@@ -21,3 +21,17 @@ define Build/fit-inline-rootfs
 	[ "$$(( $$rootfs_offset % 4096 ))" -eq 0 ] || { echo "SquashFS is misaligned in $@"; exit 1; }; \
 	rm -f $@.dtb $@.kernel
 endef
+
+define Device/acer_wave7
+	DEVICE_VENDOR := Acer
+	DEVICE_MODEL := Wave 7
+	DEVICE_DTS := ipq5332-acer-wave7
+	DEVICE_DTS_CONFIG := config@mi04.1-c2
+	SOC := ipq5332
+	SUPPORTED_DEVICES += acer,wave7
+	KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
+	KERNEL_INITRAMFS := kernel-bin | lzma | \
+		fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb with-initrd | pad-to 64k
+	KERNEL_INITRAMFS_SUFFIX := .itb
+endef
+TARGET_DEVICES += acer_wave7

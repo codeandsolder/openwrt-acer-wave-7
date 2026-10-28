@@ -1,0 +1,23 @@
+#!/bin/sh /etc/rc.common
+START=99
+STOP=1
+
+. /lib/functions/system.sh
+
+start() {
+	[ "$(board_name)" = "acer,wave7" ] || return 0
+	(
+		sleep 180
+		[ -e /tmp/wave7-keep-boot ] && exit 0
+		logger -t wave7-firstboot "failsafe timeout; rebooting without committing trial"
+		sync
+		reboot -f
+	) &
+	echo $! > /tmp/wave7-firstboot-failsafe.pid
+}
+
+stop() {
+	[ -s /tmp/wave7-firstboot-failsafe.pid ] || return 0
+	kill "$(cat /tmp/wave7-firstboot-failsafe.pid)" 2>/dev/null || true
+	rm -f /tmp/wave7-firstboot-failsafe.pid
+}

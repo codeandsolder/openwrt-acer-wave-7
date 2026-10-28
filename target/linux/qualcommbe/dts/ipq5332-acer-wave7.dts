@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+
+/dts-v1/;
+
+#include <arm64/qcom/ipq5332.dtsi>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/clock/qcom,ipq5332-nsscc.h>
+
+/ {
+	model = "Acer Wave 7";
+	compatible = "acer,wave7", "qcom,ipq5332";
+
+	aliases {
+		serial0 = &blsp1_uart0;
+		ethernet0 = &xgmac2;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs-append = " panic=10";
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x0 0x20000000>;
+	};
+
+	/*
+	 * Keep the downstream WCSS/Q6/MLO/crash region untouched for the
+	 * first initramfs bring-up.  Wi-Fi is deliberately left disabled.
+	 */
+	reserved-memory {
+
+		wave7-vendor-wcss@4a900000 {
+			reg = <0x0 0x4a900000 0x0 0x4200000>;
+			no-map;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-0 = <&wave7_button_pins>;
+		pinctrl-names = "default";
+
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;
+		};
+
+		reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&tlmm 24 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&blsp1_uart0 {
+	pinctrl-0 = <&serial_0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+/* The shipping board uses the same 48 MHz XO arrangement as IPQ5332 RDPs. */
+&ref_48mhz_clk {
+	clock-div = <1>;
+	clock-mult = <1>;
+};
+
+&sleep_clk {
+	clock-frequency = <32000>;
+};
+
+&xo_board {
+	clock-div = <2>;
+	clock-mult = <1>;
+};
+
+&xo_clk {
+	clock-frequency = <48000000>;
+};
+
+&tlmm {
+	wave7_button_pins: wave7-button-state {
+		pins = "gpio24", "gpio35";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	wave7_mdio_pins: wave7-mdio-state {
+		mdc-pins {
+			pins = "gpio27";
+			function = "mdc1";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+
+		mdio-pins {
+			pins = "gpio28";
+			function = "mdio1";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+};
+
+&mdio {
+	pinctrl-0 = <&wave7_mdio_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	wan_phy: ethernet-phy@18 {
+		compatible = "ethernet-phy-id004d.d101";
+		reg = <0x18>;
+		reset-gpios = <&tlmm 22 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <50000>;
+	};
+};
+
+&qcom_ppe {
+	status = "okay";
+
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		xgmac2: port@2 {
+			reg = <2>;
+			phy-mode = "2500base-x";
+			label = "lan";
+			pcs-handle = <&pcs1_ch0>;
+			phy-handle = <&wan_phy>;
+			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK>;
+			clock-names = "mac", "rx", "tx";
+			resets = <&nsscc NSS_CC_PORT2_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK_ARES>;
+			reset-names = "mac", "rx", "tx";
+		};
+	};
+};
+
+&pcs1 {
+	status = "okay";
+};
