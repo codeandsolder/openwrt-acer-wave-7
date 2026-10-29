@@ -1,0 +1,71 @@
+wave7_firstboot_kmsg() {
+	while IFS= read -r line; do
+		printf '<6>wave7-firstboot: %s\n' "$line" > /dev/kmsg 2>/dev/null || true
+	done
+}
+
+wave7_firstboot_dump_state() {
+	{
+		echo "diagnostic snapshot before failsafe panic"
+		echo "board=$(board_name 2>/dev/null)"
+		echo "uptime=$(cat /proc/uptime 2>/dev/null)"
+		echo "--- /proc/modules ---"
+		cat /proc/modules 2>/dev/null
+		echo "--- network sysfs ---"
+		for net in /sys/class/net/*; do
+			[ -e "$net" ] || continue
+			name=${net##*/}
+			printf "%s operstate=" "$name"
+			cat "$net/operstate" 2>/dev/null || true
+			printf "%s carrier=" "$name"
+			cat "$net/carrier" 2>/dev/null || true
+		done
+		echo "--- ip link ---"
+		ip link show 2>&1 || true
+		echo "--- ip addr ---"
+		ip addr show 2>&1 || true
+		echo "--- mdio devices ---"
+		ls -l /sys/bus/mdio_bus/devices 2>&1 || true
+		echo "--- network uci ---"
+		uci show network 2>&1 || true
+		echo "--- processes ---"
+		ps w 2>&1 || true
+		echo "--- blocked kmodloader diagnostics ---"
+		for proc in /proc/[0-9]*; do
+			[ -r "$proc/comm" ] || continue
+			[ "$(cat "$proc/comm" 2>/dev/null)" = kmodloader ] || continue
+			echo "pid=${proc##*/} wchan=$(cat "$proc/wchan" 2>/dev/null)"
+			cat "$proc/stack" 2>/dev/null || true
+		done
+	} | wave7_firstboot_kmsg
+}
+
+wave7_firstboot_arm_watchdog() {
+	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
+	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
+		kill -0 "$(cat /tmp/wave7-firstboot-hard-panic.pid)" 2>/dev/null && return 0
+
+	# Hard deadline first. This path intentionally does no diagnostics, sync,
+	# logging pipeline, or other potentially blocking work before SysRq.
+	(
+		sleep 120
+		[ -e /tmp/wave7-keep-boot ] && exit 0
+		echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+		echo c > /proc/sysrq-trigger
+	) &
+	echo $! > /tmp/wave7-firstboot-hard-panic.pid
+
+	# Best-effort diagnostics run independently and earlier. If any probe wedges,
+	# the hard deadline above still fires.
+	(
+		sleep 90
+		[ -e /tmp/wave7-keep-boot ] && exit 0
+		wave7_firstboot_dump_state
+		echo "<4>wave7-firstboot: diagnostic snapshot complete; hard panic remains armed" > /dev/kmsg 2>/dev/null || true
+	) &
+	echo $! > /tmp/wave7-firstboot-diagnostics.pid
+
+	echo "<6>wave7-firstboot: diagnostics at 90s, hard panic armed for 120s" > /dev/kmsg 2>/dev/null || true
+}
+
+boot_hook_add preinit_main wave7_firstboot_arm_watchdog

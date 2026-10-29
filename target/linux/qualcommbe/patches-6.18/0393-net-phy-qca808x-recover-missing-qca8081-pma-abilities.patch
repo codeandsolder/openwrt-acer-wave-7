@@ -1,0 +1,84 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: recover missing QCA8081 PMA abilities
+
+A QCA8081 can occasionally reach phylink with no copper speed modes after
+genphy_c45_pma_read_abilities() succeeds. phylink then rejects the PHY
+before the netdev is registered.
+
+Keep the generic Clause-45 path as the default. If it succeeds but leaves a
+QCA8081 with no copper speeds, dump the relevant capability registers,
+decode the PMA extended tables directly, then supplement Clause-22 basic
+abilities if needed.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -575,13 +575,67 @@
+ 	return 0;
+ }
+ 
++static bool qca808x_has_copper_speed(struct phy_device *phydev)
++{
++	return linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Half_BIT,
++				 phydev->supported) ||
++		linkmode_test_bit(ETHTOOL_LINK_MODE_10baseT_Full_BIT,
++				  phydev->supported) ||
++		linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT,
++				  phydev->supported) ||
++		linkmode_test_bit(ETHTOOL_LINK_MODE_100baseT_Full_BIT,
++				  phydev->supported) ||
++		linkmode_test_bit(ETHTOOL_LINK_MODE_1000baseT_Full_BIT,
++				  phydev->supported) ||
++		linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++				  phydev->supported);
++}
++
+ static int qca808x_get_features(struct phy_device *phydev)
+ {
++	int stat2, ext, ng_ext, bmsr, estatus;
+ 	int ret;
+ 
+ 	ret = genphy_c45_pma_read_abilities(phydev);
+ 	if (ret)
+ 		return ret;
++
++	/* Some QCA8081 revisions respond to the PMA extended ability
++	 * registers but fail to advertise the extended-table-present bit in
++	 * PMA Status 2. In that state the generic helper succeeds while
++	 * leaving every copper speed mode clear, which makes phylink reject
++	 * the PHY before the netdev can be registered.
++	 *
++	 * Keep the standards-compliant path as the default. Only recover when
++	 * it produced no usable copper speed at all, first by decoding the PMA
++	 * extended tables directly and finally by supplementing the basic
++	 * Clause-22 abilities. The register dump makes the quirk observable.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    !qca808x_has_copper_speed(phydev)) {
++		stat2 = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_STAT2);
++		ext = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_PMA_EXTABLE);
++		ng_ext = phy_read_mmd(phydev, MDIO_MMD_PMAPMD,
++				      MDIO_PMA_NG_EXTABLE);
++		bmsr = phy_read(phydev, MII_BMSR);
++		estatus = phy_read(phydev, MII_ESTATUS);
++
++		phydev_warn(phydev,
++			    "PMA abilities reported no copper speeds; stat2=%#x ext=%#x ng-ext=%#x bmsr=%#x estatus=%#x\n",
++			    stat2, ext, ng_ext, bmsr, estatus);
++
++		if (ext >= 0 && ext != 0xffff) {
++			ret = genphy_c45_pma_read_ext_abilities(phydev);
++			if (ret)
++				return ret;
++		}
++
++		if (!qca808x_has_copper_speed(phydev)) {
++			ret = genphy_read_abilities(phydev);
++			if (ret)
++				return ret;
++		}
++	}
+ 
+ 	/* The autoneg ability is not existed in bit3 of MMD7.1,
+ 	 * but it is supported by qca808x PHY, so we add it here

@@ -6,18 +6,21 @@ STOP=1
 
 start() {
 	[ "$(board_name)" = "acer,wave7" ] || return 0
+	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
+		kill -0 "$(cat /tmp/wave7-firstboot-hard-panic.pid)" 2>/dev/null && return 0
 	(
-		sleep 180
+		sleep 120
 		[ -e /tmp/wave7-keep-boot ] && exit 0
-		logger -t wave7-firstboot "failsafe timeout; rebooting without committing trial"
-		sync
-		reboot -f
+		echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+		echo c > /proc/sysrq-trigger
 	) &
-	echo $! > /tmp/wave7-firstboot-failsafe.pid
+	echo $! > /tmp/wave7-firstboot-hard-panic.pid
 }
 
 stop() {
-	[ -s /tmp/wave7-firstboot-failsafe.pid ] || return 0
-	kill "$(cat /tmp/wave7-firstboot-failsafe.pid)" 2>/dev/null || true
-	rm -f /tmp/wave7-firstboot-failsafe.pid
+	for pidfile in /tmp/wave7-firstboot-hard-panic.pid /tmp/wave7-firstboot-diagnostics.pid; do
+		[ -s "$pidfile" ] || continue
+		kill "$(cat "$pidfile")" 2>/dev/null || true
+		rm -f "$pidfile"
+	done
 }

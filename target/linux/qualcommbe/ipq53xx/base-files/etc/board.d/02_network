@@ -6,7 +6,8 @@ board_config_update
 
 case "$(board_name)" in
 acer,wave7)
-	ucidef_set_interface_lan "lan"
+	ucidef_set_interface "lan" device "lan" protocol "static" \
+		ipaddr "192.168.76.1" netmask "255.255.255.0"
 	;;
 esac
 
