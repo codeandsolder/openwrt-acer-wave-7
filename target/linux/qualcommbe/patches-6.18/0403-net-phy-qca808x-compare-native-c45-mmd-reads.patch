@@ -1,0 +1,52 @@
+From: Jan Równicki <jan@example.invalid>
+Subject: [PATCH] net: phy: qca808x: compare native C45 MMD reads
+
+QCA8081 is bound as a Clause-22 PHY, so phy_read_mmd() accesses its MMDs
+through the Clause-22 indirect 0x0d/0x0e mechanism. Qualcomm's vendor SSDK
+instead uses native Clause-45 transactions for the same registers.
+
+Log both paths side by side during Wave 7 SGMII diagnosis. This can
+separate a broken indirect-MMD path from real PHY register state without
+changing link configuration.
+
+This is diagnostic-only.
+
+Signed-off-by: Jan Równicki <jan@example.invalid>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -697,7 +697,10 @@
+ 
+ static void qca808x_link_change_notify(struct phy_device *phydev)
+ {
++	struct mii_bus *bus = phydev->mdio.bus;
++	int phy_addr = phydev->mdio.addr;
+ 	int pma4, pma8, pma11, pma21, pma93, an20, spec;
++	int c45_pma4, c45_pma8, c45_pma11, c45_pma21, c45_pma93, c45_an20;
+ 	int serdes4, serdes8, serdes11, serdes21;
+ 	int before, after, ret;
+ 	int serdes_addr = phydev->mdio.addr + 1;
+@@ -724,6 +727,12 @@
+ 	pma93 = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, 0x93);
+ 	an20 = phy_read_mmd(phydev, MDIO_MMD_AN, 0x20);
+ 	spec = phy_read(phydev, 0x11);
++	c45_pma4 = mdiobus_c45_read(bus, phy_addr, MDIO_MMD_PMAPMD, 4);
++	c45_pma8 = mdiobus_c45_read(bus, phy_addr, MDIO_MMD_PMAPMD, 8);
++	c45_pma11 = mdiobus_c45_read(bus, phy_addr, MDIO_MMD_PMAPMD, 11);
++	c45_pma21 = mdiobus_c45_read(bus, phy_addr, MDIO_MMD_PMAPMD, 21);
++	c45_pma93 = mdiobus_c45_read(bus, phy_addr, MDIO_MMD_PMAPMD, 0x93);
++	c45_an20 = mdiobus_c45_read(bus, phy_addr, MDIO_MMD_AN, 0x20);
+ 	serdes4 = mdiobus_c45_read(phydev->mdio.bus, serdes_addr,
+ 				   MDIO_MMD_PMAPMD, 4);
+ 	serdes8 = mdiobus_c45_read(phydev->mdio.bus, serdes_addr,
+@@ -737,6 +746,10 @@
+ 		    "SGMII PHY state: spec=%#x pma4=%#x pma8=%#x pma11=%#x pma21=%#x pma93=%#x an20=%#x\n",
+ 		    spec, pma4, pma8, pma11, pma21, pma93, an20);
+ 	phydev_info(phydev,
++		    "SGMII PHY native-C45 state: is-c45=%u pma4=%#x pma8=%#x pma11=%#x pma21=%#x pma93=%#x an20=%#x\n",
++		    phydev->is_c45, c45_pma4, c45_pma8, c45_pma11, c45_pma21,
++		    c45_pma93, c45_an20);
++	phydev_info(phydev,
+ 		    "SGMII SerDes state: phy=%#x pma4=%#x pma8=%#x pma11=%#x pma21=%#x fifo=%#x\n",
+ 		    serdes_addr, serdes4, serdes8, serdes11, serdes21, after);
+ 	phydev_info(phydev,
