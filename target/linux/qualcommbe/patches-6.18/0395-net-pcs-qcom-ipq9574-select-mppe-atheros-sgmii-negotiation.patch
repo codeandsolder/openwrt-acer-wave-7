@@ -1,0 +1,39 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: select MPPE Atheros SGMII negotiation
+
+MPPE/IPQ53xx vendor SSDK programs MODE_CTRL bit 0 to zero for its
+SGMII and SGMII+ personalities, selecting Qualcomm/Atheros negotiation.
+The PCS driver currently omits that bit from its update mask, allowing
+the reset value to survive and leaving MPPE in standard negotiation.
+
+Include the negotiation-select bit in the MPPE SGMII personality mask.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -47,6 +47,7 @@
+ 						   0x2)
+ #define PCS_MODE_SGMII_MODE_1000BASEX	FIELD_PREP(PCS_MODE_SGMII_MODE_MASK, \
+ 						   0x0)
++#define PCS_MODE_AUTONEG_STANDARD	BIT(0)
+ 
+ #define PCS_MII_CTRL(x)			(0x480 + 0x18 * (x))
+ #define PCS_MII_ADPT_RESET		BIT(11)
+@@ -408,6 +409,16 @@
+ 		goto err_clk;
+ 	}
+ 
++	/* MPPE uses Qualcomm/Atheros SGMII negotiation. The power-on
++	 * value selects standard negotiation; include the bit in the update
++	 * mask so it is cleared instead of inheriting reset state.
++	 */
++	if (qpcs->mppe &&
++	    (interface == PHY_INTERFACE_MODE_SGMII ||
++	     interface == PHY_INTERFACE_MODE_1000BASEX ||
++	     interface == PHY_INTERFACE_MODE_2500BASEX))
++		mask |= PCS_MODE_AUTONEG_STANDARD;
++
+ 	ret = regmap_update_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
+ 	if (ret)
+ 		goto err_clk;
