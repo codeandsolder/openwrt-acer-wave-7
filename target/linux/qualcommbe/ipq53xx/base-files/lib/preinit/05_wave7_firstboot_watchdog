@@ -42,7 +42,8 @@ wave7_firstboot_dump_state() {
 
 wave7_firstboot_link_ready() {
 	[ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 1
-	ip -4 -o addr show dev br-lan 2>/dev/null | grep -Fq '192.168.76.1/24'
+	ip -4 -o addr show dev br-lan 2>/dev/null | grep -Fq '192.168.76.1/24' || return 1
+	ping -I br-lan -c 1 -W 1 192.168.76.2 >/dev/null 2>&1
 }
 
 wave7_firstboot_accept_link() {
