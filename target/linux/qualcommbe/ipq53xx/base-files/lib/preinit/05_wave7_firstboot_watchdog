@@ -40,6 +40,18 @@ wave7_firstboot_dump_state() {
 	} | wave7_firstboot_kmsg
 }
 
+wave7_firstboot_link_ready() {
+	[ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 1
+	ip -4 -o addr show dev br-lan 2>/dev/null | grep -Fq '192.168.76.1/24'
+}
+
+wave7_firstboot_accept_link() {
+	wave7_firstboot_link_ready || return 1
+	touch /tmp/wave7-keep-boot
+	echo "<6>wave7-firstboot: lan carrier and management address are up; preserving trial boot" > /dev/kmsg 2>/dev/null || true
+	return 0
+}
+
 wave7_firstboot_arm_watchdog() {
 	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
 	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
@@ -50,6 +62,7 @@ wave7_firstboot_arm_watchdog() {
 	(
 		sleep 120
 		[ -e /tmp/wave7-keep-boot ] && exit 0
+		wave7_firstboot_accept_link && exit 0
 		echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
 		echo c > /proc/sysrq-trigger
 	) &
@@ -60,6 +73,7 @@ wave7_firstboot_arm_watchdog() {
 	(
 		sleep 90
 		[ -e /tmp/wave7-keep-boot ] && exit 0
+		wave7_firstboot_accept_link && exit 0
 		wave7_firstboot_dump_state
 		echo "<4>wave7-firstboot: diagnostic snapshot complete; hard panic remains armed" > /dev/kmsg 2>/dev/null || true
 	) &
