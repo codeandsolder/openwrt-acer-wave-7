@@ -1,0 +1,100 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: qcom: reset MPPE SGMII after port clock setup
+
+The IPQ53xx MPPE vendor link-up sequence programs the negotiated port
+clock and MAC speed before waiting 50 ms and pulsing the UNIPHY channel
+adapter reset. Phylink calls pcs_link_up() before mac_link_up(), so the
+current driver resets the adapter before PPE switches its RX/TX clocks to
+the negotiated rate. The PCS then remains at 1G/full status without the
+link bit and cannot pass packets.
+
+Defer the MPPE SGMII adapter reset from pcs_link_up() to a Qualcomm PCS
+hook called by PPE after the speed clock and GMAC speed are programmed,
+but before GMAC is enabled. This mirrors the vendor ordering without
+changing generic phylink semantics.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -738,6 +738,13 @@
+ 			return ret;
+ 	}
+ 
++	/* MPPE must pulse the SGMII adapter reset only after the PPE port
++	 * clock has been switched to the negotiated speed. PPE calls the
++	 * post-MAC hook after programming that clock and the GMAC speed.
++	 */
++	if (qpcs->mppe && qpcs->interface == PHY_INTERFACE_MODE_SGMII)
++		return 0;
++
+ 	/* PCS adapter reset */
+ 	ret = regmap_clear_bits(qpcs->regmap,
+ 				PCS_MII_CTRL(index), PCS_MII_ADPT_RESET);
+@@ -762,6 +769,42 @@
+ 	return 0;
+ }
+ 
++int ipq_pcs_link_up_post_mac(struct phylink_pcs *pcs)
++{
++	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
++	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
++	unsigned int ctrl, sts;
++	int ret;
++
++	if (!qpcs->mppe || qpcs->interface != PHY_INTERFACE_MODE_SGMII)
++		return 0;
++
++	/* Match the MPPE vendor sequence: the port clock and MAC speed are
++	 * configured first, then allowed to settle before adapter reset.
++	 */
++	msleep(50);
++
++	ret = regmap_clear_bits(qpcs->regmap, PCS_MII_CTRL(qpcs_mii->index),
++				PCS_MII_ADPT_RESET);
++	if (ret)
++		return ret;
++
++	ret = regmap_set_bits(qpcs->regmap, PCS_MII_CTRL(qpcs_mii->index),
++			      PCS_MII_ADPT_RESET);
++	if (ret)
++		return ret;
++
++	fsleep(10000);
++	if (!regmap_read(qpcs->regmap, PCS_MII_CTRL(qpcs_mii->index), &ctrl) &&
++	    !regmap_read(qpcs->regmap, PCS_MII_STS(qpcs_mii->index), &sts))
++		dev_info(qpcs->dev,
++			 "MPPE SGMII post-MAC reset: ctrl=%#x sts=%#x\n",
++			 ctrl, sts);
++
++	return 0;
++}
++EXPORT_SYMBOL_GPL(ipq_pcs_link_up_post_mac);
++
+ static int ipq_pcs_link_up_config_2500basex(struct ipq_pcs *qpcs, int speed)
+ {
+ 	int ret;
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -846,6 +846,12 @@
+ 	if (ret)
+ 		return ret;
+ 
++	if (ppe_port->pcs) {
++		ret = ipq_pcs_link_up_post_mac(ppe_port->pcs);
++		if (ret)
++			return ret;
++	}
++
+ 	/* Set duplex, flow control and enable GMAC */
+ 	val = GMAC_TRXEN;
+ 	if (duplex == DUPLEX_FULL)
+--- a/include/linux/pcs/pcs-qcom-ipq9574.h
++++ b/include/linux/pcs/pcs-qcom-ipq9574.h
+@@ -11,5 +11,6 @@
+ 
+ struct phylink_pcs *ipq_pcs_get(struct device_node *np);
+ void ipq_pcs_put(struct phylink_pcs *pcs);
++int ipq_pcs_link_up_post_mac(struct phylink_pcs *pcs);
+ 
+ #endif /* __LINUX_PCS_QCOM_IPQ9574_H */
