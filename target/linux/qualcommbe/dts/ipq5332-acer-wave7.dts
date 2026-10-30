@@ -128,6 +128,7 @@
 		      "gcc_uniphy1_ahb_clk",
 		      "gcc_uniphy1_sys_clk";
 	clock-frequency = <6250000>;
+	phy-reset-gpios = <&tlmm 22 GPIO_ACTIVE_LOW>;
 	pinctrl-0 = <&wave7_mdio_pins>;
 	pinctrl-names = "default";
 	status = "okay";
@@ -135,9 +136,6 @@
 	wan_phy: ethernet-phy@18 {
 		compatible = "ethernet-phy-id004d.d101";
 		reg = <0x18>;
-		reset-gpios = <&tlmm 22 GPIO_ACTIVE_LOW>;
-		reset-assert-us = <100000>;
-		reset-deassert-us = <100000>;
 	};
 };
 

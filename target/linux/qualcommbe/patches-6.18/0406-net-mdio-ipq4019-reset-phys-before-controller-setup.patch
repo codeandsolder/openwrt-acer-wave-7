@@ -1,0 +1,95 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: mdio: ipq4019: reset external PHYs before controller setup
+
+Qualcomm's downstream IPQ53xx MDIO driver pulses the parent MDIO
+phy-reset GPIO array at the very start of probe, before enabling the MDIO
+clock, mapping/programming the controller, or registering the bus.
+
+Match that ordering. Request the optional reset array asserted, hold it
+for 100 ms, release it, and wait 100 ms before proceeding with controller
+setup. Do not reset the same PHYs again from mii_bus->reset().
+
+This is especially important on Wave 7, where resetting QCA8081 later as
+a PHY-child reset changes otherwise-working pre-enumeration MMD behavior.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -368,29 +368,6 @@
+ 		fsleep(IPQ_PHY_SET_DELAY_US);
+ 	}
+ 
+-	/* Reset attached PHYs only after the SoC clock/LDO path is live. */
+-	if (priv->reset_gpios) {
+-		unsigned long *values;
+-
+-		values = bitmap_zalloc(priv->reset_gpios->ndescs, GFP_KERNEL);
+-		if (!values)
+-			return -ENOMEM;
+-
+-		bitmap_fill(values, priv->reset_gpios->ndescs);
+-		gpiod_set_array_value_cansleep(priv->reset_gpios->ndescs,
+-					       priv->reset_gpios->desc,
+-					     priv->reset_gpios->info, values);
+-		/* Qualcomm IPQ5332 U-Boot holds QCA808x reset low for 500ms. */
+-		msleep(500);
+-
+-		bitmap_zero(values, priv->reset_gpios->ndescs);
+-		gpiod_set_array_value_cansleep(priv->reset_gpios->ndescs,
+-					       priv->reset_gpios->desc,
+-					     priv->reset_gpios->info, values);
+-		bitmap_free(values);
+-		fsleep(IPQ_PHY_SET_DELAY_US);
+-	}
+-
+ 	/* Configure MDIO clock source frequency if clock is specified in the device tree */
+ 	if (priv->clk[MDIO_CLK_MDIO_AHB]) {
+ 		ret = clk_set_rate(priv->clk[MDIO_CLK_MDIO_AHB], IPQ_MDIO_CLK_RATE);
+@@ -484,6 +461,33 @@
+ 
+ 	priv = bus->priv;
+ 
++	/* Qualcomm downstream asserts external PHY reset before touching the
++	 * MDIO controller or enabling its clocks. Request the optional reset
++	 * array asserted, hold it for 100 ms, then release it and wait another
++	 * 100 ms before continuing probe.
++	 */
++	priv->reset_gpios = devm_gpiod_get_array_optional(&pdev->dev,
++							  "phy-reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(priv->reset_gpios))
++		return dev_err_probe(&pdev->dev, PTR_ERR(priv->reset_gpios),
++				     "could not get PHY reset GPIOs\n");
++
++	if (priv->reset_gpios) {
++		unsigned long *values;
++
++		fsleep(IPQ_PHY_SET_DELAY_US);
++		values = bitmap_zalloc(priv->reset_gpios->ndescs, GFP_KERNEL);
++		if (!values)
++			return -ENOMEM;
++
++		bitmap_zero(values, priv->reset_gpios->ndescs);
++		gpiod_set_array_value_cansleep(priv->reset_gpios->ndescs,
++					       priv->reset_gpios->desc,
++					       priv->reset_gpios->info, values);
++		bitmap_free(values);
++		fsleep(IPQ_PHY_SET_DELAY_US);
++	}
++
+ 	priv->membase = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(priv->membase))
+ 		return PTR_ERR(priv->membase);
+@@ -508,12 +512,6 @@
+ 			return PTR_ERR(priv->eth_ldo_rdy);
+ 	}
+ 
+-	priv->reset_gpios = devm_gpiod_get_array_optional(&pdev->dev,
+-							  "phy-reset", GPIOD_OUT_LOW);
+-	if (IS_ERR(priv->reset_gpios))
+-		return dev_err_probe(&pdev->dev, PTR_ERR(priv->reset_gpios),
+-				     "could not get PHY reset GPIOs\n");
+-
+ 	bus->name = "ipq4019_mdio";
+ 	bus->read = ipq4019_mdio_read_c22;
+ 	bus->write = ipq4019_mdio_write_c22;
