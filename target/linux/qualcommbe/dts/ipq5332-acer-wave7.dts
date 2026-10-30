@@ -149,7 +149,6 @@
 		xgmac2: port@2 {
 			reg = <2>;
 			phy-mode = "sgmii";
-			managed = "in-band-status";
 			label = "lan";
 			pcs-handle = <&pcs1_ch0>;
 			phy-handle = <&wan_phy>;
