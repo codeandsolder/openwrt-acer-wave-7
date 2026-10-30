@@ -1,0 +1,41 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: recover QCA8081 2.5G capability from chip type
+
+Some QCA8081 devices expose an empty PMA capability table early in probe.
+The Clause-22 fallback recovers the basic 10/100/1000 modes, but cannot
+represent 2.5G. This leaves a 2.5G-capable QCA8081 looking like a
+1G PHY and skips the driver's existing fast-retrain initialization.
+
+QCA8081 already exposes a chip-type bit used by the driver to identify the
+1G-only variant. When PMA discovery omitted 2.5G, restore
+2500baseT_Full for a QCA8081 that is explicitly not the 1G-only variant.
+The existing variant
+check still removes 2.5G on genuine 1G-only parts.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -637,6 +637,22 @@
+ 		}
+ 	}
+ 
++	/* QCA8081 also identifies the 1G-only variant through MMD7.0x901d.
++	 * If the PMA capability table was unavailable during probe, use that
++	 * variant bit to recover the 2.5G capability. This also lets the normal
++	 * QCA8081 fast-retrain initialization run instead of treating a 2.5G
++	 * part as a 1G-only PHY.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    !qca808x_is_1g_only(phydev) &&
++	    !linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++			       phydev->supported)) {
++		linkmode_set_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT,
++				 phydev->supported);
++		phydev_warn(phydev,
++			    "recovering missing 2.5G capability from QCA8081 chip type\n");
++	}
++
+ 	/* The autoneg ability is not existed in bit3 of MMD7.1,
+ 	 * but it is supported by qca808x PHY, so we add it here
+ 	 * manually.
