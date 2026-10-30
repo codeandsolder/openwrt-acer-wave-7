@@ -127,6 +127,7 @@
 		      "gcc_uniphy0_sys_clk",
 		      "gcc_uniphy1_ahb_clk",
 		      "gcc_uniphy1_sys_clk";
+	clock-frequency = <6250000>;
 	pinctrl-0 = <&wave7_mdio_pins>;
 	pinctrl-names = "default";
 	status = "okay";
