@@ -1,0 +1,168 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] qualcommbe: wave7: match QSDK MDIO completion barriers
+
+The shipping IPQ5332 QSDK MDIO driver emits dsb(st) between controller
+stores and dsb(sy) after every command-register load in the BUSY poll.
+Generic arm64 writel/readl only provide the weaker normal I/O barriers.
+
+Reproduce the shipping completion boundaries without changing the MDIO
+transaction topology. This tests whether posted controller accesses cause
+the observed stale DATA_READ values during consecutive Clause 45 reads.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -79,14 +79,33 @@
+ 
+ static int ipq4019_mdio_set_div(struct ipq4019_mdio_data *priv);
+ 
++static u32 ipq4019_mdio_read_cmd(struct ipq4019_mdio_data *priv)
++{
++	u32 val = readl(priv->membase + MDIO_CMD_REG);
++
++	/* Match QSDK's dsb(sy) completion barrier after controller loads. */
++	mb();
++
++	return val;
++}
++
+ static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
+ 	unsigned int busy;
+ 
+-	return readl_poll_timeout(priv->membase + MDIO_CMD_REG, busy,
+-				  (busy & MDIO_CMD_ACCESS_BUSY) == 0,
+-				  IPQ4019_MDIO_SLEEP, IPQ4019_MDIO_TIMEOUT);
++	return read_poll_timeout(ipq4019_mdio_read_cmd, busy,
++				 (busy & MDIO_CMD_ACCESS_BUSY) == 0,
++				 IPQ4019_MDIO_SLEEP, IPQ4019_MDIO_TIMEOUT,
++				 false, priv);
++}
++
++static void ipq4019_mdio_write_reg(struct ipq4019_mdio_data *priv,
++				   u32 reg, u32 val)
++{
++	writel(val, priv->membase + reg);
++	/* Match QSDK's dsb(st) completion barrier after controller stores. */
++	wmb();
+ }
+ 
+ static void ipq4019_mdio_dump_state(struct mii_bus *bus, const char *stage)
+@@ -124,18 +143,18 @@
+ 
+ 	data |= MDIO_MODE_C45;
+ 
+-	writel(data, priv->membase + MDIO_MODE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_MODE_REG, data);
+ 
+ 	/* issue the phy address and mmd */
+-	writel((mii_id << 8) | mmd, priv->membase + MDIO_ADDR_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_ADDR_REG, (mii_id << 8) | mmd);
+ 
+ 	/* issue reg */
+-	writel(reg, priv->membase + MDIO_DATA_WRITE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_DATA_WRITE_REG, reg);
+ 
+ 	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_C45_ADDR;
+ 
+ 	/* issue read command */
+-	writel(cmd, priv->membase + MDIO_CMD_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_CMD_REG, cmd);
+ 
+ 	/* Wait address phase complete */
+ 	if (ipq4019_mdio_wait_busy(bus))
+@@ -151,7 +170,7 @@
+ 
+ 	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_C45_READ;
+ 
+-	writel(cmd, priv->membase + MDIO_CMD_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_CMD_REG, cmd);
+ 
+ 	if (ipq4019_mdio_wait_busy(bus))
+ 		return -ETIMEDOUT;
+@@ -190,15 +209,15 @@
+ 
+ 	data &= ~MDIO_MODE_C45;
+ 
+-	writel(data, priv->membase + MDIO_MODE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_MODE_REG, data);
+ 
+ 	/* issue the phy address and reg */
+-	writel((mii_id << 8) | regnum, priv->membase + MDIO_ADDR_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_ADDR_REG, (mii_id << 8) | regnum);
+ 
+ 	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_READ;
+ 
+ 	/* issue read command */
+-	writel(cmd, priv->membase + MDIO_CMD_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_CMD_REG, cmd);
+ 
+ 	/* Wait read complete */
+ 	if (ipq4019_mdio_wait_busy(bus))
+@@ -229,26 +248,26 @@
+ 
+ 	data |= MDIO_MODE_C45;
+ 
+-	writel(data, priv->membase + MDIO_MODE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_MODE_REG, data);
+ 
+ 	/* issue the phy address and mmd */
+-	writel((mii_id << 8) | mmd, priv->membase + MDIO_ADDR_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_ADDR_REG, (mii_id << 8) | mmd);
+ 
+ 	/* issue reg */
+-	writel(reg, priv->membase + MDIO_DATA_WRITE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_DATA_WRITE_REG, reg);
+ 
+ 	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_C45_ADDR;
+ 
+-	writel(cmd, priv->membase + MDIO_CMD_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_CMD_REG, cmd);
+ 
+ 	if (ipq4019_mdio_wait_busy(bus))
+ 		return -ETIMEDOUT;
+ 
+ 	/* issue write data */
+-	writel(value, priv->membase + MDIO_DATA_WRITE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_DATA_WRITE_REG, value);
+ 
+ 	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_C45_WRITE;
+-	writel(cmd, priv->membase + MDIO_CMD_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_CMD_REG, cmd);
+ 
+ 	/* Wait write complete */
+ 	if (ipq4019_mdio_wait_busy(bus))
+@@ -279,18 +298,18 @@
+ 
+ 	data &= ~MDIO_MODE_C45;
+ 
+-	writel(data, priv->membase + MDIO_MODE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_MODE_REG, data);
+ 
+ 	/* issue the phy address and reg */
+-	writel((mii_id << 8) | regnum, priv->membase + MDIO_ADDR_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_ADDR_REG, (mii_id << 8) | regnum);
+ 
+ 	/* issue write data */
+-	writel(value, priv->membase + MDIO_DATA_WRITE_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_DATA_WRITE_REG, value);
+ 
+ 	/* issue write command */
+ 	cmd = MDIO_CMD_ACCESS_START | MDIO_CMD_ACCESS_CODE_WRITE;
+ 
+-	writel(cmd, priv->membase + MDIO_CMD_REG);
++	ipq4019_mdio_write_reg(priv, MDIO_CMD_REG, cmd);
+ 
+ 	/* Wait write complete */
+ 	if (ipq4019_mdio_wait_busy(bus))
+@@ -321,7 +340,7 @@
+ 			val = readl(priv->membase + MDIO_MODE_REG);
+ 			val &= ~MDIO_MODE_DIV_MASK;
+ 			val |= MDIO_MODE_DIV(div);
+-			writel(val, priv->membase + MDIO_MODE_REG);
++			ipq4019_mdio_write_reg(priv, MDIO_MODE_REG, val);
+ 
+ 			return 0;
+ 		}
