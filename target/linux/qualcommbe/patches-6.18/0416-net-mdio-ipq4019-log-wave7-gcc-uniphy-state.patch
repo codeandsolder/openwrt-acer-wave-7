@@ -1,0 +1,78 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: mdio: ipq4019: log Wave7 GCC and UNIPHY state
+
+The Wave 7 Clause-45 path still returns stale data after matching the
+shipping transaction shape, MMIO completion semantics, BUSY handshake,
+pinctrl, and ordered PHY reset sequence. Record the exact IPQ5332 GCC
+UNIPHY/MDIO clock state and UNIPHY clock-output registers at MDIO reset
+entry and immediately before the existing pre-scan.
+
+This is read-only diagnostic instrumentation intended to distinguish a
+clock-domain mutation from a controller/PHY transaction problem.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -381,6 +381,46 @@
+ 	return -EINVAL;
+ }
+ 
++#define WAVE7_GCC_BASE		0x01800000
++#define WAVE7_GCC_SIZE		0x00032000
++#define WAVE7_UNIPHY_BASE	0x07a00000
++#define WAVE7_UNIPHY_SIZE	0x00020000
++
++static void ipq4019_mdio_dump_wave7_clock_state(struct mii_bus *bus, const char *tag)
++{
++	void __iomem *gcc;
++	void __iomem *uniphy;
++
++	gcc = ioremap(WAVE7_GCC_BASE, WAVE7_GCC_SIZE);
++	uniphy = ioremap(WAVE7_UNIPHY_BASE, WAVE7_UNIPHY_SIZE);
++	if (!gcc || !uniphy) {
++		dev_warn(bus->parent, "Wave7 clock-state map failed at %s\n", tag);
++		goto out;
++	}
++
++	dev_info(bus->parent,
++		 "Wave7 GCC state %s: u0_bcr=%#x u0_sys=%#x u0_ahb=%#x u1_bcr=%#x u1_sys=%#x u1_ahb=%#x sys_cmd=%#x sys_cfg=%#x pcnoc_cmd=%#x pcnoc_cfg=%#x mdiom=%#x mdios=%#x\n",
++		 tag, readl(gcc + 0x16000), readl(gcc + 0x1600c),
++		 readl(gcc + 0x16010), readl(gcc + 0x16014),
++		 readl(gcc + 0x16018), readl(gcc + 0x1601c),
++		 readl(gcc + 0x16004), readl(gcc + 0x16008),
++		 readl(gcc + 0x31004), readl(gcc + 0x31008),
++		 readl(gcc + 0x12004), readl(gcc + 0x1200c));
++	dev_info(bus->parent,
++		 "Wave7 UNIPHY state %s: u0=%#x/%#x/%#x/%#x/%#x u1=%#x/%#x/%#x/%#x/%#x\n",
++		 tag, readl(uniphy + 0x00600), readl(uniphy + 0x00604),
++		 readl(uniphy + 0x00608), readl(uniphy + 0x0060c),
++		 readl(uniphy + 0x00610), readl(uniphy + 0x10600),
++		 readl(uniphy + 0x10604), readl(uniphy + 0x10608),
++		 readl(uniphy + 0x1060c), readl(uniphy + 0x10610));
++
++out:
++	if (uniphy)
++		iounmap(uniphy);
++	if (gcc)
++		iounmap(gcc);
++}
++
+ static int ipq_mdio_reset(struct mii_bus *bus)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
+@@ -389,6 +429,7 @@
+ 	int i, ret;
+ 
+ 	ipq4019_mdio_dump_state(bus, "reset-entry");
++	ipq4019_mdio_dump_wave7_clock_state(bus, "reset-entry");
+ 
+ 	/* IPQ5332 needs the SoC UNIPHY clocks running before an external
+ 	 * PHY reset takes effect. The clocks are optional so older users
+@@ -455,6 +496,7 @@
+ 	}
+ 
+ 	mdelay(10);
++	ipq4019_mdio_dump_wave7_clock_state(bus, "pre-scan");
+ 
+ 	/* Restore MDC rate */
+ 	ret = ipq4019_mdio_set_div(priv);
