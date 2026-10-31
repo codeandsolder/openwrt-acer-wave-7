@@ -1,0 +1,119 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: mdio: ipq4019: trace C45 command busy handshake
+
+The Wave 7 native Clause-45 path can repeatedly return data from a stale
+register even though the controller's address and write-data registers show
+the newly requested register.  Trace the existing command-register polling
+without adding extra MMIO reads or logging between the address and data
+phases.  Record the first/last command values, number of polls and whether
+BUSY was ever observed, then emit the accounting with the existing post-
+transaction diagnostic.
+
+This is diagnostic-only and deliberately leaves the normal non-traced wait
+path unchanged.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/mdio/mdio-ipq4019.c b/drivers/net/mdio/mdio-ipq4019.c
+index 3ea40fe..5c5eae5 100644
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -79,6 +79,41 @@ static const char *const mdio_clk_name[MDIO_CLK_CNT] = {
+ 
+ static int ipq4019_mdio_set_div(struct ipq4019_mdio_data *priv);
+ 
++struct ipq4019_mdio_wait_trace {
++	u32 first;
++	u32 last;
++	unsigned int polls;
++	bool saw_busy;
++};
++
++static inline u32
++ipq4019_mdio_read_cmd_trace(struct ipq4019_mdio_data *priv,
++			    struct ipq4019_mdio_wait_trace *trace)
++{
++	u32 val = readl(priv->membase + MDIO_CMD_REG);
++
++	if (!trace->polls)
++		trace->first = val;
++	trace->last = val;
++	trace->polls++;
++	trace->saw_busy |= !!(val & MDIO_CMD_ACCESS_BUSY);
++
++	return val;
++}
++
++static int
++ipq4019_mdio_wait_busy_trace(struct mii_bus *bus,
++			     struct ipq4019_mdio_wait_trace *trace)
++{
++	struct ipq4019_mdio_data *priv = bus->priv;
++	unsigned int busy;
++
++	return read_poll_timeout(ipq4019_mdio_read_cmd_trace, busy,
++				 (busy & MDIO_CMD_ACCESS_BUSY) == 0,
++				 IPQ4019_MDIO_SLEEP, IPQ4019_MDIO_TIMEOUT,
++				 false, priv, trace);
++}
++
+ static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
+@@ -103,6 +138,8 @@ static int ipq4019_mdio_read_c45(struct mii_bus *bus, int mii_id, int mmd,
+ 				 int reg)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
++	struct ipq4019_mdio_wait_trace addr_wait = {};
++	struct ipq4019_mdio_wait_trace read_wait = {};
+ 	unsigned int addr_mode, addr_addr, addr_wr, addr_rd, addr_cmd;
+ 	unsigned int data;
+ 	unsigned int cmd;
+@@ -137,9 +174,15 @@ static int ipq4019_mdio_read_c45(struct mii_bus *bus, int mii_id, int mmd,
+ 	/* issue read command */
+ 	writel(cmd, priv->membase + MDIO_CMD_REG);
+ 
+-	/* Wait address phase complete */
+-	if (ipq4019_mdio_wait_busy(bus))
++	/* Wait address phase complete. For the Wave trace, account for the
++	 * existing CMD reads without adding another controller access.
++	 */
++	if (trace) {
++		if (ipq4019_mdio_wait_busy_trace(bus, &addr_wait))
++			return -ETIMEDOUT;
++	} else if (ipq4019_mdio_wait_busy(bus)) {
+ 		return -ETIMEDOUT;
++	}
+ 
+ 	if (trace) {
+ 		addr_mode = readl(priv->membase + MDIO_MODE_REG);
+@@ -153,19 +196,25 @@ static int ipq4019_mdio_read_c45(struct mii_bus *bus, int mii_id, int mmd,
+ 
+ 	writel(cmd, priv->membase + MDIO_CMD_REG);
+ 
+-	if (ipq4019_mdio_wait_busy(bus))
++	if (trace) {
++		if (ipq4019_mdio_wait_busy_trace(bus, &read_wait))
++			return -ETIMEDOUT;
++	} else if (ipq4019_mdio_wait_busy(bus)) {
+ 		return -ETIMEDOUT;
++	}
+ 
+ 	data = readl(priv->membase + MDIO_DATA_READ_REG);
+ 	if (trace)
+ 		dev_info(bus->parent,
+-			 "C45 trace phy=%#x mmd=%#x reg=%#x: addr-phase mode=%#x addr=%#x wr=%#x rd=%#x cmd=%#x; read-phase mode=%#x addr=%#x wr=%#x rd=%#x cmd=%#x\n",
++			 "C45 trace phy=%#x mmd=%#x reg=%#x: addr-phase mode=%#x addr=%#x wr=%#x rd=%#x cmd=%#x wait[first=%#x last=%#x polls=%u saw-busy=%u]; read-phase mode=%#x addr=%#x wr=%#x rd=%#x cmd=%#x wait[first=%#x last=%#x polls=%u saw-busy=%u]\n",
+ 			 mii_id, mmd, reg, addr_mode, addr_addr, addr_wr,
+-			 addr_rd, addr_cmd,
++			 addr_rd, addr_cmd, addr_wait.first, addr_wait.last,
++			 addr_wait.polls, addr_wait.saw_busy,
+ 			 readl(priv->membase + MDIO_MODE_REG),
+ 			 readl(priv->membase + MDIO_ADDR_REG),
+ 			 readl(priv->membase + MDIO_DATA_WRITE_REG), data,
+-			 readl(priv->membase + MDIO_CMD_REG));
++			 readl(priv->membase + MDIO_CMD_REG), read_wait.first,
++			 read_wait.last, read_wait.polls, read_wait.saw_busy);
+ 
+ 	return data;
+ }
