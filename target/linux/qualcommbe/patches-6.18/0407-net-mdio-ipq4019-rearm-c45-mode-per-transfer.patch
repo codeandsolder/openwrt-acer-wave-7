@@ -1,0 +1,75 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: mdio: ipq4019: re-arm Clause 45 mode per transfer
+
+Wave 7 exposes a repeatable IPQ5332 MDIO controller failure mode: the first
+native Clause 45 transaction after a Clause 22 transaction returns the
+expected PHY register value, while a following Clause 45 transaction can
+return the previous DATA_READ value instead. The controller command itself
+completes and the address/write registers contain the new request.
+
+The per-transfer divider restore preserves the current Clause 45 mode bit.
+The first C22 -> C45 access therefore produces a real mode transition.
+Consecutive C45 accesses only rewrite the already-set mode. Re-arm the
+native Clause 45 engine by explicitly passing through Clause 22 mode before
+selecting Clause 45 for each native C45 transfer.
+
+Keep divider handling separate so Clause 22 operation and the configured
+MDC rate are unchanged.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -89,6 +89,18 @@
+ 				  IPQ4019_MDIO_SLEEP, IPQ4019_MDIO_TIMEOUT);
+ }
+ 
++static void ipq4019_mdio_rearm_c45(struct ipq4019_mdio_data *priv)
++{
++	u32 mode;
++
++	mode = readl(priv->membase + MDIO_MODE_REG);
++	mode &= ~MDIO_MODE_C45;
++	writel(mode, priv->membase + MDIO_MODE_REG);
++
++	mode |= MDIO_MODE_C45;
++	writel(mode, priv->membase + MDIO_MODE_REG);
++}
++
+ static int ipq4019_mdio_read_c45(struct mii_bus *bus, int mii_id, int mmd,
+ 				 int reg)
+ {
+@@ -110,11 +122,7 @@
+ 	if (ipq4019_mdio_set_div(priv))
+ 		return -EINVAL;
+ 
+-	data = readl(priv->membase + MDIO_MODE_REG);
+-
+-	data |= MDIO_MODE_C45;
+-
+-	writel(data, priv->membase + MDIO_MODE_REG);
++	ipq4019_mdio_rearm_c45(priv);
+ 
+ 	/* issue the phy address and mmd */
+ 	writel((mii_id << 8) | mmd, priv->membase + MDIO_ADDR_REG);
+@@ -202,7 +210,6 @@
+ 				  int reg, u16 value)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
+-	unsigned int data;
+ 	unsigned int cmd;
+ 
+ 	if (ipq4019_mdio_wait_busy(bus))
+@@ -215,11 +222,7 @@
+ 	if (ipq4019_mdio_set_div(priv))
+ 		return -EINVAL;
+ 
+-	data = readl(priv->membase + MDIO_MODE_REG);
+-
+-	data |= MDIO_MODE_C45;
+-
+-	writel(data, priv->membase + MDIO_MODE_REG);
++	ipq4019_mdio_rearm_c45(priv);
+ 
+ 	/* issue the phy address and mmd */
+ 	writel((mii_id << 8) | mmd, priv->membase + MDIO_ADDR_REG);
