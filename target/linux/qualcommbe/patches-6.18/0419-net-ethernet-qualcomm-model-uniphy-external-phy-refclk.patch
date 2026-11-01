@@ -1,0 +1,142 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: ethernet: qualcomm: model UNIPHY external PHY refclk
+
+UNIPHY can provide a 25/50MHz reference clock to an external Ethernet
+PHY. Model that output as a clock owned by the PCS driver, rather than
+having the MDIO driver reach into the PCS register window directly.
+
+The external PHY must receive its reference clock before it is reset and
+before MDIO enumeration. Let the IPQ MDIO controller consume the PCS
+clock during probe so the clock provider dependency orders PCS probe
+first and the output is enabled before mdiobus registration invokes the
+bus reset callback.
+
+Only the output-enable bit is changed while preparing the clock. The
+existing divider bit remains untouched, preserving the bootloader's
+50MHz selection on boards which require the early reference clock.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -166,6 +166,8 @@
+ 	struct clk_hw rx_hw;
+ 	/* TX clock supplied to NSSCC */
+ 	struct clk_hw tx_hw;
++	/* 25/50MHz reference clock supplied to an external Ethernet PHY */
++	struct clk_hw phy_ref_hw;
+ 
+ 	struct ipq_pcs_mii *qpcs_mii[PCS_MAX_MII_NRS];
+ 	struct reset_control *xpcs_rstc;
+@@ -1200,6 +1202,40 @@
+ 	.recalc_rate = ipq_pcs_tx_clk_recalc_rate,
+ };
+ 
++static int ipq_pcs_phy_ref_clk_prepare(struct clk_hw *hw)
++{
++	struct ipq_pcs *qpcs = container_of(hw, struct ipq_pcs, phy_ref_hw);
++
++	return regmap_set_bits(qpcs->regmap, PCS_CLKOUT_50M_CTRL,
++			       PCS_CLKOUT_50M_25M_EN);
++}
++
++static void ipq_pcs_phy_ref_clk_unprepare(struct clk_hw *hw)
++{
++	struct ipq_pcs *qpcs = container_of(hw, struct ipq_pcs, phy_ref_hw);
++
++	regmap_clear_bits(qpcs->regmap, PCS_CLKOUT_50M_CTRL,
++			  PCS_CLKOUT_50M_25M_EN);
++}
++
++static unsigned long ipq_pcs_phy_ref_clk_recalc_rate(struct clk_hw *hw,
++						     unsigned long parent_rate)
++{
++	struct ipq_pcs *qpcs = container_of(hw, struct ipq_pcs, phy_ref_hw);
++	unsigned int val;
++
++	if (regmap_read(qpcs->regmap, PCS_CLKOUT_50M_CTRL, &val))
++		return 0;
++
++	return val & PCS_CLKOUT_50M_DIV2_SEL ? 25000000 : 50000000;
++}
++
++static const struct clk_ops ipq_pcs_phy_ref_clk_ops = {
++	.prepare = ipq_pcs_phy_ref_clk_prepare,
++	.unprepare = ipq_pcs_phy_ref_clk_unprepare,
++	.recalc_rate = ipq_pcs_phy_ref_clk_recalc_rate,
++};
++
+ static struct clk_hw *ipq_pcs_clk_hw_get(struct of_phandle_args *clkspec,
+ 					 void *data)
+ {
+@@ -1210,6 +1246,8 @@
+ 		return &qpcs->rx_hw;
+ 	case PCS_TX_CLK:
+ 		return &qpcs->tx_hw;
++	case PCS_PHY_REF_CLK:
++		return &qpcs->phy_ref_hw;
+ 	}
+ 
+ 	return ERR_PTR(-EINVAL);
+@@ -1248,6 +1286,17 @@
+ 	if (ret)
+ 		return ret;
+ 
++	init.ops = &ipq_pcs_phy_ref_clk_ops;
++	init.name = devm_kasprintf(qpcs->dev, GFP_KERNEL, "%s::phy_ref_clk",
++				   dev_name(qpcs->dev));
++	if (!init.name)
++		return -ENOMEM;
++
++	qpcs->phy_ref_hw.init = &init;
++	ret = devm_clk_hw_register(qpcs->dev, &qpcs->phy_ref_hw);
++	if (ret)
++		return ret;
++
+ 	return devm_of_clk_add_hw_provider(qpcs->dev, ipq_pcs_clk_hw_get, qpcs);
+ }
+ 
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -52,6 +52,7 @@
+ #define IPQ_PHY_SET_DELAY_US	100000
+ #define IPQ_PHY_RESET_MIN_US	100000
+ #define IPQ_PHY_RESET_MAX_US	110000
++#define IPQ_PHY_REF_CLK_CNT	2
+ 
+ enum mdio_clk_id {
+ 	MDIO_CLK_MDIO_AHB,
+@@ -66,6 +67,7 @@
+ 	void __iomem	*membase;
+ 	void __iomem *eth_ldo_rdy;
+ 	struct clk *clk[MDIO_CLK_CNT];
++	struct clk *phy_ref_clk[IPQ_PHY_REF_CLK_CNT];
+ 	struct gpio_descs *reset_gpios;
+ 	unsigned int mdc_rate;
+ };
+@@ -78,6 +80,11 @@
+ 	[MDIO_CLK_UNIPHY1_SYS] = "gcc_uniphy1_sys_clk",
+ };
+ 
++static const char *const phy_ref_clk_name[IPQ_PHY_REF_CLK_CNT] = {
++	"uniphy0_phy_ref_clk",
++	"uniphy1_phy_ref_clk",
++};
++
+ static int ipq4019_mdio_set_div(struct ipq4019_mdio_data *priv);
+ 
+ struct ipq4019_mdio_wait_trace {
+@@ -624,6 +631,13 @@
+ 			return PTR_ERR(priv->clk[ret]);
+ 	}
+ 
++	for (ret = 0; ret < IPQ_PHY_REF_CLK_CNT; ret++) {
++		priv->phy_ref_clk[ret] =
++			devm_clk_get_optional_enabled(&pdev->dev, phy_ref_clk_name[ret]);
++		if (IS_ERR(priv->phy_ref_clk[ret]))
++			return PTR_ERR(priv->phy_ref_clk[ret]);
++	}
++
+ 	ipq4019_mdio_select_mdc_rate(pdev, priv);
+ 	ret = ipq4019_mdio_set_div(priv);
+ 	if (ret)

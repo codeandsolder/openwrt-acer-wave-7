@@ -7,6 +7,7 @@
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/clock/qcom,ipq5332-nsscc.h>
 #include <dt-bindings/clock/qcom,ipq5332-gcc.h>
+#include <dt-bindings/net/qcom,ipq9574-pcs.h>
 
 / {
 	model = "Acer Wave 7";
@@ -121,12 +122,16 @@
 		 <&gcc GCC_UNIPHY0_AHB_CLK>,
 		 <&gcc GCC_UNIPHY0_SYS_CLK>,
 		 <&gcc GCC_UNIPHY1_AHB_CLK>,
-		 <&gcc GCC_UNIPHY1_SYS_CLK>;
+		 <&gcc GCC_UNIPHY1_SYS_CLK>,
+		 <&pcs0 PCS_PHY_REF_CLK>,
+		 <&pcs1 PCS_PHY_REF_CLK>;
 	clock-names = "gcc_mdio_ahb_clk",
 		      "gcc_uniphy0_ahb_clk",
 		      "gcc_uniphy0_sys_clk",
 		      "gcc_uniphy1_ahb_clk",
-		      "gcc_uniphy1_sys_clk";
+		      "gcc_uniphy1_sys_clk",
+		      "uniphy0_phy_ref_clk",
+		      "uniphy1_phy_ref_clk";
 	clock-frequency = <6250000>;
 	phy-reset-gpios = <&tlmm 51 GPIO_ACTIVE_LOW>,
 			  <&tlmm 22 GPIO_ACTIVE_LOW>;
@@ -163,6 +168,10 @@
 			reset-names = "mac", "rx", "tx";
 		};
 	};
+};
+
+&pcs0 {
+	status = "okay";
 };
 
 &pcs1 {
