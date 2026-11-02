@@ -4,10 +4,9 @@ Subject: [PATCH] net: qualcomm: drop Wave 7 bring-up logging
 The direct QCA8081/MPPE SGMII path is now stable with the UNIPHY
 external-PHY reference clock modeled through CCF. Remove the remaining
 bring-up-only register snapshots and informational logs embedded in the
-functional PCS and MDIO fixes.
+functional PCS fixes.
 
-Keep all sequencing, delays, adapter resets and per-transfer MDC divider
-programming unchanged.
+Keep all PCS sequencing, delays and adapter resets unchanged.
 
 Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
@@ -87,19 +86,3 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  	return 0;
  }
---- a/drivers/net/mdio/mdio-ipq4019.c
-+++ b/drivers/net/mdio/mdio-ipq4019.c
-@@ -381,12 +381,7 @@
- 	mdelay(10);
- 
- 	/* Restore MDC rate */
--	ret = ipq4019_mdio_set_div(priv);
--	if (!ret)
--		dev_info(bus->parent, "MDC rate %u Hz, mode register %#x\n",
--			 priv->mdc_rate, readl(priv->membase + MDIO_MODE_REG));
--
--	return ret;
-+	return ipq4019_mdio_set_div(priv);
- }
- 
- static void ipq4019_mdio_select_mdc_rate(struct platform_device *pdev,

@@ -123,9 +123,9 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 +	"uniphy1_phy_ref_clk",
 +};
 +
- static int ipq4019_mdio_set_div(struct ipq4019_mdio_data *priv);
- 
- struct ipq4019_mdio_wait_trace {
+ static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
+ {
+ 	struct ipq4019_mdio_data *priv = bus->priv;
 @@ -624,6 +631,13 @@
  			return PTR_ERR(priv->clk[ret]);
  	}
