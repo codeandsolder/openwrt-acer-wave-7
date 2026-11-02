@@ -108,11 +108,11 @@ index 9dca72c..6e518d6 100644
 - * User pd boot-info format mentioned below
 - * <Version> <No of elements passing over smem> <Header type> <Header Length>
 - * <Process Id> <Load address> <firmware mem Size>
-+ * Version 2 of the IPQ5332 SMEM 507 contract contains two counted sections:
-+ * a byte array of root-Q6 boot arguments followed by a byte-sized block of
-+ * packed UserPD boot records.  The UserPD records may come either from the
-+ * legacy remoteproc child objects or from metadata-only DT properties when
-+ * the WLAN driver owns UserPD lifecycle.
++ * Version 2 of the IPQ5332 SMEM 507 contract has one byte-counted payload
++ * after the version.  The payload concatenates root-Q6 boot argument bytes
++ * and packed UserPD boot records.  The UserPD records may come either from
++ * legacy remoteproc child objects or metadata-only DT properties when the
++ * WLAN driver owns UserPD lifecycle.
   *
   * Returns 0 on success else negative value on failure.
   */
@@ -129,13 +129,13 @@ index 9dca72c..6e518d6 100644
 -	const struct firmware *fw;
 +	u16 cnt, version = VERSION2;
 +	u32 bootarg;
-+	size_t size;
++	size_t payload_size, size;
 +	void *ptr;
 +	int i, ret, bootarg_count;
  
  	ret = qcom_smem_alloc(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID,
  			      UPD_BOOT_INFO_SMEM_SIZE);
-@@ -289,60 +363,77 @@ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+@@ -289,60 +363,76 @@ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
  	}
  
  	ptr = qcom_smem_get(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID, &size);
@@ -179,11 +179,20 @@ index 9dca72c..6e518d6 100644
 +				     "failed to count root Q6 boot args\n");
 +	if (bootarg_count < 0)
 +		bootarg_count = 0;
-+	if (bootarg_count > U16_MAX)
++	payload_size = bootarg_count;
++	if (wcss->userpd_count) {
++		payload_size += sizeof(struct userpd_boot_info) * wcss->userpd_count;
++	} else {
++		for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
++			if (wcss->upd[i])
++				payload_size += sizeof(struct userpd_boot_info);
++	}
++	if (payload_size > U16_MAX)
 +		return dev_err_probe(wcss->dev, -E2BIG,
-+				     "too many root Q6 boot args: %d\n", bootarg_count);
++				     "Q6 bootinfo payload too large: %zu\n",
++				     payload_size);
 +
-+	cnt = bootarg_count;
++	cnt = payload_size;
 +	memcpy_toio(ptr, &cnt, sizeof(cnt));
 +	ptr += sizeof(cnt);
 +
@@ -204,19 +213,9 @@ index 9dca72c..6e518d6 100644
 -		/* LENGTH */
 -		upd_bootinfo.header.length =
 -			sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
-+	if (wcss->userpd_count) {
-+		cnt = sizeof(struct userpd_boot_info) * wcss->userpd_count;
-+	} else {
-+		cnt = 0;
-+		for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
-+			if (wcss->upd[i])
-+				cnt += sizeof(struct userpd_boot_info);
-+	}
  
 -		/* Process ID */
 -		upd_bootinfo.pid = upd->pd_asid + 1;
-+	memcpy_toio(ptr, &cnt, sizeof(cnt));
-+	ptr += sizeof(cnt);
  
 -		ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
 -		if (ret < 0) {
