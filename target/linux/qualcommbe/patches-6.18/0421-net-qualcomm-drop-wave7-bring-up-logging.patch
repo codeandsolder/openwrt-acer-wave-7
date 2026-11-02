@@ -1,0 +1,105 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: qualcomm: drop Wave 7 bring-up logging
+
+The direct QCA8081/MPPE SGMII path is now stable with the UNIPHY
+external-PHY reference clock modeled through CCF. Remove the remaining
+bring-up-only register snapshots and informational logs embedded in the
+functional PCS and MDIO fixes.
+
+Keep all sequencing, delays, adapter resets and per-transfer MDC divider
+programming unchanged.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -193,13 +193,8 @@
+ 
+ 	state->link = !!(val & PCS_MII_LINK_STS);
+ 
+-	if (!state->link) {
+-		if (qpcs->mppe)
+-			dev_info_ratelimited(qpcs->dev,
+-					     "MPPE SGMII waiting for link: sts=%#x\n",
+-					     val);
++	if (!state->link)
+ 		return;
+-	}
+ 
+ 	switch (FIELD_GET(PCS_MII_STS_SPEED_MASK, val)) {
+ 	case PCS_MII_STS_SPEED_1000:
+@@ -572,7 +567,6 @@
+ 				unsigned int neg_mode,
+ 				phy_interface_t interface)
+ {
+-	unsigned int misc2, mode, ctrl, sts;
+ 	int ret;
+ 
+ 	/* Configure the PCS mode if required */
+@@ -613,13 +607,6 @@
+ 				      PCS_MII_ADPT_RESET);
+ 		if (ret)
+ 			return ret;
+-		if (!regmap_read(qpcs->regmap, PCS_MISC2, &misc2) &&
+-		    !regmap_read(qpcs->regmap, PCS_MODE_CTRL, &mode) &&
+-		    !regmap_read(qpcs->regmap, PCS_MII_CTRL(index), &ctrl) &&
+-		    !regmap_read(qpcs->regmap, PCS_MII_STS(index), &sts))
+-			dev_info(qpcs->dev,
+-				 "MPPE SGMII primed: misc2=%#x mode=%#x ctrl=%#x sts=%#x\n",
+-				 misc2, mode, ctrl, sts);
+ 	}
+ 	return 0;
+ }
+@@ -758,16 +745,6 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	if (qpcs->mppe) {
+-		unsigned int ctrl, sts;
+-
+-		if (!regmap_read(qpcs->regmap, PCS_MII_CTRL(index), &ctrl) &&
+-		    !regmap_read(qpcs->regmap, PCS_MII_STS(index), &sts))
+-			dev_info(qpcs->dev,
+-				 "MPPE SGMII link-up: neg=%u speed=%d ctrl=%#x sts=%#x\n",
+-				 neg_mode, speed, ctrl, sts);
+-	}
+-
+ 	return 0;
+ }
+ 
+@@ -775,7 +752,6 @@
+ {
+ 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+ 	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
+-	unsigned int ctrl, sts;
+ 	int ret;
+ 
+ 	if (!qpcs->mppe || qpcs->interface != PHY_INTERFACE_MODE_SGMII)
+@@ -797,11 +773,6 @@
+ 		return ret;
+ 
+ 	fsleep(10000);
+-	if (!regmap_read(qpcs->regmap, PCS_MII_CTRL(qpcs_mii->index), &ctrl) &&
+-	    !regmap_read(qpcs->regmap, PCS_MII_STS(qpcs_mii->index), &sts))
+-		dev_info(qpcs->dev,
+-			 "MPPE SGMII post-MAC reset: ctrl=%#x sts=%#x\n",
+-			 ctrl, sts);
+ 
+ 	return 0;
+ }
+--- a/drivers/net/mdio/mdio-ipq4019.c
++++ b/drivers/net/mdio/mdio-ipq4019.c
+@@ -381,12 +381,7 @@
+ 	mdelay(10);
+ 
+ 	/* Restore MDC rate */
+-	ret = ipq4019_mdio_set_div(priv);
+-	if (!ret)
+-		dev_info(bus->parent, "MDC rate %u Hz, mode register %#x\n",
+-			 priv->mdc_rate, readl(priv->membase + MDIO_MODE_REG));
+-
+-	return ret;
++	return ipq4019_mdio_set_div(priv);
+ }
+ 
+ static void ipq4019_mdio_select_mdc_rate(struct platform_device *pdev,
