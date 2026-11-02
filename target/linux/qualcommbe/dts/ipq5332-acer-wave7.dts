@@ -29,14 +29,45 @@
 		reg = <0x0 0x40000000 0x0 0x20000000>;
 	};
 
-	/*
-	 * Keep the downstream WCSS/Q6/MLO/crash region untouched for the
-	 * first initramfs bring-up.  Wi-Fi is deliberately left disabled.
-	 */
 	reserved-memory {
 
-		wave7-vendor-wcss@4a900000 {
-			reg = <0x0 0x4a900000 0x0 0x4100000>;
+		q6_region: wcss@4a900000 {
+			reg = <0x0 0x4a900000 0x0 0x2100000>;
+			no-map;
+		};
+
+		m3_dump: wifi-m3-dump@4ca00000 {
+			reg = <0x0 0x4ca00000 0x0 0x100000>;
+			no-map;
+		};
+
+		wcss_spare0: wifi-reserved@4cb00000 {
+			reg = <0x0 0x4cb00000 0x0 0x300000>;
+			no-map;
+		};
+
+		q6_caldb: qcn6432_data: wifi-data@4ce00000 {
+			reg = <0x0 0x4ce00000 0x0 0xe00000>;
+			no-map;
+		};
+
+		qcn6432_m3_dump: wifi-m3-dump@4dc00000 {
+			reg = <0x0 0x4dc00000 0x0 0x100000>;
+			no-map;
+		};
+
+		wcss_spare1: wifi-reserved@4dd00000 {
+			reg = <0x0 0x4dd00000 0x0 0x300000>;
+			no-map;
+		};
+
+		mlo_mem: wifi-mlo@4e000000 {
+			reg = <0x0 0x4e000000 0x0 0x900000>;
+			no-map;
+		};
+
+		wcss_crash: wifi-crash@4e900000 {
+			reg = <0x0 0x4e900000 0x0 0x100000>;
 			no-map;
 		};
 
@@ -46,6 +77,27 @@
 			record-size = <0x20000>;
 			console-size = <0x20000>;
 			ftrace-size = <0x20000>;
+		};
+	};
+
+	wcss_smp2p: smp2p-wcss {
+		compatible = "qcom,smp2p";
+		qcom,smem = <435>, <428>;
+		interrupts = <GIC_SPI 418 IRQ_TYPE_EDGE_RISING>;
+		mboxes = <&apcs_glb 9>;
+		qcom,local-pid = <0>;
+		qcom,remote-pid = <1>;
+
+		wcss_smp2p_out: master-kernel {
+			qcom,entry-name = "master-kernel";
+			qcom,smp2p-feature-ssr-ack;
+			#qcom,smem-state-cells = <1>;
+		};
+
+		wcss_smp2p_in: slave-kernel {
+			qcom,entry-name = "slave-kernel";
+			interrupt-controller;
+			#interrupt-cells = <2>;
 		};
 	};
 
@@ -60,6 +112,154 @@
 			gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;
 		};
 
+	};
+};
+
+
+&{/soc@0} {
+	q6v5_wcss: remoteproc@d100000 {
+		compatible = "qcom,ipq5332-q6-mpd";
+		reg = <0x0d100000 0x4040>;
+		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw0.mdt";
+		interrupts-extended = <&intc GIC_SPI 421 IRQ_TYPE_EDGE_RISING>,
+				      <&wcss_smp2p_in 0 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 1 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 2 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 3 IRQ_TYPE_NONE>;
+		interrupt-names = "wdog", "fatal", "ready", "handover", "stop-ack";
+		qcom,smem-states = <&wcss_smp2p_out 0>,
+				   <&wcss_smp2p_out 1>;
+		qcom,smem-state-names = "shutdown", "stop";
+		memory-region = <&q6_region>;
+		boot-args = <0x01 0x04 0x03 0x01 0x2f 0x02>;
+		qcom,userpd-firmware-names =
+			"ath12k/IPQ5332/hw1.0/q6_fw1.mdt",
+			"ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
+		qcom,userpd-asids = <1 2>;
+		status = "okay";
+
+		glink-edge {
+			interrupts = <GIC_SPI 417 IRQ_TYPE_EDGE_RISING>;
+			label = "rtr";
+			qcom,remote-pid = <1>;
+			mboxes = <&apcs_glb 8>;
+		};
+	};
+
+	wifi0: wifi@c000000 {
+		compatible = "qcom,ipq5332-wifi";
+		reg = <0x0c000000 0x1000000>;
+		clocks = <&gcc GCC_XO_CLK>;
+		clock-names = "xo";
+		interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
+		                      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
+		                      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
+		                      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>,
+		                      <&intc GIC_SPI 559 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 560 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 561 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 422 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 423 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 424 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 425 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 426 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 427 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 428 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 429 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 430 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 431 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 432 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 433 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 491 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 495 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 493 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 544 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 457 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 466 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 497 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 454 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 453 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 452 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 451 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 488 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 488 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 484 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 554 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 554 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 549 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 507 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 500 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 499 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 498 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 450 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 449 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 448 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 447 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 543 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 482 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 419 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "fatal",
+		                  "ready",
+		                  "spawn",
+		                  "stop-ack",
+		                  "misc-pulse1",
+		                  "misc-latch",
+		                  "sw-exception",
+		                  "ce0",
+		                  "ce1",
+		                  "ce2",
+		                  "ce3",
+		                  "ce4",
+		                  "ce5",
+		                  "ce6",
+		                  "ce7",
+		                  "ce8",
+		                  "ce9",
+		                  "ce10",
+		                  "ce11",
+		                  "host2wbm-desc-feed",
+		                  "host2reo-re-injection",
+		                  "host2reo-command",
+		                  "host2rxdma-monitor-ring1",
+		                  "reo2ost-exception",
+		                  "wbm2host-rx-release",
+		                  "reo2host-status",
+		                  "reo2host-destination-ring4",
+		                  "reo2host-destination-ring3",
+		                  "reo2host-destination-ring2",
+		                  "reo2host-destination-ring1",
+		                  "rxdma2host-monitor-destination-mac3",
+		                  "rxdma2host-monitor-destination-mac2",
+		                  "rxdma2host-monitor-destination-mac1",
+		                  "host2rxdma-host-buf-ring-mac3",
+		                  "host2rxdma-host-buf-ring-mac2",
+		                  "host2rxdma-host-buf-ring-mac1",
+		                  "host2tcl-input-ring4",
+		                  "host2tcl-input-ring3",
+		                  "host2tcl-input-ring2",
+		                  "host2tcl-input-ring1",
+		                  "wbm2host-tx-completions-ring4",
+		                  "wbm2host-tx-completions-ring3",
+		                  "wbm2host-tx-completions-ring2",
+		                  "wbm2host-tx-completions-ring1",
+		                  "host2tx-monitor-ring1",
+		                  "txmon2host-monitor-destination-mac3",
+		                  "txmon2host-monitor-destination-mac2",
+		                  "txmon2host-monitor-destination-mac1",
+		                  "umac-reset";
+
+		memory-region = <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
+		memory-region-names = "q6-region", "m3-dump", "q6-caldb", "mlo-global-mem";
+		qcom,rproc = <&q6v5_wcss>;
+		qcom,smem-states = <&wcss_smp2p_out 8>,
+		                   <&wcss_smp2p_out 9>,
+		                   <&wcss_smp2p_out 10>;
+		qcom,smem-state-names = "shutdown",
+		                        "stop",
+		                        "spawn";
+		status = "okay";
 	};
 };
 
