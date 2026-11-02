@@ -1,0 +1,164 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Date: Mon, 2 Nov 2026 20:25:00 +0100
+Subject: [PATCH] wifi: ath12k: rely on synchronous RootPD boot
+
+rproc_boot() does not return until the remote processor start callback and
+all remoteproc subdevice start callbacks have completed, after which the
+remoteproc is marked RPROC_RUNNING. Waiting for a separate SSR
+QCOM_SSR_AFTER_POWERUP notification after a successful rproc_boot() is
+therefore redundant.
+
+It is also incorrect to derive the SSR subsystem identifier from
+rproc->name. Qualcomm remoteproc drivers may publish a different SSR name;
+the WCSS multipd driver publishes "q6wcss" while the remoteproc itself is
+named from the DT node, for example "d100000.remoteproc". Registering
+against rproc->name then creates a notifier chain which is never signalled
+and turns a successful RootPD boot into a timeout.
+
+Remove the redundant notifier and completion entirely and use the
+synchronous rproc_boot() result as the RootPD boot result. This avoids
+coupling ath12k to a provider-private SSR subsystem name as well.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+diff -uNr a/drivers/net/wireless/ath/ath12k/ahb.c b/drivers/net/wireless/ath/ath12k/ahb.c
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -781,49 +781,6 @@
+ 	return 0;
+ }
+ 
+-static int ath12k_ahb_root_pd_state_notifier(struct notifier_block *nb,
+-					     const unsigned long event, void *data)
+-{
+-	struct ath12k_ahb *ab_ahb = container_of(nb, struct ath12k_ahb, root_pd_nb);
+-	struct ath12k_base *ab = ab_ahb->ab;
+-
+-	if (event == ATH12K_RPROC_AFTER_POWERUP) {
+-		ath12k_dbg(ab, ATH12K_DBG_AHB, "Root PD is UP\n");
+-		complete(&ab_ahb->rootpd_ready);
+-	}
+-
+-	return 0;
+-}
+-
+-static int ath12k_ahb_register_rproc_notifier(struct ath12k_base *ab)
+-{
+-	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-
+-	ab_ahb->root_pd_nb.notifier_call = ath12k_ahb_root_pd_state_notifier;
+-	init_completion(&ab_ahb->rootpd_ready);
+-
+-	ab_ahb->root_pd_notifier = qcom_register_ssr_notifier(ab_ahb->tgt_rproc->name,
+-							      &ab_ahb->root_pd_nb);
+-	if (IS_ERR(ab_ahb->root_pd_notifier))
+-		return PTR_ERR(ab_ahb->root_pd_notifier);
+-
+-	return 0;
+-}
+-
+-static void ath12k_ahb_unregister_rproc_notifier(struct ath12k_base *ab)
+-{
+-	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-
+-	if (!ab_ahb->root_pd_notifier) {
+-		ath12k_err(ab, "Rproc notifier not registered\n");
+-		return;
+-	}
+-
+-	qcom_unregister_ssr_notifier(ab_ahb->root_pd_notifier,
+-				     &ab_ahb->root_pd_nb);
+-	ab_ahb->root_pd_notifier = NULL;
+-}
+-
+ static int ath12k_ahb_get_rproc(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+@@ -851,7 +808,6 @@
+ static int ath12k_ahb_boot_root_pd(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-	unsigned long time_left;
+ 	int ret;
+ 
+ 	ret = rproc_boot(ab_ahb->tgt_rproc);
+@@ -860,13 +816,6 @@
+ 		return ret;
+ 	}
+ 
+-	time_left = wait_for_completion_timeout(&ab_ahb->rootpd_ready,
+-						ATH12K_ROOTPD_READY_TIMEOUT);
+-	if (!time_left) {
+-		ath12k_err(ab, "RootPD ready wait timed out\n");
+-		return -ETIMEDOUT;
+-	}
+-
+ 	return 0;
+ }
+ 
+@@ -879,26 +828,16 @@
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = ath12k_ahb_register_rproc_notifier(ab);
+-	if (ret < 0) {
+-		ret = dev_err_probe(&ab->pdev->dev, ret,
+-				    "failed to register rproc notifier\n");
+-		goto err_put_rproc;
+-	}
+-
+ 	if (ab_ahb->tgt_rproc->state != RPROC_RUNNING) {
+ 		ret = ath12k_ahb_boot_root_pd(ab);
+ 		if (ret < 0) {
+ 			ath12k_err(ab, "failed to boot the remote processor Q6\n");
+-			goto err_unreg_notifier;
++			goto err_put_rproc;
+ 		}
+ 	}
+ 
+ 	return ath12k_ahb_config_rproc_irq(ab);
+ 
+-err_unreg_notifier:
+-	ath12k_ahb_unregister_rproc_notifier(ab);
+-
+ err_put_rproc:
+ 	rproc_put(ab_ahb->tgt_rproc);
+ 	return ret;
+@@ -908,7 +847,6 @@
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+ 
+-	ath12k_ahb_unregister_rproc_notifier(ab);
+ 	rproc_put(ab_ahb->tgt_rproc);
+ }
+ 
+diff -uNr a/drivers/net/wireless/ath/ath12k/ahb.h b/drivers/net/wireless/ath/ath12k/ahb.h
+--- a/drivers/net/wireless/ath/ath12k/ahb.h
++++ b/drivers/net/wireless/ath/ath12k/ahb.h
+@@ -7,7 +7,6 @@
+ #define ATH12K_AHB_H
+ 
+ #include <linux/clk.h>
+-#include <linux/remoteproc/qcom_rproc.h>
+ #include <linux/platform_device.h>
+ #include "core.h"
+ 
+@@ -18,8 +18,6 @@
+ #define ATH12K_AHB_SMP2P_SMEM_VALUE_MASK	0xFFFFFFFF
+ #define ATH12K_PCI_CE_WAKE_IRQ			2
+ #define ATH12K_PCI_IRQ_CE0_OFFSET		3
+-#define ATH12K_ROOTPD_READY_TIMEOUT		(5 * HZ)
+-#define ATH12K_RPROC_AFTER_POWERUP		QCOM_SSR_AFTER_POWERUP
+ #define ATH12K_AHB_FW_PREFIX			"q6_fw"
+ #define ATH12K_AHB_FW_SUFFIX			".mbn"
+ #define ATH12K_AHB_FW2				"iu_fw.mbn"
+@@ -54,9 +52,6 @@
+ 	struct ath12k_base *ab;
+ 	struct rproc *tgt_rproc;
+ 	struct clk *xo_clk;
+-	struct completion rootpd_ready;
+-	struct notifier_block root_pd_nb;
+-	void *root_pd_notifier;
+ 	struct qcom_smem_state *spawn_state;
+ 	struct qcom_smem_state *stop_state;
+ 	struct completion userpd_spawned;
