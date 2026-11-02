@@ -6,48 +6,21 @@ leaves the UNIPHY SGMII channel in Qualcomm/Atheros in-band framing
 mode. The working vendor state keeps PCS_MII_FORCE_MODE clear while using
 the PHY link event to update clocks and pulse the channel adapter reset.
 
-Phylink's out-of-band mode currently sets PCS_MII_FORCE_MODE, which
-changes the working MPPE PCS control value from 0x844 to 0x84c. Keep
-force mode clear for MPPE SGMII while still using the PHY-driven phylink
-state and link-up callback. Log the MPPE PCS state after the link-up reset
-while bring-up is in progress.
+Phylink's out-of-band mode normally sets PCS_MII_FORCE_MODE, changing the
+working MPPE PCS control value from 0x844 to 0x84c. Keep force mode clear
+for MPPE SGMII while retaining PHY-driven phylink state.
 
 Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -581,7 +581,8 @@ static int ipq_pcs_config_sgmii(struct ipq_pcs *qpcs,
+@@ -565,7 +565,8 @@ static int ipq_pcs_config_sgmii(struct ipq_pcs *qpcs,
  	}
  
  	/* Set AN mode or force mode */
 -	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
 +	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED ||
 +	    (qpcs->mppe && interface == PHY_INTERFACE_MODE_SGMII))
- 		ret = regmap_clear_bits(qpcs->regmap,
- 					PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
+ 		return regmap_clear_bits(qpcs->regmap,
+ 					 PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
  	else
-@@ -743,8 +744,22 @@ static int ipq_pcs_link_up_config_sgmii(struct ipq_pcs *qpcs,
- 	if (ret)
- 		return ret;
- 
--	return regmap_set_bits(qpcs->regmap,
--			       PCS_MII_CTRL(index), PCS_MII_ADPT_RESET);
-+	ret = regmap_set_bits(qpcs->regmap,
-+			      PCS_MII_CTRL(index), PCS_MII_ADPT_RESET);
-+	if (ret)
-+		return ret;
-+
-+	if (qpcs->mppe) {
-+		unsigned int ctrl, sts;
-+
-+		if (!regmap_read(qpcs->regmap, PCS_MII_CTRL(index), &ctrl) &&
-+		    !regmap_read(qpcs->regmap, PCS_MII_STS(index), &sts))
-+			dev_info(qpcs->dev,
-+				 "MPPE SGMII link-up: neg=%u speed=%d ctrl=%#x sts=%#x\n",
-+				 neg_mode, speed, ctrl, sts);
-+	}
-+
-+	return 0;
- }
- 
- static int ipq_pcs_link_up_config_2500basex(struct ipq_pcs *qpcs, int speed)
