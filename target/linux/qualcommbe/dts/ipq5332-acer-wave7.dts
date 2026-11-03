@@ -250,8 +250,9 @@
 		                  "txmon2host-monitor-destination-mac1",
 		                  "umac-reset";
 
-		memory-region = <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
-		memory-region-names = "q6-region", "m3-dump", "q6-caldb", "mlo-global-mem";
+		memory-region = <&q6_region>, <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
+		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
+				      "q6-caldb", "mlo-global-mem";
 		qcom,rproc = <&q6v5_wcss>;
 		qcom,smem-states = <&wcss_smp2p_out 8>,
 		                   <&wcss_smp2p_out 9>,
@@ -259,6 +260,31 @@
 		qcom,smem-state-names = "shutdown",
 		                        "stop",
 		                        "spawn";
+		status = "okay";
+	};
+
+	wifi1: wifi {
+		compatible = "qcom,qcn6432-wifi";
+		msi-parent = <&v2m0>;
+
+		interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
+		interrupt-names = "fatal", "ready", "spawn", "stop-ack";
+
+		memory-region = <&qcn6432_data>, <&q6_region>,
+				<&qcn6432_m3_dump>, <&mlo_mem>;
+		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
+				      "mlo-global-mem";
+		qcom,bdf-addr = <0x4ce00000 0x4ce00000 0x4ce00000 0 0 0>;
+
+		qcom,rproc = <&q6v5_wcss>;
+		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
+		qcom,smem-states = <&wcss_smp2p_out 16>,
+				   <&wcss_smp2p_out 17>,
+				   <&wcss_smp2p_out 18>;
+		qcom,smem-state-names = "shutdown", "stop", "spawn";
 		status = "okay";
 	};
 };
