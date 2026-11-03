@@ -1,0 +1,142 @@
+Subject: [PATCH] wifi: ath12k: prevent fixed BDF and HOST_DDR overlap
+
+Pre-scan the requested fixed BDF intervals and reject invalid or
+overlapping reservations before assigning other memory segments.
+Place HOST_DDR chunks around those fixed intervals, independently
+of the order in which firmware requests the segments.
+
+On QCN6432 the BDF consumes 0x5a000 bytes at the start of a
+0xe00000-byte reserved region. Firmware requests another 0xda6000
+bytes for HOST_DDR, so the two descriptors must not share a base.
+
+---
+diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/ath12k/qmi.c
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2816,6 +2816,10 @@
+ {
+ 	struct ath12k_hw_group *ag = ab->ag;
+ 	struct reserved_mem *ddr_rmem, *rmem;
++	struct {
++		size_t start;
++		size_t end;
++	} bdf[ATH12K_QMI_WLANFW_MAX_NUM_MEM_SEG_V01] = {};
+ 	size_t host_ddr_off = 0, mlo_off = 0, avail;
+ 	u32 failed_type = 0, failed_size = 0;
+ 	int i, idx, mlo_idx = 0, ret = 0;
+@@ -2841,22 +2845,85 @@
+ 		goto out_free;
+ 	}
+ 
++	if (ab->qmi.mem_seg_count > ARRAY_SIZE(bdf)) {
++		ret = -EINVAL;
++		goto out_free;
++	}
++
++	/* Fixed BDF ranges must be known before placing any HOST_DDR chunk,
++	 * regardless of the order in which firmware requested the segments.
++	 */
++	for (i = 0; i < ab->qmi.mem_seg_count; i++) {
++		struct target_mem_chunk *chunk = &ab->qmi.target_mem[i];
++		phys_addr_t paddr;
++		size_t start;
++		u32 addr;
++		int j;
++
++		if (chunk->type != BDF_MEM_REGION_TYPE)
++			continue;
++
++		ret = of_property_read_u32_index(ab->dev->of_node,
++						 "qcom,bdf-addr", ab->target_mem_mode, &addr);
++		if (!ret)
++			paddr = addr;
++		else
++			paddr = ddr_rmem->base + ab->hw_params->bdf_addr_offset;
++
++		if (paddr < ddr_rmem->base ||
++		    paddr - ddr_rmem->base > ddr_rmem->size ||
++		    !chunk->size ||
++		    chunk->size > ddr_rmem->size - (paddr - ddr_rmem->base)) {
++			ath12k_err(ab, "BDF memory %pa+%u is outside host-ddr-mem %pa+%pa\n",
++				   &paddr, chunk->size, &ddr_rmem->base, &ddr_rmem->size);
++			ret = -EINVAL;
++			goto out_free;
++		}
++
++		start = paddr - ddr_rmem->base;
++		bdf[i].start = start;
++		bdf[i].end = start + chunk->size;
++
++		for (j = 0; j < i; j++) {
++			if (bdf[j].end && start < bdf[j].end &&
++			    bdf[j].start < bdf[i].end) {
++				ath12k_err(ab, "overlapping fixed BDF memory regions\n");
++				ret = -EINVAL;
++				goto out_free;
++			}
++		}
++	}
++
+ 	for (i = 0, idx = 0; i < ab->qmi.mem_seg_count; i++) {
+ 		struct target_mem_chunk *src = &ab->qmi.target_mem[i];
+ 		struct target_mem_chunk *dst = &ab->qmi.target_mem[idx];
+ 		struct target_mem_chunk *mlo_chunk;
+ 		phys_addr_t paddr;
+-		u32 addr;
++		int j;
+ 
+ 		switch (src->type) {
+ 		case HOST_DDR_REGION_TYPE:
+-			if (host_ddr_off > ddr_rmem->size ||
+-			    src->size > ddr_rmem->size - host_ddr_off) {
+-				avail = host_ddr_off < ddr_rmem->size ?
+-					ddr_rmem->size - host_ddr_off : 0;
+-				failed_type = src->type;
+-				failed_size = src->size;
+-				goto no_space;
++			/* Sequentially pack HOST_DDR while skipping every fixed BDF
++			 * interval, even when firmware lists HOST_DDR first.
++			 */
++			for (;;) {
++				if (host_ddr_off > ddr_rmem->size ||
++				    src->size > ddr_rmem->size - host_ddr_off) {
++					avail = host_ddr_off < ddr_rmem->size ?
++						ddr_rmem->size - host_ddr_off : 0;
++					failed_type = src->type;
++					failed_size = src->size;
++					goto no_space;
++				}
++
++				for (j = 0; j < ab->qmi.mem_seg_count; j++) {
++					if (bdf[j].end && host_ddr_off < bdf[j].end &&
++					    bdf[j].start < host_ddr_off + src->size)
++						break;
++				}
++				if (j == ab->qmi.mem_seg_count)
++					break;
++				host_ddr_off = bdf[j].end;
+ 			}
+ 
+ 			paddr = ddr_rmem->base + host_ddr_off;
+@@ -2864,20 +2931,7 @@
+ 			break;
+ 
+ 		case BDF_MEM_REGION_TYPE:
+-			ret = of_property_read_u32_index(ab->dev->of_node, "qcom,bdf-addr",
+-							 ab->target_mem_mode, &addr);
+-			if (!ret)
+-				paddr = addr;
+-			else
+-				paddr = ddr_rmem->base + ab->hw_params->bdf_addr_offset;
+-
+-			if (paddr < ddr_rmem->base || paddr - ddr_rmem->base > ddr_rmem->size ||
+-			    src->size > ddr_rmem->size - (paddr - ddr_rmem->base)) {
+-				ath12k_err(ab, "BDF memory %pa+%u is outside host-ddr-mem %pa+%pa\n",
+-					   &paddr, src->size, &ddr_rmem->base, &ddr_rmem->size);
+-				ret = -EINVAL;
+-				goto out_free;
+-			}
++			paddr = ddr_rmem->base + bdf[i].start;
+ 			break;
+ 
+ 		case CALDB_MEM_REGION_TYPE:
