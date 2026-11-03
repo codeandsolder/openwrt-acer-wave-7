@@ -120,7 +120,9 @@
 	q6v5_wcss: remoteproc@d100000 {
 		compatible = "qcom,ipq5332-q6-mpd";
 		reg = <0x0d100000 0x4040>;
-		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw0.mdt";
+		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw0.mdt",
+				"ath12k/IPQ5332/hw1.0/iu_fw.mdt",
+				"ath12k/QCN6432/hw1.0/iu_fw.mdt";
 		interrupts-extended = <&intc GIC_SPI 421 IRQ_TYPE_EDGE_RISING>,
 				      <&wcss_smp2p_in 0 IRQ_TYPE_NONE>,
 				      <&wcss_smp2p_in 1 IRQ_TYPE_NONE>,
