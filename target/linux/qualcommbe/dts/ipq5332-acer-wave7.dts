@@ -278,6 +278,7 @@
 		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
 				      "mlo-global-mem";
 		qcom,bdf-addr = <0x4ce00000 0x4ce00000 0x4ce00000 0 0 0>;
+		qcom,tgt-mem-mode = <2>;
 
 		qcom,rproc = <&q6v5_wcss>;
 		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
