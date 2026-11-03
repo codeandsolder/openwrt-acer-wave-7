@@ -1,0 +1,37 @@
+Subject: [PATCH] remoteproc: qcom: use PAS authentication for IPQ5332 UserPDs
+
+The IPQ5332 WCSS UserPD path uses PAS authentication and shutdown for
+each user process, with the ASID-derived PAS identifier. Qualcomm's
+downstream driver performs PAS_AUTH_AND_RESET before spawning a UserPD
+and PAS_SHUTDOWN when stopping it.
+
+MSA lock/unlock are different secure monitor operations and cannot
+substitute for PIL authentication. In particular, an unavailable MSA
+command may return success without configuring UserPD access. This
+lets the DSP boot but fault on its first external DDR accesses.
+
+Use the existing one-argument PAS services; downstream's additional
+zero debug/reset arguments do not alter the underlying SCM request.
+
+---
+diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -161,7 +161,7 @@
+ 	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+-	ret = qcom_scm_msa_lock(pasid);
++	ret = qcom_scm_pas_auth_and_reset(pasid);
+ 	if (ret) {
+ 		dev_err(upd->dev, "failed to power up pd\n");
+ 		return ret;
+@@ -232,7 +232,7 @@
+ 		}
+ 	}
+ 
+-	ret = qcom_scm_msa_unlock(pasid);
++	ret = qcom_scm_pas_shutdown(pasid);
+ 	if (ret) {
+ 		dev_err(upd->dev, "failed to power down pd\n");
+ 		return ret;
