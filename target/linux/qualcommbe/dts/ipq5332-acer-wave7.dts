@@ -132,6 +132,7 @@
 		qcom,smem-state-names = "shutdown", "stop";
 		memory-region = <&q6_region>;
 		boot-args = <0x01 0x04 0x03 0x01 0x2f 0x02>;
+		qcom,heartbeat_smem = <508>;
 		qcom,userpd-firmware-names =
 			"ath12k/IPQ5332/hw1.0/q6_fw1.mdt",
 			"ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
