@@ -1,0 +1,31 @@
+Subject: [PATCH] wifi: ath12k: match WBE1.3 QCN6432 host BDF capability
+
+The original Acer QCN6432 WBE1.3 CNSS host-capability request does not
+advertise BDF-support, although it passes a fixed BDF physical address
+inside the HOST_DDR reservation later in the QMI memory response.
+
+Avoid advertising a distinct host BDF service for this UserPD while
+preserving the existing capability for other ath12k hardware. This is
+a targeted firmware-contract experiment pending hardware validation.
+
+---
+diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/ath12k/qmi.c
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2274,8 +2274,14 @@
+ 	req.num_clients = 1;
+ 	req.mem_cfg_mode = ab->qmi.target_mem_mode;
+ 	req.mem_cfg_mode_valid = 1;
+-	req.bdf_support_valid = 1;
+-	req.bdf_support = 1;
++	/* WBE 1.3 QCN6432 uses the vendor CNSS fixed-BDF contract:
++	 * the BDF resides inside HOST_DDR and is not separately offered
++	 * through the host BDF-support capability.
++	 */
++	if (ab->hw_rev != ATH12K_HW_QCN6432_HW10) {
++		req.bdf_support_valid = 1;
++		req.bdf_support = 1;
++	}
+ 
+ 	if (ab->hw_params->fw.m3_loader == ath12k_m3_fw_loader_driver) {
+ 		req.m3_support_valid = 1;
