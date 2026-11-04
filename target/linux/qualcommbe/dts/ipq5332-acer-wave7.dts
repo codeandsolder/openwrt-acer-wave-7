@@ -46,18 +46,23 @@
 			no-map;
 		};
 
-		q6_caldb: qcn6432_data: wifi-data@4ce00000 {
-			reg = <0x0 0x4ce00000 0x0 0xe00000>;
+		qcn6432_bdf: wifi-bdf@4ce00000 {
+			reg = <0x0 0x4ce00000 0x0 0x200000>;
 			no-map;
 		};
 
-		qcn6432_m3_dump: wifi-m3-dump@4dc00000 {
-			reg = <0x0 0x4dc00000 0x0 0x100000>;
+		q6_caldb: qcn6432_data: wifi-data@4d000000 {
+			reg = <0x0 0x4d000000 0x0 0xe00000>;
 			no-map;
 		};
 
-		wcss_spare1: wifi-reserved@4dd00000 {
-			reg = <0x0 0x4dd00000 0x0 0x300000>;
+		qcn6432_m3_dump: wifi-m3-dump@4de00000 {
+			reg = <0x0 0x4de00000 0x0 0x100000>;
+			no-map;
+		};
+
+		wcss_spare1: wifi-reserved@4df00000 {
+			reg = <0x0 0x4df00000 0x0 0x100000>;
 			no-map;
 		};
 
@@ -277,9 +282,9 @@
 		interrupt-names = "fatal", "ready", "spawn", "stop-ack";
 
 		memory-region = <&qcn6432_data>, <&q6_region>,
-				<&qcn6432_m3_dump>, <&mlo_mem>;
+				<&qcn6432_m3_dump>, <&mlo_mem>, <&qcn6432_bdf>;
 		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
-				      "mlo-global-mem";
+				      "mlo-global-mem", "bdf-mem";
 		qcom,bdf-addr = <0x4ce00000 0x4ce00000 0x4ce00000 0 0 0>;
 		qcom,tgt-mem-mode = <2>;
 
