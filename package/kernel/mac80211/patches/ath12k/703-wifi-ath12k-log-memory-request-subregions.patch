@@ -2,8 +2,8 @@ From: Code and Solder <codeandsolder@gmail.com>
 Subject: [PATCH] wifi: ath12k: diagnose firmware memory subregion requests
 
 The REQUEST_MEM indication carries optional offset, size and secure_flag
-descriptors for each requested segment. Record these descriptors under
-the existing QMI debug category so we can distinguish firmware-side
+descriptors for each requested segment. Record these descriptors at
+boot-time informational severity so we can distinguish firmware-side
 permission contracts from physical address placement issues.
 
 Reject malformed segment and descriptor counts before changing the
@@ -13,7 +13,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/wireless/ath/ath12k/qmi.c
 +++ b/drivers/net/wireless/ath/ath12k/qmi.c
-@@ -4083,20 +4083,45 @@
+@@ -4083,20 +4083,44 @@
  	int i, ret;
  
  	ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi firmware request memory request\n");
@@ -51,17 +51,16 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 +
 +		ab->qmi.target_mem[i].type = seg->type;
 +		ab->qmi.target_mem[i].size = seg->size;
-+		ath12k_dbg(ab, ATH12K_DBG_QMI,
-+			   "qmi mem seg[%d] type %d size %u configs %u\n",
-+			   i, seg->type, seg->size, seg->mem_cfg_len);
++		ath12k_info(ab, "qmi mem seg[%d] type %d size %u configs %u\n",
++			    i, seg->type, seg->size, seg->mem_cfg_len);
 +
 +		for (cfg = 0; cfg < seg->mem_cfg_len; cfg++) {
 +			const struct qmi_wlanfw_mem_cfg_s_v01 *mem_cfg = &seg->mem_cfg[cfg];
 +
-+			ath12k_dbg(ab, ATH12K_DBG_QMI,
-+				   "qmi mem seg[%d] cfg[%u] offset %#llx size %u secure %u\n",
-+				   i, cfg, (unsigned long long)mem_cfg->offset,
-+				   mem_cfg->size, mem_cfg->secure_flag);
++			ath12k_info(ab,
++				    "qmi mem seg[%d] cfg[%u] offset %#llx size %u secure %u\n",
++				    i, cfg, (unsigned long long)mem_cfg->offset,
++				    mem_cfg->size, mem_cfg->secure_flag);
 +		}
  	}
  
