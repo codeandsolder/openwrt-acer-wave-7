@@ -21,7 +21,7 @@
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-		bootargs-append = " root=/dev/ram0 rdinit=/init panic=10 reboot=panic_w wave7.defer_wifi=1";
+		bootargs-append = " root=/dev/ram0 rdinit=/init panic=10 reboot=panic_w wave7.defer_wifi=1 clk_ignore_unused";
 	};
 
 	memory@40000000 {
@@ -289,8 +289,7 @@
 				   <&wcss_smp2p_out 17>,
 				   <&wcss_smp2p_out 18>;
 		qcom,smem-state-names = "shutdown", "stop", "spawn";
-		/* Diagnostic: do not spawn the external QCN6432 UserPD2. */
-		status = "disabled";
+		status = "okay";
 	};
 };
 
