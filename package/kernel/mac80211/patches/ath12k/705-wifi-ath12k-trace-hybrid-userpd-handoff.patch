@@ -1,0 +1,161 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: trace QCN6432 hybrid UserPD handoff boundaries
+
+Temporary diagnostic checkpoints on the QCN6432 hybrid path only. Distinguish
+the ready IRQ -> SMEM spawn clear -> HIF power-up return sequence from the
+concurrent QMI FW_READY -> MSI -> firmware/CE/DP/core initialization path.
+
+Use log statements only: do not change clock ownership, reset sequencing,
+transport, error handling, firmware contents, or device tree. Follow-up
+instrumentation to localize the full-host hang seen immediately after
+"UserPD2 is now UP" during Acer Wave 7 bring-up.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -344,10 +344,11 @@
+ 	phys_addr_t mem_phys;
+ 	void *mem_region;
+ 	size_t mem_size;
+ 	u32 pasid;
+ 	int ret;
++	int spawn_clear_ret;
+ 
+ 	rmem = ath12k_core_get_reserved_mem_by_name(ab, "q6-region");
+ 	if (!rmem)
+ 		return -ENODEV;
+ 
+@@ -455,18 +456,30 @@
+ 		ret = -ETIMEDOUT;
+ 		goto reset_spawn;
+ 	}
+ 
+ 	ath12k_info(ab, "UserPD%d is now UP\n", ab_ahb->userpd_id);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: UserPD ready, before accounting\n");
+ 	ab->ag->num_userpd_started++;
+ 
+ reset_spawn:
+-	qcom_smem_state_update_bits(ab_ahb->spawn_state, BIT(ab_ahb->spawn_bit), 0);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: before spawn-clear, ret=%d\n", ret);
++	spawn_clear_ret = qcom_smem_state_update_bits(ab_ahb->spawn_state,
++						 BIT(ab_ahb->spawn_bit), 0);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: spawn-clear returned %d\n",
++			    spawn_clear_ret);
+ err_fw2:
+ 	release_firmware(fw2);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: released secondary firmware\n");
+ err_fw:
+ 	release_firmware(fw);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: power_up return %d\n", ret);
+ 	return ret;
+ }
+ 
+ static void ath12k_ahb_power_down(struct ath12k_base *ab, bool is_suspend)
+ {
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -870,11 +870,15 @@
+ 		return ret;
+ 	}
+ 
+ 	ath12k_debugfs_soc_create(ab);
+ 
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: soc-create before power_up\n");
+ 	ret = ath12k_hif_power_up(ab);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: soc-create after power_up ret=%d\n", ret);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to power up :%d\n", ret);
+ 		goto err_qmi_deinit;
+ 	}
+ 
+@@ -1352,32 +1356,44 @@
+ int ath12k_core_qmi_firmware_ready(struct ath12k_base *ab)
+ {
+ 	struct ath12k_hw_group *ag = ath12k_ab_to_ag(ab);
+ 	int ret, i;
+ 
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: fw-ready before start-firmware\n");
+ 	ret = ath12k_core_start_firmware(ab, ab->fw_mode);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: fw-ready start-firmware ret=%d\n", ret);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to start firmware: %d\n", ret);
+ 		return ret;
+ 	}
+ 
+ 	ret = ath12k_ce_init_pipes(ab);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: fw-ready ce_init ret=%d\n", ret);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to initialize CE: %d\n", ret);
+ 		goto err_firmware_stop;
+ 	}
+ 
+ 	ret = ath12k_dp_cmn_device_init(ath12k_ab_to_dp(ab));
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: fw-ready dp_init ret=%d\n", ret);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to init DP: %d\n", ret);
+ 		goto err_firmware_stop;
+ 	}
+ 
+ 	mutex_lock(&ag->mutex);
+ 	mutex_lock(&ab->core_lock);
+ 
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: fw-ready before core-start\n");
+ 	ret = ath12k_core_start(ab);
++	if (ab->hif.bus == ATH12K_BUS_HYBRID)
++		ath12k_info(ab, "hybrid trace: fw-ready core-start ret=%d\n", ret);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to start core: %d\n", ret);
+ 		goto err_deinit;
+ 	}
+ 
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -4303,10 +4303,12 @@
+ 			ret = ath12k_qmi_event_load_bdf(qmi);
+ 			if (ret < 0)
+ 				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+ 			break;
+ 		case ATH12K_QMI_EVENT_FW_READY:
++			if (ab->hif.bus == ATH12K_BUS_HYBRID)
++				ath12k_info(ab, "hybrid trace: qmi FW_READY event\n");
+ 			clear_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+ 			if (test_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE, &ab->dev_flags)) {
+ 				if (ab->is_reset)
+ 					ath12k_hal_dump_srng_stats(ab);
+ 
+@@ -4315,17 +4317,23 @@
+ 				break;
+ 			}
+ 
+ 			clear_bit(ATH12K_FLAG_CRASH_FLUSH,
+ 				  &ab->dev_flags);
++			if (ab->hif.bus == ATH12K_BUS_HYBRID)
++				ath12k_info(ab, "hybrid trace: qmi before MSI readiness\n");
+ 			ret = ath12k_wait_for_gic_msi(ab);
++			if (ab->hif.bus == ATH12K_BUS_HYBRID)
++				ath12k_info(ab, "hybrid trace: qmi MSI readiness ret=%d\n", ret);
+ 			if (ret) {
+ 				ath12k_warn(ab, "failed to get qgic handler for dev %d ret: %d\n",
+ 					    ab->hw_rev, ret);
+ 				break;
+ 			}
+ 			ret = ath12k_core_qmi_firmware_ready(ab);
++			if (ab->hif.bus == ATH12K_BUS_HYBRID)
++				ath12k_info(ab, "hybrid trace: qmi core-firmware-ready ret=%d\n", ret);
+ 			if (!ret)
+ 				set_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE,
+ 					&ab->dev_flags);
+ 
+ 			break;
