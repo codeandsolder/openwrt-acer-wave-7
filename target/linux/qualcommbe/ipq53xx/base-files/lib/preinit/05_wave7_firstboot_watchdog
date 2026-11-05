@@ -53,8 +53,36 @@ wave7_firstboot_accept_link() {
 	return 0
 }
 
+# This opt-in trial preserves wired management before probing radio UserPDs.
+# Only the auto-probe module line is deferred; the driver remains installed
+# and can be explicitly loaded after boot with: modprobe ath12k_wifi7
+wave7_firstboot_defer_wifi_autoload() {
+	case " $(cat /proc/cmdline 2>/dev/null) " in
+		*" wave7.defer_wifi=1 "*) ;;
+		*) return 0 ;;
+	esac
+	local modules=/etc/modules.d/ath12k
+	local saved=/tmp/wave7-deferred-ath12k.modules
+	[ -e "$saved" ] && return 0
+	if [ ! -r "$modules" ]; then
+		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: missing autoload file' > /dev/kmsg 2>/dev/null || true
+		return 1
+	fi
+	if ! grep -qx 'ath12k_wifi7' "$modules"; then
+		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: unknown module list' > /dev/kmsg 2>/dev/null || true
+		return 1
+	fi
+	if ! mv "$modules" "$saved"; then
+		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: module list not writable' > /dev/kmsg 2>/dev/null || true
+		return 1
+	fi
+	printf 'ath12k\n' > "$modules"
+	echo '<6>wave7-firstboot: ath12k_wifi7 autoload deferred; manual modprobe after wired management' > /dev/kmsg 2>/dev/null || true
+}
+
 wave7_firstboot_arm_watchdog() {
 	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
+	wave7_firstboot_defer_wifi_autoload || true
 	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
 		kill -0 "$(cat /tmp/wave7-firstboot-hard-panic.pid)" 2>/dev/null && return 0
 
