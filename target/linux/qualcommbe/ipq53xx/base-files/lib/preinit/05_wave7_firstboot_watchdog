@@ -199,14 +199,15 @@ wave7_firstboot_arm_autoprobe() {
         done
         iw phy 2>&1 | grep '^Wiphy ' | wave7_firstboot_kmsg || true
         wave7_firstboot_network_snapshot after
-        # Module insertion success is necessary, not sufficient: verify that
-        # the two expected child rprocs and at least one PHY remain online
-        # before allowing the independent safety timer to disarm.
+        # A working internal PHY is not proof QCN6432 initialized.
+        # Require both external and internal radio PHY registrations, as
+        # well as both child UserPDs, before disarming hard recovery.
         if [ "$ret" -eq 0 ]; then
-            for _ in $(seq 1 15); do
+            for _ in $(seq 1 45); do
+                phy_count=$(iw phy 2>/dev/null | grep -c '^Wiphy ' || true)
                 if [ "$(cat /sys/class/remoteproc/remoteproc1/state 2>/dev/null)" = running ] &&
                    [ "$(cat /sys/class/remoteproc/remoteproc2/state 2>/dev/null)" = running ] &&
-                   iw phy 2>/dev/null | grep -q '^Wiphy '; then
+                   [ "$phy_count" -ge 2 ]; then
                     touch /tmp/wave7-autoprobe-success
                     echo '<6>wave7-autoprobe: RADIO_STARTUP_SUCCESS' > /dev/kmsg
                     break
