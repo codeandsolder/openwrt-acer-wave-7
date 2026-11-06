@@ -135,11 +135,35 @@
 		memory-region = <&q6_region>;
 		boot-args = <0x01 0x04 0x03 0x00 0x26 0x02>;
 		qcom,heartbeat_smem = <508>;
-		qcom,userpd-firmware-names =
-			"ath12k/IPQ5332/hw1.0/q6_fw1.mdt",
-			"ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
-		qcom,userpd-asids = <1 2>;
 		status = "okay";
+
+		wcss_pd1: remoteproc-pd1 {
+			compatible = "qcom,ipq5332-wcss-ahb-mpd";
+			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw1.mdt";
+			interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>;
+			interrupt-names = "fatal", "ready", "spawn-ack", "stop-ack";
+			qcom,smem-states = <&wcss_smp2p_out 8>,
+					   <&wcss_smp2p_out 9>,
+					   <&wcss_smp2p_out 10>;
+			qcom,smem-state-names = "shutdown", "stop", "spawn";
+		};
+
+		wcss_pd2: remoteproc-pd2 {
+			compatible = "qcom,ipq5332-wcss-pcie-mpd";
+			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
+			interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
+			interrupt-names = "fatal", "ready", "spawn-ack", "stop-ack";
+			qcom,smem-states = <&wcss_smp2p_out 16>,
+					   <&wcss_smp2p_out 17>,
+					   <&wcss_smp2p_out 18>;
+			qcom,smem-state-names = "shutdown", "stop", "spawn";
+		};
 
 		glink-edge {
 			interrupts = <GIC_SPI 417 IRQ_TYPE_EDGE_RISING>;
@@ -154,11 +178,7 @@
 		reg = <0x0c000000 0x1000000>;
 		clocks = <&gcc GCC_XO_CLK>;
 		clock-names = "xo";
-		interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
-		                      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
-		                      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
-		                      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>,
-		                      <&intc GIC_SPI 559 IRQ_TYPE_EDGE_RISING>,
+		interrupts-extended = <&intc GIC_SPI 559 IRQ_TYPE_EDGE_RISING>,
 		                      <&intc GIC_SPI 560 IRQ_TYPE_EDGE_RISING>,
 		                      <&intc GIC_SPI 561 IRQ_TYPE_EDGE_RISING>,
 		                      <&intc GIC_SPI 422 IRQ_TYPE_EDGE_RISING>,
@@ -203,11 +223,7 @@
 		                      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
 		                      <&intc GIC_SPI 482 IRQ_TYPE_EDGE_RISING>,
 		                      <&intc GIC_SPI 419 IRQ_TYPE_EDGE_RISING>;
-		interrupt-names = "fatal",
-		                  "ready",
-		                  "spawn",
-		                  "stop-ack",
-		                  "misc-pulse1",
+		interrupt-names = "misc-pulse1",
 		                  "misc-latch",
 		                  "sw-exception",
 		                  "ce0",
@@ -256,13 +272,8 @@
 		memory-region = <&q6_region>, <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
 		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
 				      "q6-caldb", "mlo-global-mem";
-		qcom,rproc = <&q6v5_wcss>;
-		qcom,smem-states = <&wcss_smp2p_out 8>,
-		                   <&wcss_smp2p_out 9>,
-		                   <&wcss_smp2p_out 10>;
-		qcom,smem-state-names = "shutdown",
-		                        "stop",
-		                        "spawn";
+		qcom,rproc = <&wcss_pd1>;
+
 		status = "okay";
 	};
 
@@ -270,11 +281,6 @@
 		compatible = "qcom,qcn6432-wifi";
 		msi-parent = <&v2m0>;
 
-		interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
-				      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
-				      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
-				      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
-		interrupt-names = "fatal", "ready", "spawn", "stop-ack";
 
 		memory-region = <&qcn6432_data>, <&q6_region>,
 				<&qcn6432_m3_dump>, <&mlo_mem>;
@@ -283,12 +289,9 @@
 		qcom,bdf-addr = <0x4ce00000 0x4ce00000 0x4ce00000 0 0 0>;
 		qcom,tgt-mem-mode = <2>;
 
-		qcom,rproc = <&q6v5_wcss>;
+		qcom,rproc = <&wcss_pd2>;
 		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
-		qcom,smem-states = <&wcss_smp2p_out 16>,
-				   <&wcss_smp2p_out 17>,
-				   <&wcss_smp2p_out 18>;
-		qcom,smem-state-names = "shutdown", "stop", "spawn";
+
 		status = "okay";
 	};
 };
