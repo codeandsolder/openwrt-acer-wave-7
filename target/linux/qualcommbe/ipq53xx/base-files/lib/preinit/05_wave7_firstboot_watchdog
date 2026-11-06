@@ -47,6 +47,12 @@ wave7_firstboot_link_ready() {
 }
 
 wave7_firstboot_accept_link() {
+	# In an autonomous radio trial, LAN readiness alone must never disarm
+	# the hard recovery timer before the WLAN startup has completed.
+	case " $(cat /proc/cmdline 2>/dev/null) " in
+		*" wave7.autoprobe=1 "*)
+			[ -e /tmp/wave7-autoprobe-success ] || return 1 ;;
+	esac
 	wave7_firstboot_link_ready || return 1
 	touch /tmp/wave7-keep-boot
 	echo "<6>wave7-firstboot: lan carrier and management address are up; preserving trial boot" > /dev/kmsg 2>/dev/null || true
@@ -155,7 +161,9 @@ wave7_firstboot_arm_autoprobe() {
             if [ -w "$filter" ]; then
                 printf '%s\n' '*:mod:ath12k_wifi7' > "$filter" 2>/dev/null || true
                 printf '%s\n' '*:mod:ath12k' >> "$filter" 2>/dev/null || true
-                for pattern in '*qcom*' '*rproc*' '*smp2p*' '*irq*' '*pci*' 'complete*' 'wait_for_completion*'; do
+                # Generic IRQ tracing flooded the 128KiB persistent ring
+                # with timer/softirq traffic and obscured WLAN transitions.
+                for pattern in '*qcom*' '*rproc*' '*smp2p*' '*pci*' '*clk*' 'complete*' 'wait_for_completion*'; do
                     printf '%s\n' "$pattern" >> "$filter" 2>/dev/null || true
                 done
             fi
@@ -191,6 +199,21 @@ wave7_firstboot_arm_autoprobe() {
         done
         iw phy 2>&1 | grep '^Wiphy ' | wave7_firstboot_kmsg || true
         wave7_firstboot_network_snapshot after
+        # Module insertion success is necessary, not sufficient: verify that
+        # the two expected child rprocs and at least one PHY remain online
+        # before allowing the independent safety timer to disarm.
+        if [ "$ret" -eq 0 ]; then
+            for _ in $(seq 1 15); do
+                if [ "$(cat /sys/class/remoteproc/remoteproc1/state 2>/dev/null)" = running ] &&
+                   [ "$(cat /sys/class/remoteproc/remoteproc2/state 2>/dev/null)" = running ] &&
+                   iw phy 2>/dev/null | grep -q '^Wiphy '; then
+                    touch /tmp/wave7-autoprobe-success
+                    echo '<6>wave7-autoprobe: RADIO_STARTUP_SUCCESS' > /dev/kmsg
+                    break
+                fi
+                sleep 1
+            done
+        fi
         touch /tmp/wave7-autoprobe-finished
         exit "$ret"
     ) </dev/null >/dev/null 2>&1 &
