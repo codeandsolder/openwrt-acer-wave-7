@@ -30,7 +30,7 @@ wave7_firstboot_dump_state() {
 		uci show network 2>&1 || true
 		echo "--- processes ---"
 		ps w 2>&1 || true
-		echo "--- blocked kmodloader diagnostics ---"
+		echo "--- active kmodloader tasks (if any) ---"
 		for proc in /proc/[0-9]*; do
 			[ -r "$proc/comm" ] || continue
 			[ "$(cat "$proc/comm" 2>/dev/null)" = kmodloader ] || continue
@@ -80,9 +80,128 @@ wave7_firstboot_defer_wifi_autoload() {
 	echo '<6>wave7-firstboot: ath12k_wifi7 autoload deferred; manual modprobe after wired management' > /dev/kmsg 2>/dev/null || true
 }
 
+
+# The LAN PHY can show carrier while no frames reach the Redmi peer.
+# Each snapshot is small enough for the ramoops persistent console.
+wave7_firstboot_network_snapshot() {
+    local label="$1"
+    {
+        printf 'network snapshot %s uptime=' "$label"
+        cat /proc/uptime
+        echo "--- LAN statistics ---"
+        for dev in lan br-lan; do
+            for stat in rx_packets tx_packets rx_bytes tx_bytes rx_errors tx_errors rx_dropped tx_dropped; do
+                file="/sys/class/net/$dev/statistics/$stat"
+                [ -r "$file" ] && printf '%s.%s=%s\n' "$dev" "$stat" "$(cat "$file")"
+            done
+            for prop in carrier operstate address; do
+                file="/sys/class/net/$dev/$prop"
+                [ -r "$file" ] && printf '%s.%s=%s\n' "$dev" "$prop" "$(cat "$file")"
+            done
+        done
+        echo "--- ip neigh ---"
+        ip neigh show dev br-lan 2>&1 || true
+        echo "--- /proc/net/arp ---"
+        cat /proc/net/arp 2>&1 || true
+        echo "--- routing ---"
+        ip route get 192.168.76.2 2>&1 || true
+        echo "--- peer ping ---"
+        ping -I br-lan -c 2 -W 1 192.168.76.2 2>&1 || true
+        echo "--- LAN driver stats ---"
+        if command -v ethtool >/dev/null 2>&1; then
+            ethtool -S lan 2>&1 | head -n 55 || true
+        fi
+    } | wave7_firstboot_kmsg
+}
+
+# Trial-only radio start does not depend on SSH or LAN connectivity.
+# The independent 120-second hard fallback remains armed if this worker wedges.
+wave7_firstboot_arm_autoprobe() {
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" wave7.autoprobe=1 "*) ;;
+        *) return 0 ;;
+    esac
+    [ ! -e /tmp/wave7-autoprobe-armed ] || return 0
+    touch /tmp/wave7-autoprobe-armed
+    (
+        sleep 35
+        wave7_firstboot_network_snapshot before
+
+        if [ ! -r /tmp/wave7-deferred-ath12k.modules ] ||
+           ! grep -qx 'ath12k_wifi7' /tmp/wave7-deferred-ath12k.modules ||
+           [ ! -d /sys/firmware/devicetree/base/soc@0/remoteproc@d100000/remoteproc-pd1 ] ||
+           [ ! -d /sys/firmware/devicetree/base/soc@0/remoteproc@d100000/remoteproc-pd2 ]; then
+            echo '<3>wave7-autoprobe: startup invariants failed; not loading WLAN' > /dev/kmsg
+            exit 1
+        fi
+        for r in /sys/class/remoteproc/remoteproc*; do
+            [ -r "$r/state" ] || continue
+            if [ "$(cat "$r/state")" != offline ]; then
+                printf '<3>wave7-autoprobe: non-offline remoteproc %s; refusing probe\n' "$(basename "$r")" > /dev/kmsg
+                exit 1
+            fi
+        done
+        if lsmod | grep -q '^ath12k_wifi7 '; then
+            echo '<3>wave7-autoprobe: WLAN already loaded; refusing probe' > /dev/kmsg
+            exit 1
+        fi
+
+        record=/sys/kernel/debug/pstore/record_ftrace
+        if [ -w "$record" ]; then
+            if ! grep -q ' /sys/kernel/tracing ' /proc/mounts; then
+                mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+            fi
+            filter=/sys/kernel/tracing/set_ftrace_filter
+            if [ -w "$filter" ]; then
+                printf '%s\n' '*:mod:ath12k_wifi7' > "$filter" 2>/dev/null || true
+                printf '%s\n' '*:mod:ath12k' >> "$filter" 2>/dev/null || true
+                for pattern in '*qcom*' '*rproc*' '*smp2p*' '*irq*' '*pci*' 'complete*' 'wait_for_completion*'; do
+                    printf '%s\n' "$pattern" >> "$filter" 2>/dev/null || true
+                done
+            fi
+            # Refuse global tracing if filters did not install. A failed
+            # sysfs selector otherwise turns this into a whole-kernel trace.
+            if [ -r "$filter" ] &&
+               grep -q '^qcom_wdt_isr$' "$filter" &&
+               grep -q 'ath12k' "$filter" &&
+               echo 1 > "$record" 2>/dev/null; then
+                echo '<6>wave7-autoprobe: PSTORE_FTRACE_ARMED' > /dev/kmsg
+            else
+                echo '<4>wave7-autoprobe: ftrace filter unavailable; probe still proceeds' > /dev/kmsg
+            fi
+        else
+            echo '<4>wave7-autoprobe: no writable pstore ftrace control' > /dev/kmsg
+        fi
+
+        touch /tmp/wave7-autoprobe-attempted
+        echo '<6>wave7-autoprobe: ABOUT_TO_MODPROBE ath12k_wifi7' > /dev/kmsg
+        modprobe ath12k_wifi7 > /tmp/wave7-autoprobe-output.txt 2>&1
+        ret=$?
+        echo "<6>wave7-autoprobe: MODULE_LOAD_RETURNED=$ret" > /dev/kmsg
+        if [ -r /tmp/wave7-autoprobe-output.txt ]; then
+            head -n 35 /tmp/wave7-autoprobe-output.txt | wave7_firstboot_kmsg
+        fi
+        if [ -w "$record" ]; then
+            echo 0 > "$record" 2>/dev/null || true
+        fi
+        echo "--- remoteproc states ---" | wave7_firstboot_kmsg
+        for r in /sys/class/remoteproc/remoteproc*; do
+            [ -r "$r/state" ] || continue
+            printf '%s name=%s state=%s\n' "$(basename "$r")" "$(cat "$r/name")" "$(cat "$r/state")" | wave7_firstboot_kmsg
+        done
+        iw phy 2>&1 | grep '^Wiphy ' | wave7_firstboot_kmsg || true
+        wave7_firstboot_network_snapshot after
+        touch /tmp/wave7-autoprobe-finished
+        exit "$ret"
+    ) </dev/null >/dev/null 2>&1 &
+    echo $! > /tmp/wave7-autoprobe-pid
+    echo '<6>wave7-autoprobe: scheduled one-shot radio after 35s; failsafe remains armed' > /dev/kmsg
+}
+
 wave7_firstboot_arm_watchdog() {
 	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
 	wave7_firstboot_defer_wifi_autoload || true
+	wave7_firstboot_arm_autoprobe
 	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
 		kill -0 "$(cat /tmp/wave7-firstboot-hard-panic.pid)" 2>/dev/null && return 0
 
@@ -104,6 +223,7 @@ wave7_firstboot_arm_watchdog() {
 		[ -e /tmp/wave7-keep-boot ] && exit 0
 		wave7_firstboot_accept_link && exit 0
 		wave7_firstboot_dump_state
+		wave7_firstboot_network_snapshot deadline
 		echo "<4>wave7-firstboot: diagnostic snapshot complete; hard panic remains armed" > /dev/kmsg 2>/dev/null || true
 	) &
 	echo $! > /tmp/wave7-firstboot-diagnostics.pid
