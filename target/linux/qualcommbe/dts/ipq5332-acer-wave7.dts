@@ -133,7 +133,12 @@
 				   <&wcss_smp2p_out 1>;
 		qcom,smem-state-names = "shutdown", "stop";
 		memory-region = <&q6_region>;
-		boot-args = <0x01 0x04 0x03 0x00 0x26 0x02>;
+		/*
+		 * Actual Acer firmware 067 (live 2026-11-06): PCIe1, GPIO47.
+		 * QCN6432 UserPD2 is physically on the 2-lane controller at
+		 * 0x18000000. Slot 0/GPIO38 is the wrong board variant.
+		 */
+		boot-args = <0x01 0x04 0x03 0x01 0x2f 0x02>;
 		qcom,heartbeat_smem = <508>;
 		status = "okay";
 
@@ -288,6 +293,9 @@
 				      "mlo-global-mem";
 		qcom,bdf-addr = <0x4ce00000 0x4ce00000 0x4ce00000 0 0 0>;
 		qcom,tgt-mem-mode = <2>;
+		/* Captured from the running stock 067 device tree, not board-default.dts. */
+		qcom,board_id = <0x53>;
+		qcom,pci_slot_id = <1>;
 
 		qcom,rproc = <&wcss_pd2>;
 		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
