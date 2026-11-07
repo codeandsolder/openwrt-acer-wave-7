@@ -1,0 +1,95 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] wifi: trace: preserve optional pointer checks with a typed helper
+
+The trace macros handle both nullable pointer arguments and addresses of
+embedded (non-null) array/structure members. Expanding the macros at
+fixed-address call sites causes GCC -Werror=address diagnostics, although
+the null handling is necessary for other callers.
+
+Put the null check behind a small type-safe inline helper to retain both
+cases. Compilers can optimize known non-null addresses without diagnosing
+the pointer expression in a macro conditional. No trace field layout or
+recorded data changes.
+
+---
+--- a/net/wireless/trace.h
++++ b/net/wireless/trace.h
+@@ -17,9 +17,20 @@
+ #include <net/cfg80211.h>
+ #include "core.h"
+ 
++/* Preserve checks for nullable pointer arguments without the compiler
++ * diagnosing statically non-null embedded arrays passed by callers.
++ */
++#ifndef __CFG80211_TRACE_PTR_NONNULL
++#define __CFG80211_TRACE_PTR_NONNULL
++static inline bool cfg80211_trace_ptr_nonnull(const void *ptr)
++{
++	return ptr != NULL;
++}
++#endif
++
+ #define MAC_ENTRY(entry_mac) __array(u8, entry_mac, ETH_ALEN)
+ #define MAC_ASSIGN(entry_mac, given_mac) do {			     \
+-	if (given_mac)						     \
++	if (cfg80211_trace_ptr_nonnull(given_mac))						     \
+ 		memcpy(__entry->entry_mac, given_mac, ETH_ALEN);     \
+ 	else							     \
+ 		eth_zero_addr(__entry->entry_mac);		     \
+@@ -146,7 +157,7 @@
+ 		       __field(u16, npca_punctured)
+ #define CHAN_DEF_ASSIGN(chandef)					\
+ 	do {								\
+-		if ((chandef) && (chandef)->chan) {			\
++		if (cfg80211_trace_ptr_nonnull(chandef) && (chandef)->chan) {			\
+ 			__entry->band = (chandef)->chan->band;		\
+ 			__entry->control_freq =				\
+ 				(chandef)->chan->center_freq;		\
+--- a/net/mac80211/trace.h
++++ b/net/mac80211/trace.h
+@@ -12,6 +12,17 @@
+ #include <net/mac80211.h>
+ #include "ieee80211_i.h"
+ 
++/* This check must support both nullable pointers and embedded channel
++ * definitions whose addresses are guaranteed non-null.
++ */
++#ifndef __MAC80211_TRACE_PTR_NONNULL
++#define __MAC80211_TRACE_PTR_NONNULL
++static inline bool mac80211_trace_ptr_nonnull(const void *ptr)
++{
++	return ptr != NULL;
++}
++#endif
++
+ #undef TRACE_SYSTEM
+ #define TRACE_SYSTEM mac80211
+ 
+@@ -54,18 +65,18 @@
+ 			__field(u32, n##npca_pri_freq)					\
+ 			__field(u16, n##npca_punctured)
+ #define __CHANDEF_ASSIGN(n, c)								\
+-			__entry->n##control_freq = (c) && (c)->chan ?			\
++			__entry->n##control_freq = mac80211_trace_ptr_nonnull(c) && (c)->chan ?			\
+ 				(c)->chan->center_freq : 0;				\
+-			__entry->n##freq_offset = (c) && (c)->chan ?			\
++			__entry->n##freq_offset = mac80211_trace_ptr_nonnull(c) && (c)->chan ?			\
+ 				(c)->chan->freq_offset : 0;				\
+-			__entry->n##chan_width = (c) ? (c)->width : 0;			\
+-			__entry->n##center_freq1 = (c) ? (c)->center_freq1 : 0;		\
+-			__entry->n##freq1_offset = (c) ? (c)->freq1_offset : 0;		\
+-			__entry->n##center_freq2 = (c) ? (c)->center_freq2 : 0;		\
+-			__entry->n##punctured = (c) ? (c)->punctured : 0;		\
+-			__entry->n##npca_pri_freq = (c) && (c)->npca_chan ?		\
++			__entry->n##chan_width = mac80211_trace_ptr_nonnull(c) ? (c)->width : 0;			\
++			__entry->n##center_freq1 = mac80211_trace_ptr_nonnull(c) ? (c)->center_freq1 : 0;		\
++			__entry->n##freq1_offset = mac80211_trace_ptr_nonnull(c) ? (c)->freq1_offset : 0;		\
++			__entry->n##center_freq2 = mac80211_trace_ptr_nonnull(c) ? (c)->center_freq2 : 0;		\
++			__entry->n##punctured = mac80211_trace_ptr_nonnull(c) ? (c)->punctured : 0;		\
++			__entry->n##npca_pri_freq = mac80211_trace_ptr_nonnull(c) && (c)->npca_chan ?		\
+ 				(c)->npca_chan->center_freq : 0;			\
+-			__entry->n##npca_punctured = (c) ? (c)->npca_punctured : 0;
++			__entry->n##npca_punctured = mac80211_trace_ptr_nonnull(c) ? (c)->npca_punctured : 0;
+ #define __CHANDEF_PR_FMT(n)								\
+ 	" " #n "(%d.%03d MHz,width:%d,center: %d.%03d/%d MHz, punct:0x%x, npca:%u, npca_punct:0x%x)"
+ #define __CHANDEF_PR_ARG(n)								\
