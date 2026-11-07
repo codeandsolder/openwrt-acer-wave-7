@@ -1,0 +1,17 @@
+--- a/usr/Makefile
++++ b/usr/Makefile
+@@ -17,6 +17,14 @@ obj-$(CONFIG_BLK_DEV_INITRD) := initramf
+ 
+ $(obj)/initramfs_data.o: $(obj)/initramfs_inc_data
+ 
++# initramfs_data.S embeds initramfs_inc_data with .incbin. Compiler cache
++# dependency scanners do not see that input, so an otherwise identical
++# compile can return an object containing stale initramfs bytes. Kbuild has
++# already decided this target is stale when this recipe is reached; force the
++# cache frontend to recompile this one object rather than accepting a hit.
++$(obj)/initramfs_data.o: private export CCACHE_RECACHE := 1
++$(obj)/initramfs_data.o: private export SCCACHE_RECACHE := 1
++
+ ramfs-input := $(CONFIG_INITRAMFS_SOURCE)
+ cpio-data :=
+ 

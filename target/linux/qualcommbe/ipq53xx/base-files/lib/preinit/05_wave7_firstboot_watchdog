@@ -1,0 +1,270 @@
+wave7_firstboot_kmsg() {
+	while IFS= read -r line; do
+		printf '<6>wave7-firstboot: %s\n' "$line" > /dev/kmsg 2>/dev/null || true
+	done
+}
+
+wave7_firstboot_dump_state() {
+	{
+		echo "diagnostic snapshot before failsafe panic"
+		echo "board=$(board_name 2>/dev/null)"
+		echo "uptime=$(cat /proc/uptime 2>/dev/null)"
+		echo "--- /proc/modules ---"
+		cat /proc/modules 2>/dev/null
+		echo "--- network sysfs ---"
+		for net in /sys/class/net/*; do
+			[ -e "$net" ] || continue
+			name=${net##*/}
+			printf "%s operstate=" "$name"
+			cat "$net/operstate" 2>/dev/null || true
+			printf "%s carrier=" "$name"
+			cat "$net/carrier" 2>/dev/null || true
+		done
+		echo "--- ip link ---"
+		ip link show 2>&1 || true
+		echo "--- ip addr ---"
+		ip addr show 2>&1 || true
+		echo "--- mdio devices ---"
+		ls -l /sys/bus/mdio_bus/devices 2>&1 || true
+		echo "--- network uci ---"
+		uci show network 2>&1 || true
+		echo "--- processes ---"
+		ps w 2>&1 || true
+		echo "--- active kmodloader tasks (if any) ---"
+		for proc in /proc/[0-9]*; do
+			[ -r "$proc/comm" ] || continue
+			[ "$(cat "$proc/comm" 2>/dev/null)" = kmodloader ] || continue
+			echo "pid=${proc##*/} wchan=$(cat "$proc/wchan" 2>/dev/null)"
+			cat "$proc/stack" 2>/dev/null || true
+		done
+	} | wave7_firstboot_kmsg
+}
+
+wave7_firstboot_link_ready() {
+	[ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 1
+	ip -4 -o addr show dev br-lan 2>/dev/null | grep -Fq '192.168.76.1/24' || return 1
+	ping -I br-lan -c 1 -W 1 192.168.76.2 >/dev/null 2>&1
+}
+
+wave7_firstboot_accept_link() {
+	# In an autonomous radio trial, LAN readiness alone must never disarm
+	# the hard recovery timer before the WLAN startup has completed.
+	case " $(cat /proc/cmdline 2>/dev/null) " in
+		*" wave7.autoprobe=1 "*)
+			[ -e /tmp/wave7-autoprobe-success ] || return 1 ;;
+	esac
+	wave7_firstboot_link_ready || return 1
+	touch /tmp/wave7-keep-boot
+	echo "<6>wave7-firstboot: lan carrier and management address are up; preserving trial boot" > /dev/kmsg 2>/dev/null || true
+	return 0
+}
+
+# This opt-in trial preserves wired management before probing radio UserPDs.
+# Only the auto-probe module line is deferred; the driver remains installed
+# and can be explicitly loaded after boot with: modprobe ath12k_wifi7
+wave7_firstboot_defer_wifi_autoload() {
+	case " $(cat /proc/cmdline 2>/dev/null) " in
+		*" wave7.defer_wifi=1 "*) ;;
+		*) return 0 ;;
+	esac
+	local modules=/etc/modules.d/ath12k
+	local saved=/tmp/wave7-deferred-ath12k.modules
+	[ -e "$saved" ] && return 0
+	if [ ! -r "$modules" ]; then
+		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: missing autoload file' > /dev/kmsg 2>/dev/null || true
+		return 1
+	fi
+	if ! grep -qx 'ath12k_wifi7' "$modules"; then
+		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: unknown module list' > /dev/kmsg 2>/dev/null || true
+		return 1
+	fi
+	if ! mv "$modules" "$saved"; then
+		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: module list not writable' > /dev/kmsg 2>/dev/null || true
+		return 1
+	fi
+	printf 'ath12k\n' > "$modules"
+	echo '<6>wave7-firstboot: ath12k_wifi7 autoload deferred; manual modprobe after wired management' > /dev/kmsg 2>/dev/null || true
+}
+
+
+# The LAN PHY can show carrier while no frames reach the Redmi peer.
+# Each snapshot is small enough for the ramoops persistent console.
+wave7_firstboot_network_snapshot() {
+    local label="$1"
+    {
+        printf 'network snapshot %s uptime=' "$label"
+        cat /proc/uptime
+        echo "--- LAN statistics ---"
+        for dev in lan br-lan; do
+            for stat in rx_packets tx_packets rx_bytes tx_bytes rx_errors tx_errors rx_dropped tx_dropped; do
+                file="/sys/class/net/$dev/statistics/$stat"
+                [ -r "$file" ] && printf '%s.%s=%s\n' "$dev" "$stat" "$(cat "$file")"
+            done
+            for prop in carrier operstate address; do
+                file="/sys/class/net/$dev/$prop"
+                [ -r "$file" ] && printf '%s.%s=%s\n' "$dev" "$prop" "$(cat "$file")"
+            done
+        done
+        echo "--- ip neigh ---"
+        ip neigh show dev br-lan 2>&1 || true
+        echo "--- /proc/net/arp ---"
+        cat /proc/net/arp 2>&1 || true
+        echo "--- routing ---"
+        ip route get 192.168.76.2 2>&1 || true
+        echo "--- peer ping ---"
+        ping -I br-lan -c 2 -W 1 192.168.76.2 2>&1 || true
+        echo "--- LAN driver stats ---"
+        if command -v ethtool >/dev/null 2>&1; then
+            ethtool -S lan 2>&1 | head -n 55 || true
+        fi
+    } | wave7_firstboot_kmsg
+}
+
+# Multi-chip MLO combines the two physical radios into one mac80211 wiphy.
+# Do not mistake one successfully registered MLO PHY for one initialized chip.
+# The QMI advertisements are made independently by both members of the group;
+# combined registration only happens after both firmware instances start.
+wave7_firstboot_radio_registered() {
+    local phy_count
+    phy_count=$(iw phy 2>/dev/null | grep -c '^Wiphy ' || :)
+    [ "$phy_count" -ge 2 ] && return 0
+    [ "$phy_count" -ge 1 ] || return 1
+
+    dmesg | grep -Eq 'QMI MLO host cap: enabled=1 group=0 chip=0 chips=2 links=1' || return 1
+    dmesg | grep -Eq 'QMI MLO host cap: enabled=1 group=0 chip=1 chips=2 links=1'
+}
+
+# Trial-only radio start does not depend on SSH or LAN connectivity.
+# The independent 120-second hard fallback remains armed if this worker wedges.
+wave7_firstboot_arm_autoprobe() {
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" wave7.autoprobe=1 "*) ;;
+        *) return 0 ;;
+    esac
+    [ ! -e /tmp/wave7-autoprobe-armed ] || return 0
+    touch /tmp/wave7-autoprobe-armed
+    (
+        sleep 35
+        wave7_firstboot_network_snapshot before
+
+        if [ ! -r /tmp/wave7-deferred-ath12k.modules ] ||
+           ! grep -qx 'ath12k_wifi7' /tmp/wave7-deferred-ath12k.modules ||
+           [ ! -d /sys/firmware/devicetree/base/soc@0/remoteproc@d100000/remoteproc-pd1 ] ||
+           [ ! -d /sys/firmware/devicetree/base/soc@0/remoteproc@d100000/remoteproc-pd2 ]; then
+            echo '<3>wave7-autoprobe: startup invariants failed; not loading WLAN' > /dev/kmsg
+            exit 1
+        fi
+        for r in /sys/class/remoteproc/remoteproc*; do
+            [ -r "$r/state" ] || continue
+            if [ "$(cat "$r/state")" != offline ]; then
+                printf '<3>wave7-autoprobe: non-offline remoteproc %s; refusing probe\n' "$(basename "$r")" > /dev/kmsg
+                exit 1
+            fi
+        done
+        if lsmod | grep -q '^ath12k_wifi7 '; then
+            echo '<3>wave7-autoprobe: WLAN already loaded; refusing probe' > /dev/kmsg
+            exit 1
+        fi
+
+        record=/sys/kernel/debug/pstore/record_ftrace
+        if [ -w "$record" ]; then
+            if ! grep -q ' /sys/kernel/tracing ' /proc/mounts; then
+                mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true
+            fi
+            filter=/sys/kernel/tracing/set_ftrace_filter
+            if [ -w "$filter" ]; then
+                printf '%s\n' '*:mod:ath12k_wifi7' > "$filter" 2>/dev/null || true
+                printf '%s\n' '*:mod:ath12k' >> "$filter" 2>/dev/null || true
+                # Generic IRQ tracing flooded the 128KiB persistent ring
+                # with timer/softirq traffic and obscured WLAN transitions.
+                for pattern in '*qcom*' '*rproc*' '*smp2p*' '*pci*' '*clk*' 'complete*' 'wait_for_completion*'; do
+                    printf '%s\n' "$pattern" >> "$filter" 2>/dev/null || true
+                done
+            fi
+            # Refuse global tracing if filters did not install. A failed
+            # sysfs selector otherwise turns this into a whole-kernel trace.
+            if [ -r "$filter" ] &&
+               grep -q '^qcom_wdt_isr$' "$filter" &&
+               grep -q 'ath12k' "$filter" &&
+               echo 1 > "$record" 2>/dev/null; then
+                echo '<6>wave7-autoprobe: PSTORE_FTRACE_ARMED' > /dev/kmsg
+            else
+                echo '<4>wave7-autoprobe: ftrace filter unavailable; probe still proceeds' > /dev/kmsg
+            fi
+        else
+            echo '<4>wave7-autoprobe: no writable pstore ftrace control' > /dev/kmsg
+        fi
+
+        touch /tmp/wave7-autoprobe-attempted
+        echo '<6>wave7-autoprobe: ABOUT_TO_MODPROBE ath12k_wifi7' > /dev/kmsg
+        modprobe ath12k_wifi7 > /tmp/wave7-autoprobe-output.txt 2>&1
+        ret=$?
+        echo "<6>wave7-autoprobe: MODULE_LOAD_RETURNED=$ret" > /dev/kmsg
+        if [ -r /tmp/wave7-autoprobe-output.txt ]; then
+            head -n 35 /tmp/wave7-autoprobe-output.txt | wave7_firstboot_kmsg
+        fi
+        if [ -w "$record" ]; then
+            echo 0 > "$record" 2>/dev/null || true
+        fi
+        echo "--- remoteproc states ---" | wave7_firstboot_kmsg
+        for r in /sys/class/remoteproc/remoteproc*; do
+            [ -r "$r/state" ] || continue
+            printf '%s name=%s state=%s\n' "$(basename "$r")" "$(cat "$r/name")" "$(cat "$r/state")" | wave7_firstboot_kmsg
+        done
+        iw phy 2>&1 | grep '^Wiphy ' | wave7_firstboot_kmsg || true
+        wave7_firstboot_network_snapshot after
+        # Accept either separate PHYs or the single combined MLO wiphy,
+        # with both UserPDs still running. Never trust one internal PHY.
+        if [ "$ret" -eq 0 ]; then
+            for _ in $(seq 1 45); do
+                if [ "$(cat /sys/class/remoteproc/remoteproc1/state 2>/dev/null)" = running ] &&
+                   [ "$(cat /sys/class/remoteproc/remoteproc2/state 2>/dev/null)" = running ] &&
+                   wave7_firstboot_radio_registered; then
+                    touch /tmp/wave7-autoprobe-success
+                    echo '<6>wave7-autoprobe: RADIO_STARTUP_SUCCESS' > /dev/kmsg
+                    break
+                fi
+                sleep 1
+            done
+        fi
+        touch /tmp/wave7-autoprobe-finished
+        exit "$ret"
+    ) </dev/null >/dev/null 2>&1 &
+    echo $! > /tmp/wave7-autoprobe-pid
+    echo '<6>wave7-autoprobe: scheduled one-shot radio after 35s; failsafe remains armed' > /dev/kmsg
+}
+
+wave7_firstboot_arm_watchdog() {
+	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
+	wave7_firstboot_defer_wifi_autoload || true
+	wave7_firstboot_arm_autoprobe
+	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
+		kill -0 "$(cat /tmp/wave7-firstboot-hard-panic.pid)" 2>/dev/null && return 0
+
+	# Hard deadline first. This path intentionally does no diagnostics, sync,
+	# logging pipeline, or other potentially blocking work before SysRq.
+	(
+		sleep 120
+		[ -e /tmp/wave7-keep-boot ] && exit 0
+		wave7_firstboot_accept_link && exit 0
+		echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+		echo c > /proc/sysrq-trigger
+	) &
+	echo $! > /tmp/wave7-firstboot-hard-panic.pid
+
+	# Best-effort diagnostics run independently and earlier. If any probe wedges,
+	# the hard deadline above still fires.
+	(
+		sleep 90
+		[ -e /tmp/wave7-keep-boot ] && exit 0
+		wave7_firstboot_accept_link && exit 0
+		wave7_firstboot_dump_state
+		wave7_firstboot_network_snapshot deadline
+		echo "<4>wave7-firstboot: diagnostic snapshot complete; hard panic remains armed" > /dev/kmsg 2>/dev/null || true
+	) &
+	echo $! > /tmp/wave7-firstboot-diagnostics.pid
+
+	echo "<6>wave7-firstboot: diagnostics at 90s, hard panic armed for 120s" > /dev/kmsg 2>/dev/null || true
+}
+
+boot_hook_add preinit_main wave7_firstboot_arm_watchdog

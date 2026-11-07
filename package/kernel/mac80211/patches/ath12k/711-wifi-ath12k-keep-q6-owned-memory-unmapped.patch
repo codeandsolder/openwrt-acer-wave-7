@@ -1,0 +1,73 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: avoid host mappings for Q6-owned hybrid memory
+
+Vendor CNSS does not map the hybrid radio's HOST_DDR and BDF buffers
+into APSS. Their QMI memory response needs physical addresses only.
+Retain host mappings for M3, AFC and other regions and non-hybrid PCIe
+coredumps, while making fixed-region cleanup explicitly ownership-aware.
+
+This isolates a real host mapping contract difference; whether it
+affects the observed DSP user-mode permission fault remains unproven.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2647,19 +2647,20 @@
+ 						      &ab->qmi.target_mem[i],
+ 						      mlo_idx++);
+ 		} else {
+-			if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags) &&
+-			    ab->qmi.target_mem[i].v.ioaddr) {
+-				iounmap(ab->qmi.target_mem[i].v.ioaddr);
+-				ab->qmi.target_mem[i].v.ioaddr = NULL;
+-			} else {
+-				if (!ab->qmi.target_mem[i].v.addr)
+-					continue;
+-				dma_free_coherent(ab->dev,
++			if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags)) {
++				if (ab->qmi.target_mem[i].v.ioaddr) {
++					iounmap(ab->qmi.target_mem[i].v.ioaddr);
++					ab->qmi.target_mem[i].v.ioaddr = NULL;
++				}
++				continue;
++			}
++			if (!ab->qmi.target_mem[i].v.addr)
++				continue;
++			dma_free_coherent(ab->dev,
+ 						  ab->qmi.target_mem[i].prev_size,
+ 						  ab->qmi.target_mem[i].v.addr,
+ 						  ab->qmi.target_mem[i].paddr);
+-				ab->qmi.target_mem[i].v.addr = NULL;
+-			}
++			ab->qmi.target_mem[i].v.addr = NULL;
+ 		}
+ 	}
+ 
+@@ -2979,10 +2980,22 @@
+ 		}
+ 
+ 		dst->paddr = paddr;
+-		dst->v.ioaddr = ioremap(paddr, src->size);
+-		if (!dst->v.ioaddr) {
+-			ret = -EIO;
+-			goto out_free;
++		/*
++		 * Q6 owns the hybrid HOST_DDR and BDF segments. The APSS only
++		 * passes their physical addresses through QMI, as vendor CNSS
++		 * does; creating an otherwise unused host mapping is unnecessary.
++		 * Retain host mappings for other types and for PCIe RDDM dumps.
++		 */
++		if (ab->hif.bus == ATH12K_BUS_HYBRID &&
++		    (src->type == HOST_DDR_REGION_TYPE ||
++		     src->type == BDF_MEM_REGION_TYPE)) {
++			dst->v.ioaddr = NULL;
++		} else {
++			dst->v.ioaddr = ioremap(paddr, src->size);
++			if (!dst->v.ioaddr) {
++				ret = -EIO;
++				goto out_free;
++			}
+ 		}
+ 		dst->size = src->size;
+ 		dst->type = src->type;

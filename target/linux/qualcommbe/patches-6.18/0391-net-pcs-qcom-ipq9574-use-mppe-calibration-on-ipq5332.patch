@@ -1,0 +1,126 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: use MPPE calibration sequence on IPQ5332
+
+IPQ5332 uses the MPPE variant of the Ethernet block. Qualcomm SSDK keeps
+the port clocks disabled while changing SGMII/SGMII+ mode and restarts
+VCO calibration through UNIPHY_VCO_CALIBRATION_CONTROL bit 14, rather
+than toggling the generic analog reset used by the IPQ9574 path.
+
+Model that sequence for qcom,ipq5332-pcs while preserving the existing
+IPQ9574 behavior.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -73,6 +73,8 @@
+ #define PCS_ANA_SW_RESET		BIT(6)
+ #define PCS_PLL_RESET_ASSERT		0x2bf
+ #define PCS_PLL_RESET_RELEASE		0x2ff
++#define PCS_VCO_CAL_CTRL		0xb4
++#define PCS_VCO_CAL_RESTART		BIT(14)
+ 
+ /* LOS-from-SFP select; 0x7 on SFP ports, 0 otherwise */
+ #define PCS_LINK_DETECT			0x570
+@@ -154,6 +156,7 @@
+ /* PCS private data */
+ struct ipq_pcs {
+ 	struct device *dev;
++	bool mppe;
+ 	void __iomem *base;
+ 	struct regmap *regmap;
+ 	phy_interface_t interface;
+@@ -305,13 +308,40 @@
+ 	state->pause |= MLO_PAUSE_TXRX_MASK;
+ }
+ 
+-/* Re-enable the port clocks held off across a USXGMII reconfiguration */
++static bool ipq_pcs_reconfig_port_clks(struct ipq_pcs *qpcs,
++				       phy_interface_t interface)
++{
++	if (!qpcs->qpcs_mii[0])
++		return false;
++
++	if (interface == PHY_INTERFACE_MODE_USXGMII)
++		return true;
++
++	/* IPQ5332/MPPE keeps the port clocks off while SGMII and SGMII+
++	 * are reprogrammed, matching the vendor SSDK sequence.
++	 */
++	return qpcs->mppe &&
++	       (interface == PHY_INTERFACE_MODE_SGMII ||
++		interface == PHY_INTERFACE_MODE_1000BASEX ||
++		interface == PHY_INTERFACE_MODE_2500BASEX);
++}
++
++static void ipq_pcs_disable_port_clks(struct ipq_pcs *qpcs,
++				      phy_interface_t interface)
++{
++	if (!ipq_pcs_reconfig_port_clks(qpcs, interface))
++		return;
++
++	clk_disable_unprepare(qpcs->qpcs_mii[0]->rx_clk);
++	clk_disable_unprepare(qpcs->qpcs_mii[0]->tx_clk);
++}
++
+ static int ipq_pcs_restore_port_clks(struct ipq_pcs *qpcs,
+ 				     phy_interface_t interface)
+ {
+ 	int ret;
+ 
+-	if (interface != PHY_INTERFACE_MODE_USXGMII || !qpcs->qpcs_mii[0])
++	if (!ipq_pcs_reconfig_port_clks(qpcs, interface))
+ 		return 0;
+ 
+ 	ret = clk_prepare_enable(qpcs->qpcs_mii[0]->rx_clk);
+@@ -329,11 +359,8 @@
+ 	bool xpcs_mode = false;
+ 	int ret;
+ 
+-	/* The port clocks must be held off across the reconfiguration */
+-	if (interface == PHY_INTERFACE_MODE_USXGMII && qpcs->qpcs_mii[0]) {
+-		clk_disable_unprepare(qpcs->qpcs_mii[0]->rx_clk);
+-		clk_disable_unprepare(qpcs->qpcs_mii[0]->tx_clk);
+-	}
++	/* Hold the affected port clocks off across mode reconfiguration. */
++	ipq_pcs_disable_port_clks(qpcs, interface);
+ 
+ 	/* Assert XPCS reset */
+ 	reset_control_assert(qpcs->xpcs_rstc);
+@@ -418,8 +445,26 @@
+ 		msleep(100);
+ 	}
+ 
+-	/* PCS PLL reset */
+-	if (interface == PHY_INTERFACE_MODE_USXGMII) {
++	/* PCS PLL/calibration reset. IPQ5332 is MPPE: for its SGMII
++	 * personalities the vendor sequence restarts VCO calibration rather
++	 * than toggling the generic analog reset bit.
++	 */
++	if (qpcs->mppe &&
++	    (interface == PHY_INTERFACE_MODE_SGMII ||
++	     interface == PHY_INTERFACE_MODE_1000BASEX ||
++	     interface == PHY_INTERFACE_MODE_2500BASEX)) {
++		ret = regmap_set_bits(qpcs->regmap, PCS_VCO_CAL_CTRL,
++				      PCS_VCO_CAL_RESTART);
++		if (ret)
++			goto err_clk;
++		fsleep(10000);
++
++		ret = regmap_clear_bits(qpcs->regmap, PCS_VCO_CAL_CTRL,
++					PCS_VCO_CAL_RESTART);
++		if (ret)
++			goto err_clk;
++		fsleep(10000);
++	} else if (interface == PHY_INTERFACE_MODE_USXGMII) {
+ 		/* Program the whole register: the analog enables must not
+ 		 * be left at their power-on state.
+ 		 */
+@@ -1147,6 +1192,7 @@
+ 		return -ENOMEM;
+ 
+ 	qpcs->dev = dev;
++	qpcs->mppe = of_device_is_compatible(dev->of_node, "qcom,ipq5332-pcs");
+ 
+ 	qpcs->base = devm_platform_ioremap_resource(pdev, 0);
+ 	if (IS_ERR(qpcs->base))

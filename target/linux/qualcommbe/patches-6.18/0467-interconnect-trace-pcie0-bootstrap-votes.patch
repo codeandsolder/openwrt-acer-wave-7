@@ -1,0 +1,71 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] interconnect: trace PCIe0 bootstrap vote transitions
+
+Temporary diagnostic trace for Qualcomm IPQ5332 PCIe0 interconnect
+initial-bandwidth floor release and the provider-wide sync_state sequence.
+Log before the selected clock operations without changing their behavior.
+The external radio runs on root Q6 while host ICC owns bootstrap votes;
+this test distinguishes a coincident ICC clock transition from an unrelated
+UserPD2 host hang. Not production code.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/interconnect/core.c
++++ b/drivers/interconnect/core.c
+@@ -1200,10 +1200,12 @@
+ 	struct icc_provider *p;
+ 	struct icc_node *n;
+ 	static int count;
+ 
+ 	count++;
++	pr_info("icc-trace: sync_state provider=%s count=%d/%d\n",
++		dev_name(dev), count, providers_count);
+ 
+ 	if (count < providers_count)
+ 		return;
+ 
+ 	mutex_lock(&icc_lock);
+@@ -1220,10 +1222,11 @@
+ 			}
+ 		}
+ 	}
+ 	mutex_unlock(&icc_bw_lock);
+ 	mutex_unlock(&icc_lock);
++	pr_info("icc-trace: sync_state complete provider=%s\n", dev_name(dev));
+ }
+ EXPORT_SYMBOL_GPL(icc_sync_state);
+ 
+ static int __init icc_init(void)
+ {
+--- a/drivers/interconnect/icc-clk.c
++++ b/drivers/interconnect/icc-clk.c
+@@ -5,10 +5,11 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/device.h>
+ #include <linux/interconnect-clk.h>
+ #include <linux/interconnect-provider.h>
++#include <linux/string.h>
+ 
+ struct icc_clk_node {
+ 	struct clk *clk;
+ 	bool enabled;
+ };
+@@ -27,10 +28,17 @@
+ 	struct icc_clk_node *qn = src->data;
+ 	int ret;
+ 
+ 	if (!qn || !qn->clk)
+ 		return 0;
++
++	if (!strcmp(src->name, "gcc_snoc_pcie3_1lane_m_clk_master") ||
++	    !strcmp(src->name, "gcc_snoc_pcie3_1lane_s_clk_master"))
++		dev_info(src->provider->dev,
++			 "icc-trace: %s set peak=%u enabled=%u rate=%lu\n",
++			 src->name, src->peak_bw, qn->enabled,
++			 clk_get_rate(qn->clk));
+ 
+ 	if (!src->peak_bw) {
+ 		if (qn->enabled)
+ 			clk_disable_unprepare(qn->clk);
+ 		qn->enabled = false;

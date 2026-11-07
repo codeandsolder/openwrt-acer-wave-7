@@ -1,0 +1,16 @@
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2453,6 +2453,13 @@
+ 	ret = ath12k_host_cap_parse_mlo(ab, &req);
+ 	if (ret < 0)
+ 		goto out;
++
++	if (ab->ag->num_devices > 1)
++		ath12k_info(ab,
++			    "QMI MLO host cap: enabled=%u group=%u chip=%u chips=%u links=%u\n",
++			    req.mlo_capable_valid && req.mlo_capable,
++			    req.mlo_group_id, req.mlo_chip_id, req.mlo_num_chips,
++			    ab->qmi.num_radios);
+ 
+ 	ret = qmi_txn_init(&ab->qmi.handle, &txn,
+ 			   qmi_wlanfw_host_cap_resp_msg_v01_ei, &resp);

@@ -1,0 +1,79 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: ethernet: qualcomm: ppe: fix unsigned ring unwind loops
+
+The EDMA allocation error paths use unsigned loop indices with conditions
+such as `while (--ring_idx >= 0)` and `while (i-- >= 0)`.  Those
+conditions can never become false after unsigned underflow. On an early
+allocation failure, they walk out of bounds indefinitely instead of
+unwinding
+previously allocated rings.
+
+Unwind only the successfully completed rings using an explicit non-zero
+count and decrement before indexing.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+@@ -607,8 +607,10 @@
+ 		if (ret) {
+ 			pr_err("Error in setting up %d rxfill ring. ret: %d",
+ 			       rxfill_ring->ring_id, ret);
+-			while (--ring_idx >= 0)
++			while (ring_idx) {
++				ring_idx--;
+ 				edma_cfg_rx_fill_ring_cleanup(&edma_ctx->rxfill_rings[ring_idx]);
++			}
+ 
+ 			return -ENOMEM;
+ 		}
+@@ -626,8 +628,10 @@
+ 
+ 		if (queue_id > EDMA_CPU_PORT_QUEUE_MAX(EDMA_RX_QUEUE_START)) {
+ 			pr_err("Invalid queue_id: %d\n", queue_id);
+-			while (--ring_idx >= 0)
++			while (ring_idx) {
++				ring_idx--;
+ 				edma_cfg_rx_desc_ring_cleanup(&edma_ctx->rx_rings[ring_idx]);
++			}
+ 
+ 			goto rxdesc_mem_alloc_fail;
+ 		}
+@@ -645,8 +649,10 @@
+ 		if (ret) {
+ 			pr_err("Error in setting up %d rxdesc ring. ret: %d",
+ 			       rxdesc_ring->ring_id, ret);
+-			while (--ring_idx >= 0)
++			while (ring_idx) {
++				ring_idx--;
+ 				edma_cfg_rx_desc_ring_cleanup(&edma_ctx->rx_rings[ring_idx]);
++			}
+ 
+ 			goto rxdesc_mem_alloc_fail;
+ 		}
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.c
+@@ -400,8 +400,10 @@
+ 		if (ret) {
+ 			pr_err("Error in setting up %d txdesc ring. ret: %d",
+ 			       txdesc_ring->id, ret);
+-			while (i-- >= 0)
++			while (i) {
++				i--;
+ 				edma_cfg_tx_desc_ring_cleanup(&edma_ctx->tx_rings[i]);
++			}
+ 
+ 			return -ENOMEM;
+ 		}
+@@ -420,8 +422,10 @@
+ 		if (ret != 0) {
+ 			pr_err("Error in setting up %d Tx cmpl ring. ret: %d",
+ 			       txcmpl_ring->id, ret);
+-			while (i-- >= 0)
++			while (i) {
++				i--;
+ 				edma_cfg_txcmpl_ring_cleanup(&edma_ctx->txcmpl_rings[i]);
++			}
+ 
+ 			goto txcmpl_mem_alloc_fail;
+ 		}

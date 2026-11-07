@@ -1,0 +1,21 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: netns: use explicit initial namespace inode
+
+The initial network namespace has a fixed inode number.  Calling
+ns_common_init(&init_net) makes the generic helper expand a comparison of
+&init_net with itself, which GCC 14 diagnoses as -Wtautological-compare under
+-Werror.  Use the explicit-inum helper, matching the comment at the call site.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/net/core/net_namespace.c
++++ b/net/core/net_namespace.c
+@@ -1282,7 +1282,7 @@ static int __init net_ns_init(void)
+ 	 * has a static inode number.
+ 	 */
+ 	preinit_net(&init_net, &init_user_ns);
+-	if (ns_common_init(&init_net))
++	if (ns_common_init_inum(&init_net, NET_NS_INIT_INO))
+ 		panic("Could not preinitialize the initial network namespace");
+ 
+ 	down_write(&pernet_ops_rwsem);

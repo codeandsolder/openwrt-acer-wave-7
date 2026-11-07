@@ -1,0 +1,270 @@
+diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
+index 9dca72c..6e518d6 100644
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -80,6 +80,9 @@ struct q6_wcss {
+ 	size_t mem_size;
+ 	const struct wcss_data *desc;
+ 	const char **firmware;
++	const char *userpd_firmware[MAX_UPD];
++	u8 userpd_asid[MAX_UPD];
++	u8 userpd_count;
+ 	struct userpd *upd[MAX_UPD];
+ };
+ 
+@@ -252,33 +255,104 @@ static void *q6_wcss_da_to_va(struct rproc *rproc, u64 da, size_t len,
+ 	return wcss->mem_region + offset;
+ }
+ 
++static int q6_parse_userpd_metadata(struct q6_wcss *wcss)
++{
++	struct device_node *np = wcss->dev->of_node;
++	bool has_firmware, has_asids;
++	int fw_count, asid_count, i, j, ret;
++	u32 asid;
++
++	has_firmware = of_property_present(np, "qcom,userpd-firmware-names");
++	has_asids = of_property_present(np, "qcom,userpd-asids");
++	if (!has_firmware && !has_asids)
++		return 0;
++
++	if (!has_firmware || !has_asids)
++		return dev_err_probe(wcss->dev, -EINVAL,
++				     "userpd firmware names and ASIDs must be provided together\n");
++
++	fw_count = of_property_count_strings(np, "qcom,userpd-firmware-names");
++	asid_count = of_property_count_u32_elems(np, "qcom,userpd-asids");
++	if (fw_count <= 0 || fw_count > MAX_UPD || asid_count != fw_count)
++		return dev_err_probe(wcss->dev, -EINVAL,
++				     "invalid userpd metadata: firmware=%d asids=%d\n",
++				     fw_count, asid_count);
++
++	for (i = 0; i < fw_count; i++) {
++		ret = of_property_read_string_index(np, "qcom,userpd-firmware-names",
++						i, &wcss->userpd_firmware[i]);
++		if (ret)
++			return ret;
++
++		ret = of_property_read_u32_index(np, "qcom,userpd-asids", i, &asid);
++		if (ret)
++			return ret;
++		if (!asid || asid >= U8_MAX)
++			return dev_err_probe(wcss->dev, -EINVAL,
++					     "invalid userpd ASID %u\n", asid);
++
++		for (j = 0; j < i; j++)
++			if (wcss->userpd_asid[j] == asid)
++				return dev_err_probe(wcss->dev, -EINVAL,
++						     "duplicate userpd ASID %u\n", asid);
++
++		wcss->userpd_asid[i] = asid;
++	}
++
++	wcss->userpd_count = fw_count;
++	return 0;
++}
++
++static int q6_write_userpd_bootinfo(struct rproc *rproc, void **ptr, u8 asid,
++				    const char *firmware_name)
++{
++	struct q6_wcss *wcss = rproc->priv;
++	struct userpd_boot_info bootinfo = {
++		.header.type = UPD_BOOT_INFO_HEADER_TYPE,
++		.header.length = sizeof(bootinfo) - sizeof(bootinfo.header),
++		.pid = asid + 1,
++	};
++	const struct firmware *fw;
++	int ret;
++
++	ret = request_firmware(&fw, firmware_name, wcss->dev);
++	if (ret)
++		return dev_err_probe(wcss->dev, ret,
++				     "failed to request userpd firmware %s\n",
++				     firmware_name);
++
++	bootinfo.bootaddr = rproc_get_boot_addr(rproc, fw);
++	bootinfo.data_size = qcom_mdt_get_size(fw);
++	release_firmware(fw);
++
++	memcpy_toio(*ptr, &bootinfo, sizeof(bootinfo));
++	*ptr += sizeof(bootinfo);
++
++	return 0;
++}
++
+ /**
+- * share_upd_bootinfo_to_q6() - Share userpd boot info to Q6 root pd
+- * @rproc:	rproc handle
+- *
+- * Q6 needs user pd parameters like loadaddress and
+- * PIL size to authenticate user pd with underlying
+- * security software. If authenticatoin success then
+- * only Q6 spawns user pd and sends spawn ack to rproc
+- * driver. This API is passing userpd boot info to Q6
+- * over SMEM.
++ * share_upd_bootinfo_to_q6() - Share root boot args and UserPD boot info
++ * @rproc: rproc handle
+  *
+- * User pd boot-info format mentioned below
+- * <Version> <No of elements passing over smem> <Header type> <Header Length>
+- * <Process Id> <Load address> <firmware mem Size>
++ * Version 2 of the IPQ5332 SMEM 507 contract has one byte-counted payload
++ * after the version.  The payload concatenates root-Q6 boot argument bytes
++ * and packed UserPD boot records.  The UserPD records may come either from
++ * legacy remoteproc child objects or metadata-only DT properties when the
++ * WLAN driver owns UserPD lifecycle.
+  *
+  * Returns 0 on success else negative value on failure.
+  */
+ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+ {
+-	int i, ret;
+-	size_t size;
+-	u16 cnt = 0, version;
+-	void *ptr;
+ 	struct q6_wcss *wcss = rproc->priv;
++	struct device_node *np = wcss->dev->of_node;
+ 	struct userpd *upd;
+-	struct userpd_boot_info upd_bootinfo = {0};
+-	const struct firmware *fw;
++	u16 cnt, version = VERSION2;
++	u32 bootarg;
++	size_t payload_size, size;
++	void *ptr;
++	int i, ret, bootarg_count;
+ 
+ 	ret = qcom_smem_alloc(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID,
+ 			      UPD_BOOT_INFO_SMEM_SIZE);
+@@ -289,60 +363,76 @@ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+ 	}
+ 
+ 	ptr = qcom_smem_get(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID, &size);
+-	if (IS_ERR(ptr) || size != UPD_BOOT_INFO_SMEM_SIZE) {
+-		dev_err(wcss->dev,
+-			"Unable to acquire smp2p item(%d) ret:%ld\n",
+-			UPD_BOOT_INFO_SMEM_ID, PTR_ERR(ptr));
+-		return PTR_ERR(ptr);
+-	}
++	if (IS_ERR(ptr))
++		return dev_err_probe(wcss->dev, PTR_ERR(ptr),
++				     "unable to acquire Q6 bootinfo SMEM item\n");
++	if (size != UPD_BOOT_INFO_SMEM_SIZE)
++		return dev_err_probe(wcss->dev, -EINVAL,
++				     "unexpected Q6 bootinfo SMEM size %zu\n", size);
+ 
+-	/*Version*/
+-	version = VERSION2;
+ 	memcpy_toio(ptr, &version, sizeof(version));
+ 	ptr += sizeof(version);
+ 
+-	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
+-		if (wcss->upd[i])
+-			cnt++;
+-
+-	/* No of elements */
+-	cnt = (sizeof(upd_bootinfo) * cnt);
+-	memcpy_toio(ptr, &cnt, sizeof(u16));
+-	ptr += sizeof(u16);
+-
+-	for (i = 0; i < ARRAY_SIZE(wcss->upd); i++) {
+-		upd = wcss->upd[i];
+-		if (!upd)
+-			continue;
+-
+-		/* TYPE */
+-		upd_bootinfo.header.type = UPD_BOOT_INFO_HEADER_TYPE;
++	bootarg_count = of_property_count_u32_elems(np, "boot-args");
++	if (bootarg_count < 0 && bootarg_count != -EINVAL)
++		return dev_err_probe(wcss->dev, bootarg_count,
++				     "failed to count root Q6 boot args\n");
++	if (bootarg_count < 0)
++		bootarg_count = 0;
++	payload_size = bootarg_count;
++	if (wcss->userpd_count) {
++		payload_size += sizeof(struct userpd_boot_info) * wcss->userpd_count;
++	} else {
++		for (i = 0; i < ARRAY_SIZE(wcss->upd); i++)
++			if (wcss->upd[i])
++				payload_size += sizeof(struct userpd_boot_info);
++	}
++	if (payload_size > U16_MAX)
++		return dev_err_probe(wcss->dev, -E2BIG,
++				     "Q6 bootinfo payload too large: %zu\n",
++				     payload_size);
++
++	cnt = payload_size;
++	memcpy_toio(ptr, &cnt, sizeof(cnt));
++	ptr += sizeof(cnt);
++
++	for (i = 0; i < bootarg_count; i++) {
++		ret = of_property_read_u32_index(np, "boot-args", i, &bootarg);
++		if (ret)
++			return dev_err_probe(wcss->dev, ret,
++					     "failed to read root Q6 boot arg %d\n", i);
++		if (bootarg > U8_MAX)
++			return dev_err_probe(wcss->dev, -ERANGE,
++					     "root Q6 boot arg %d exceeds one byte: %u\n",
++					     i, bootarg);
++
++		writeb((u8)bootarg, ptr);
++		ptr++;
++	}
+ 
+-		/* LENGTH */
+-		upd_bootinfo.header.length =
+-			sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
+ 
+-		/* Process ID */
+-		upd_bootinfo.pid = upd->pd_asid + 1;
+ 
+-		ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
+-		if (ret < 0) {
+-			dev_err(upd->dev, "request_firmware failed: %d\n",	ret);
+-			return ret;
++	if (wcss->userpd_count) {
++		for (i = 0; i < wcss->userpd_count; i++) {
++			ret = q6_write_userpd_bootinfo(rproc, &ptr,
++						wcss->userpd_asid[i],
++						wcss->userpd_firmware[i]);
++			if (ret)
++				return ret;
++		}
++	} else {
++		for (i = 0; i < ARRAY_SIZE(wcss->upd); i++) {
++			upd = wcss->upd[i];
++			if (!upd)
++				continue;
++
++			ret = q6_write_userpd_bootinfo(rproc, &ptr, upd->pd_asid,
++						upd->q6.rproc->firmware);
++			if (ret)
++				return ret;
+ 		}
+-
+-		/* Load address */
+-		upd_bootinfo.bootaddr = rproc_get_boot_addr(upd->q6.rproc, fw);
+-
+-		/* Firmware mem size */
+-		upd_bootinfo.data_size = qcom_mdt_get_size(fw);
+-
+-		release_firmware(fw);
+-
+-		/* copy into smem */
+-		memcpy_toio(ptr, &upd_bootinfo, sizeof(upd_bootinfo));
+-		ptr += sizeof(upd_bootinfo);
+ 	}
++
+ 	return 0;
+ }
+ 
+@@ -710,6 +801,10 @@ static int q6_wcss_probe(struct platform_device *pdev)
+ 	wcss->desc = of_device_get_match_data(&pdev->dev);
+ 	wcss->firmware = firmware;
+ 
++	ret = q6_parse_userpd_metadata(wcss);
++	if (ret)
++		goto free_rproc;
++
+ 	ret = q6_alloc_memory_region(wcss);
+ 	if (ret)
+ 		goto free_rproc;

@@ -1,0 +1,71 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: time memory-response handshake during Q6 boot
+
+Log bounded host memory response addresses and firmware ACKs with kernel
+timestamps, including memory-ready and firmware-ready indications.
+This discriminates delayed QMI provisioning from QuRT user-bit mapping
+failures at the first UserPD2 heap write without modifying protocol data.
+Temporary Wave 7 instrumentation; remove when the issue is resolved.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2516,13 +2516,13 @@
+ 		for (i = 0; i < req->mem_seg_len ; i++) {
+ 			req->mem_seg[i].addr = ab->qmi.target_mem[i].paddr;
+ 			req->mem_seg[i].size = ab->qmi.target_mem[i].size;
+ 			req->mem_seg[i].type = ab->qmi.target_mem[i].type;
+-			ath12k_dbg(ab, ATH12K_DBG_QMI,
+-				   "qmi req mem_seg[%d] %pad %u %u\n", i,
+-				   &ab->qmi.target_mem[i].paddr,
+-				   ab->qmi.target_mem[i].size,
+-				   ab->qmi.target_mem[i].type);
++			ath12k_info(ab,
++				    "qmi respond mem[%d] addr %pad size %u type %u\n",
++				    i, &ab->qmi.target_mem[i].paddr,
++				    ab->qmi.target_mem[i].size,
++				    ab->qmi.target_mem[i].type);
+ 		}
+ 	}
+ 
+ 	ret = qmi_txn_init(&ab->qmi.handle, &txn,
+@@ -2540,13 +2540,16 @@
+ 			    ret);
+ 		goto out;
+ 	}
+ 
++	ath12k_info(ab, "qmi respond mem sent count %u\n", req->mem_seg_len);
+ 	ret = qmi_txn_wait(&txn, msecs_to_jiffies(ATH12K_QMI_WLANFW_TIMEOUT_MS));
+ 	if (ret < 0) {
+ 		ath12k_warn(ab, "qmi failed memory request, err = %d\n", ret);
+ 		goto out;
+ 	}
++	ath12k_info(ab, "qmi respond mem ACK result %d error %d\n",
++		    resp.resp.result, resp.resp.error);
+ 
+ 	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
+ 		/* the error response is expected when
+ 		 * target_mem_delayed is true.
+@@ -4148,9 +4151,9 @@
+ {
+ 	struct ath12k_qmi *qmi = container_of(qmi_hdl, struct ath12k_qmi, handle);
+ 	struct ath12k_base *ab = qmi->ab;
+ 
+-	ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi firmware memory ready indication\n");
++	ath12k_info(ab, "qmi firmware memory ready indication\n");
+ 	ath12k_qmi_driver_event_post(qmi, ATH12K_QMI_EVENT_FW_MEM_READY, NULL);
+ }
+ 
+ static void ath12k_qmi_msg_fw_ready_cb(struct qmi_handle *qmi_hdl,
+@@ -4160,9 +4163,9 @@
+ {
+ 	struct ath12k_qmi *qmi = container_of(qmi_hdl, struct ath12k_qmi, handle);
+ 	struct ath12k_base *ab = qmi->ab;
+ 
+-	ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi firmware ready\n");
++	ath12k_info(ab, "qmi firmware ready indication\n");
+ 	ath12k_qmi_driver_event_post(qmi, ATH12K_QMI_EVENT_FW_READY, NULL);
+ }
+ 
+ static const struct qmi_msg_handler ath12k_qmi_msg_handlers[] = {

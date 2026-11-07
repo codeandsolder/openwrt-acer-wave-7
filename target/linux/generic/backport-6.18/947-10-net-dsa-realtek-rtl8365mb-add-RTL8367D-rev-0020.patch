@@ -1,0 +1,34 @@
+From 58fbf8c86a56e2b469f7b0a502be9b895b424201 Mon Sep 17 00:00:00 2001
+From: Wave7 test <wave7-test@localhost>
+Date: Mon, 2 Nov 2026 15:25:50 +0100
+Subject: [PATCH] net: dsa: realtek: rtl8365mb: add RTL8367D revision 0x0020
+
+Acer Wave 7 retail hardware reports chip ID 0x6642, version 0x0020. Its stock GPL driver uses the RTL8367D API and the live vendor system runs the CPU trunk over HSGMII on port 6. Treat this revision as the same family-D layout as RTL8367S-VB while keeping the new hardware evidence in a separate downstream patch.
+---
+ drivers/net/dsa/realtek/rtl8365mb_main.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
+index 3dc2e40..575a127 100644
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -894,6 +894,19 @@ static const struct rtl8365mb_chip_info rtl8365mb_chip_infos[] = {
+ 		.jam_table = rtl8365mb_init_jam_8365mb_vc,
+ 		.jam_size = ARRAY_SIZE(rtl8365mb_init_jam_8365mb_vc),
+ 	},
++	{
++		.name = "RTL8367D",
++		.chip_id = 0x6642,
++		.chip_ver = 0x0020,
++		.family = RTL8365MB_FAMILY_D,
++		.extints = {
++			{ 6, 0, PHY_INTF(SGMII) | PHY_INTF(HSGMII) },
++			{ 7, 1, PHY_INTF(MII) | PHY_INTF(TMII) |
++				PHY_INTF(RMII) | PHY_INTF(RGMII) },
++		},
++		.jam_table = rtl8365mb_init_jam_8365mb_vc,
++		.jam_size = ARRAY_SIZE(rtl8365mb_init_jam_8365mb_vc),
++	},
+ };
+ 
+ enum rtl8365mb_stp_state {

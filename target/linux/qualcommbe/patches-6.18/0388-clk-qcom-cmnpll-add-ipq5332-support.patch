@@ -1,0 +1,125 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] clk: qcom: cmnpll: add IPQ5332 support
+
+Backport the upstream IPQ5332 CMN PLL output table and compatible. Keep
+the downstream ethernet-LDO-ready handshake, but perform it from the CMN
+owner rather than aliasing the CMN MMIO range into the MDIO device.
+
+The Wave 7 bootloader programs the same reference index/reset sequence and
+the live vendor system reports the expected 6 GHz PLL parameters.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- /dev/null
++++ b/include/dt-bindings/clock/qcom,ipq5332-cmn-pll.h
+@@ -0,0 +1,19 @@
++/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
++/*
++ * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
++ */
++
++#ifndef _DT_BINDINGS_CLK_QCOM_IPQ5332_CMN_PLL_H
++#define _DT_BINDINGS_CLK_QCOM_IPQ5332_CMN_PLL_H
++
++/* CMN PLL core clock. */
++#define IPQ5332_CMN_PLL_CLK			0
++
++/* The output clocks from CMN PLL of IPQ5332. */
++#define IPQ5332_XO_24MHZ_CLK			1
++#define IPQ5332_SLEEP_32KHZ_CLK			2
++#define IPQ5332_PCS_31P25MHZ_CLK		3
++#define IPQ5332_NSS_300MHZ_CLK			4
++#define IPQ5332_PPE_200MHZ_CLK			5
++#define IPQ5332_ETH_50MHZ_CLK			6
++#endif
+--- a/drivers/clk/qcom/ipq-cmn-pll.c
++++ b/drivers/clk/qcom/ipq-cmn-pll.c
+@@ -44,6 +44,7 @@
+ #include <linux/err.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_clock.h>
+ #include <linux/pm_runtime.h>
+@@ -51,6 +52,7 @@
+ 
+ #include <dt-bindings/clock/qcom,ipq-cmn-pll.h>
+ #include <dt-bindings/clock/qcom,ipq5018-cmn-pll.h>
++#include <dt-bindings/clock/qcom,ipq5332-cmn-pll.h>
+ #include <dt-bindings/clock/qcom,ipq5424-cmn-pll.h>
+ 
+ #define CMN_PLL_REFCLK_SRC_SELECTION		0x28
+@@ -61,6 +63,8 @@
+ 
+ #define CMN_PLL_POWER_ON_AND_RESET		0x780
+ #define CMN_ANA_EN_SW_RSTN			BIT(6)
++#define CMN_PLL_ETH_LDO_RDY			BIT(0)
++#define CMN_PLL_ETH_LDO_RDY_DELAY_US		100000
+ 
+ #define CMN_PLL_REFCLK_CONFIG			0x784
+ #define CMN_PLL_REFCLK_EXTERNAL			BIT(9)
+@@ -93,6 +97,7 @@
+ struct clk_cmn_pll {
+ 	struct regmap *regmap;
+ 	struct clk_hw hw;
++	bool eth_ldo_rdy;
+ };
+ 
+ #define CLK_PLL_OUTPUT(_id, _name, _rate) {		\
+@@ -117,6 +122,16 @@
+ 	{ /* Sentinel */ }
+ };
+ 
++static const struct cmn_pll_fixed_output_clk ipq5332_output_clks[] = {
++	CLK_PLL_OUTPUT(IPQ5332_XO_24MHZ_CLK, "xo-24mhz", 24000000UL),
++	CLK_PLL_OUTPUT(IPQ5332_SLEEP_32KHZ_CLK, "sleep-32khz", 32000UL),
++	CLK_PLL_OUTPUT(IPQ5332_PCS_31P25MHZ_CLK, "pcs-31p25mhz", 31250000UL),
++	CLK_PLL_OUTPUT(IPQ5332_NSS_300MHZ_CLK, "nss-300mhz", 300000000UL),
++	CLK_PLL_OUTPUT(IPQ5332_PPE_200MHZ_CLK, "ppe-200mhz", 200000000UL),
++	CLK_PLL_OUTPUT(IPQ5332_ETH_50MHZ_CLK, "eth-50mhz", 50000000UL),
++	{ /* Sentinel */ }
++};
++
+ static const struct cmn_pll_fixed_output_clk ipq5424_output_clks[] = {
+ 	CLK_PLL_OUTPUT(IPQ5424_XO_24MHZ_CLK, "xo-24mhz", 24000000UL),
+ 	CLK_PLL_OUTPUT(IPQ5424_SLEEP_32KHZ_CLK, "sleep-32khz", 32000UL),
+@@ -227,6 +242,21 @@
+ 	u32 val;
+ 
+ 	/*
++	 * IPQ5332 uses bit 0 of the CMN power/reset register as the
++	 * ethernet-LDO-ready handshake. Older downstream code poked this
++	 * through the MDIO node; keep the behavior but let the CMN driver
++	 * own its register block.
++	 */
++	if (cmn_pll->eth_ldo_rdy) {
++		ret = regmap_set_bits(cmn_pll->regmap, CMN_PLL_POWER_ON_AND_RESET,
++				      CMN_PLL_ETH_LDO_RDY);
++		if (ret)
++			return ret;
++
++		fsleep(CMN_PLL_ETH_LDO_RDY_DELAY_US);
++	}
++
++	/*
+ 	 * Configure the reference input clock selection as per the given
+ 	 * parent clock. The output clock rates are always of fixed value.
+ 	 */
+@@ -320,6 +350,8 @@
+ 
+ 	cmn_pll->hw.init = &init;
+ 	cmn_pll->regmap = regmap;
++	cmn_pll->eth_ldo_rdy = of_device_is_compatible(dev->of_node,
++						      "qcom,ipq5332-cmn-pll");
+ 
+ 	ret = devm_clk_hw_register(dev, &cmn_pll->hw);
+ 	if (ret)
+@@ -454,6 +486,7 @@
+ 
+ static const struct of_device_id ipq_cmn_pll_clk_ids[] = {
+ 	{ .compatible = "qcom,ipq5018-cmn-pll", .data = &ipq5018_output_clks },
++	{ .compatible = "qcom,ipq5332-cmn-pll", .data = &ipq5332_output_clks },
+ 	{ .compatible = "qcom,ipq5424-cmn-pll", .data = &ipq5424_output_clks },
+ 	{ .compatible = "qcom,ipq9574-cmn-pll", .data = &ipq9574_output_clks },
+ 	{ }

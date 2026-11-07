@@ -1,0 +1,45 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Date: Mon, 2 Nov 2026 17:50:00 +0100
+Subject: [PATCH] backports: use kernel QCOM MDT loader
+
+The Qualcomm SoC Makefile in backports already leaves mdt_loader.o
+disabled, but QCOM_MDT_LOADER is still declared as a local backports
+symbol. ath12k AHB
+selecting it therefore targets a deliberately unavailable symbol instead of
+the kernel-provided MDT loader.
+
+Drop the unused local definition and local-symbol entry so backports
+imports the kernel QCOM_MDT_LOADER value, matching the existing QRTR/MHI
+arrangement.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+ drivers/soc/qcom/Kconfig | 6 ------
+ local-symbols            | 1 -
+ 2 files changed, 7 deletions(-)
+
+--- a/drivers/soc/qcom/Kconfig
++++ b/drivers/soc/qcom/Kconfig
+@@ -69,12 +69,6 @@ config QCOM_KRYO_L2_ACCESSORS
+ 	bool
+ 	depends on (ARCH_QCOM || COMPILE_TEST) && ARM64
+ 
+-config QCOM_MDT_LOADER
+-	depends on n
+-	tristate
+-	depends on m
+-	depends on QCOM_SCM
+-
+ config QCOM_OCMEM
+ 	depends on n
+ 	tristate "Qualcomm On Chip Memory (OCMEM) driver"
+--- a/local-symbols
++++ b/local-symbols
+@@ -61,7 +61,6 @@ QCOM_GENI_SE=
+ QCOM_GSBI=
+ QCOM_LLCC=
+ QCOM_KRYO_L2_ACCESSORS=
+-QCOM_MDT_LOADER=
+ QCOM_OCMEM=
+ QCOM_PD_MAPPER=
+ QCOM_PDR_HELPERS=
