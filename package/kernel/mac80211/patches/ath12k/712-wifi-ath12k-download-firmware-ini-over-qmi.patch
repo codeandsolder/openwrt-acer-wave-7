@@ -1,0 +1,296 @@
+--- a/drivers/net/wireless/ath/ath12k/qmi.h
++++ b/drivers/net/wireless/ath/ath12k/qmi.h
+@@ -523,6 +523,28 @@
+ };
+ 
+ #define QMI_WLANFW_BDF_DOWNLOAD_REQ_MSG_V01_MAX_LEN	6182
++/* WLFW INI file download (0x56), distinct from WLAN_INI (0x2f). */
++#define QMI_WLANFW_INI_FILE_DOWNLOAD_REQ_V01		0x0056
++#define QMI_WLANFW_INI_FILE_DOWNLOAD_REQ_MSG_V01_MAX_LEN	6174
++
++struct qmi_wlanfw_ini_file_download_req_msg_v01 {
++	u8 file_id_valid;
++	s32 file_id;
++	u8 total_size_valid;
++	u32 total_size;
++	u8 seg_id_valid;
++	u32 seg_id;
++	u8 data_valid;
++	u32 data_len;
++	u8 data[QMI_WLANFW_MAX_DATA_SIZE_V01];
++	u8 end_valid;
++	u8 end;
++};
++
++struct qmi_wlanfw_ini_file_download_resp_msg_v01 {
++	struct qmi_response_type_v01 resp;
++};
++
+ #define QMI_WLANFW_BDF_DOWNLOAD_RESP_MSG_V01_MAX_LEN	7
+ #define QMI_WLANFW_BDF_DOWNLOAD_RESP_V01		0x0025
+ #define QMI_WLANFW_BDF_DOWNLOAD_REQ_V01			0x0025
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -1490,6 +1490,132 @@
+ 		.data_type	= QMI_EOTI,
+ 		.array_type	= NO_ARRAY,
+ 		.tlv_type	= QMI_COMMON_TLV_TYPE,
++	},
++};
++
++/* QCN vendor WLFW 0x56: optional file ID, length, segment index, data and EOF. */
++static const struct qmi_elem_info qmi_wlanfw_ini_file_download_req_msg_v01_ei[] = {
++	{
++		.data_type = QMI_OPT_FLAG,
++		.elem_len = 1,
++		.elem_size = sizeof(u8),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x10,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   file_id_valid),
++	},
++	{
++		.data_type = QMI_SIGNED_4_BYTE_ENUM,
++		.elem_len = 1,
++		.elem_size = sizeof(s32),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x10,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   file_id),
++	},
++	{
++		.data_type = QMI_OPT_FLAG,
++		.elem_len = 1,
++		.elem_size = sizeof(u8),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x11,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   total_size_valid),
++	},
++	{
++		.data_type = QMI_UNSIGNED_4_BYTE,
++		.elem_len = 1,
++		.elem_size = sizeof(u32),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x11,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   total_size),
++	},
++	{
++		.data_type = QMI_OPT_FLAG,
++		.elem_len = 1,
++		.elem_size = sizeof(u8),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x12,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   seg_id_valid),
++	},
++	{
++		.data_type = QMI_UNSIGNED_4_BYTE,
++		.elem_len = 1,
++		.elem_size = sizeof(u32),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x12,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   seg_id),
++	},
++	{
++		.data_type = QMI_OPT_FLAG,
++		.elem_len = 1,
++		.elem_size = sizeof(u8),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x13,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   data_valid),
++	},
++	{
++		.data_type = QMI_DATA_LEN,
++		.elem_len = 1,
++		.elem_size = sizeof(u16),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x13,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   data_len),
++	},
++	{
++		.data_type = QMI_UNSIGNED_1_BYTE,
++		.elem_len = QMI_WLANFW_MAX_DATA_SIZE_V01,
++		.elem_size = sizeof(u8),
++		.array_type = VAR_LEN_ARRAY,
++		.tlv_type = 0x13,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   data),
++	},
++	{
++		.data_type = QMI_OPT_FLAG,
++		.elem_len = 1,
++		.elem_size = sizeof(u8),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x14,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   end_valid),
++	},
++	{
++		.data_type = QMI_UNSIGNED_1_BYTE,
++		.elem_len = 1,
++		.elem_size = sizeof(u8),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x14,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_req_msg_v01,
++				   end),
++	},
++	{
++		.data_type = QMI_EOTI,
++		.array_type = NO_ARRAY,
++		.tlv_type = QMI_COMMON_TLV_TYPE,
++	},
++};
++
++static const struct qmi_elem_info qmi_wlanfw_ini_file_download_resp_msg_v01_ei[] = {
++	{
++		.data_type = QMI_STRUCT,
++		.elem_len = 1,
++		.elem_size = sizeof(struct qmi_response_type_v01),
++		.array_type = NO_ARRAY,
++		.tlv_type = 0x02,
++		.offset = offsetof(struct qmi_wlanfw_ini_file_download_resp_msg_v01,
++				   resp),
++		.ei_array = qmi_response_type_v01_ei,
++	},
++	{
++		.data_type = QMI_EOTI,
++		.array_type = NO_ARRAY,
++		.tlv_type = QMI_COMMON_TLV_TYPE,
+ 	},
+ };
+ 
+@@ -2355,6 +2481,99 @@
+ 	}
+ 
+ out:
++	return ret;
++}
++
++/* Download firmware's optional board INI before it requests host DDR.
++ * The transaction uses WLFW INI_FILE_DOWNLOAD (0x56), not WLAN_INI (0x2f).
++ */
++static int ath12k_qmi_ini_file_download(struct ath12k_base *ab)
++{
++	const char *file = ab->hw_params->fw.ini_file;
++	struct qmi_wlanfw_ini_file_download_req_msg_v01 *req;
++	struct qmi_wlanfw_ini_file_download_resp_msg_v01 resp;
++	const struct firmware *fw;
++	struct qmi_txn txn;
++	size_t offset;
++	u32 segment = 0;
++	int ret;
++
++	if (!file)
++		return 0;
++
++	fw = ath12k_core_firmware_request(ab, file);
++	if (IS_ERR(fw)) {
++		ret = PTR_ERR(fw);
++		ath12k_warn(ab, "failed to request firmware INI %s: %d\n", file, ret);
++		return ret;
++	}
++	if (!fw->size || fw->size > U32_MAX) {
++		ret = -EINVAL;
++		goto out_release;
++	}
++
++	req = kzalloc(sizeof(*req), GFP_KERNEL);
++	if (!req) {
++		ret = -ENOMEM;
++		goto out_release;
++	}
++
++	req->file_id_valid = 1;
++	req->file_id = 0;
++	req->total_size_valid = 1;
++	req->total_size = fw->size;
++	req->seg_id_valid = 1;
++	req->data_valid = 1;
++	req->end_valid = 1;
++
++	for (offset = 0; offset < fw->size; offset += req->data_len) {
++		req->seg_id = segment++;
++		req->data_len = min_t(size_t, fw->size - offset,
++				      QMI_WLANFW_MAX_DATA_SIZE_V01);
++		memcpy(req->data, fw->data + offset, req->data_len);
++		req->end = offset + req->data_len == fw->size;
++
++		memset(&resp, 0, sizeof(resp));
++		ret = qmi_txn_init(&ab->qmi.handle, &txn,
++				   qmi_wlanfw_ini_file_download_resp_msg_v01_ei,
++				   &resp);
++		if (ret < 0)
++			goto out_free;
++
++		ret = qmi_send_request(&ab->qmi.handle, NULL, &txn,
++				       QMI_WLANFW_INI_FILE_DOWNLOAD_REQ_V01,
++				       QMI_WLANFW_INI_FILE_DOWNLOAD_REQ_MSG_V01_MAX_LEN,
++				       qmi_wlanfw_ini_file_download_req_msg_v01_ei,
++				       req);
++		if (ret < 0) {
++			qmi_txn_cancel(&txn);
++			goto out_free;
++		}
++
++		ret = qmi_txn_wait(&txn,
++				   msecs_to_jiffies(ATH12K_QMI_WLANFW_TIMEOUT_MS));
++		if (ret < 0)
++			goto out_free;
++
++		if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
++			ath12k_warn(ab,
++				    "firmware INI segment %u rejected: result %u error %u\n",
++				    req->seg_id, resp.resp.result, resp.resp.error);
++			ret = -EREMOTEIO;
++			goto out_free;
++		}
++	}
++
++	ath12k_info(ab, "firmware INI %s downloaded (%zu bytes, %u segments)\n",
++		    file, fw->size, segment);
++	ret = 0;
++out_free:
++	if (ret)
++		ath12k_warn(ab, "firmware INI %s segment %u failed: %d\n",
++			    file, req->seg_id, ret);
++	kfree(req);
++out_release:
++	release_firmware(fw);
+ 	return ret;
+ }
+ 
+@@ -4260,7 +4479,7 @@
+ 		return ret;
+ 	}
+ 
+-	return ret;
++	return ath12k_qmi_ini_file_download(ab);
+ }
+ 
+ static int ath12k_wait_for_gic_msi(struct ath12k_base *ab)
+--- a/drivers/net/wireless/ath/ath12k/hw.h
++++ b/drivers/net/wireless/ath/ath12k/hw.h
+@@ -166,6 +166,8 @@
+ 
+ 	struct {
+ 		const char *dir;
++		/* Non-NULL when firmware requires a WLFW INI-file transfer. */
++		const char *ini_file;
+ 		size_t board_size;
+ 		size_t cal_offset;
+ 		enum ath12k_m3_fw_loaders m3_loader;
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -752,6 +752,7 @@
+ 		.hw_rev = ATH12K_HW_QCN6432_HW10,
+ 		.fw = {
+ 			.dir = "QCN6432/hw1.0",
++			.ini_file = "fw_ini_cfg.bin",
+ 			.board_size = 256 * 1024,
+ 			.cal_offset = 128 * 1024,
+ 			.m3_loader = ath12k_m3_fw_loader_remoteproc,
