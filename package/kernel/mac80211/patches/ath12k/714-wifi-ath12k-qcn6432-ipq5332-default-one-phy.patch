@@ -1,0 +1,20 @@
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -722,7 +722,7 @@
+ 
+ 		.rddm_size = 0,
+ 
+-		.def_num_link = 0,
++		.def_num_link = 1,
+ 		.max_mlo_peer = 256,
+ 
+ 		.otp_board_id_register = 0,
+@@ -803,7 +803,7 @@
+ 
+ 		.rddm_size = 0,
+ 
+-		.def_num_link = 0,
++		.def_num_link = 1,
+ 		.max_mlo_peer = 256,
+ 
+ 		.otp_board_id_register = 0,

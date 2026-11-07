@@ -1,0 +1,31 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: retain UserPD boot ownership on shutdown failure
+
+The remoteproc core retains its power reference when shutdown fails.
+Only clear the WLAN ownership flag and group accounting after a
+successful rproc_shutdown(), allowing subsequent recovery.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -352,11 +352,19 @@
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+ 
++	int ret;
++
+ 	if (!ab_ahb->userpd_booted)
+ 		return;
+ 
++	ret = rproc_shutdown(ab_ahb->tgt_rproc);
++	if (ret) {
++		ath12k_err(ab, "failed to shut down UserPD%u remoteproc: %d\n",
++			   ab_ahb->userpd_id, ret);
++		return;
++	}
++
+ 	ab_ahb->userpd_booted = false;
+-	rproc_shutdown(ab_ahb->tgt_rproc);
+ 	ab->ag->num_userpd_started--;
+ }
+ 

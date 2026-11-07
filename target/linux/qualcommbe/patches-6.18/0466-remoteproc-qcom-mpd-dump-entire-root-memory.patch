@@ -1,0 +1,85 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] remoteproc: qcom: capture full root Q6 reserved DDR
+
+The existing firmware-PT_LOAD coredump already captured the QCN6432
+crashing UserPD and exposed the first invalid user write. But it misses
+parts of the root reserved DDR containing dynamic QuRT allocations,
+possibly including MMU translation metadata. Register one buffered
+ELF32/Hexagon PT_LOAD for the full MPD root memory mapping instead of
+duplicated per-image sections. All declared UserPD images reside inside
+the root mapping, and standalone child dumps retain their ELF segments.
+The 33-MiB Wave 7 root Q6 span is within the device DRAM budget.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -625,50 +625,31 @@
+ 		return ret;
+ 
+ 	return qcom_register_dump_segments(rproc, fw);
+ }
+ 
+-static int q6_wcss_register_image_dump(struct rproc *rproc, const char *name)
+-{
+-	const struct firmware *fw;
+-	int ret;
+-
+-	ret = request_firmware(&fw, name, &rproc->dev);
+-	if (ret)
+-		return ret;
+-
+-	ret = qcom_register_dump_segments(rproc, fw);
+-	release_firmware(fw);
+-
+-	return ret;
+-}
+-
++/*
++ * The root Q6 owns one reserved DDR window containing its code, every UserPD,
++ * and QuRT-allocated runtime objects. Firmware PT_LOAD sections only cover
++ * file-backed data and BSS; they can miss dynamically allocated memory-map
++ * metadata needed to diagnose fatal UserPD page-permission faults.
++ *
++ * For this diagnostic image, capture the complete root reserved-memory span
++ * exactly once, avoiding overlapping ELF sections and duplicated data.
++ * Child UserPDs retain their ordinary image-based coredump registration.
++ */
+ static int q6_wcss_parse_fw(struct rproc *rproc, const struct firmware *fw)
+ {
+ 	struct q6_wcss *wcss = rproc->priv;
+-	int i, ret;
+-
+-	ret = wcss_register_dump_segments(rproc, fw);
+-	if (ret)
+-		return ret;
+-
+-	for (i = 1; i < MAX_FIRMWARE; i++) {
+-		if (!wcss->firmware[i])
+-			continue;
+-
+-		ret = q6_wcss_register_image_dump(rproc, wcss->firmware[i]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	for (i = 0; i < wcss->userpd_count; i++) {
+-		ret = q6_wcss_register_image_dump(rproc, wcss->userpd_firmware[i]);
+-		if (ret)
+-			return ret;
+-	}
+-
+-	return 0;
++	int ret;
++
++	ret = rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_HEXAGON);
++	if (ret)
++		return ret;
++
++	return rproc_coredump_add_segment(rproc, wcss->mem_reloc,
++					  wcss->mem_size);
+ }
+ 
+ static const struct rproc_ops wcss_ops = {
+ 	.start = wcss_pd_start,
+ 	.stop = wcss_pd_stop,

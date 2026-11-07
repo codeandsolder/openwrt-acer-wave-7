@@ -1,0 +1,62 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: preserve direct PCI BAR accesses and hybrid mapping lifetime
+
+The QCN6432 hybrid HIF shares the QCN9274 direct BAR window semantics:
+offsets below WINDOW_START must access the BAR directly, not window 1.
+Also unmap the QMI-acquired (non-devres) hybrid BAR on probe failure
+rather than calling devm_iounmap on memory not allocated with devres.
+
+Matches the upstream QCN6432 v3 08/17 direct-access behavior while
+preserving QMI device-info BAR discovery used by this downstream build.
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/wireless/ath/ath12k/pcic.c b/drivers/net/wireless/ath/ath12k/pcic.c
+--- a/drivers/net/wireless/ath/ath12k/pcic.c
++++ b/drivers/net/wireless/ath/ath12k/pcic.c
+@@ -639,8 +639,11 @@
+ u32 ath12k_pcic_ipci_read32(struct ath12k_base *ab, u32 offset)
+ {
+ 	u32 val, window_start;
+ 
++	if (offset < WINDOW_START)
++		return ioread32(ab->mem + offset);
++
+ 	window_start = ath12k_pcic_get_window_start(ab, offset);
+ 
+ 	val = ioread32(ab->mem + window_start +
+ 		       (offset & WINDOW_RANGE_MASK));
+@@ -650,8 +653,13 @@
+ 
+ void ath12k_pcic_ipci_write32(struct ath12k_base *ab, u32 offset, u32 value)
+ {
+ 	u32 window_start;
++
++	if (offset < WINDOW_START) {
++		iowrite32(value, ab->mem + offset);
++		return;
++	}
+ 
+ 	window_start = ath12k_pcic_get_window_start(ab, offset);
+ 
+ 	iowrite32(value, ab->mem + window_start +
+diff --git a/drivers/net/wireless/ath/ath12k/ahb.c b/drivers/net/wireless/ath/ath12k/ahb.c
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -733,8 +733,17 @@
+ static void ath12k_ahb_resource_deinit(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+ 
++	if (ab->hif.bus == ATH12K_BUS_HYBRID) {
++		/* QMI device-info supplies this non-devres ioremap. */
++		if (ab->mem)
++			iounmap(ab->mem);
++		ab->mem = NULL;
++		ab->mem_len = 0;
++		return;
++	}
++
+ 	if (ab->mem)
+ 		devm_iounmap(ab->dev, ab->mem);
+ 
+ 	if (ab->mem_ce)

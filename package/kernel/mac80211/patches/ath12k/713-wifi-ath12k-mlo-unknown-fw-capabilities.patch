@@ -1,0 +1,16 @@
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -2278,7 +2278,12 @@
+ 		/* even if 1 device's firmware feature indicates MLO
+ 		 * unsupported, make MLO unsupported for the whole group
+ 		 */
+-		if (!ath12k_fw_feature_supported(ab, ATH12K_FW_FEATURE_MLO)) {
++		/* A missing firmware API 2 feature manifest is not a
++		 * declaration that MLO is unsupported. Use PHY capabilities
++		 * and the explicitly described WSI device group instead.
++		 */
++		if (ab->fw.fw_features_valid &&
++		    !ath12k_fw_feature_supported(ab, ATH12K_FW_FEATURE_MLO)) {
+ 			ag->mlo_capable = false;
+ 			return;
+ 		}

@@ -1,0 +1,51 @@
+diff --git a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
+index c52ac16..e14b30a 100644
+--- a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
++++ b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
+@@ -28,6 +28,33 @@ properties:
+   firmware-name:
+     maxItems: 2
+ 
++  boot-args:
++    $ref: /schemas/types.yaml#/definitions/uint32-array
++    description:
++      Root-Q6 boot arguments published in the version-2 SMEM boot-info block.
++      Each value is encoded as one byte for compatibility with IPQ5332 WCSS
++      firmware.
++    maxItems: 64
++    items:
++      maximum: 255
++
++  qcom,userpd-firmware-names:
++    description:
++      Firmware images for UserPDs whose lifecycle is owned by the WLAN driver.
++      Entries correspond one-to-one with qcom,userpd-asids and are used only
++      to publish UserPD boot metadata to the Q6 root protection domain.
++    minItems: 1
++    maxItems: 3
++
++  qcom,userpd-asids:
++    description:
++      Protection-domain ASIDs corresponding to qcom,userpd-firmware-names.
++    minItems: 1
++    maxItems: 3
++    items:
++      minimum: 1
++      maximum: 254
++
+   interrupts:
+     items:
+       - description: Watchdog interrupt
+@@ -124,6 +151,12 @@ patternProperties:
+ 
+     additionalProperties: false
+ 
++dependentRequired:
++  qcom,userpd-firmware-names:
++    - qcom,userpd-asids
++  qcom,userpd-asids:
++    - qcom,userpd-firmware-names
++
+ required:
+   - compatible
+   - firmware-name

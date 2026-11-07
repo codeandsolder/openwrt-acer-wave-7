@@ -1,0 +1,47 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] PCI: avoid constant-address checks in capability finder macros
+
+Capture prev_ptr once in a local typed pointer before testing it. This avoids GCC -Waddress diagnostics when callers pass the address of a local variable, while also making the macro evaluate prev_ptr only once.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/pci/pci.h
++++ b/drivers/pci/pci.h
+@@ -123,6 +123,7 @@
+ 	u8 __prev_pos = (start);					\
+ 	u8 __pos = (start);						\
+ 	u16 __ent;							\
++	u8 *__prev_ptr = (u8 *)(prev_ptr);				\
+ 									\
+ 	read_cfg##_byte(args, __pos, &__pos);				\
+ 									\
+@@ -139,8 +140,8 @@
+ 									\
+ 		if (__id == (cap)) {					\
+ 			__found_pos = __pos;				\
+-			if (prev_ptr != NULL)				\
+-				*(u8 *)prev_ptr = __prev_pos;		\
++			if (__prev_ptr)					\
++				*__prev_ptr = __prev_pos;			\
+ 			break;						\
+ 		}							\
+ 									\
+@@ -174,6 +175,7 @@
+ 	u16 __prev_pos;							\
+ 	int __ttl, __ret;						\
+ 	u32 __header;							\
++	u16 *__prev_ptr = (u16 *)(prev_ptr);			\
+ 									\
+ 	__prev_pos = __pos;						\
+ 	__ttl = (PCI_CFG_SPACE_EXP_SIZE - PCI_CFG_SPACE_SIZE) / 8;	\
+@@ -187,8 +189,8 @@
+ 									\
+ 		if (PCI_EXT_CAP_ID(__header) == (cap) && __pos != start) {\
+ 			__found_pos = __pos;				\
+-			if (prev_ptr != NULL)				\
+-				*(u16 *)prev_ptr = __prev_pos;		\
++			if (__prev_ptr)					\
++				*__prev_ptr = __prev_pos;			\
+ 			break;						\
+ 		}							\
+ 									\

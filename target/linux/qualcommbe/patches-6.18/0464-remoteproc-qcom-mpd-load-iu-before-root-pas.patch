@@ -1,0 +1,44 @@
+Subject: [PATCH] remoteproc: qcom: load UserPD IU images before root PAS init
+
+Qualcomm's IPQ5332 WCSS loader stages each UserPD auxiliary IU image
+before loading and initializing the root Q6 PAS image. Keep that
+order in the generic MPD firmware-name loader so root PAS init runs
+with the auxiliary segments already populated.
+
+Both images are required when declared in DT, and errors remain fatal.
+This also leaves the root image relocation result as the final value.
+
+---
+diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -507,13 +507,6 @@
+ 		}
+ 	}
+ 
+-	ret = qcom_mdt_load(wcss->dev, fw, rproc->firmware,
+-			    desc->pasid, wcss->mem_region,
+-			    wcss->mem_phys, wcss->mem_size,
+-			    &wcss->mem_reloc);
+-	if (ret)
+-		return ret;
+-
+ 	for (loop = 1; loop < MAX_FIRMWARE; loop++) {
+ 		if (!wcss->firmware[loop])
+ 			continue;
+@@ -544,7 +537,14 @@
+ 		dev_info(wcss->dev, "loaded auxiliary firmware %s\n",
+ 			 wcss->firmware[loop]);
+ 	}
+-	return 0;
++
++	/* Match Qualcomm's WCSS load order: stage UserPD IU images before
++	 * invoking root Q6 PAS image initialization.
++	 */
++	return qcom_mdt_load(wcss->dev, fw, rproc->firmware,
++			     desc->pasid, wcss->mem_region,
++			     wcss->mem_phys, wcss->mem_size,
++			     &wcss->mem_reloc);
+ }
+ 
+ /**

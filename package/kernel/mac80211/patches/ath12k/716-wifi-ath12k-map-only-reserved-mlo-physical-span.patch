@@ -1,0 +1,54 @@
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -3046,7 +3046,7 @@
+ {
+ 	struct ath12k_hw_group *ag = ab->ag;
+ 	struct reserved_mem *ddr_rmem, *rmem;
+-	size_t host_ddr_off = 0, mlo_off = 0, avail;
++	size_t host_ddr_off = 0, mlo_off = 0, avail, mlo_map_size;
+ 	u32 failed_type = 0, failed_size = 0;
+ 	int i, idx, mlo_idx = 0, ret = 0;
+ 
+@@ -3167,12 +3167,26 @@
+ 				goto out_free;
+ 			}
+ 			if (mlo_idx >= ARRAY_SIZE(ag->mlo_mem.chunk) ||
+-			    mlo_off > rmem->size || src->size > rmem->size - mlo_off) {
++			    mlo_off >= rmem->size) {
+ 				avail = mlo_off < rmem->size ? rmem->size - mlo_off : 0;
+ 				failed_type = src->type;
+ 				failed_size = src->size;
+ 				goto no_space;
+ 			}
++
++			/*
++			 * The vendor CNSS driver may advertise a larger logical
++			 * MLO chunk than its device-tree reservation (IPQ5332
++			 * asks for 12 MiB backed by 9 MiB on Wave 7). The
++			 * firmware still receives the full requested QMI size,
++			 * but APSS must never map or clear beyond the actual
++			 * reserved physical region.
++			 */
++			mlo_map_size = min_t(size_t, src->size, rmem->size - mlo_off);
++			if (mlo_map_size != src->size)
++				ath12k_warn(ab,
++					     "MLO QMI requests %u bytes; physical reserve has %zu bytes\n",
++					     src->size, mlo_map_size);
+ 
+ 			mlo_chunk = &ag->mlo_mem.chunk[mlo_idx++];
+ 			paddr = rmem->base + mlo_off;
+@@ -3180,12 +3194,12 @@
+ 				mlo_chunk->paddr = paddr;
+ 				mlo_chunk->size = src->size;
+ 				mlo_chunk->type = src->type;
+-				mlo_chunk->v.ioaddr = ioremap(paddr, src->size);
++				mlo_chunk->v.ioaddr = ioremap(paddr, mlo_map_size);
+ 				if (!mlo_chunk->v.ioaddr) {
+ 					ret = -EIO;
+ 					goto out_free;
+ 				}
+-				memset_io(mlo_chunk->v.ioaddr, 0, src->size);
++				memset_io(mlo_chunk->v.ioaddr, 0, mlo_map_size);
+ 			} else if (mlo_chunk->paddr != paddr || mlo_chunk->size != src->size) {
+ 				ath12k_err(ab, "MLO fixed memory layout changed across group devices\n");
+ 				ret = -EINVAL;

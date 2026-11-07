@@ -1,0 +1,53 @@
+From: Manikanta Mylavarapu <quic_mmanikan@quicinc.com>
+Date: Tue, 18 Jul 2023 17:34:56 +0530
+Subject: [PATCH] firmware: qcom_scm: ipq5332: add support to pass metadata size
+
+IPQ5332 security software running under trustzone requires metadata size.
+With new command support added in TrustZone that includes a size parameter,
+pass metadata size as well.
+
+Signed-off-by: Manikanta Mylavarapu <quic_mmanikan@quicinc.com>
+---
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -627,9 +627,6 @@
+ 	int ret;
+ 	struct qcom_scm_desc desc = {
+ 		.svc = QCOM_SCM_SVC_PIL,
+-		.cmd = QCOM_SCM_PIL_PAS_INIT_IMAGE,
+-		.arginfo = QCOM_SCM_ARGS(2, QCOM_SCM_VAL, QCOM_SCM_RW),
+-		.args[0] = pas_id,
+ 		.owner = ARM_SMCCC_OWNER_SIP,
+ 	};
+ 	struct qcom_scm_res res;
+@@ -661,7 +658,19 @@
+ 	if (ret)
+ 		goto disable_clk;
+ 
+-	desc.args[1] = mdata_phys;
++	if (__qcom_scm_is_call_available(__scm->dev, QCOM_SCM_SVC_PIL,
++					 QCOM_SCM_PIL_PAS_INIT_IMAGE_V2)) {
++		desc.cmd = QCOM_SCM_PIL_PAS_INIT_IMAGE_V2;
++		desc.arginfo = QCOM_SCM_ARGS(3, QCOM_SCM_VAL, QCOM_SCM_RW, QCOM_SCM_VAL);
++		desc.args[0] = pas_id;
++		desc.args[1] = mdata_phys;
++		desc.args[2] = size;
++	} else {
++		desc.cmd = QCOM_SCM_PIL_PAS_INIT_IMAGE;
++		desc.arginfo = QCOM_SCM_ARGS(2, QCOM_SCM_VAL, QCOM_SCM_RW);
++		desc.args[0] = pas_id;
++		desc.args[1] = mdata_phys;
++	}
+ 
+ 	ret = qcom_scm_call(__scm->dev, &desc, &res);
+ 	qcom_scm_bw_disable();
+--- a/drivers/firmware/qcom/qcom_scm.h
++++ b/drivers/firmware/qcom/qcom_scm.h
+@@ -100,6 +100,7 @@
+ 
+ #define QCOM_SCM_SVC_PIL		0x02
+ #define QCOM_SCM_PIL_PAS_INIT_IMAGE	0x01
++#define QCOM_SCM_PIL_PAS_INIT_IMAGE_V2	0x1a
+ #define QCOM_SCM_PIL_PAS_MEM_SETUP	0x02
+ #define QCOM_SCM_PIL_PAS_AUTH_AND_RESET	0x05
+ #define QCOM_SCM_PIL_PAS_SHUTDOWN	0x06

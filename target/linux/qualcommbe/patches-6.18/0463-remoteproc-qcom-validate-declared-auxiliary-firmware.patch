@@ -1,0 +1,36 @@
+Subject: [PATCH] remoteproc: qcom: validate declared WCSS auxiliary firmware
+
+MPD's firmware-name array permits optional auxiliary images, but a
+request failure for a declared image must not silently skip it.
+Report the error and abort root Q6 loading rather than start an
+incompletely initialized processor. Log each successfully loaded
+auxiliary image to make early WCSS initialization observable.
+
+---
+diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -520,8 +520,11 @@
+ 
+ 		ret = request_firmware(&fw_hdl, wcss->firmware[loop],
+ 				       wcss->dev);
+-		if (ret)
+-			continue;
++		if (ret) {
++			dev_err(wcss->dev, "can't request auxiliary firmware %s: %d\n",
++				wcss->firmware[loop], ret);
++			return ret;
++		}
+ 
+ 		ret = qcom_mdt_load_no_init(wcss->dev, fw_hdl,
+ 					    wcss->firmware[loop],
+@@ -537,6 +540,9 @@
+ 				"can't load %s ret:%d\n", wcss->firmware[loop], ret);
+ 			return ret;
+ 		}
++
++		dev_info(wcss->dev, "loaded auxiliary firmware %s\n",
++			 wcss->firmware[loop]);
+ 	}
+ 	return 0;
+ }

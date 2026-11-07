@@ -1,0 +1,150 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] remoteproc: qcom: register MPD and UserPD crash segments
+
+A fatal UserPD can crash the root processor, whose ELF coredump needs
+to include its declared UserPD firmware segments as well as the root
+and auxiliary images. Register all of them with the existing Qualcomm
+ELF segment parser and describe the 32-bit Hexagon ELF type.
+
+Enable buffered dumps before startup (inline dumps block recovery).
+Support standalone child UserPD dumps through the parent's memory
+mapping, and correctly mark WC mappings as I/O memory while checking
+bounds without truncating device addresses or overflowing lengths.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -246,15 +246,28 @@
+ static void *q6_wcss_da_to_va(struct rproc *rproc, u64 da, size_t len,
+ 			      bool *is_iomem)
+ {
+ 	struct q6_wcss *wcss = rproc->priv;
+-	int offset;
++	u64 offset;
++
++	if (da < wcss->mem_reloc)
++		return NULL;
+ 
+ 	offset = da - wcss->mem_reloc;
+-	if (offset < 0 || offset + len > wcss->mem_size)
++	if (offset > wcss->mem_size || len > wcss->mem_size - offset)
+ 		return NULL;
+ 
++	*is_iomem = true;
+ 	return wcss->mem_region + offset;
++}
++
++static void *wcss_pd_da_to_va(struct rproc *rproc, u64 da, size_t len,
++			      bool *is_iomem)
++{
++	struct userpd *upd = rproc->priv;
++	struct rproc *root = dev_get_drvdata(upd->dev->parent);
++
++	return q6_wcss_da_to_va(root, da, len, is_iomem);
+ }
+ 
+ static int q6_parse_userpd_metadata(struct q6_wcss *wcss)
+ {
+@@ -596,19 +609,81 @@
+ 
+ 	return qcom_q6v5_panic(&wcss->q6);
+ }
+ 
++/*
++ * The root processor owns the reserved memory shared by every UserPD.
++ * Include their code/data segments in the root crash dump: a UserPD fault
++ * can be reported by the root WCSS processor instead of the child rproc.
++ */
++static int wcss_register_dump_segments(struct rproc *rproc,
++				       const struct firmware *fw)
++{
++	int ret;
++
++	ret = rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_HEXAGON);
++	if (ret)
++		return ret;
++
++	return qcom_register_dump_segments(rproc, fw);
++}
++
++static int q6_wcss_register_image_dump(struct rproc *rproc, const char *name)
++{
++	const struct firmware *fw;
++	int ret;
++
++	ret = request_firmware(&fw, name, &rproc->dev);
++	if (ret)
++		return ret;
++
++	ret = qcom_register_dump_segments(rproc, fw);
++	release_firmware(fw);
++
++	return ret;
++}
++
++static int q6_wcss_parse_fw(struct rproc *rproc, const struct firmware *fw)
++{
++	struct q6_wcss *wcss = rproc->priv;
++	int i, ret;
++
++	ret = wcss_register_dump_segments(rproc, fw);
++	if (ret)
++		return ret;
++
++	for (i = 1; i < MAX_FIRMWARE; i++) {
++		if (!wcss->firmware[i])
++			continue;
++
++		ret = q6_wcss_register_image_dump(rproc, wcss->firmware[i]);
++		if (ret)
++			return ret;
++	}
++
++	for (i = 0; i < wcss->userpd_count; i++) {
++		ret = q6_wcss_register_image_dump(rproc, wcss->userpd_firmware[i]);
++		if (ret)
++			return ret;
++	}
++
++	return 0;
++}
++
+ static const struct rproc_ops wcss_ops = {
+ 	.start = wcss_pd_start,
+ 	.stop = wcss_pd_stop,
++	.da_to_va = wcss_pd_da_to_va,
++	.parse_fw = wcss_register_dump_segments,
+ 	.load = wcss_pd_load,
+ 	.get_boot_addr = rproc_elf_get_boot_addr,
+ };
+ 
+ static const struct rproc_ops q6_wcss_ops = {
+ 	.start = q6_wcss_start,
+ 	.stop = q6_wcss_stop,
+ 	.da_to_va = q6_wcss_da_to_va,
++	.parse_fw = q6_wcss_parse_fw,
+ 	.load = q6_wcss_load,
+ 	.get_boot_addr = rproc_elf_get_boot_addr,
+ 	.panic = q6_wcss_panic,
+ };
+@@ -813,8 +888,9 @@
+ 		       WCSS_CRASH_REASON, NULL, NULL);
+ 	if (ret)
+ 		goto free_rproc;
+ 
++	rproc->dump_conf = RPROC_COREDUMP_ENABLED;
+ 	rproc->auto_boot = false;
+ 	ret = rproc_add(rproc);
+ 	if (ret)
+ 		goto free_rproc;
+@@ -874,8 +950,9 @@
+ 
+ 	qcom_add_glink_subdev(rproc, &wcss->glink_subdev, "q6wcss");
+ 	qcom_add_ssr_subdev(rproc, &wcss->ssr_subdev, "q6wcss");
+ 
++	rproc->dump_conf = RPROC_COREDUMP_ENABLED;
+ 	rproc->auto_boot = false;
+ 	ret = rproc_add(rproc);
+ 	if (ret)
+ 		goto free_rproc;

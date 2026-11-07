@@ -69,6 +69,9 @@ config-$(call config_package,ath11k) += ATH11K
 config-$(call config_package,ath11k-ahb) += ATH11K_AHB
 config-$(call config_package,ath11k-pci) += ATH11K_PCI
 config-$(call config_package,ath12k) += ATH12K
+ifdef CONFIG_PACKAGE_kmod-ath12k
+config-y += ATH12K_AHB
+endif
 
 config-$(call config_package,ath5k) += ATH5K ATH5K_PCI
 
@@ -369,7 +372,7 @@ define KernelPackage/ath12k
   TITLE:=Qualcomm 802.11be wireless chipset support
   URL:=https://wireless.wiki.kernel.org/en/users/drivers/ath12k
   DEPENDS+= @PCI_SUPPORT +kmod-ath +@DRIVER_11AC_SUPPORT +@DRIVER_11AX_SUPPORT \
-  +kmod-crypto-michael-mic +kmod-qrtr-mhi \
+  +kmod-crypto-michael-mic +kmod-qrtr-mhi +TARGET_qualcommbe:kmod-qrtr-smd \
   +kmod-qcom-qmi-helpers +@DRIVER_11BE_SUPPORT \
   +ATH12K_THERMAL:kmod-hwmon-core +ATH12K_THERMAL:kmod-thermal
   FILES:= \
@@ -380,7 +383,7 @@ endef
 
 define KernelPackage/ath12k/description
 This module adds support for Qualcomm Technologies 802.11be family of
-chipsets with PCI bus.
+chipsets.
 endef
 
 define KernelPackage/ath12k/config

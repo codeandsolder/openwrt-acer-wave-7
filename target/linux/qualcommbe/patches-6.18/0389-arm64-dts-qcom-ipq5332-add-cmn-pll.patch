@@ -1,0 +1,63 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] arm64: dts: qcom: ipq5332: add CMN PLL
+
+Backport the upstream IPQ5332 networking CMN PLL node and 48 MHz reference
+clock path. Keep the existing NSSCC fixed-clock inputs for now so this
+bring-up changes only CMN hardware initialization.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/arch/arm64/boot/dts/qcom/ipq5332.dtsi
++++ b/arch/arm64/boot/dts/qcom/ipq5332.dtsi
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <dt-bindings/clock/qcom,apss-ipq.h>
++#include <dt-bindings/clock/qcom,ipq5332-cmn-pll.h>
+ #include <dt-bindings/clock/qcom,ipq5332-gcc.h>
+ #include <dt-bindings/clock/qcom,ipq5332-nsscc.h>
+ #include <dt-bindings/interconnect/qcom,ipq5332.h>
+@@ -17,6 +18,12 @@
+ 	#size-cells = <2>;
+ 
+ 	clocks {
++		ref_48mhz_clk: ref-48mhz-clk {
++			compatible = "fixed-factor-clock";
++			clocks = <&xo_clk>;
++			#clock-cells = <0>;
++		};
++
+ 		cmn_pll_nss_200m_clk: cmn-pll-nss-200m-clk {
+ 			compatible = "fixed-clock";
+ 			clock-frequency = <200000000>;
+@@ -38,6 +45,11 @@
+ 			compatible = "fixed-clock";
+ 			#clock-cells = <0>;
+ 		};
++
++		xo_clk: xo-clk {
++			compatible = "fixed-clock";
++			#clock-cells = <0>;
++		};
+ 	};
+ 
+ 	cpus {
+@@ -180,6 +192,18 @@
+ 			status = "disabled";
+ 		};
+ 
++		cmn_pll: clock-controller@9b000 {
++			compatible = "qcom,ipq5332-cmn-pll";
++			reg = <0x0009b000 0x800>;
++			clocks = <&ref_48mhz_clk>,
++				 <&gcc GCC_CMN_12GPLL_AHB_CLK>,
++				 <&gcc GCC_CMN_12GPLL_SYS_CLK>;
++			clock-names = "ref", "ahb", "sys";
++			#clock-cells = <1>;
++			assigned-clocks = <&cmn_pll IPQ5332_CMN_PLL_CLK>;
++			assigned-clock-rates-u64 = /bits/ 64 <6000000000>;
++		};
++
+ 		qfprom: efuse@a4000 {
+ 			compatible = "qcom,ipq5332-qfprom", "qcom,qfprom";
+ 			reg = <0x000a4000 0x721>;

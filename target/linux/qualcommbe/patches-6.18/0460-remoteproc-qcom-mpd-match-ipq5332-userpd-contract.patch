@@ -1,0 +1,208 @@
+From: Jan Równicki <jan@codeandsolder.com>
+Date: Tue, 3 Nov 2026 14:00:00 +0100
+Subject: [PATCH] remoteproc: qcom: match IPQ5332 UserPD boot contract
+
+Qualcomm's IPQ5332 WCSS firmware consumes two pieces of root-PD state that
+are present in the QSDK multipd implementation but missing from the current
+port.
+
+First, UserPD boot records describe the file-backed firmware span, not the
+aligned in-memory span. Add qcom_mdt_get_file_size() and use it when
+serializing UserPD data_size. This matches the p_filesz-based value
+consumed by the root Q6 firmware while retaining qcom_mdt_get_size()
+for actual memory allocation.
+
+Second, firmware using the heartbeat contract expects the AP to allocate a
+4096-byte SMEM item before the root WCSS processor starts. Model the SMEM
+ID as an optional DT property. Allocate it while publishing the root
+boot information. Existing platforms without the property are unchanged.
+
+Signed-off-by: Jan Równicki <jan@codeandsolder.com>
+---
+diff --git a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
+index 649df7e..8391d97 100644
+--- a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
++++ b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
+@@ -38,6 +38,13 @@ properties:
+     items:
+       maximum: 255
+ 
++  qcom,heartbeat_smem:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description:
++      SMEM item ID reserved for the root-Q6 heartbeat block. Firmware using
++      this contract expects the host to allocate a 4096-byte item before the
++      root WCSS remote processor starts.
++
+   qcom,userpd-firmware-names:
+     description:
+       Firmware images for UserPDs whose lifecycle is owned by the WLAN driver.
+diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
+index 99e13d2..1cfdede 100644
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -41,6 +41,7 @@
+ #define UPD_SWID		0x12
+ #define REMOTE_PID			1
+ #define UPD_BOOT_INFO_SMEM_SIZE		4096
++#define Q6_HEARTBEAT_SMEM_SIZE		4096
+ #define UPD_BOOT_INFO_HEADER_TYPE	0x2
+ #define UPD_BOOT_INFO_SMEM_ID		507
+ #define VERSION2			2
+@@ -313,6 +314,8 @@ static int q6_write_userpd_bootinfo(struct rproc *rproc, void **ptr, u8 asid,
+ 		.pid = asid + 1,
+ 	};
+ 	const struct firmware *fw;
++	ssize_t data_size;
++	u64 bootaddr;
+ 	int ret;
+ 
+ 	ret = request_firmware(&fw, firmware_name, wcss->dev);
+@@ -321,14 +324,59 @@ static int q6_write_userpd_bootinfo(struct rproc *rproc, void **ptr, u8 asid,
+ 				     "failed to request userpd firmware %s\n",
+ 				     firmware_name);
+ 
+-	bootinfo.bootaddr = rproc_get_boot_addr(rproc, fw);
+-	bootinfo.data_size = qcom_mdt_get_size(fw);
++	bootaddr = rproc_get_boot_addr(rproc, fw);
++	if (bootaddr > U32_MAX) {
++		ret = -EOVERFLOW;
++		goto out_release_firmware;
++	}
++
++	data_size = qcom_mdt_get_file_size(fw);
++	if (data_size < 0) {
++		ret = data_size;
++		goto out_release_firmware;
++	}
++	if (data_size > U32_MAX) {
++		ret = -EOVERFLOW;
++		goto out_release_firmware;
++	}
++
++	bootinfo.bootaddr = bootaddr;
++	bootinfo.data_size = data_size;
+ 	release_firmware(fw);
+ 
+ 	memcpy_toio(*ptr, &bootinfo, sizeof(bootinfo));
+ 	*ptr += sizeof(bootinfo);
+ 
+ 	return 0;
++
++out_release_firmware:
++	release_firmware(fw);
++	return dev_err_probe(wcss->dev, ret,
++			     "invalid UserPD firmware layout for %s\n",
++			     firmware_name);
++}
++
++static int q6_alloc_heartbeat_smem(struct q6_wcss *wcss)
++{
++	struct device_node *np = wcss->dev->of_node;
++	u32 smem_id;
++	int ret;
++
++	if (!of_property_present(np, "qcom,heartbeat_smem"))
++		return 0;
++
++	ret = of_property_read_u32(np, "qcom,heartbeat_smem", &smem_id);
++	if (ret)
++		return dev_err_probe(wcss->dev, ret,
++				     "failed to read heartbeat SMEM id\n");
++
++	ret = qcom_smem_alloc(REMOTE_PID, smem_id, Q6_HEARTBEAT_SMEM_SIZE);
++	if (ret && ret != -EEXIST)
++		return dev_err_probe(wcss->dev, ret,
++				     "failed to allocate heartbeat SMEM item %u\n",
++				     smem_id);
++
++	return 0;
+ }
+ 
+ /**
+@@ -433,6 +481,10 @@ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+ 		}
+ 	}
+ 
++	ret = q6_alloc_heartbeat_smem(wcss);
++	if (ret)
++		return ret;
++
+ 	return 0;
+ }
+ 
+diff --git a/drivers/soc/qcom/mdt_loader.c b/drivers/soc/qcom/mdt_loader.c
+index a5c80d4..69ca0d5 100644
+--- a/drivers/soc/qcom/mdt_loader.c
++++ b/drivers/soc/qcom/mdt_loader.c
+@@ -100,6 +100,46 @@ static ssize_t mdt_load_split_segment(void *ptr, const struct elf32_phdr *phdrs,
+ 	return ret;
+ }
+ 
++/**
++ * qcom_mdt_get_file_size() - acquire span of file-backed MDT segments
++ * @fw:		firmware object for the mdt file
++ *
++ * Returns the address span covered by loadable segment file data, or -EINVAL
++ * on failure.  Unlike qcom_mdt_get_size(), this intentionally ignores BSS
++ * growth and alignment beyond p_filesz.
++ */
++ssize_t qcom_mdt_get_file_size(const struct firmware *fw)
++{
++	const struct elf32_phdr *phdrs;
++	const struct elf32_phdr *phdr;
++	const struct elf32_hdr *ehdr;
++	phys_addr_t min_addr = PHYS_ADDR_MAX;
++	phys_addr_t max_addr = 0;
++	int i;
++
++	if (!mdt_header_valid(fw))
++		return -EINVAL;
++
++	ehdr = (struct elf32_hdr *)fw->data;
++	phdrs = (struct elf32_phdr *)(fw->data + ehdr->e_phoff);
++
++	for (i = 0; i < ehdr->e_phnum; i++) {
++		phdr = &phdrs[i];
++
++		if (!mdt_phdr_loadable(phdr))
++			continue;
++
++		if (phdr->p_paddr < min_addr)
++			min_addr = phdr->p_paddr;
++
++		if (phdr->p_paddr + phdr->p_filesz > max_addr)
++			max_addr = phdr->p_paddr + phdr->p_filesz;
++	}
++
++	return min_addr < max_addr ? max_addr - min_addr : -EINVAL;
++}
++EXPORT_SYMBOL_GPL(qcom_mdt_get_file_size);
++
+ /**
+  * qcom_mdt_get_size() - acquire size of the memory region needed to load mdt
+  * @fw:		firmware object for the mdt file
+diff --git a/include/linux/soc/qcom/mdt_loader.h b/include/linux/soc/qcom/mdt_loader.h
+index 8ea8230..fc11666 100644
+--- a/include/linux/soc/qcom/mdt_loader.h
++++ b/include/linux/soc/qcom/mdt_loader.h
+@@ -14,6 +14,7 @@ struct qcom_scm_pas_metadata;
+ 
+ #if IS_ENABLED(CONFIG_QCOM_MDT_LOADER)
+ 
++ssize_t qcom_mdt_get_file_size(const struct firmware *fw);
+ ssize_t qcom_mdt_get_size(const struct firmware *fw);
+ int qcom_mdt_pas_init(struct device *dev, const struct firmware *fw,
+ 		      const char *fw_name, int pas_id, phys_addr_t mem_phys,
+@@ -32,6 +33,11 @@ void *qcom_mdt_read_metadata(const struct firmware *fw, size_t *data_len,
+ 
+ #else /* !IS_ENABLED(CONFIG_QCOM_MDT_LOADER) */
+ 
++static inline ssize_t qcom_mdt_get_file_size(const struct firmware *fw)
++{
++	return -ENODEV;
++}
++
+ static inline ssize_t qcom_mdt_get_size(const struct firmware *fw)
+ {
+ 	return -ENODEV;

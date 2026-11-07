@@ -1,0 +1,68 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: diagnose firmware memory subregion requests
+
+The REQUEST_MEM indication carries optional offset, size and secure_flag
+descriptors for each requested segment. Record these descriptors at
+boot-time informational severity so we can distinguish firmware-side
+permission contracts from physical address placement issues.
+
+Reject malformed segment and descriptor counts before changing the
+retained request state; the previous code only warned then continued.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -4083,20 +4083,44 @@
+ 	int i, ret;
+ 
+ 	ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi firmware request memory request\n");
+ 
+-	if (msg->mem_seg_len == 0 ||
+-	    msg->mem_seg_len > ATH12K_QMI_WLANFW_MAX_NUM_MEM_SEG_V01)
+-		ath12k_warn(ab, "Invalid memory segment length: %u\n",
++	if (!msg->mem_seg_len ||
++	    msg->mem_seg_len > ATH12K_QMI_WLANFW_MAX_NUM_MEM_SEG_V01) {
++		ath12k_warn(ab, "Invalid memory segment length: %u\n",
+ 			    msg->mem_seg_len);
++		return;
++	}
++
++	/* Validate the entire request before updating the retained segment set. */
++	for (i = 0; i < msg->mem_seg_len; i++) {
++		if (msg->mem_seg[i].mem_cfg_len > QMI_WLANFW_MAX_NUM_MEM_CFG_V01) {
++			ath12k_warn(ab,
++				    "Invalid memory segment %d config count: %u\n",
++				    i, msg->mem_seg[i].mem_cfg_len);
++			return;
++		}
++	}
+ 
+ 	ab->qmi.mem_seg_count = msg->mem_seg_len;
+ 
+-	for (i = 0; i < qmi->mem_seg_count ; i++) {
+-		ab->qmi.target_mem[i].type = msg->mem_seg[i].type;
+-		ab->qmi.target_mem[i].size = msg->mem_seg[i].size;
+-		ath12k_dbg(ab, ATH12K_DBG_QMI, "qmi mem seg type %d size %d\n",
+-			   msg->mem_seg[i].type, msg->mem_seg[i].size);
++	for (i = 0; i < qmi->mem_seg_count; i++) {
++		const struct qmi_wlanfw_mem_seg_s_v01 *seg = &msg->mem_seg[i];
++		u32 cfg;
++
++		ab->qmi.target_mem[i].type = seg->type;
++		ab->qmi.target_mem[i].size = seg->size;
++		ath12k_info(ab, "qmi mem seg[%d] type %d size %u configs %u\n",
++			    i, seg->type, seg->size, seg->mem_cfg_len);
++
++		for (cfg = 0; cfg < seg->mem_cfg_len; cfg++) {
++			const struct qmi_wlanfw_mem_cfg_s_v01 *mem_cfg = &seg->mem_cfg[cfg];
++
++			ath12k_info(ab,
++				    "qmi mem seg[%d] cfg[%u] offset %#llx size %u secure %u\n",
++				    i, cfg, (unsigned long long)mem_cfg->offset,
++				    mem_cfg->size, mem_cfg->secure_flag);
++		}
+ 	}
+ 
+ 	if (test_bit(ATH12K_FLAG_FIXED_MEM_REGION, &ab->dev_flags)) {
+ 		ret = ath12k_qmi_assign_target_mem_chunk(ab);

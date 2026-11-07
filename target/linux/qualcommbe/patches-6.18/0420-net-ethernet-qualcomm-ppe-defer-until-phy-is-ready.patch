@@ -1,0 +1,69 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: ethernet: qualcomm: defer PPE until PHY is ready
+
+PPE connects each port to its PHY during platform probe. If the MDIO bus
+is still probing, phylink returns -ENODEV for a valid phy-handle that has
+not been registered yet. PPE treats that as permanent and tears the port
+down for the rest of the boot.
+
+Check a declared phy-handle before allocating the phylink path. If its
+PHY device has not been registered and bound yet, defer PPE probe so the
+driver core can retry once MDIO and phylib have finished bringing up the
+supplier.
+
+This is particularly important when an MDIO controller itself has a
+late clock provider, but the ordering issue is generic to probe-time PHY
+connections.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -8,6 +8,7 @@
+ #include <linux/clk.h>
+ #include <linux/of.h>
+ #include <linux/of_net.h>
++#include <linux/of_mdio.h>
+ #include <linux/pcs/pcs-qcom-ipq9574.h>
+ #include <linux/phylink.h>
+ #include <linux/regmap.h>
+@@ -1103,6 +1104,28 @@
+ 	PHY_INTERFACE_MODE_10G_QXGMII,
+ };
+ 
++static int ppe_port_wait_for_phy(struct ppe_port *ppe_port)
++{
++	struct device_node *phy_node;
++	struct phy_device *phydev;
++	int ret = 0;
++
++	phy_node = of_parse_phandle(ppe_port->np, "phy-handle", 0);
++	if (!phy_node)
++		return 0;
++
++	phydev = of_phy_find_device(phy_node);
++	of_node_put(phy_node);
++	if (!phydev)
++		return -EPROBE_DEFER;
++
++	if (!device_is_bound(&phydev->mdio.dev))
++		ret = -EPROBE_DEFER;
++
++	put_device(&phydev->mdio.dev);
++	return ret;
++}
++
+ /**
+  * ppe_port_phylink_setup() - Set phylink instance for the given PPE port
+  * @ppe_port: PPE port
+@@ -1119,6 +1142,10 @@
+ 	struct device_node *pcs_node;
+ 	int i, ret;
+ 
++	ret = ppe_port_wait_for_phy(ppe_port);
++	if (ret)
++		return ret;
++
+ 	/* Get PCS instance */
+ 	pcs_node = of_parse_phandle(ppe_port->np, "pcs-handle", 0);
+ 	if (!pcs_node)

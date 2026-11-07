@@ -1,0 +1,23 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: report successful AHB probe before ICC synchronization
+
+Temporary chronological breadcrumb at platform probe return, next to
+the separate interconnect/clock sync trace. No device behavior change.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -1141,10 +1141,12 @@
+ 		ath12k_err(ab, "AHB arch_init failed %d\n", ret);
+ 		goto err_rproc_deconfigure;
+ 	}
+ 
+ 	ret = ath12k_core_init(ab);
++	if (!ret)
++		ath12k_info(ab, "ath12k probe-complete: bus=%d\n", ab->hif.bus);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to init core: %d\n", ret);
+ 		goto err_deinit_arch;
+ 	}
+ 

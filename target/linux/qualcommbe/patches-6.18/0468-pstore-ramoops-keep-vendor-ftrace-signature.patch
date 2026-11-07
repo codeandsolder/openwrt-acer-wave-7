@@ -1,0 +1,33 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] pstore: use vendor-compatible QCN ftrace zone signature for diagnosis
+
+The recovery kernel is 32-bit Linux 5.4.213. A Linux 6.18 ftrace PRZ
+signature is rejected on vendor reboot and its header is reset, losing
+the only persistent instruction history. Use the vendor version salt
+only for the ftrace zone. The original console and oops buffers are
+unchanged. Deliberately diagnostic-only; revert after bring-up.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/fs/pstore/ram.c
++++ b/fs/pstore/ram.c
+@@ -805,11 +805,18 @@
+ 	cxt->max_ftrace_cnt = (cxt->flags & RAMOOPS_FLAG_FTRACE_PER_CPU)
+ 				? nr_cpu_ids
+ 				: 1;
+ 	err = ramoops_init_przs("ftrace", dev, cxt, &cxt->fprzs, &paddr,
+ 				cxt->ftrace_size, -1,
+-				&cxt->max_ftrace_cnt, LINUX_VERSION_CODE,
++				&cxt->max_ftrace_cnt,
++				/* Keep the recovered ftrace ring readable by the
++				 * stock Acer Linux 5.4.213 ramoops driver.
++				 * Without a shared PRZ signature its initialization
++				 * resets the ring before any userspace capture.
++				 * Diagnostic only: preserve all other pstore zones.
++				 */
++				KERNEL_VERSION(5, 4, 213),
+ 				(cxt->flags & RAMOOPS_FLAG_FTRACE_PER_CPU)
+ 					? PRZ_FLAG_NO_LOCK : 0);
+ 	if (err)
+ 		goto fail_init;
+ 

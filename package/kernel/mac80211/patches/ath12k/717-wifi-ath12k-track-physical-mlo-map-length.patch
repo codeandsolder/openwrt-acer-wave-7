@@ -1,0 +1,48 @@
+--- a/drivers/net/wireless/ath/ath12k/qmi.h
++++ b/drivers/net/wireless/ath/ath12k/qmi.h
+@@ -107,6 +107,8 @@
+ 	u32 type;
+ 	u32 prev_size;
+ 	u32 prev_type;
++	/* APSS-visible span can be smaller than the QMI-advertised size. */
++	u32 mapped_size;
+ 	dma_addr_t paddr;
+ 	union {
+ 		void __iomem *ioaddr;
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -2814,7 +2814,7 @@
+ 		 * needs to be handled properly.
+ 		 */
+ 		if (ag->mlo_mem.fixed_mem)
+-			memset_io(mlo_chunk->v.ioaddr, 0, mlo_chunk->size);
++			memset_io(mlo_chunk->v.ioaddr, 0, mlo_chunk->mapped_size);
+ 		else
+ 			memset(mlo_chunk->v.addr, 0, mlo_chunk->size);
+ 	}
+@@ -2854,6 +2854,7 @@
+ 
+ 	mlo_chunk->paddr = 0;
+ 	mlo_chunk->size = 0;
++	mlo_chunk->mapped_size = 0;
+ 	if (fixed_mem)
+ 		chunk->v.ioaddr = NULL;
+ 	else
+@@ -3194,13 +3195,16 @@
+ 				mlo_chunk->paddr = paddr;
+ 				mlo_chunk->size = src->size;
+ 				mlo_chunk->type = src->type;
++				mlo_chunk->mapped_size = mlo_map_size;
+ 				mlo_chunk->v.ioaddr = ioremap(paddr, mlo_map_size);
+ 				if (!mlo_chunk->v.ioaddr) {
+ 					ret = -EIO;
+ 					goto out_free;
+ 				}
+ 				memset_io(mlo_chunk->v.ioaddr, 0, mlo_map_size);
+-			} else if (mlo_chunk->paddr != paddr || mlo_chunk->size != src->size) {
++			} else if (mlo_chunk->paddr != paddr ||
++				   mlo_chunk->size != src->size ||
++				   mlo_chunk->mapped_size != mlo_map_size) {
+ 				ath12k_err(ab, "MLO fixed memory layout changed across group devices\n");
+ 				ret = -EINVAL;
+ 				goto out_free;

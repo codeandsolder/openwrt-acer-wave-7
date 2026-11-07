@@ -1,0 +1,468 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: delegate UserPD lifecycle to child remoteproc
+
+The root Q6 remoteproc already stages UserPD auxiliary firmware before
+the root PAS transition and manages child UserPD PAS/SMEM startup/shutdown.
+Do not stage the same IU again while root Q6 runs or duplicate PAS and SMP2P
+state in WLAN.  Resolve a child rproc at probe but boot at HIF power_up,
+preserving deferred radio startup and tracking one boot ref per device.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -5,26 +5,18 @@
+  */
+ 
+ #include <linux/dma-mapping.h>
+-#include <linux/firmware/qcom/qcom_scm.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
+ #include <linux/remoteproc.h>
+-#include <linux/soc/qcom/mdt_loader.h>
+-#include <linux/soc/qcom/smem_state.h>
+ #include "ahb.h"
+ #include "debug.h"
+ #include "hif.h"
+ #include "pcic.h"
+ 
+ #define ATH12K_IRQ_CE0_OFFSET 4
+-#define ATH12K_MAX_UPDS 1
+-#define ATH12K_UPD_IRQ_WRD_LEN  18
+ 
+ static struct ath12k_ahb_driver *ath12k_ahb_family_drivers[ATH12K_DEVICE_FAMILY_MAX];
+-static const char ath12k_userpd_irq[][9] = {"spawn",
+-				     "ready",
+-				     "stop-ack"};
+ 
+ static const char *irq_name[ATH12K_IRQ_NUM_MAX] = {
+ 	"misc-pulse1",
+@@ -332,201 +324,40 @@
+ 	ath12k_ce_cleanup_pipes(ab);
+ }
+ 
++/*
++ * Remoteproc exclusively owns UserPD firmware, PAS, SMP2P handshakes and
++ * the shared root-Q6 lifetime.  HIF holds precisely one rproc boot ref.
++ */
+ static int ath12k_ahb_power_up(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-	char fw_name[ATH12K_USERPD_FW_NAME_LEN];
+-	char fw2_name[ATH12K_USERPD_FW_NAME_LEN];
+-	struct device *dev = ab->dev;
+-	const struct firmware *fw, *fw2;
+-	struct reserved_mem *rmem = NULL;
+-	unsigned long time_left;
+-	phys_addr_t mem_phys;
+-	void *mem_region;
+-	size_t mem_size;
+-	u32 pasid;
+ 	int ret;
+-	int spawn_clear_ret;
+-
+-	rmem = ath12k_core_get_reserved_mem_by_name(ab, "q6-region");
+-	if (!rmem)
+-		return -ENODEV;
+-
+-	mem_phys = rmem->base;
+-	mem_size = rmem->size;
+-	mem_region = devm_memremap(dev, mem_phys, mem_size, MEMREMAP_WC);
+-	if (IS_ERR(mem_region)) {
+-		ath12k_err(ab, "unable to map memory region: %pa+%pa\n",
+-			   &rmem->base, &rmem->size);
+-		return PTR_ERR(mem_region);
+-	}
+-
+-	snprintf(fw_name, sizeof(fw_name), "%s/%s/%s%d%s", ATH12K_FW_DIR,
+-		 ab->hw_params->fw.dir, ATH12K_AHB_FW_PREFIX, ab_ahb->userpd_id,
+-		 ATH12K_AHB_FW_SUFFIX);
+-
+-	ret = request_firmware(&fw, fw_name, dev);
+-	if (ret < 0) {
+-		ath12k_err(ab, "request_firmware failed\n");
++
++	if (ab_ahb->userpd_booted)
++		return 0;
++
++	ret = rproc_boot(ab_ahb->tgt_rproc);
++	if (ret) {
++		ath12k_err(ab, "failed to boot UserPD%u remoteproc: %d\n",
++			   ab_ahb->userpd_id, ret);
+ 		return ret;
+ 	}
+ 
+-	ath12k_dbg(ab, ATH12K_DBG_AHB, "Booting fw image %s, size %zd\n", fw_name,
+-		   fw->size);
+-
+-	if (!fw->size) {
+-		ath12k_err(ab, "Invalid firmware size\n");
+-		ret = -EINVAL;
+-		goto err_fw;
+-	}
+-
+-	pasid = (u32_encode_bits(ab_ahb->userpd_id, ATH12K_USERPD_ID_MASK)) |
+-		ATH12K_AHB_UPD_SWID;
+-
+-	/* Load FW image to a reserved memory location */
+-	if (ab_ahb->scm_auth_enabled)
+-		ret = qcom_mdt_load(dev, fw, fw_name, pasid, mem_region,
+-				    mem_phys, mem_size, &mem_phys);
+-	else
+-		ret = qcom_mdt_load_no_init(dev, fw, fw_name, mem_region,
+-					    mem_phys, mem_size, &mem_phys);
+-	if (ret) {
+-		ath12k_err(ab, "Failed to load MDT segments: %d\n", ret);
+-		goto err_fw;
+-	}
+-
+-	snprintf(fw2_name, sizeof(fw2_name), "%s/%s/%s", ATH12K_FW_DIR,
+-		 ab->hw_params->fw.dir, ATH12K_AHB_FW2);
+-
+-	ret = request_firmware(&fw2, fw2_name, dev);
+-	if (ret < 0) {
+-		ath12k_err(ab, "request_firmware failed\n");
+-		goto err_fw;
+-	}
+-
+-	ath12k_dbg(ab, ATH12K_DBG_AHB, "Booting fw image %s, size %zd\n", fw2_name,
+-		   fw2->size);
+-
+-	if (!fw2->size) {
+-		ath12k_err(ab, "Invalid firmware size\n");
+-		ret = -EINVAL;
+-		goto err_fw2;
+-	}
+-
+-	ret = qcom_mdt_load_no_init(dev, fw2, fw2_name, mem_region, mem_phys,
+-				    mem_size, &mem_phys);
+-	if (ret) {
+-		ath12k_err(ab, "Failed to load MDT segments with no init : %d\n", ret);
+-		goto err_fw2;
+-	}
+-
+-	reinit_completion(&ab_ahb->userpd_spawned);
+-	reinit_completion(&ab_ahb->userpd_ready);
+-	reinit_completion(&ab_ahb->userpd_stopped);
+-
+-	if (ab_ahb->scm_auth_enabled) {
+-		/* Authenticate FW image using peripheral ID */
+-		ret = qcom_scm_pas_auth_and_reset(pasid);
+-		if (ret) {
+-			ath12k_err(ab, "failed to boot the remote processor %d\n", ret);
+-			goto err_fw2;
+-		}
+-	}
+-
+-	/* Instruct Q6 to spawn userPD thread */
+-	ret = qcom_smem_state_update_bits(ab_ahb->spawn_state, BIT(ab_ahb->spawn_bit),
+-					  BIT(ab_ahb->spawn_bit));
+-	if (ret) {
+-		ath12k_err(ab, "Failed to update spawn state %d\n", ret);
+-		goto err_fw2;
+-	}
+-
+-	time_left = wait_for_completion_timeout(&ab_ahb->userpd_spawned,
+-						ATH12K_USERPD_SPAWN_TIMEOUT);
+-
+-	/*
+-	 * Acknowledge the spawn handshake before waiting for the independent
+-	 * UserPD ready indication, as qcom_q6v5_request_spawn() does.  The
+-	 * spawn bit is a request level, not a "keep UserPD alive" bit.
+-	 * Deassert it even if the spawn acknowledgement times out.
+-	 */
+-	spawn_clear_ret = qcom_smem_state_update_bits(ab_ahb->spawn_state,
+-						 BIT(ab_ahb->spawn_bit), 0);
+-	if (spawn_clear_ret)
+-		ath12k_err(ab, "Failed to clear UserPD spawn state: %d\n",
+-			   spawn_clear_ret);
+-	if (!time_left) {
+-		ath12k_err(ab, "UserPD spawn wait timed out\n");
+-		ret = -ETIMEDOUT;
+-		goto err_fw2;
+-	}
+-	if (spawn_clear_ret) {
+-		ret = spawn_clear_ret;
+-		goto err_fw2;
+-	}
+-
+-	time_left = wait_for_completion_timeout(&ab_ahb->userpd_ready,
+-						ATH12K_USERPD_READY_TIMEOUT);
+-	if (!time_left) {
+-		ath12k_err(ab, "UserPD ready wait timed out\n");
+-		ret = -ETIMEDOUT;
+-		goto err_fw2;
+-	}
+-
+-	ath12k_info(ab, "UserPD%d is now UP\n", ab_ahb->userpd_id);
+-	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+-		ath12k_info(ab, "hybrid trace: spawn cleared after ACK, before ready\n");
++	ab_ahb->userpd_booted = true;
+ 	ab->ag->num_userpd_started++;
+-err_fw2:
+-	release_firmware(fw2);
+-	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+-		ath12k_info(ab, "hybrid trace: released secondary firmware\n");
+-err_fw:
+-	release_firmware(fw);
+-	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+-		ath12k_info(ab, "hybrid trace: power_up return %d\n", ret);
+-	return ret;
++	return 0;
+ }
+ 
+ static void ath12k_ahb_power_down(struct ath12k_base *ab, bool is_suspend)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-	unsigned long time_left;
+-	u32 pasid;
+-	int ret;
+-
+-	qcom_smem_state_update_bits(ab_ahb->stop_state, BIT(ab_ahb->stop_bit),
+-				    BIT(ab_ahb->stop_bit));
+-
+-	time_left = wait_for_completion_timeout(&ab_ahb->userpd_stopped,
+-						ATH12K_USERPD_STOP_TIMEOUT);
+-	if (!time_left) {
+-		ath12k_err(ab, "UserPD stop wait timed out\n");
++
++	if (!ab_ahb->userpd_booted)
+ 		return;
+-	}
+-
+-	qcom_smem_state_update_bits(ab_ahb->stop_state, BIT(ab_ahb->stop_bit), 0);
+-
+-	if (ab_ahb->scm_auth_enabled) {
+-		pasid = (u32_encode_bits(ab_ahb->userpd_id, ATH12K_USERPD_ID_MASK)) |
+-			 ATH12K_AHB_UPD_SWID;
+-		/* Release the firmware */
+-		ret = qcom_scm_pas_shutdown(pasid);
+-		if (ret)
+-			ath12k_err(ab, "scm pas shutdown failed for userPD%d\n",
+-				   ab_ahb->userpd_id);
+-	}
+-
++
++	ab_ahb->userpd_booted = false;
++	rproc_shutdown(ab_ahb->tgt_rproc);
+ 	ab->ag->num_userpd_started--;
+-
+-	/* Turn off rootPD during rmmod and shutdown only. RootPD is handled
+-	 * by RProc driver in case of recovery
+-	 */
+-
+-	if (!ab->ag->num_userpd_started &&
+-	    test_bit(ATH12K_GROUP_FLAG_UNREGISTER, &ab->ag->flags)) {
+-		rproc_put(ab_ahb->tgt_rproc);
+-	}
+ }
+ 
+ static void ath12k_ahb_init_qmi_ce_config(struct ath12k_base *ab)
+@@ -784,72 +615,6 @@
+ 	.ce_irq_disable = ath12k_pcic_ce_irq_disable_sync,
+ };
+ 
+-static irqreturn_t ath12k_userpd_irq_handler(int irq, void *data)
+-{
+-	struct ath12k_base *ab = data;
+-	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-
+-	if (irq == ab_ahb->userpd_irq_num[ATH12K_USERPD_SPAWN_IRQ]) {
+-		complete(&ab_ahb->userpd_spawned);
+-	} else if (irq == ab_ahb->userpd_irq_num[ATH12K_USERPD_READY_IRQ]) {
+-		complete(&ab_ahb->userpd_ready);
+-	} else if (irq == ab_ahb->userpd_irq_num[ATH12K_USERPD_STOP_ACK_IRQ])	{
+-		complete(&ab_ahb->userpd_stopped);
+-	} else {
+-		ath12k_err(ab, "Invalid userpd interrupt\n");
+-		return IRQ_NONE;
+-	}
+-
+-	return IRQ_HANDLED;
+-}
+-
+-static int ath12k_ahb_config_rproc_irq(struct ath12k_base *ab)
+-{
+-	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-	int i, ret;
+-	char *upd_irq_name;
+-
+-	for (i = 0; i < ATH12K_USERPD_MAX_IRQ; i++) {
+-		ab_ahb->userpd_irq_num[i] = platform_get_irq_byname(ab->pdev,
+-								    ath12k_userpd_irq[i]);
+-		if (ab_ahb->userpd_irq_num[i] < 0)
+-			return ab_ahb->userpd_irq_num[i];
+-
+-		upd_irq_name = devm_kzalloc(&ab->pdev->dev, ATH12K_UPD_IRQ_WRD_LEN,
+-					    GFP_KERNEL);
+-		if (!upd_irq_name)
+-			return -ENOMEM;
+-
+-		scnprintf(upd_irq_name, ATH12K_UPD_IRQ_WRD_LEN, "UserPD%u-%s",
+-			  ab_ahb->userpd_id, ath12k_userpd_irq[i]);
+-		ret = devm_request_threaded_irq(&ab->pdev->dev, ab_ahb->userpd_irq_num[i],
+-						NULL, ath12k_userpd_irq_handler,
+-						IRQF_TRIGGER_RISING | IRQF_ONESHOT,
+-						upd_irq_name, ab);
+-		if (ret)
+-			return dev_err_probe(&ab->pdev->dev, ret,
+-					     "Request %s irq failed: %d\n",
+-					     ath12k_userpd_irq[i], ret);
+-	}
+-
+-	ab_ahb->spawn_state = devm_qcom_smem_state_get(&ab->pdev->dev, "spawn",
+-						       &ab_ahb->spawn_bit);
+-	if (IS_ERR(ab_ahb->spawn_state))
+-		return dev_err_probe(&ab->pdev->dev, PTR_ERR(ab_ahb->spawn_state),
+-				     "Failed to acquire spawn state\n");
+-
+-	ab_ahb->stop_state = devm_qcom_smem_state_get(&ab->pdev->dev, "stop",
+-						      &ab_ahb->stop_bit);
+-	if (IS_ERR(ab_ahb->stop_state))
+-		return dev_err_probe(&ab->pdev->dev, PTR_ERR(ab_ahb->stop_state),
+-				     "Failed to acquire stop state\n");
+-
+-	init_completion(&ab_ahb->userpd_spawned);
+-	init_completion(&ab_ahb->userpd_ready);
+-	init_completion(&ab_ahb->userpd_stopped);
+-	return 0;
+-}
+-
+ static int ath12k_ahb_get_rproc(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+@@ -874,46 +639,13 @@
+ 	return 0;
+ }
+ 
+-static int ath12k_ahb_boot_root_pd(struct ath12k_base *ab)
+-{
+-	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-	int ret;
+-
+-	ret = rproc_boot(ab_ahb->tgt_rproc);
+-	if (ret < 0) {
+-		ath12k_err(ab, "RootPD boot failed\n");
+-		return ret;
+-	}
+-
+-	return 0;
+-}
+-
++/*
++ * Resolve the child remoteproc at probe, but start it only at HIF power_up.
++ * The child loader boots the root Q6 and holds its own parent reference.
++ */
+ static int ath12k_ahb_configure_rproc(struct ath12k_base *ab)
+ {
+-	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+-	int ret;
+-
+-	ret = ath12k_ahb_get_rproc(ab);
+-	if (ret < 0)
+-		return ret;
+-
+-	if (ab_ahb->tgt_rproc->state != RPROC_RUNNING) {
+-		ret = ath12k_ahb_boot_root_pd(ab);
+-		if (ret < 0) {
+-			ath12k_err(ab, "failed to boot the remote processor Q6\n");
+-			goto err_put_rproc;
+-		}
+-	}
+-
+-	ret = ath12k_ahb_config_rproc_irq(ab);
+-	if (ret < 0)
+-		goto err_put_rproc;
+-
+-	return ret;
+-
+-err_put_rproc:
+-	rproc_put(ab_ahb->tgt_rproc);
+-	return ret;
++	return ath12k_ahb_get_rproc(ab);
+ }
+ 
+ static void ath12k_ahb_deconfigure_rproc(struct ath12k_base *ab)
+--- a/drivers/net/wireless/ath/ath12k/ahb.h
++++ b/drivers/net/wireless/ath/ath12k/ahb.h
+@@ -12,33 +12,7 @@
+ 
+ #define ATH12K_AHB_RECOVERY_TIMEOUT (3 * HZ)
+ 
+-#define ATH12K_AHB_SMP2P_SMEM_MSG		GENMASK(15, 0)
+-#define ATH12K_AHB_SMP2P_SMEM_SEQ_NO		GENMASK(31, 16)
+-#define ATH12K_AHB_SMP2P_SMEM_VALUE_MASK	0xFFFFFFFF
+-#define ATH12K_PCI_CE_WAKE_IRQ			2
+ #define ATH12K_PCI_IRQ_CE0_OFFSET		3
+-#define ATH12K_AHB_FW_PREFIX			"q6_fw"
+-#define ATH12K_AHB_FW_SUFFIX			".mbn"
+-#define ATH12K_AHB_FW2				"iu_fw.mbn"
+-#define ATH12K_AHB_UPD_SWID			0x12
+-#define ATH12K_USERPD_SPAWN_TIMEOUT		(5 * HZ)
+-#define ATH12K_USERPD_READY_TIMEOUT		(10 * HZ)
+-#define ATH12K_USERPD_STOP_TIMEOUT		(5 * HZ)
+-#define ATH12K_USERPD_ID_MASK			GENMASK(9, 8)
+-#define ATH12K_USERPD_FW_NAME_LEN		35
+-#define ATH12K_AHB_USERPD1			1
+-
+-enum ath12k_ahb_smp2p_msg_id {
+-	ATH12K_AHB_POWER_SAVE_ENTER = 1,
+-	ATH12K_AHB_POWER_SAVE_EXIT,
+-};
+-
+-enum ath12k_ahb_userpd_irq {
+-	ATH12K_USERPD_SPAWN_IRQ,
+-	ATH12K_USERPD_READY_IRQ,
+-	ATH12K_USERPD_STOP_ACK_IRQ,
+-	ATH12K_USERPD_MAX_IRQ,
+-};
+ 
+ struct ath12k_base;
+ 
+@@ -52,18 +26,10 @@
+ 	struct ath12k_base *ab;
+ 	struct rproc *tgt_rproc;
+ 	struct clk *xo_clk;
+-	struct qcom_smem_state *spawn_state;
+-	struct qcom_smem_state *stop_state;
+-	struct completion userpd_spawned;
+-	struct completion userpd_ready;
+-	struct completion userpd_stopped;
+ 	u32 userpd_id;
+-	u32 spawn_bit;
+-	u32 stop_bit;
+-	int userpd_irq_num[ATH12K_USERPD_MAX_IRQ];
++	bool userpd_booted;
+ 	const struct ath12k_ahb_ops *ahb_ops;
+ 	const struct ath12k_ahb_device_family_ops *device_family_ops;
+-	bool scm_auth_enabled;
+ };
+ 
+ struct ath12k_ahb_driver {
+--- a/drivers/net/wireless/ath/ath12k/wifi7/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/ahb.c
+@@ -6,7 +6,6 @@
+ 
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
+-#include <linux/soc/qcom/mdt_loader.h>
+ #include "../ahb.h"
+ #include "ahb.h"
+ #include "../debug.h"
+@@ -42,14 +41,10 @@
+ 
+ 	switch (ab->hw_rev) {
+ 	case ATH12K_HW_IPQ5332_HW10:
+-		ab_ahb->userpd_id = ATH12K_IPQ5332_USERPD_ID;
+-		fallthrough;
+-	case ATH12K_HW_QCN6432_HW10:
+-		ab_ahb->scm_auth_enabled = true;
+-		break;
+ 	case ATH12K_HW_IPQ5424_HW10:
+ 		ab_ahb->userpd_id = ATH12K_IPQ5332_USERPD_ID;
+-		ab_ahb->scm_auth_enabled = false;
++		break;
++	case ATH12K_HW_QCN6432_HW10:
+ 		break;
+ 	default:
+ 		return -EOPNOTSUPP;

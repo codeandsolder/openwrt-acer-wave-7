@@ -1,0 +1,75 @@
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+index 195dfec..766dd73 100644
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -68,6 +68,19 @@ ath12k_mem_profile_based_param ath12k_mem_profile_based_param[] = {
+ 			.rx_desc_count = 6144,
+ 		},
+ 	},
++[ATH12K_QMI_MEMORY_MODE_LOW_256_M] = {
++		.num_vdevs = 9,
++		.max_client_single = 128,
++		.max_client_dbs = 64,
++		.max_client_dbs_sbs = 64,
++		.dp_params = {
++			.tx_comp_ring_size = 16384,
++			.rxdma_monitor_buf_ring_size = 256,
++			.rxdma_monitor_dst_ring_size = 512,
++			.num_pool_tx_desc = 16384,
++			.rx_desc_count = 6144,
++		},
++	},
+ };
+ 
+ static int ath12k_core_rfkill_config(struct ath12k_base *ab)
+diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/ath12k/qmi.h
+index a10e405..7516b9f 100644
+--- a/drivers/net/wireless/ath/ath12k/qmi.h
++++ b/drivers/net/wireless/ath/ath12k/qmi.h
+@@ -645,6 +645,8 @@ struct qmi_wlanfw_wlan_ini_resp_msg_v01 {
+ enum ath12k_qmi_mem_mode {
+ 	ATH12K_QMI_MEMORY_MODE_DEFAULT = 0,
+ 	ATH12K_QMI_MEMORY_MODE_LOW_512_M,
++	ATH12K_QMI_MEMORY_MODE_LOW_256_M,
++	ATH12K_QMI_MEMORY_MODE_MAX,
+ };
+ 
+ static inline void ath12k_qmi_set_event_block(struct ath12k_qmi *qmi, bool block)
+diff --git a/drivers/net/wireless/ath/ath12k/wifi7/ahb.c b/drivers/net/wireless/ath/ath12k/wifi7/ahb.c
+index f8034ef..3792891 100644
+--- a/drivers/net/wireless/ath/ath12k/wifi7/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/ahb.c
+@@ -34,6 +34,7 @@ static int ath12k_wifi7_ahb_probe(struct platform_device *pdev)
+ {
+ 	struct ath12k_ahb *ab_ahb;
+ 	struct ath12k_base *ab;
++	u32 target_mem_mode;
+ 	int ret;
+ 
+ 	ab = platform_get_drvdata(pdev);
+@@ -55,6 +56,25 @@ static int ath12k_wifi7_ahb_probe(struct platform_device *pdev)
+ 	}
+ 
+ 	ab->target_mem_mode = ATH12K_QMI_MEMORY_MODE_DEFAULT;
++	if (of_property_present(pdev->dev.of_node, "qcom,tgt-mem-mode")) {
++		ret = of_property_read_u32(pdev->dev.of_node, "qcom,tgt-mem-mode",
++					   &target_mem_mode);
++		if (ret) {
++			dev_err(&pdev->dev, "failed to read target memory mode: %d\n",
++				ret);
++			return ret;
++		}
++
++		if (target_mem_mode >= ATH12K_QMI_MEMORY_MODE_MAX) {
++			dev_err(&pdev->dev, "invalid target memory mode %u\n",
++				target_mem_mode);
++			return -EINVAL;
++		}
++
++		ab->target_mem_mode = (enum ath12k_qmi_mem_mode)target_mem_mode;
++	}
++
++	ath12k_info(ab, "FW memory mode: %u\n", ab->target_mem_mode);
+ 
+ 	ret = ath12k_wifi7_hw_init(ab);
+ 	if (ret) {

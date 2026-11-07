@@ -1,0 +1,76 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: deassert UserPD spawn at ACK before ready
+
+The Qualcomm Q6v5 multiprocessor handshake is a request/acknowledgment
+followed by a separate readiness indication.  qcom_q6v5_request_spawn()
+clears the spawn request immediately after spawn_done and only then
+q6_wcss_spawn_pd() waits for ready.  Our AHB path instead held the spawn
+bit until after both completions, diverging from the remoteproc contract.
+
+Match the remoteproc ordering for all UserPDs.  Clear even on spawn timeout,
+propagate failure to deassert (without losing an earlier timeout), and do
+not perform a second clear after ready.  Keep Q6 memory, PAS/SCM, interrupt
+assignments and PCIe clock ownership unchanged.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -440,39 +440,46 @@
+ 		ath12k_err(ab, "Failed to update spawn state %d\n", ret);
+ 		goto err_fw2;
+ 	}
+ 
+ 	time_left = wait_for_completion_timeout(&ab_ahb->userpd_spawned,
+ 						ATH12K_USERPD_SPAWN_TIMEOUT);
++
++	/*
++	 * Acknowledge the spawn handshake before waiting for the independent
++	 * UserPD ready indication, as qcom_q6v5_request_spawn() does.  The
++	 * spawn bit is a request level, not a "keep UserPD alive" bit.
++	 * Deassert it even if the spawn acknowledgement times out.
++	 */
++	spawn_clear_ret = qcom_smem_state_update_bits(ab_ahb->spawn_state,
++						 BIT(ab_ahb->spawn_bit), 0);
++	if (spawn_clear_ret)
++		ath12k_err(ab, "Failed to clear UserPD spawn state: %d\n",
++			   spawn_clear_ret);
+ 	if (!time_left) {
+ 		ath12k_err(ab, "UserPD spawn wait timed out\n");
+ 		ret = -ETIMEDOUT;
+-		goto reset_spawn;
++		goto err_fw2;
++	}
++	if (spawn_clear_ret) {
++		ret = spawn_clear_ret;
++		goto err_fw2;
+ 	}
+ 
+ 	time_left = wait_for_completion_timeout(&ab_ahb->userpd_ready,
+ 						ATH12K_USERPD_READY_TIMEOUT);
+ 	if (!time_left) {
+ 		ath12k_err(ab, "UserPD ready wait timed out\n");
+ 		ret = -ETIMEDOUT;
+-		goto reset_spawn;
++		goto err_fw2;
+ 	}
+ 
+ 	ath12k_info(ab, "UserPD%d is now UP\n", ab_ahb->userpd_id);
+ 	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+-		ath12k_info(ab, "hybrid trace: UserPD ready, before accounting\n");
++		ath12k_info(ab, "hybrid trace: spawn cleared after ACK, before ready\n");
+ 	ab->ag->num_userpd_started++;
+-
+-reset_spawn:
+-	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+-		ath12k_info(ab, "hybrid trace: before spawn-clear, ret=%d\n", ret);
+-	spawn_clear_ret = qcom_smem_state_update_bits(ab_ahb->spawn_state,
+-						 BIT(ab_ahb->spawn_bit), 0);
+-	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+-		ath12k_info(ab, "hybrid trace: spawn-clear returned %d\n",
+-			    spawn_clear_ret);
+ err_fw2:
+ 	release_firmware(fw2);
+ 	if (ab->hif.bus == ATH12K_BUS_HYBRID)
+ 		ath12k_info(ab, "hybrid trace: released secondary firmware\n");
+ err_fw:
+ 	release_firmware(fw);

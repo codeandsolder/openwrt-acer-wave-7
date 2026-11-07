@@ -1,0 +1,19 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] dt-bindings: net: pcs: qcom-ipq9574: add external PHY refclk
+
+UNIPHY can supply a 25/50MHz reference clock to an external Ethernet
+PHY. Add a clock ID for that output so consumers can express the
+dependency through the common clock framework.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/include/dt-bindings/net/qcom,ipq9574-pcs.h
++++ b/include/dt-bindings/net/qcom,ipq9574-pcs.h
+@@ -12,4 +12,7 @@
+ #define PCS_RX_CLK		0
+ #define PCS_TX_CLK		1
+ 
++/* Reference clock output from UNIPHY to an external Ethernet PHY. */
++#define PCS_PHY_REF_CLK		2
++
+ #endif /* _DT_BINDINGS_PCS_QCOM_IPQ9574_H */

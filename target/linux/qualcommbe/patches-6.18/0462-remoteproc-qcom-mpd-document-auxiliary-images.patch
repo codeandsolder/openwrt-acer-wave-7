@@ -1,0 +1,24 @@
+Subject: [PATCH] dt-bindings: remoteproc: document multipd auxiliary images
+
+The Q6 MPD loader accepts an array of three firmware-name entries:
+one root image followed by up to two auxiliary MDT images loaded
+into WCSS memory before the processor starts. Allow all three
+entries in the binding.
+
+---
+diff --git a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
+--- a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
++++ b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
+@@ -26,7 +26,11 @@
+     maxItems: 1
+ 
+   firmware-name:
+-    maxItems: 2
++    description: |
++      The root Q6 image followed by up to two auxiliary images to load
++      into its reserved memory before the remote processor starts.
++      IPQ5332 uses separate IU firmware images for its UserPD radios.
++    maxItems: 3
+ 
+   boot-args:
+     $ref: /schemas/types.yaml#/definitions/uint32-array

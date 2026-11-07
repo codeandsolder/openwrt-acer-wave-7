@@ -1,0 +1,306 @@
+From: Wave 7 bring-up <noreply@example.com>
+Subject: [PATCH] net: ethernet: qualcomm: ppe: fix error-path cleanup
+
+A NAPI context is added in the disabled state. Track whether it was
+actually enabled before calling napi_disable(); otherwise probe failures
+can block forever waiting for a NAPI instance which was never enabled.
+
+Also make ppe_port_mac_init() unwind the current port and previously
+created ports without decrementing the port count below zero. The old
+error path could enter while (i) with i == -1 and walk before the port
+array after the first port failed to initialize.
+
+---
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_rx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_rx.h
+@@ -260,6 +260,7 @@
+  * @rxdesc_stats: Rx descriptor ring statistics
+  * @rxfill: RxFill ring used
+  * @napi_added: Flag to indicate NAPI add status
++ * @napi_enabled: Flag to indicate NAPI enable status
+  * @pdma: Primary descriptor ring physical address
+  * @sdma: Secondary descriptor ring physical address
+  * @head: Head of the skb list in case of scatter-gather frame
+@@ -277,6 +278,7 @@
+ 	struct edma_rxdesc_stats rxdesc_stats;
+ 	struct edma_rxfill_ring *rxfill;
+ 	bool napi_added;
++	bool napi_enabled;
+ 	dma_addr_t pdma;
+ 	dma_addr_t sdma;
+ 	struct sk_buff *head;
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
+@@ -275,6 +275,7 @@
+  * @dma: Descriptor ring physical address
+  * @count: Number of descriptors in the ring
+  * @napi_added: Flag to indicate NAPI add status
++ * @napi_enabled: Flag to indicate NAPI enable status
+  */
+ struct edma_txcmpl_ring {
+ 	struct napi_struct napi;
+@@ -286,6 +287,7 @@
+ 	dma_addr_t dma;
+ 	u32 count;
+ 	bool napi_added;
++	bool napi_enabled;
+ };
+ 
+ extern int edma_tx_napi_budget;
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+@@ -899,56 +899,61 @@
+ 
+ 		rxdesc_ring = &edma_ctx->rx_rings[i];
+ 
++		if (!rxdesc_ring->napi_added || !rxdesc_ring->napi_enabled)
++			continue;
++
++		napi_disable(&rxdesc_ring->napi);
++		rxdesc_ring->napi_enabled = false;
++	}
++}
++
++/**
++ * edma_cfg_rx_napi_enable - Enable NAPI for Rx
++ *
++ * Enable NAPI for Rx
++ */
++void edma_cfg_rx_napi_enable(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
++		if (!rxdesc_ring->napi_added || rxdesc_ring->napi_enabled)
++			continue;
++
++		napi_enable(&rxdesc_ring->napi);
++		rxdesc_ring->napi_enabled = true;
++	}
++}
++
++/**
++ * edma_cfg_rx_napi_delete - Delete Rx NAPI
++ *
++ * Delete RX NAPI
++ */
++void edma_cfg_rx_napi_delete(void)
++{
++	struct edma_hw_info *hw_info = edma_ctx->hw_info;
++	struct edma_ring_info *rx = hw_info->rx;
++	u32 i;
++
++	for (i = 0; i < rx->num_rings; i++) {
++		struct edma_rxdesc_ring *rxdesc_ring;
++
++		rxdesc_ring = &edma_ctx->rx_rings[i];
++
+ 		if (!rxdesc_ring->napi_added)
+ 			continue;
+ 
+-		napi_disable(&rxdesc_ring->napi);
+-	}
+-}
+-
+-/**
+- * edma_cfg_rx_napi_enable - Enable NAPI for Rx
+- *
+- * Enable NAPI for Rx
+- */
+-void edma_cfg_rx_napi_enable(void)
+-{
+-	struct edma_hw_info *hw_info = edma_ctx->hw_info;
+-	struct edma_ring_info *rx = hw_info->rx;
+-	u32 i;
+-
+-	for (i = 0; i < rx->num_rings; i++) {
+-		struct edma_rxdesc_ring *rxdesc_ring;
+-
+-		rxdesc_ring = &edma_ctx->rx_rings[i];
+-
+-		if (!rxdesc_ring->napi_added)
+-			continue;
+-
+-		napi_enable(&rxdesc_ring->napi);
+-	}
+-}
+-
+-/**
+- * edma_cfg_rx_napi_delete - Delete Rx NAPI
+- *
+- * Delete RX NAPI
+- */
+-void edma_cfg_rx_napi_delete(void)
+-{
+-	struct edma_hw_info *hw_info = edma_ctx->hw_info;
+-	struct edma_ring_info *rx = hw_info->rx;
+-	u32 i;
+-
+-	for (i = 0; i < rx->num_rings; i++) {
+-		struct edma_rxdesc_ring *rxdesc_ring;
+-
+-		rxdesc_ring = &edma_ctx->rx_rings[i];
+-
+-		if (!rxdesc_ring->napi_added)
+-			continue;
+-
+-		napi_disable(&rxdesc_ring->napi);
++		if (rxdesc_ring->napi_enabled) {
++			napi_disable(&rxdesc_ring->napi);
++			rxdesc_ring->napi_enabled = false;
++		}
+ 		netif_napi_del(&rxdesc_ring->napi);
+ 		rxdesc_ring->napi_added = false;
+ 	}
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_tx.c
+@@ -586,10 +586,11 @@
+ 	for_each_possible_cpu(i) {
+ 		ring_idx = ((port_id - 1) * num_possible_cpus()) + i;
+ 		txcmpl_ring = &edma_ctx->txcmpl_rings[ring_idx];
+-		if (!txcmpl_ring->napi_added)
++		if (!txcmpl_ring->napi_added || txcmpl_ring->napi_enabled)
+ 			continue;
+ 
+ 		napi_enable(&txcmpl_ring->napi);
++		txcmpl_ring->napi_enabled = true;
+ 	}
+ }
+ 
+@@ -600,6 +601,29 @@
+  * Disable Tx NAPI.
+  */
+ void edma_cfg_tx_napi_disable(u32 port_id)
++{
++	struct edma_txcmpl_ring *txcmpl_ring;
++	u32 i, ring_idx;
++
++	/* Disabling Tx napi for a interface with each queue. */
++	for_each_possible_cpu(i) {
++		ring_idx = ((port_id - 1) * num_possible_cpus()) + i;
++		txcmpl_ring = &edma_ctx->txcmpl_rings[ring_idx];
++		if (!txcmpl_ring->napi_added || !txcmpl_ring->napi_enabled)
++			continue;
++
++		napi_disable(&txcmpl_ring->napi);
++		txcmpl_ring->napi_enabled = false;
++	}
++}
++
++/**
++ * edma_cfg_tx_napi_delete - Delete Tx NAPI.
++ * @port_id: Port ID.
++ *
++ * Delete Tx NAPI.
++ */
++void edma_cfg_tx_napi_delete(u32 port_id)
+ {
+ 	struct edma_txcmpl_ring *txcmpl_ring;
+ 	u32 i, ring_idx;
+@@ -611,29 +635,10 @@
+ 		if (!txcmpl_ring->napi_added)
+ 			continue;
+ 
+-		napi_disable(&txcmpl_ring->napi);
+-	}
+-}
+-
+-/**
+- * edma_cfg_tx_napi_delete - Delete Tx NAPI.
+- * @port_id: Port ID.
+- *
+- * Delete Tx NAPI.
+- */
+-void edma_cfg_tx_napi_delete(u32 port_id)
+-{
+-	struct edma_txcmpl_ring *txcmpl_ring;
+-	u32 i, ring_idx;
+-
+-	/* Disabling Tx napi for a interface with each queue. */
+-	for_each_possible_cpu(i) {
+-		ring_idx = ((port_id - 1) * num_possible_cpus()) + i;
+-		txcmpl_ring = &edma_ctx->txcmpl_rings[ring_idx];
+-		if (!txcmpl_ring->napi_added)
+-			continue;
+-
+-		napi_disable(&txcmpl_ring->napi);
++		if (txcmpl_ring->napi_enabled) {
++			napi_disable(&txcmpl_ring->napi);
++			txcmpl_ring->napi_enabled = false;
++		}
+ 		netif_napi_del(&txcmpl_ring->napi);
+ 		txcmpl_ring->napi_added = false;
+ 	}
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -1367,13 +1367,13 @@
+ 		ret = of_property_read_u32(port_node, "reg", &port);
+ 		if (ret) {
+ 			dev_err(ppe_dev->dev, "Failed to get port id\n");
+-			goto err_port_node;
++			goto err_cleanup_ports;
+ 		}
+ 
+ 		ret = of_get_phy_mode(port_node, &phy_mode);
+ 		if (ret) {
+ 			dev_err(ppe_dev->dev, "Failed to get phy mode\n");
+-			goto err_port_node;
++			goto err_cleanup_ports;
+ 		}
+ 
+ 		ppe_ports->port[i].ppe_dev = ppe_dev;
+@@ -1385,20 +1385,19 @@
+ 		ret = ppe_port_clock_init(&ppe_ports->port[i]);
+ 		if (ret) {
+ 			dev_err(ppe_dev->dev, "Failed to initialize port clocks\n");
+-			goto err_port_clk;
++			goto err_cleanup_ports;
+ 		}
+ 
+ 		ret = ppe_port_mac_hw_init(&ppe_ports->port[i]);
+ 		if (ret) {
+ 			dev_err(ppe_dev->dev, "Failed to initialize MAC hardware\n");
+-			goto err_port_node;
++			goto err_current_clock;
+ 		}
+ 
+ 		ret = edma_port_setup(&ppe_ports->port[i]);
+ 		if (ret) {
+ 			dev_err(ppe_dev->dev, "QCOM EDMA port setup failed\n");
+-			i--;
+-			goto err_port_setup;
++			goto err_current_clock;
+ 		}
+ 
+ 		i++;
+@@ -1407,20 +1406,15 @@
+ 	of_node_put(ports_node);
+ 	return 0;
+ 
+-err_port_setup:
+-	/* Destroy edma ports created till now */
+-	while (i >= 0) {
+-		edma_port_destroy(&ppe_ports->port[i]);
+-		i--;
+-	}
+-
+-err_port_clk:
++err_current_clock:
++	ppe_port_clock_deinit(&ppe_ports->port[i]);
++err_cleanup_ports:
+ 	while (i) {
+ 		i--;
++		edma_port_destroy(&ppe_ports->port[i]);
+ 		ppe_port_clock_deinit(&ppe_ports->port[i]);
+ 	}
+ 
+-err_port_node:
+ 	of_node_put(port_node);
+ err_ports_node:
+ 	of_node_put(ports_node);

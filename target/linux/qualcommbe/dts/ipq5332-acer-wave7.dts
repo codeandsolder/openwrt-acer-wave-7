@@ -1,0 +1,590 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+
+/dts-v1/;
+
+#include <arm64/qcom/ipq5332.dtsi>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/clock/qcom,ipq5332-nsscc.h>
+#include <dt-bindings/clock/qcom,ipq5332-gcc.h>
+#include <dt-bindings/net/qcom,ipq9574-pcs.h>
+
+/ {
+	model = "Acer Wave 7";
+	compatible = "acer,wave7", "qcom,ipq5332";
+
+	aliases {
+		serial0 = &blsp1_uart0;
+		ethernet0 = &xgmac2;
+		ethernet1 = &xgmac1;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+		bootargs-append = " root=/dev/ram0 rdinit=/init panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
+	};
+
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0x0 0x40000000 0x0 0x20000000>;
+	};
+
+	reserved-memory {
+
+		q6_region: wcss@4a900000 {
+			reg = <0x0 0x4a900000 0x0 0x2100000>;
+			no-map;
+		};
+
+		m3_dump: wifi-m3-dump@4ca00000 {
+			reg = <0x0 0x4ca00000 0x0 0x100000>;
+			no-map;
+		};
+
+		wcss_spare0: wifi-reserved@4cb00000 {
+			reg = <0x0 0x4cb00000 0x0 0x300000>;
+			no-map;
+		};
+
+		q6_caldb: qcn6432_data: wifi-data@4ce00000 {
+			reg = <0x0 0x4ce00000 0x0 0xe00000>;
+			no-map;
+		};
+
+		qcn6432_m3_dump: wifi-m3-dump@4dc00000 {
+			reg = <0x0 0x4dc00000 0x0 0x100000>;
+			no-map;
+		};
+
+		wcss_spare1: wifi-reserved@4dd00000 {
+			reg = <0x0 0x4dd00000 0x0 0x300000>;
+			no-map;
+		};
+
+		mlo_mem: wifi-mlo@4e000000 {
+			reg = <0x0 0x4e000000 0x0 0x900000>;
+			no-map;
+		};
+
+		wcss_crash: wifi-crash@4e900000 {
+			reg = <0x0 0x4e900000 0x0 0x100000>;
+			no-map;
+		};
+
+		ramoops@4ea00000 {
+			compatible = "ramoops";
+			reg = <0x0 0x4ea00000 0x0 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x20000>;
+			ftrace-size = <0x20000>;
+		};
+	};
+
+	wcss_smp2p: smp2p-wcss {
+		compatible = "qcom,smp2p";
+		qcom,smem = <435>, <428>;
+		interrupts = <GIC_SPI 418 IRQ_TYPE_EDGE_RISING>;
+		mboxes = <&apcs_glb 9>;
+		qcom,local-pid = <0>;
+		qcom,remote-pid = <1>;
+
+		wcss_smp2p_out: master-kernel {
+			qcom,entry-name = "master-kernel";
+			qcom,smp2p-feature-ssr-ack;
+			#qcom,smem-state-cells = <1>;
+		};
+
+		wcss_smp2p_in: slave-kernel {
+			qcom,entry-name = "slave-kernel";
+			interrupt-controller;
+			#interrupt-cells = <2>;
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-0 = <&wave7_button_pins>;
+		pinctrl-names = "default";
+
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&tlmm 35 GPIO_ACTIVE_LOW>;
+		};
+
+	};
+};
+
+
+&{/soc@0} {
+	q6v5_wcss: remoteproc@d100000 {
+		compatible = "qcom,ipq5332-q6-mpd";
+		reg = <0x0d100000 0x4040>;
+		firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw0.mdt",
+				"ath12k/IPQ5332/hw1.0/iu_fw.mdt",
+				"ath12k/QCN6432/hw1.0/iu_fw.mdt";
+		interrupts-extended = <&intc GIC_SPI 421 IRQ_TYPE_EDGE_RISING>,
+				      <&wcss_smp2p_in 0 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 1 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 2 IRQ_TYPE_NONE>,
+				      <&wcss_smp2p_in 3 IRQ_TYPE_NONE>;
+		interrupt-names = "wdog", "fatal", "ready", "handover", "stop-ack";
+		qcom,smem-states = <&wcss_smp2p_out 0>,
+				   <&wcss_smp2p_out 1>;
+		qcom,smem-state-names = "shutdown", "stop";
+		memory-region = <&q6_region>;
+		/*
+		 * Actual Acer firmware 067 (live 2026-11-06): PCIe1, GPIO47.
+		 * QCN6432 UserPD2 is physically on the 2-lane controller at
+		 * 0x18000000. Slot 0/GPIO38 is the wrong board variant.
+		 */
+		boot-args = <0x01 0x04 0x03 0x01 0x2f 0x02>;
+		qcom,heartbeat_smem = <508>;
+		status = "okay";
+
+		wcss_pd1: remoteproc-pd1 {
+			compatible = "qcom,ipq5332-wcss-ahb-mpd";
+			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw1.mdt";
+			interrupts-extended = <&wcss_smp2p_in 8 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 9 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 12 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 11 IRQ_TYPE_NONE>;
+			interrupt-names = "fatal", "ready", "spawn-ack", "stop-ack";
+			qcom,smem-states = <&wcss_smp2p_out 8>,
+					   <&wcss_smp2p_out 9>,
+					   <&wcss_smp2p_out 10>;
+			qcom,smem-state-names = "shutdown", "stop", "spawn";
+		};
+
+		wcss_pd2: remoteproc-pd2 {
+			compatible = "qcom,ipq5332-wcss-pcie-mpd";
+			firmware-name = "ath12k/IPQ5332/hw1.0/q6_fw2.mdt";
+			interrupts-extended = <&wcss_smp2p_in 16 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 17 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 20 IRQ_TYPE_NONE>,
+					      <&wcss_smp2p_in 19 IRQ_TYPE_NONE>;
+			interrupt-names = "fatal", "ready", "spawn-ack", "stop-ack";
+			qcom,smem-states = <&wcss_smp2p_out 16>,
+					   <&wcss_smp2p_out 17>,
+					   <&wcss_smp2p_out 18>;
+			qcom,smem-state-names = "shutdown", "stop", "spawn";
+		};
+
+		glink-edge {
+			interrupts = <GIC_SPI 417 IRQ_TYPE_EDGE_RISING>;
+			label = "rtr";
+			qcom,remote-pid = <1>;
+			mboxes = <&apcs_glb 8>;
+		};
+	};
+
+	wifi0: wifi@c000000 {
+		compatible = "qcom,ipq5332-wifi";
+		reg = <0x0c000000 0x1000000>;
+		clocks = <&gcc GCC_XO_CLK>;
+		clock-names = "xo";
+		interrupts-extended = <&intc GIC_SPI 559 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 560 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 561 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 422 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 423 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 424 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 425 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 426 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 427 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 428 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 429 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 430 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 431 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 432 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 433 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 491 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 495 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 493 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 544 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 457 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 466 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 497 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 454 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 453 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 452 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 451 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 488 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 488 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 484 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 554 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 554 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 549 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 507 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 500 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 499 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 498 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 450 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 449 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 448 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 447 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 543 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 486 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 482 IRQ_TYPE_EDGE_RISING>,
+		                      <&intc GIC_SPI 419 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "misc-pulse1",
+		                  "misc-latch",
+		                  "sw-exception",
+		                  "ce0",
+		                  "ce1",
+		                  "ce2",
+		                  "ce3",
+		                  "ce4",
+		                  "ce5",
+		                  "ce6",
+		                  "ce7",
+		                  "ce8",
+		                  "ce9",
+		                  "ce10",
+		                  "ce11",
+		                  "host2wbm-desc-feed",
+		                  "host2reo-re-injection",
+		                  "host2reo-command",
+		                  "host2rxdma-monitor-ring1",
+		                  "reo2ost-exception",
+		                  "wbm2host-rx-release",
+		                  "reo2host-status",
+		                  "reo2host-destination-ring4",
+		                  "reo2host-destination-ring3",
+		                  "reo2host-destination-ring2",
+		                  "reo2host-destination-ring1",
+		                  "rxdma2host-monitor-destination-mac3",
+		                  "rxdma2host-monitor-destination-mac2",
+		                  "rxdma2host-monitor-destination-mac1",
+		                  "host2rxdma-host-buf-ring-mac3",
+		                  "host2rxdma-host-buf-ring-mac2",
+		                  "host2rxdma-host-buf-ring-mac1",
+		                  "host2tcl-input-ring4",
+		                  "host2tcl-input-ring3",
+		                  "host2tcl-input-ring2",
+		                  "host2tcl-input-ring1",
+		                  "wbm2host-tx-completions-ring4",
+		                  "wbm2host-tx-completions-ring3",
+		                  "wbm2host-tx-completions-ring2",
+		                  "wbm2host-tx-completions-ring1",
+		                  "host2tx-monitor-ring1",
+		                  "txmon2host-monitor-destination-mac3",
+		                  "txmon2host-monitor-destination-mac2",
+		                  "txmon2host-monitor-destination-mac1",
+		                  "umac-reset";
+
+		memory-region = <&q6_region>, <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
+		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
+				      "q6-caldb", "mlo-global-mem";
+		/* Exact IPQ5332 settings from the running stock 067 device tree.
+		 * The generic ath12k BDF fallback points to 0x4c300000 instead.
+		 */
+		qcom,tgt-mem-mode = <2>;
+		qcom,bdf-addr = <0x4bd00000 0x4bd00000 0x4bd00000 0 0 0>;
+		qcom,rproc = <&wcss_pd1>;
+		qcom,wsi-controller;
+
+		/* Two-chip MLO group: IPQ5332 -> QCN6432 -> IPQ5332.
+		 * These are logical WSI graph links, not GPIO/PCIe connections.
+		 */
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				wifi0_wsi_tx: endpoint {
+					remote-endpoint = <&wifi1_wsi_rx>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				wifi0_wsi_rx: endpoint {
+					remote-endpoint = <&wifi1_wsi_tx>;
+				};
+			};
+		};
+
+	};
+
+	wifi1: wifi {
+		compatible = "qcom,qcn6432-wifi";
+		msi-parent = <&v2m0>;
+
+
+		memory-region = <&qcn6432_data>, <&q6_region>,
+				<&qcn6432_m3_dump>, <&mlo_mem>;
+		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
+				      "mlo-global-mem";
+		qcom,bdf-addr = <0x4ce00000 0x4ce00000 0x4ce00000 0 0 0>;
+		qcom,tgt-mem-mode = <2>;
+		/* Captured from the running stock 067 device tree, not board-default.dts. */
+		qcom,board_id = <0x53>;
+		qcom,pci_slot_id = <1>;
+
+		qcom,rproc = <&wcss_pd2>;
+		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
+
+		status = "okay";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				wifi1_wsi_tx: endpoint {
+					remote-endpoint = <&wifi0_wsi_rx>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				wifi1_wsi_rx: endpoint {
+					remote-endpoint = <&wifi0_wsi_tx>;
+				};
+			};
+		};
+
+	};
+};
+
+&blsp1_uart0 {
+	pinctrl-0 = <&serial_0_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&ref_48mhz_clk {
+	clock-div = <1>;
+	clock-mult = <1>;
+};
+
+&sleep_clk {
+	clock-frequency = <32000>;
+};
+
+/*
+ * Acer stock firmware uses QPIC/BAM at 0x079b0000/0x07984000 with
+ * GPIO8-13. Expose the chip but do not describe arbitrary partition
+ * offsets: the vendor partition table must be recovered separately.
+ */
+&qpic_bam {
+	status = "okay";
+};
+
+&qpic_nand {
+	pinctrl-0 = <&wave7_qpic_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	flash@0 {
+		compatible = "spi-nand";
+		reg = <0>;
+		nand-ecc-engine = <&qpic_nand>;
+		nand-ecc-strength = <4>;
+		nand-ecc-step-size = <512>;
+	};
+};
+
+&xo_board {
+	clock-frequency = <24000000>;
+};
+
+&xo_clk {
+	clock-frequency = <48000000>;
+};
+
+&tlmm {
+	wave7_button_pins: wave7-button-state {
+		pins = "gpio35";
+		function = "gpio";
+		drive-strength = <8>;
+		bias-pull-up;
+	};
+
+	wave7_qpic_pins: wave7-qpic-state {
+		clock-pins {
+			pins = "gpio13";
+			function = "qspi_clk";
+			drive-strength = <8>;
+			bias-pull-down;
+		};
+
+		cs-pins {
+			pins = "gpio12";
+			function = "qspi_cs";
+			drive-strength = <8>;
+			bias-pull-up;
+		};
+
+		data-pins {
+			pins = "gpio8", "gpio9", "gpio10", "gpio11";
+			function = "qspi_data";
+			drive-strength = <8>;
+			bias-pull-down;
+		};
+	};
+
+	wave7_mdio_pins: wave7-mdio-state {
+		mdc-pins {
+			pins = "gpio27";
+			function = "mdc1";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+
+		mdio-pins {
+			pins = "gpio28";
+			function = "mdio1";
+			drive-strength = <2>;
+			bias-pull-up;
+		};
+	};
+};
+
+&mdio {
+	compatible = "qcom,ipq5332-mdio", "qcom,ipq4019-mdio";
+	/*
+	 * CMN PLL now owns 0x9b000..0x9b7ff. Keep only the UNIPHY clocks and
+	 * QCA8081 reset sequencing in MDIO; the CMN owner performs the
+	 * ethernet-LDO-ready handshake before resetting the PLL.
+	 */
+	reg = <0x90000 0x64>;
+	clocks = <&gcc GCC_MDIO_AHB_CLK>,
+		 <&gcc GCC_UNIPHY0_AHB_CLK>,
+		 <&gcc GCC_UNIPHY0_SYS_CLK>,
+		 <&gcc GCC_UNIPHY1_AHB_CLK>,
+		 <&gcc GCC_UNIPHY1_SYS_CLK>,
+		 <&pcs0 PCS_PHY_REF_CLK>,
+		 <&pcs1 PCS_PHY_REF_CLK>;
+	clock-names = "gcc_mdio_ahb_clk",
+		      "gcc_uniphy0_ahb_clk",
+		      "gcc_uniphy0_sys_clk",
+		      "gcc_uniphy1_ahb_clk",
+		      "gcc_uniphy1_sys_clk",
+		      "uniphy0_phy_ref_clk",
+		      "uniphy1_phy_ref_clk";
+	clock-frequency = <6250000>;
+	phy-reset-gpios = <&tlmm 22 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&wave7_mdio_pins>;
+	pinctrl-names = "default";
+	status = "okay";
+
+	wan_phy: ethernet-phy@18 {
+		compatible = "ethernet-phy-id004d.d101";
+		reg = <0x18>;
+	};
+
+	switch: ethernet-switch@1d {
+		compatible = "realtek,rtl8365mb";
+		reg = <0x1d>;
+		reset-gpios = <&tlmm 51 GPIO_ACTIVE_LOW>;
+
+		mdio {
+			compatible = "realtek,smi-mdio";
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			switchphy1: ethernet-phy@1 {
+				reg = <1>;
+			};
+
+			switchphy2: ethernet-phy@2 {
+				reg = <2>;
+			};
+		};
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@1 {
+				reg = <1>;
+				label = "lan2";
+				phy-handle = <&switchphy1>;
+			};
+
+			port@2 {
+				reg = <2>;
+				label = "game";
+				phy-handle = <&switchphy2>;
+			};
+
+			port@6 {
+				reg = <6>;
+				label = "cpu";
+				ethernet = <&xgmac1>;
+				phy-mode = "2500base-x";
+
+				fixed-link {
+					speed = <2500>;
+					full-duplex;
+					pause;
+				};
+			};
+		};
+	};
+};
+
+&qcom_ppe {
+	status = "okay";
+
+	ethernet-ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		xgmac1: port@1 {
+			reg = <1>;
+			phy-mode = "2500base-x";
+			label = "switch";
+			pcs-handle = <&pcs0_ch0>;
+			clocks = <&nsscc NSS_CC_PORT1_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK>;
+			clock-names = "mac", "rx", "tx";
+			resets = <&nsscc NSS_CC_PORT1_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT1_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT1_TX_CLK_ARES>;
+			reset-names = "mac", "rx", "tx";
+
+			fixed-link {
+				speed = <2500>;
+				full-duplex;
+				pause;
+			};
+		};
+
+		xgmac2: port@2 {
+			reg = <2>;
+			phy-mode = "sgmii";
+			label = "lan";
+			pcs-handle = <&pcs1_ch0>;
+			phy-handle = <&wan_phy>;
+			clocks = <&nsscc NSS_CC_PORT2_MAC_CLK>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK>;
+			clock-names = "mac", "rx", "tx";
+			resets = <&nsscc NSS_CC_PORT2_MAC_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_RX_CLK_ARES>,
+				 <&nsscc NSS_CC_PORT2_TX_CLK_ARES>;
+			reset-names = "mac", "rx", "tx";
+		};
+	};
+};
+
+&pcs0 {
+	status = "okay";
+};
+
+&pcs1 {
+	status = "okay";
+};

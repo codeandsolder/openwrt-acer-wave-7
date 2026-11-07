@@ -1,0 +1,23 @@
+From 408ec3ffcc766d540bc58120f59c8cc1343f2ed4 Mon Sep 17 00:00:00 2001
+From: Aaradhana Sahu <aaradhana.sahu@oss.qualcomm.com>
+Date: Fri, 10 Jul 2026 11:05:34 +0530
+Subject: [PATCH] wifi: ath12k: update IPQ5332 BDF address offset
+
+IPQ5332 variants can place multiple UserPD firmware images in the shared Q6
+memory region.  The old 0xc00000 BDF offset can then overlap another
+firmware image.  Use the upstream 0x1a00000 upper-bound offset derived from
+known IPQ5332 firmware layouts.
+
+Signed-off-by: Aaradhana Sahu <aaradhana.sahu@oss.qualcomm.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -698,7 +698,7 @@ static const struct ath12k_hw_params ath
+ 
+ 		.ce_ie_addr = &ath12k_wifi7_ce_ie_addr_ipq5332,
+ 		.ce_remap = &ath12k_wifi7_ce_remap_ipq5332,
+-		.bdf_addr_offset = 0xC00000,
++		.bdf_addr_offset = 0x1A00000,
+ 
+ 		.dp_primary_link_only = true,
+ 		.client = {
