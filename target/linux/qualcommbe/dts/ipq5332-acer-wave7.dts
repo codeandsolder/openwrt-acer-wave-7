@@ -283,6 +283,8 @@
 		/* Two-chip MLO group: IPQ5332 -> QCN6432 -> IPQ5332.
 		 * These are logical WSI graph links, not GPIO/PCIe connections.
 		 */
+		status = "okay";
+
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -304,7 +306,6 @@
 			};
 		};
 
-		status = "okay";
 	};
 
 	wifi1: wifi {
@@ -324,6 +325,8 @@
 
 		qcom,rproc = <&wcss_pd2>;
 		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
+
+		status = "okay";
 
 		ports {
 			#address-cells = <1>;
@@ -346,7 +349,6 @@
 			};
 		};
 
-		status = "okay";
 	};
 };
 
