@@ -277,6 +277,11 @@
 		memory-region = <&q6_region>, <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
 		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
 				      "q6-caldb", "mlo-global-mem";
+		/* Exact IPQ5332 settings from the running stock 067 device tree.
+		 * The generic ath12k BDF fallback points to 0x4c300000 instead.
+		 */
+		qcom,tgt-mem-mode = <2>;
+		qcom,bdf-addr = <0x4bd00000 0x4bd00000 0x4bd00000 0 0 0>;
 		qcom,rproc = <&wcss_pd1>;
 		qcom,wsi-controller;
 
