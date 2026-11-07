@@ -1,0 +1,32 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] json_object: return zero directly on invalid integer strings
+
+Both integer getters already return zero when parsing a string fails:
+the string switch case falls through to default solely to return 0.
+A bare FALLTHRU comment is not accepted under the target's strict
+-Wimplicit-fallthrough setting.
+
+Make that behavior explicit and return 0 directly. This does not
+change valid or invalid conversion semantics.
+
+---
+--- a/json_object.c
++++ b/json_object.c
+@@ -1018,7 +1018,7 @@
+ 	case json_type_string:
+ 		if (json_parse_int64(get_string_component(jso), &cint) == 0)
+ 			return cint;
+-		/* FALLTHRU */
++		return 0;
+ 	default: return 0;
+ 	}
+ }
+@@ -1071,7 +1071,7 @@
+ 	case json_type_string:
+ 		if (json_parse_uint64(get_string_component(jso), &cuint) == 0)
+ 			return cuint;
+-		/* FALLTHRU */
++		return 0;
+ 	default: return 0;
+ 	}
+ }
