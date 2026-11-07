@@ -1,0 +1,250 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] ucode: annotate intentional switch fallthroughs
+
+The VM, compiler, parser and optional module implementations intentionally
+fall through between switch cases, with comments that GCC does not
+recognize under strict -Wimplicit-fallthrough. Replace those comments
+with explicit GNU-compatible fallthrough statements. This preserves
+execution behavior rather than suppressing diagnostics.
+
+---
+--- a/vm.c
++++ b/vm.c
+@@ -1102,7 +1102,7 @@
+ 	case I_ULOC:
+ 	case I_UUPV:
+ 		cnst = uc_chunk_debug_get_variable(chunk, pos - chunk->entries, vm->arg.u32 & 0x00ffffff, (insn == I_UUPV));
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 
+ 	case I_UVAR:
+ 		if (!cnst)
+--- a/lib/uci.c
++++ b/lib/uci.c
+@@ -945,7 +945,7 @@
+ 	case UC_INTEGER:
+ 	case UC_STRING:
+ 		*p = ucv_to_string(vm, val);
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 
+ 	case UC_NULL:
+ 		return true;
+--- a/lib/struct.c
++++ b/lib/struct.c
+@@ -2242,7 +2242,7 @@
+ 
+ 	default:
+ 		--*pfmt; /* Back out of pointer increment */
+-		/* Fall through */
++		__attribute__((__fallthrough__));
+ 
+ 	case '@':
+ 		return native_endian_table;
+@@ -2411,7 +2411,7 @@
+ 			return NULL;
+ 
+ 		switch (c) {
+-		case '*': /* fall through */
++		case '*': __attribute__((__fallthrough__));
+ 		case 's':
+ 		case 'p':
+ 		case 'X':
+@@ -2735,7 +2735,7 @@
+ 			src_off++; /* Skip the = */
+ 
+ 			/* Fall through to "single trailing =" case. */
+-			/* FALLTHROUGH */
++			__attribute__((__fallthrough__));
+ 
+ 		case BYTE4:		/* Valid, means two bytes of info */
+ 			/*
+--- a/lib/resolv.c
++++ b/lib/resolv.c
+@@ -437,12 +437,12 @@
+ 		case ns_t_ns:
+ 			if (!key)
+ 				key = "NS";
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 
+ 		case ns_t_cname:
+ 			if (!key)
+ 				key = "CNAME";
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 
+ 		case ns_t_ptr:
+ 			if (!key)
+@@ -956,7 +956,7 @@
+ 					sendto(fd, ctx->queries[qn].query, ctx->queries[qn].qlen,
+ 					       MSG_NOSIGNAL, &ctx->ns[nn].addr.u.sa, ctx->ns[nn].addr.len);
+ 
+-				/* fall through */
++				__attribute__((__fallthrough__));
+ 
+ 			default:
+ 				add_status(vm, res_obj, ctx->queries[qn].name,
+--- a/lib.c
++++ b/lib.c
+@@ -2726,7 +2726,7 @@
+ 
+ 			case '\0':
+ 				p--;
+-				/* fall through */
++				__attribute__((__fallthrough__));
+ 
+ 			default:
+ 				continue;
+@@ -5069,7 +5069,7 @@
+ 				goto err;
+ 			ch = (unsigned char)*src++;		/* Skip the = */
+ 			/* Fall through to "single trailing =" case. */
+-			/* FALLTHROUGH */
++			__attribute__((__fallthrough__));
+ 
+ 		case BYTE4:		/* Valid, means two bytes of info */
+ 			/*
+--- a/lib/socket.c
++++ b/lib/socket.c
+@@ -789,7 +789,7 @@
+ 					err_return(errno, "Invalid scope ID");
+ 			}
+ 
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 
+ 		case AF_INET:
+ 			ss->ss_family = n;
+--- a/lib/ffi/uc_cparse.c
++++ b/lib/ffi/uc_cparse.c
+@@ -540,7 +540,7 @@
+ 		{
+ 		case '\n':
+ 		case '\r':
+-			cp_newline(cp); /* fallthrough. */
++			cp_newline(cp); __attribute__((__fallthrough__));
+ 		case ' ':
+ 		case '\t':
+ 		case '\v':
+@@ -977,7 +977,7 @@
+ 				k->id = k2.id > k3.id ? k2.id : k3.id;
+ 				continue;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 1:
+ 			if (cp_opt(cp, CTOK_OROR))
+ 			{
+@@ -988,7 +988,7 @@
+ 				k->id = CTID_INT32;
+ 				continue;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 2:
+ 			if (cp_opt(cp, CTOK_ANDAND))
+ 			{
+@@ -999,7 +999,7 @@
+ 				k->id = CTID_INT32;
+ 				continue;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 3:
+ 			if (cp_opt(cp, '|'))
+ 			{
+@@ -1009,7 +1009,7 @@
+ 				k->u32 = k->u32 | k2.u32;
+ 				goto arith_result;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 4:
+ 			if (cp_opt(cp, '^'))
+ 			{
+@@ -1019,7 +1019,7 @@
+ 				k->u32 = k->u32 ^ k2.u32;
+ 				goto arith_result;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 5:
+ 			if (cp_opt(cp, '&'))
+ 			{
+@@ -1029,7 +1029,7 @@
+ 				k->u32 = k->u32 & k2.u32;
+ 				goto arith_result;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 6:
+ 			if (cp_opt(cp, CTOK_EQ))
+ 			{
+@@ -1049,7 +1049,7 @@
+ 				k->id = CTID_INT32;
+ 				continue;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 7:
+ 			if (cp_opt(cp, '<'))
+ 			{
+@@ -1099,7 +1099,7 @@
+ 				k->id = CTID_INT32;
+ 				continue;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 8:
+ 			if (cp_opt(cp, CTOK_SHL))
+ 			{
+@@ -1120,7 +1120,7 @@
+ 					k->u32 = k->u32 >> k2.u32;
+ 				continue;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 9:
+ 			if (cp_opt(cp, '+'))
+ 			{
+@@ -1141,7 +1141,7 @@
+ 				k->u32 = k->u32 - k2.u32;
+ 				goto arith_result;
+ 			}
+-			/* fallthrough */
++			__attribute__((__fallthrough__));
+ 		case 10:
+ 			if (cp_opt(cp, '*'))
+ 			{
+--- a/compiler.c
++++ b/compiler.c
+@@ -1970,7 +1970,7 @@
+ 			fn->strict = true;
+ 		}
+ 
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 
+ 	case TK_DOUBLE:
+ 		uc_compiler_emit_constant(compiler, compiler->parser->prev.pos, compiler->parser->prev.uv);
+--- a/lib/ffi/ffi.c
++++ b/lib/ffi/ffi.c
+@@ -896,7 +896,7 @@
+ 		}
+ #endif
+ 
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 
+ 	case CT_STRUCT:
+ 		if (!st) {
+@@ -2647,7 +2647,7 @@
+ 			if ((info ^ CTF_UCHAR) & CTF_UNSIGNED)
+ 				goto generic_ptr;
+ 
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 
+ 		case CTID_CCHAR:
+ 			/* special optimization case: when retrieving the ucode equivalent value of
