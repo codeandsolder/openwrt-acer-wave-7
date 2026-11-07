@@ -1,0 +1,92 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] uci: explicitly annotate intentional fallthroughs
+
+UCI's switch dispatches intentionally share code among cases, but
+GCC's strict -Wimplicit-fallthrough setting does not recognize the
+existing comments. Annotate the actual control-flow edges in the
+parser, delta validator, and Lua bindings without altering behavior.
+
+---
+--- a/file.c
++++ b/file.c
+@@ -158,7 +158,7 @@
+ 		case '\\':
+ 			if (!parse_backslash(ctx))
+ 				continue;
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 		default:
+ 			addc(ctx, target, &pctx->pos);
+ 			break;
+@@ -212,7 +212,7 @@
+ 			break;
+ 		case '#':
+ 			pctx_cur_char(pctx) = 0;
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 		case 0:
+ 			goto done;
+ 		case ';':
+@@ -221,7 +221,7 @@
+ 		case '\\':
+ 			if (!parse_backslash(ctx))
+ 				continue;
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 		default:
+ 			addc(ctx, target, &pctx->pos);
+ 			break;
+@@ -921,7 +921,7 @@
+ 		/* relative path outside of /etc/config */
+ 		if (name[1] != '/')
+ 			UCI_THROW(ctx, UCI_ERR_NOTFOUND);
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 	case '/':
+ 		/* absolute path outside of /etc/config */
+ 		filename = uci_strdup(ctx, name);
+--- a/parse.c
++++ b/parse.c
+@@ -78,9 +78,9 @@
+ 	switch(len)
+ 	{
+ 	case 3: h ^= data[2] << 16;
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 	case 2: h ^= data[1] << 8;
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 	case 1: h ^= data[0];
+ 	        h *= m;
+ 	}
+--- a/delta.c
++++ b/delta.c
+@@ -198,7 +198,7 @@
+ 	case UCI_CMD_LIST_ADD:
+ 		if (!ptr->option)
+ 			goto error;
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 	case UCI_CMD_LIST_DEL:
+ 		if (!ptr->option)
+ 			goto error;
+--- a/lua/uci.c
++++ b/lua/uci.c
+@@ -173,7 +173,7 @@
+ 	case 4:
+ 	case 3:
+ 		ptr->option = luaL_checkstring(L, 3 + offset);
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 	case 2:
+ 		ptr->section = luaL_checkstring(L, 2 + offset);
+ 		ptr->package = luaL_checkstring(L, 1 + offset);
+@@ -1015,7 +1015,7 @@
+ 			if (lua_isstring(L, 2) &&
+ 				(uci_set_savedir(*u, luaL_checkstring(L, 2)) != UCI_OK))
+ 				return luaL_error(L, "Unable to set savedir");
+-			/* fall through */
++			__attribute__((__fallthrough__));
+ 		case 1:
+ 			if (lua_isstring(L, 1) &&
+ 				(uci_set_confdir(*u, luaL_checkstring(L, 1)) != UCI_OK))
