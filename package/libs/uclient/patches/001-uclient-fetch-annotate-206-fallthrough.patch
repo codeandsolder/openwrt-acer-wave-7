@@ -1,0 +1,21 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] uclient: annotate intentional partial response fallthrough
+
+When resuming HTTP downloads, the successful 206 Content-Range validation
+must then pass into the common 200/204 response handling. An ordinary
+comment is not recognized under strict -Wimplicit-fallthrough=5.
+
+Keep the response semantics and mark the shared-code branch explicitly.
+
+---
+--- a/uclient-fetch.c
++++ b/uclient-fetch.c
+@@ -255,7 +255,7 @@
+ 			request_done(cl);
+ 			break;
+ 		}
+-		/* fall through */
++		__attribute__((__fallthrough__));
+ 	case 204:
+ 	case 200:
+ 		if (no_output)
