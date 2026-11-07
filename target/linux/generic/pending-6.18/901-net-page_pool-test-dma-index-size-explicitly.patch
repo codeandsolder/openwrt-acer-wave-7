@@ -1,0 +1,41 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] net: page_pool: compare DMA index bit count explicitly
+
+PP_DMA_INDEX_BITS is an integer-valued constant expression built from a
+conditional operator. Passing the value directly to likely()/unlikely()
+causes GCC 14.4 to diagnose -Wint-in-bool-context with CONFIG_WERROR=y
+when building page_pool.c on the IPQ5332 arm64 target.
+
+Test the bit count against zero explicitly. This preserves the compile-
+time behavior for every supported bit count and keeps WERROR enabled.
+
+---
+--- a/net/core/page_pool.c
++++ b/net/core/page_pool.c
+@@ -479,7 +479,7 @@
+ 	int err = 0;
+ 	u32 id;
+ 
+-	if (unlikely(!PP_DMA_INDEX_BITS))
++	if (unlikely(PP_DMA_INDEX_BITS == 0))
+ 		goto out;
+ 
+ 	/*
+@@ -521,7 +521,7 @@
+ 	 */
+ 	dma = page_pool_get_dma_addr_netmem(netmem);
+ 
+-	if (likely(PP_DMA_INDEX_BITS)) {
++	if (likely(PP_DMA_INDEX_BITS != 0)) {
+ 		id = netmem_get_dma_index(netmem);
+ 		if (!id)
+ 			return;
+@@ -752,7 +752,7 @@
+ 
+ 	__page_pool_unmap_netmem_dma(pool, netmem);
+ 	page_pool_set_dma_addr_netmem(netmem, 0);
+-	if (likely(PP_DMA_INDEX_BITS))
++	if (likely(PP_DMA_INDEX_BITS != 0))
+ 		netmem_set_dma_index(netmem, 0);
+ }
+ 
