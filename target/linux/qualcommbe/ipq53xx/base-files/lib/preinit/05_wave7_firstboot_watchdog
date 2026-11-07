@@ -120,6 +120,20 @@ wave7_firstboot_network_snapshot() {
     } | wave7_firstboot_kmsg
 }
 
+# Multi-chip MLO combines the two physical radios into one mac80211 wiphy.
+# Do not mistake one successfully registered MLO PHY for one initialized chip.
+# The QMI advertisements are made independently by both members of the group;
+# combined registration only happens after both firmware instances start.
+wave7_firstboot_radio_registered() {
+    local phy_count
+    phy_count=$(iw phy 2>/dev/null | grep -c '^Wiphy ' || :)
+    [ "$phy_count" -ge 2 ] && return 0
+    [ "$phy_count" -ge 1 ] || return 1
+
+    dmesg | grep -Eq 'QMI MLO host cap: enabled=1 group=0 chip=0 chips=2 links=1' || return 1
+    dmesg | grep -Eq 'QMI MLO host cap: enabled=1 group=0 chip=1 chips=2 links=1'
+}
+
 # Trial-only radio start does not depend on SSH or LAN connectivity.
 # The independent 120-second hard fallback remains armed if this worker wedges.
 wave7_firstboot_arm_autoprobe() {
@@ -199,15 +213,13 @@ wave7_firstboot_arm_autoprobe() {
         done
         iw phy 2>&1 | grep '^Wiphy ' | wave7_firstboot_kmsg || true
         wave7_firstboot_network_snapshot after
-        # A working internal PHY is not proof QCN6432 initialized.
-        # Require both external and internal radio PHY registrations, as
-        # well as both child UserPDs, before disarming hard recovery.
+        # Accept either separate PHYs or the single combined MLO wiphy,
+        # with both UserPDs still running. Never trust one internal PHY.
         if [ "$ret" -eq 0 ]; then
             for _ in $(seq 1 45); do
-                phy_count=$(iw phy 2>/dev/null | grep -c '^Wiphy ' || true)
                 if [ "$(cat /sys/class/remoteproc/remoteproc1/state 2>/dev/null)" = running ] &&
                    [ "$(cat /sys/class/remoteproc/remoteproc2/state 2>/dev/null)" = running ] &&
-                   [ "$phy_count" -ge 2 ]; then
+                   wave7_firstboot_radio_registered; then
                     touch /tmp/wave7-autoprobe-success
                     echo '<6>wave7-autoprobe: RADIO_STARTUP_SUCCESS' > /dev/kmsg
                     break
