@@ -22,6 +22,10 @@ define Build/fit-inline-rootfs
 	rm -f $@.dtb $@.kernel
 endef
 
+define Build/verify-wave7-firmware
+	$(TOPDIR)/scripts/wave7/stage-firmware.sh verify-root "$(TARGET_DIR)"
+endef
+
 define Device/acer_wave7
 	DEVICE_VENDOR := Acer
 	DEVICE_MODEL := Wave 7
@@ -30,8 +34,8 @@ define Device/acer_wave7
 	SOC := ipq5332
 	SUPPORTED_DEVICES += acer,wave7
 	DEVICE_PACKAGES := kmod-dsa-rtl8365mb kmod-ath12k
-	KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
-	KERNEL_INITRAMFS := kernel-bin | lzma | \
+	KERNEL := verify-wave7-firmware | kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
+	KERNEL_INITRAMFS := verify-wave7-firmware | kernel-bin | lzma | \
 		fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb with-initrd | pad-to 64k
 	KERNEL_INITRAMFS_SUFFIX := .itb
 endef
