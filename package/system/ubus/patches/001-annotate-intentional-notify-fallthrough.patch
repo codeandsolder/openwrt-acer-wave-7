@@ -1,0 +1,19 @@
+From: CodeAndSolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] ubus: annotate intentional notification fallthrough
+
+Non-channel notifications and unsubscriptions intentionally share the
+invoke path. Mark this branch explicitly for GCC/Clang with strict
+implicit-fallthrough warnings, preserving the channel-specific break.
+
+---
+--- a/libubus.c
++++ b/libubus.c
+@@ -109,7 +109,7 @@
+ 	case UBUS_MSG_NOTIFY:
+ 		if (ubus_context_is_channel(ctx))
+ 			break;
+-		/* fallthrough */
++		fallthrough;
+ 	case UBUS_MSG_INVOKE:
+ 		if (ctx->stack_depth) {
+ 			ubus_queue_msg(ctx, buf);
