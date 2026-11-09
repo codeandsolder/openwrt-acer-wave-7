@@ -1,6 +1,6 @@
 --- a/libfstools/ubi.c
 +++ b/libfstools/ubi.c
-@@ -44,25 +44,41 @@
+@@ -44,14 +44,12 @@
  static int ubi_volume_init(struct volume *v)
  {
  	struct ubi_volume *p = container_of(v, struct ubi_volume, v);
@@ -11,16 +11,19 @@
  
  	snprintf(voldir, sizeof(voldir), "%s/ubi%u_%u",
  		ubi_dir_name, p->ubi_num, p->ubi_volid);
- 
+-
 -	snprintf(voldev, sizeof(voldev), "/dev/ubi%u_%u",
 -		p->ubi_num, p->ubi_volid);
--
+ 
  	if (!read_string_from_file(voldir, "name", volname, sizeof(volname)))
  		return -1;
-+
-+	/* UBIFS accepts a UBI volume identifier, not necessarily a path to
-+	 * its character device. The canonical ubiX:NAME form works before
-+	 * device nodes have been populated during early boot, too. */
+@@ -59,10 +57,26 @@
+ 	if (read_uint_from_file(voldir, "data_bytes", &volsize))
+ 		return -1;
+ 
+-	v->name = volname;
++	/* Supply the kernel UBIFS volume identifier, not a character
++	 * device path which may not be openable during early boot. */
 +	source_len = snprintf(NULL, 0, "ubi%u:%s", p->ubi_num, volname);
 +	if (source_len < 0)
 +		return -1;
@@ -28,14 +31,9 @@
 +	v->blk = malloc((size_t)source_len + 1);
 +	if (!v->blk)
 +		return -1;
-+
 +	snprintf(v->blk, (size_t)source_len + 1, "ubi%u:%s",
 +		p->ubi_num, volname);
- 
- 	if (read_uint_from_file(voldir, "data_bytes", &volsize))
- 		return -1;
- 
--	v->name = volname;
++
 +	v->name = strdup(volname);
 +	if (!v->name) {
 +		free(v->blk);
