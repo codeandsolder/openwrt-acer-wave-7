@@ -76,9 +76,10 @@ non-initramfs kernel FIT** and a **SquashFS root** in the
   accommodates the normal FIT. The vendor alternate slot
   `rootfs_1` can remain untouched.
 
-**Two production changes are required before a boot test:**
+**The two production image changes are now implemented on branch
+`wave7-nand-squashfs`, source revision `357d285920`:**
 
-1. Build a **separate non-initramfs FIT DTB** without
+1. Built a **separate non-initramfs FIT DTB** without
    `root=/dev/ram0`, `rdinit=/init` and
    `ubi.no_autoattach=1`. Those flags are present in the
    original board DTS solely for the proven RAM-root trial;
@@ -93,16 +94,18 @@ non-initramfs kernel FIT** and a **SquashFS root** in the
    Preserve console, QPIC/BCH-8, watchdog, Wi-Fi autoprobe and
    all validated LAN/MLO configuration. Use a separate
    production branch so the tested FIT stays immutable.
-2. Refactor the existing vendor OTA wrapper
+2. Added a source-controlled replacement for the existing vendor OTA wrapper
    `/home/jan/projects/acer-wave7-firmware/Acer_Predator_T7c/wrap-openwrt-initramfs.sh`
-   into a **proper image packager accepting both explicit
-   kernel FIT and OpenWrt SquashFS root**. It currently hardcodes
-   `ROOTFS=$BASE/extracted-ubi-067/...-ubi_rootfs.ubifs`,
-   i.e. **the vendor root**, so reusing it unchanged would
-   produce a mixed and non-bootable installation. Preserve
-   `wifi_fw` unchanged, make the updated rootfs the UBI
-   `ubi_rootfs` dynamic volume, and retain vendor FOTA format
-   plus existing audit and rollback watchers.
+   as `scripts/wave7/host/pack-nand-ota.sh`. It accepts the
+   normal OpenWrt sysupgrade tar, private vendor assets and an
+   output directory. It extracts the paired OpenWrt FIT and SquashFS,
+   keeps the exact known-good vendor `wifi_fw`, writes a dynamic
+   `ubi_rootfs` volume containing **OpenWrt**, and wraps the whole
+   UBI image using the proven vendor FIT/TLV format. The old wrapper
+   hardcoded the vendor root and must not be used for NAND-root.
+   The firstboot Wi-Fi deferral has also been moved after the
+   writable overlay pivot on NAND SquashFS boots while preserving
+   the proven initramfs path.
 
 The kernel is built with `CONFIG_MTD_UBI=y`,
 `CONFIG_SQUASHFS=y` and `CONFIG_UBIFS_FS=y`.
@@ -113,6 +116,41 @@ OTA may replace the **active** rootfs slot while retaining the
 untouched alternate vendor slot, but stock bootloader selection and
 power-cycle rollback require dedicated verification first.
 The BCH-8 initramfs FIT remains the known-good recovery baseline.
+
+## Built production candidate (not hardware-tested), 2026-11-09
+
+- Experimental source branch `wave7-nand-squashfs`, functional commit
+  `357d285920`. Six sccache-backed build stages **PASS**.
+  OpenWrt release `r0+38211-357d285920`; normal sysupgrade TAR
+  SHA256 `ad000b5ca657fb89c00fe4129ef7ec660d6d6906771889715b733898f9c7e3e5`.
+- Non-initramfs kernel FIT **4,936,252 bytes**, SHA256
+  `344c86d67b21bdda0cdcea66112e3c471c1a7590597f529c58bcb6f26466e419`.
+  OpenWrt SquashFS **10,672,128 bytes**, SHA256
+  `71a1afc8ce9ca9a0d56d4bfcdb4be51c77932ff932fa33751db970c68bb79385`.
+- Output vendor OTA **22,547,328 bytes**, SHA256
+  `89d05e6a4a30e75c613ee65c0eecf54b07ec188c28a87d5f2cb02679a28176fd`.
+  Checksum-matched on Acer and Asus at
+  `/home/jan/firmware/wave7/trials/production-357d285920-20261109/wave7-nand-squashfs-vendor-ota.bin`
+  with `manifest.txt` and `audit.txt` alongside.
+- Offline verification of the actual OTA: TLV MD5 and FIT payload
+  boundaries valid, exactly **172 physical UBI eraseblocks**,
+  all EC/VID headers and static data CRCs valid. Reassembled volumes
+  byte-for-byte match their inputs: `wifi_fw` 46 LEB,
+  `kernel` 39 LEB, `ubi_rootfs` 85 LEB (remaining dynamic
+  padding 0xFF). The FIT-embedded 27,314-byte DTB has
+  BCH-8/512 and `ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2
+  rootwait=90`, no ramdisk root override or
+  `ubi.no_autoattach=1`. The SquashFS itself contains the correct
+  release revision and NAND preinit post-overlay Wi-Fi deferral.
+- **Still untested on hardware**. Current running 6.18.60
+  BCH-8 `d72fd34a45` remains intact on initramfs, both MLO links
+  and all three Q6 processors running, no ART ECC errors; known-good
+  FIT on Asus SHA256
+  `01c6a24ba77d05f0c032003bb6319bbdead918e864aa1ce86cb2de5e777e0d2e`.
+  Do not claim persistent boot before a guarded trial. A success
+  check must inspect the actual root mount (SquashFS
+  `ubiblock0_2`), all 27 factory MTD partitions, LAN, Wi-Fi
+  and preserved alternate vendor boot slot before keep-boot.
 
 ## Persistence for mutable configuration
 
