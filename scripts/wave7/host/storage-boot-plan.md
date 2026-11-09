@@ -156,6 +156,64 @@ The BCH-8 initramfs FIT remains the known-good recovery baseline.
   vendor UBIFS while deciding whether to set the keep-boot marker.
   The proven initramfs boot path is unaffected.
 
+## First native NAND-root hardware boot — PASS, 2026-11-09
+
+The production firmware was built from functional commit `98b9123f64`
+(release `r0+38213-98b9123f64`) and successfully installed using
+the original guarded vendor update harness. It was checked on real
+Acer Wave 7 IPQ5332 hardware, **not merely offline**.
+
+- **Firmware OTA:** 22,547,328 bytes, SHA256
+  `aa0fd9245a6181306d99efdb3a59d2e6f68756637011b89829569a5105e6610a`.
+  Staged and checksum-matched on Acer and Asus at
+  `/home/jan/firmware/wave7/trials/production-98b9123f64-20261109/`.
+  Offline audit verified all 172 UBI EC/VID headers and per-static-LEB
+  CRCs; volume0 vendor wifi_fw (46 LEB), volume1 OpenWrt FIT
+  (39 LEB), volume2 OpenWrt SquashFS (85 LEB) matched their inputs
+  byte-for-byte. Embedded FIT DTB sets BCH8, UBI block volume2,
+  rootwait=90, and the mount-gated fallback watchdog.
+- Stock vendor Linux **5.4.213** reappeared after a normal OpenWrt
+  `ubus call system reboot`. Its bootfail counter naturally
+  cleared from 1 to 0; then the existing guarded updater accepted
+  the production OTA, armed bootfail=4, staged and flashed it.
+  Both independently supervised boot/recovery observers were active.
+- On the production boot, `/rom` was **SquashFS, major:minor
+  254:0**, exactly matching `/sys/class/block/ubiblock0_2/dev`.
+  Root `/` is an OpenWrt disposable **RAM overlay**, with
+  **no vendor UBIFS mounted**. `ubi0` shows volume IDs 0/1/2.
+  Unlike the earlier working image, this is genuinely booted from
+  the physical NAND UBI SquashFS root instead of an initramfs.
+- The independent Asus-side `verify-nandroot-live.sh` accepted
+  root, release, all 27 MTD partitions, BCH-8 ECC, wired peer,
+  three Qualcomm Q6 processors, and **both MLO links** at uptime
+  **98.64 seconds**. The keep-boot marker had been armed by the
+  on-router root-validated watchdog before this acceptance;
+  it was independently reasserted at 104.58s. Zero ART
+  uncorrectable ECC failures.
+- Independent standard observer confirmed
+  `NAND_SMEMPART_READY=1`, `RADIO_MLO_READY=1`,
+  `PEER_REACHABLE=1`, `KEEP_BOOT_ARMED=1`.
+  Router remained online beyond **166 seconds**, past the
+  120s failsafe.
+- Complete trial evidence checksum-mirrored on Acer and Asus in
+  `/home/jan/firmware/wave7/logs/nandroot-trial-20261109/`:
+  `supervised-flash.log`, `nandroot-acceptance.log`,
+  `openwrt-capture.txt`, both watcher logs and
+  `trial-outcome.txt`.
+- Source branch `wave7-nand-squashfs` is kept distinct from the
+  established BCH-8 *initramfs* `wave7-current-openwrt`
+  recovery branch until writable persistence is implemented.
+
+**Remaining:** This proves *persistent read-only NAND root*
+and Wi-Fi/LAN boot, **not persistent configuration writes**:
+the current OpenWrt `/overlay` is temporary RAM. The vendor
+`rootfs_data` UBIFS must remain intact. Next create a dedicated
+`openwrt_data` volume after backing up current `rootfs_overlay`
+and determining UBI available LEBs; integrate its mount into OpenWrt
+native fstools and validate reboot/power-cycle behavior. Verify
+the alternate vendor `rootfs_1` still matches its archived
+baseline before attempting these operations.
+
 ## Persistence for mutable configuration
 
 The conventional SquashFS root is immutable by design. Consider a
