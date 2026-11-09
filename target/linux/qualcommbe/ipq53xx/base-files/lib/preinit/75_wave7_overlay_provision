@@ -1,0 +1,49 @@
+#!/bin/sh
+# The stock Acer vendor updater ALWAYS ubiformats rootfs_overlay before
+# rebooting the installed OpenWrt image. Provision our own UBIFS volume
+# after that update, ahead of OpenWrt's native mount_root, without touching
+# the vendor volume or relying on persistent state in the stock firmware.
+wave7_provision_overlay() {
+    [ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
+
+    case " $(cat /proc/cmdline 2>/dev/null) " in
+        *" fstools_overlay_name=openwrt_data "*) ;;
+        *) return 0 ;;
+    esac
+
+    local ubi=/sys/class/ubi/ubi1
+    local vendor=/sys/class/ubi/ubi1_0
+    local data=/sys/class/ubi/ubi1_1
+    local mtd_num
+    mtd_num=$(cat "$ubi/mtd_num" 2>/dev/null) || return 1
+
+    # A failed/misdirected UBI attachment must not touch another partition.
+    [ "$(cat "/sys/class/mtd/mtd$mtd_num/name" 2>/dev/null)" = rootfs_overlay ] || return 1
+    [ "$(cat "$ubi/min_io_size" 2>/dev/null)" = 2048 ] || return 1
+    [ "$(cat "$ubi/eraseblock_size" 2>/dev/null)" = 126976 ] || return 1
+    [ "$(cat "$vendor/name" 2>/dev/null)" = rootfs_data ] || return 1
+    [ "$(cat "$vendor/reserved_ebs" 2>/dev/null)" = 318 ] || return 1
+
+    if [ -e "$data" ]; then
+        [ "$(cat "$data/name" 2>/dev/null)" = openwrt_data ] || return 1
+        [ "$(cat "$data/reserved_ebs" 2>/dev/null)" = 56 ] || return 1
+        return 0
+    fi
+
+    # Do not attempt to recover unexpectedly modified volume tables.
+    [ "$(cat "$ubi/volumes_count" 2>/dev/null)" = 1 ] || return 1
+    [ "$(cat "$ubi/avail_eraseblocks" 2>/dev/null)" -ge 56 ] || return 1
+    echo '<6>wave7-overlay: provisioning separate 56-LEB openwrt_data UBIFS' > /dev/kmsg
+    if ! ubimkvol /dev/ubi1 -n 1 -N openwrt_data -s 7110656; then
+        echo '<3>wave7-overlay: UBI volume creation failed' > /dev/kmsg
+        return 1
+    fi
+    [ "$(cat "$data/name" 2>/dev/null)" = openwrt_data ] || return 1
+    [ "$(cat "$data/reserved_ebs" 2>/dev/null)" = 56 ] || return 1
+    [ "$(cat "$vendor/name" 2>/dev/null)" = rootfs_data ] || return 1
+    echo '<6>wave7-overlay: OpenWrt volume created; native mount_root will mount UBIFS' > /dev/kmsg
+}
+
+# Registration order matters: 75 runs before 80_mount_root registers the
+# mount_root hook within preinit_main.
+boot_hook_add preinit_main wave7_provision_overlay
