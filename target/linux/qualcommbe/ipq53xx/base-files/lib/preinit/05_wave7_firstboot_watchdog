@@ -252,7 +252,12 @@ wave7_firstboot_arm_autoprobe() {
 
 wave7_firstboot_arm_watchdog() {
 	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
-	wave7_firstboot_defer_wifi_autoload || true
+	# Initramfs root is writable here. On NAND SquashFS, postpone the
+	# modules.d whiteout until fstools has mounted the tmpfs overlay.
+	# Both paths must finish before procd/kmodloader runs module autoload.
+	if [ "${INITRAMFS:-0}" = 1 ]; then
+		wave7_firstboot_defer_wifi_autoload || true
+	fi
 	wave7_firstboot_arm_autoprobe
 	[ -s /tmp/wave7-firstboot-hard-panic.pid ] && \
 		kill -0 "$(cat /tmp/wave7-firstboot-hard-panic.pid)" 2>/dev/null && return 0
@@ -283,4 +288,13 @@ wave7_firstboot_arm_watchdog() {
 	echo "<6>wave7-firstboot: diagnostics at 90s, hard panic armed for 120s" > /dev/kmsg 2>/dev/null || true
 }
 
+wave7_firstboot_defer_wifi_after_mount() {
+	[ "$(board_name 2>/dev/null)" = "acer,wave7" ] || return 0
+	[ "${INITRAMFS:-0}" = 1 ] && return 0
+	# 80_mount_root invokes preinit_mount_root after its overlay pivot.
+	# /etc/modules.d/ath12k is in the read-only SquashFS until then.
+	wave7_firstboot_defer_wifi_autoload || true
+}
+
 boot_hook_add preinit_main wave7_firstboot_arm_watchdog
+boot_hook_add preinit_mount_root wave7_firstboot_defer_wifi_after_mount
