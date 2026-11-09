@@ -81,8 +81,15 @@ non-initramfs kernel FIT** and a **SquashFS root** in the
 1. Build a **separate non-initramfs FIT DTB** without
    `root=/dev/ram0`, `rdinit=/init` and
    `ubi.no_autoattach=1`. Those flags are present in the
-   current board DTS solely for the proven RAM-root trial;
+   original board DTS solely for the proven RAM-root trial;
    they would defeat the conventional squashfs-root boot.
+   **Important:** built kernel has `CONFIG_MTD_UBI_BLOCK=y` but
+   `CONFIG_MTD_UBI_GLUEBI=n`; vendor
+   `root=mtd:ubi_rootfs` will not expose a SquashFS block device.
+   Append `ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2`
+   (Linux's last `root=` wins), while retaining the vendor
+   `ubi.mtd=rootfs` and `rootwait`. Validate this in the
+   final FIT DTB; root must remain on the selected UBI slot.
    Preserve console, QPIC/BCH-8, watchdog, Wi-Fi autoprobe and
    all validated LAN/MLO configuration. Use a separate
    production branch so the tested FIT stays immutable.

@@ -22,13 +22,14 @@
 	chosen {
 		stdout-path = "serial0:115200n8";
 		/*
-		 * Production NAND rootfs: bootipq supplies ubi.mtd=rootfs,
-		 * root=mtd:ubi_rootfs, rootfstype=squashfs and rootwait.
-		 * Do not override them with the initramfs-only ramdisk root
-		 * or suppress UBI attachment. The proven 6.18.60 BCH-8
-		 * initramfs image is retained separately for recovery.
+		 * bootipq selects the active "rootfs" UBI partition.
+		 * This kernel has CONFIG_MTD_UBI_BLOCK=y, but gluebi=n,
+		 * so vendor root=mtd:ubi_rootfs cannot mount SquashFS.
+		 * Create a UBI block device for volume 2, then override
+		 * the vendor root= with the UBI block device instead.
+		 * Retain the factory ubi.mtd=rootfs and rootwait args.
 		 */
-		bootargs-append = " panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
+		bootargs-append = " ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2 panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
 	};
 
 	memory@40000000 {
