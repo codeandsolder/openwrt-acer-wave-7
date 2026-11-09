@@ -390,7 +390,13 @@
 		compatible = "spi-nand";
 		reg = <0>;
 		nand-ecc-engine = <&qpic_nand>;
-		nand-ecc-strength = <4>;
+		/*
+		 * The detected GigaDevice GD5F4GM8 family requires BCH-8/512.
+		 * The stock DTS says BCH-4, but read-only comparison against
+		 * the factory ART backup shows 4-byte codeword misalignment:
+		 * 528-byte BCH-4 codewords versus 532-byte BCH-8.
+		 */
+		nand-ecc-strength = <8>;
 		nand-ecc-step-size = <512>;
 
 		/* Parse factory partition geometry from Qualcomm's SMEM table. */

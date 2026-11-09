@@ -30,11 +30,22 @@ the NAND rootfs UBI volume. Do not run it as a diagnostic/preflight and do
 not reboot a known-working OpenWrt initramfs just to satisfy its vendor
 precondition. It does not provide a working U-Boot serial/TFTP recovery route.
 
-The current OpenWrt 6.18.60 lab image is revision aaf6bbd7da (includes
-SMEM partition discovery). The vendor-wrapped offline candidate is staged
-on Asus at /home/jan/firmware/wave7/trials/wave7-current-61860-aaf6bbd7da-smem.bin.
-It has not been flashed. The current live 6.18.55 image
-is revision a668b62dec and was used to validate the observer on 2026-11-09.
+The proven OpenWrt 6.18.60 lab image is revision cfb425bcad. Six
+supervised vendor OTA trials culminated in a successful running initramfs
+router, with all three Q6 processors, both MLO links, wired LAN and 27
+factory SMEM MTD partitions verified. Its live /tmp/wave7-keep-boot marker
+is intentionally armed; do not casually reboot this running router.
 
-The known-good observer baseline is saved privately on Asus at
-/home/jan/firmware/wave7/logs/current-openwrt-bootprep-20261109/.
+A checksum-verified RAM-boot FIT copy is stored on Asus at
+/home/jan/firmware/wave7/trials/wave7-cfb425bcad-known-good.itb
+(SHA-256 9b3a4a2b7fa5d7a59e7004eedca6ca89039ca1619c22fbb58c4dc016617a7353).
+The successfully tested NAND-writing OTA is
+/home/jan/firmware/wave7/trials/wave7-current-61860-cfb425bcad-etc-modes.bin.
+These are distinct from the untested BCH-8 NAND ECC validation variant.
+
+The complete sixth-trial observer snapshot and logs are stored privately
+on Asus and Acer in
+/home/jan/firmware/wave7/logs/current-61860-cfb425bcad-20261109/.
+
+For the separate, read-only QPIC ECC investigation, see nand-ecc.md.
+For the controlled UART/U-Boot RAM boot plan, see ram-boot.md.

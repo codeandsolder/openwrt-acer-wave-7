@@ -2,10 +2,10 @@
 
 This describes a future **UART-controlled** test of the Linux 6.18.60 FIT,
 without writing the router's NAND. It is not a procedure to execute over
-the currently running 6.18.55 SSH connection: that kernel has neither
-kexec nor a usable device-tree-overlay interface. The known-working
-two-link WPA3-SAE MLO router should remain in service until the UART
-and test host are actually available.
+the currently working 6.18.60 SSH connection: a verified remote U-Boot
+control channel or kexec mechanism has not been established. Keep the
+current two-link WPA3-SAE MLO router running until the actual UART and
+test host are available.
 
 ## Evidence and prepared artifacts
 
@@ -20,11 +20,11 @@ Acer build tree:
 `/home/jan/projects/acer-wave7-openwrt-current`
 
 Asus raw RAM-boot FIT:
-`/home/jan/firmware/wave7/trials/wave7-aaf6bbd7da.itb`
+`/home/jan/firmware/wave7/trials/wave7-cfb425bcad-known-good.itb`
 
-- **Linux:** 6.18.60, image revision aaf6bbd7da
+- **Linux:** 6.18.60, known-good revision cfb425bcad
 - **Size:** 17,563,648 bytes
-- **SHA-256:** 557acd68b88e95e565f2726fac38ff87c4c2522f54512477493d729633ef5ec1
+- **SHA-256:** 9b3a4a2b7fa5d7a59e7004eedca6ca89039ca1619c22fbb58c4dc016617a7353
 - **FIT default:** config@mi04.1-c2, ARM64 kernel load/entry 0x41000000
 - **DTB:** IPQ5332 Acer Wave 7 with QPIC/BAM and qcom,smem-part enabled
 - **Root:** embedded initramfs with the private 45-file Qualcomm radio
@@ -35,7 +35,7 @@ Asus raw RAM-boot FIT:
   mutating rootfs attachment before initramfs runs. UBI remains built in
   and can be attached explicitly later using `ubiattach` for ECC work.
 
-The separate `wave7-current-61860-aaf6bbd7da-smem.bin` is a
+The separate `wave7-current-61860-cfb425bcad-etc-modes.bin` is a
 **NAND-writing vendor sysupgrade package**, not suitable for TFTP+bootm.
 
 ## Actual hardware boot session
@@ -62,7 +62,7 @@ The separate `wave7-current-61860-aaf6bbd7da-smem.bin` is a
 5. With confirmed networking, the intended RAM-only commands are:
 
    ```text
-   tftpboot 0x44000000 wave7-aaf6bbd7da.itb
+   tftpboot 0x44000000 wave7-cfb425bcad-known-good.itb
    iminfo 0x44000000
    bootm 0x44000000#config@mi04.1-c2
    ```
@@ -72,7 +72,7 @@ The separate `wave7-current-61860-aaf6bbd7da-smem.bin` is a
    0x41000000 FIT kernel load address and recorded Q6 reserved regions.
    Check the live U-Boot `bdinfo` memory map before using it.
 6. From Asus, capture the first boot with the repo's
-   `wave7-openwrt-watch.sh <tag> 6.18.60 aaf6bbd7da`; inspect
+   `wave7-openwrt-watch.sh <tag> 6.18.60 cfb425bcad`; inspect
    `RADIO_MLO_READY` and `NAND_SMEMPART_READY` separately. The
    latter verifies all 27 recorded factory NAND partitions by name,
    size and erase geometry. Test external MT7925 two-link WPA3-SAE
@@ -88,4 +88,7 @@ Without UART, the established `wave7-trial-flash.sh` workflow is the
 alternative. That workflow **writes NAND** and requires a deliberate
 return to vendor Linux 5.4.213 with `bootfail=0`; it arms independent
 OpenWrt and fallback/pstore observers before issuing sysupgrade.
-Do not mistake a prepared OTA image for having performed this test.
+Six guarded hardware OTA trials were completed on 2026-11-09; the
+sixth validated 6.18.60 LAN, SMEM factory NAND enumeration and two-link
+MLO, with a keep-boot marker to retain the healthy initramfs boot.
+The BCH-8 NAND candidate documented in nand-ecc.md has NOT been flashed.
