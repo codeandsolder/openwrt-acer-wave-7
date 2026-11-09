@@ -116,13 +116,15 @@ wave7_firstboot_accept_link() {
 	esac
 	wave7_firstboot_nand_root_ready || return 1
 	wave7_firstboot_link_ready || return 1
-	touch /tmp/wave7-keep-boot
-	echo "<6>wave7-firstboot: lan carrier and management address are up; preserving trial boot" > /dev/kmsg 2>/dev/null || true
-	if wave7_firstboot_commit_boot; then
-		echo "<6>wave7-firstboot: bootloader bootfail cleared after accepted NAND boot" > /dev/kmsg 2>/dev/null || true
-	else
-		echo "<3>wave7-firstboot: could not clear bootfail; next reboot may return to vendor slot" > /dev/kmsg 2>/dev/null || true
+	# An accepted boot must also commit success to the bootloader.
+	# Without this write, a healthy NAND root can be switched back to the
+	# vendor slot on the very next reboot when bootfail reaches six.
+	if ! wave7_firstboot_commit_boot; then
+		echo "<3>wave7-firstboot: bootfail commit failed; keeping recovery watchdog armed" > /dev/kmsg 2>/dev/null || true
+		return 1
 	fi
+	touch /tmp/wave7-keep-boot
+	echo "<6>wave7-firstboot: NAND root, radio and LAN accepted; bootfail committed" > /dev/kmsg 2>/dev/null || true
 	return 0
 }
 
