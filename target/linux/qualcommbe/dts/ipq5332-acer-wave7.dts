@@ -21,7 +21,7 @@
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-		bootargs-append = " root=/dev/ram0 rdinit=/init panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
+		bootargs-append = " root=/dev/ram0 rdinit=/init panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused ubi.no_autoattach=1";
 	};
 
 	memory@40000000 {

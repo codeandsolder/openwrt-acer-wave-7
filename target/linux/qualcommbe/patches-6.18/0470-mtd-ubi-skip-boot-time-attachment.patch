@@ -1,0 +1,51 @@
+From: Wave 7 OpenWrt bring-up <wave7@local.invalid>
+Subject: [PATCH] mtd: ubi: allow skipping bootloader-requested auto-attachment
+
+An initramfs may be loaded by U-Boot while inheriting ubi.mtd=rootfs from
+the persistent vendor boot path. When NAND becomes visible, UBI's built-in
+late init then scans the entire vendor rootfs before the initramfs can
+start. The Acer Wave 7 test boot spent over 119 seconds in UBI attach
+with QPIC ECC errors, preventing user-space networking and activating
+the timed recovery.
+
+Provide a generic read-only no_autoattach parameter. It skips only
+automatic attachment during UBI init, including explicit ubi.mtd=
+requests; user-space can still attach MTD devices deliberately via
+ubiattach after initialization. Default behavior is unchanged.
+
+---
+--- a/drivers/mtd/ubi/build.c
++++ b/drivers/mtd/ubi/build.c
+@@ -71,6 +71,9 @@
+ 
+ /* MTD devices specification parameters */
+ static struct mtd_dev_param mtd_dev_param[UBI_MAX_DEVICES];
++
++/* Allow an initramfs to ignore stale ubi.mtd= bootloader parameters. */
++static bool no_autoattach;
+ #ifdef CONFIG_MTD_UBI_FASTMAP
+ /* UBI module parameter to enable fastmap automatically on non-fastmap images */
+ static bool fm_autoconvert;
+@@ -1342,6 +1345,11 @@
+ {
+ 	int err, i, k;
+ 
++	if (no_autoattach) {
++		pr_info("UBI: automatic MTD attachment disabled by parameter\n");
++		return 0;
++	}
++
+ 	/* Attach MTD devices */
+ 	for (i = 0; i < mtd_devs; i++) {
+ 		struct mtd_dev_param *p = &mtd_dev_param[i];
+@@ -1653,6 +1661,10 @@
+ 	mtd_devs += 1;
+ 	return 0;
+ }
++
++module_param_named(no_autoattach, no_autoattach, bool, 0400);
++MODULE_PARM_DESC(no_autoattach,
++	"Disable all boot-time UBI MTD attachments, including ubi.mtd=; manual ubiattach remains available.");
+ 
+ module_param_call(mtd, ubi_mtd_param_parse, NULL, NULL, 0400);
+ MODULE_PARM_DESC(mtd, "MTD devices to attach. Parameter format: mtd=<name|num|path>[,<vid_hdr_offs>[,max_beb_per1024[,ubi_num[,enable_fm[,need_resv_pool]]]]].\n"

@@ -29,6 +29,11 @@ Asus raw RAM-boot FIT:
 - **DTB:** IPQ5332 Acer Wave 7 with QPIC/BAM and qcom,smem-part enabled
 - **Root:** embedded initramfs with the private 45-file Qualcomm radio
   firmware set and known-working wired/MLO UCI configuration
+- **Boot-time UBI:** disabled by the Wave 7 trial's
+  `ubi.no_autoattach=1` appended kernel command line. This prevents
+  the vendor U-Boot `ubi.mtd=rootfs` from triggering an early, potentially
+  mutating rootfs attachment before initramfs runs. UBI remains built in
+  and can be attached explicitly later using `ubiattach` for ECC work.
 
 The separate `wave7-current-61860-aaf6bbd7da-smem.bin` is a
 **NAND-writing vendor sysupgrade package**, not suitable for TFTP+bootm.
