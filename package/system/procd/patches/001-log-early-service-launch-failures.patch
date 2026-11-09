@@ -1,0 +1,74 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] procd: report early service launch failures without logd
+
+Procd starts early services before the syslog daemon is active. Their
+stdout/stderr was routed only to syslog, losing any early error. A failed
+execvp() returned status 127 with no diagnostic, and nonzero service
+exits were otherwise only debug-logged.
+
+Preserve early service messages in the kernel log when /dev/log is not
+yet a socket and report registration, execution and exit failures.
+The normal syslog path remains in use after /dev/log appears.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+
+---
+diff --git a/state.c b/state.c
+--- a/state.c
++++ b/state.c
+@@ -155,7 +155,8 @@
+ 		}
+ 
+ 		procd_connect_ubus();
+-		service_start_early("ubus", ubus_cmd, p?"ubus":NULL, p?"ubus":NULL);
++		if (service_start_early("ubus", ubus_cmd, p?"ubus":NULL, p?"ubus":NULL))
++			ERROR("failed to register early ubus daemon service\n");
+ 		break;
+ 
+ 	case STATE_INIT:
+diff --git a/service/instance.c b/service/instance.c
+--- a/service/instance.c
++++ b/service/instance.c
+@@ -732,6 +732,8 @@
+ 	}
+ 
+ 	execvp(argv[0], argv);
++	ERROR("failed to execute %s for %s::%s: %m\n",
++	      argv[0], in->srv->name, in->name);
+ 	exit(127);
+ }
+ 
+@@ -1199,7 +1201,13 @@
+ 	else
+ 		arg0 = in->name;
+ 	snprintf(ident, sizeof(ident), "%s[%d]", arg0, in->proc.pid);
+-	ulog_open(ULOG_SYSLOG, in->syslog_facility, ident);
++	struct stat log_stat;
++	int channels;
++
++	/* Preserve service output before the syslog socket is available. */
++	channels = !stat("/dev/log", &log_stat) && S_ISSOCK(log_stat.st_mode)
++		? ULOG_SYSLOG : ULOG_KMSG;
++	ulog_open(channels, in->syslog_facility, ident);
+ 
+ 	do {
+ 		str = ustream_get_read_buf(s, &len);
+@@ -1219,7 +1227,7 @@
+ 		ustream_consume(s, len);
+ 	} while (1);
+ 
+-	ulog_open(ULOG_SYSLOG, LOG_DAEMON, "procd");
++	ulog_open(channels, LOG_DAEMON, "procd");
+ }
+ 
+ static void
+@@ -1520,6 +1528,9 @@
+ 	P_DEBUG(2, "Instance %s::%s exit with error code %d after %ld seconds\n", in->srv->name, in->name, ret, runtime);
+ 
+ 	in->exit_code = instance_exit_code(ret);
++	if (in->exit_code)
++		ULOG_WARN("instance %s::%s exited with status %d\n",
++			  in->srv->name, in->name, in->exit_code);
+ 	in->exit_signalled = WIFSIGNALED(ret);
+ 	if (!in->respawn_next || in->halt)
+ 		uloop_timeout_cancel(&in->timeout);
