@@ -9,6 +9,10 @@ supervised vendor sysupgrade/observation harness deployed on Asus under
   collects boot/driver/network logs and reports radio-ready only if all three
   remote processors are running, both MLO links are visible, the wired peer
   is reachable, and the router's current-boot keep marker exists.
+  It separately records the actual MTD/UBI inventory and prints
+  NAND_SMEMPART_READY=1 only when the rootfs, rootfs_1, APPSBLENV and ART
+  factory partitions are discovered. NAND discovery does not override
+  the separate radio-ready decision.
 - wave7-fallback-watch.sh TRIAL_TAG: independently observes recovery to
   the stock vendor kernel and preserves pstore/raw ramoops evidence.
 - wave7-trial-flash.sh TRIAL_TAG WRAPPED_IMAGE EXPECT_KERNEL EXPECT_REV:

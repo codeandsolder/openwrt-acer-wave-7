@@ -6,7 +6,7 @@ EXPECT_REV=${3:?expected 10-character git SHA required}
 [[ $TAG =~ ^[A-Za-z0-9._-]+$ && $EXPECT_KERNEL =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $EXPECT_REV =~ ^[0-9a-f]{10}$ ]] || exit 2
 LOG=/tmp/wave7-${TAG}-openwrt-watch.log
 OUT=/tmp/wave7-${TAG}-openwrt-capture.txt
-SSH=(ssh -i /home/jan/.ssh/wave7-root-rsa -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=2 -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.76.1)
+SSH=(ssh -n -i /home/jan/.ssh/wave7-root-rsa -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=2 -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@192.168.76.1)
 : > "$LOG"
 rm -f "$OUT"
 detected=0
@@ -35,6 +35,18 @@ for i in $(seq 1 3600); do
           echo ===IP_ADDR===; ip addr show 2>&1 || true
           echo ===IP_ROUTE===; ip route show 2>&1 || true
           echo ===MDIO===; ls -l /sys/bus/mdio_bus/devices 2>&1 || true
+          echo ===NAND_MTD===; cat /proc/mtd 2>&1 || true
+          echo ===NAND_SMEMPART_VALIDATION===
+          if grep -qi \"rootfs\" /proc/mtd &&
+             grep -qi \"rootfs_1\" /proc/mtd &&
+             grep -qi \"0:appsblenv\" /proc/mtd &&
+             grep -qi \"0:art\" /proc/mtd; then
+            echo NAND_SMEMPART_READY=1
+          else
+            echo NAND_SMEMPART_READY=0
+          fi
+          echo ===NAND_SPI_DEVICES===; ls -l /sys/bus/spi/devices 2>&1 || true
+          echo ===NAND_UBI===; ubinfo -a 2>&1 || true
           echo ===ETHTOOL_LAN===; ethtool lan 2>&1 || true
           echo ===WIFI_FIRMWARE===; ls -l /lib/firmware/ath12k/IPQ5332/hw1.0 2>&1 || true
           echo ===MODULES===; lsmod 2>&1 || true
