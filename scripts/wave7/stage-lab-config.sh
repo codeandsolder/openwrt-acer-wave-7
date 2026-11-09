@@ -21,7 +21,10 @@ grep -Fq "option ieee80211w '2'" "$source_dir/wireless"
 grep -Fq "option ssid 'Wave7-MLO-Lab'" "$source_dir/wireless"
 grep -Eq "^[[:space:]]*option key " "$source_dir/wireless"
 
-mkdir -p "$target_dir"
+# The private overlay must not make /etc itself inaccessible to
+# non-root daemons (ubusd, netifd, etc.). Keep file permissions separate.
+# Explicitly restore modes even if these directories already exist.
+install -d -m 0755 "$repo/files/etc" "$target_dir"
 for name in network wireless; do
     cp "$source_dir/$name" "$target_dir/$name.tmp"
     chmod 0600 "$target_dir/$name.tmp"
