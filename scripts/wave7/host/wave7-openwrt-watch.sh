@@ -87,7 +87,7 @@ for i in $(seq 1 3600); do
             echo PEER_REACHABLE=0
             echo KEEP_BOOT_ARMED=0
           fi
-          echo ===DMESG_RELEVANT===; dmesg | grep -Ei "ath12k|remoteproc|q6|wcss|qmi|qrtr|firmware|scm|qca808|sgmii|mppe|pcs|ppe|clock|phylink|mdio|wave7|panic" || true
+          echo ===DMESG_RELEVANT===; dmesg | grep -Ei "ath12k|remoteproc|q6|wcss|qmi|qrtr|firmware|scm|qca808|sgmii|mppe|pcs|ppe|clock|phylink|mdio|qpic|snand|nand|mtd|ubi|bam|spi|wave7|panic" || true
           echo ===DMESG_FULL===; dmesg
           echo ===LOGREAD===; logread 2>&1 || true
         '
