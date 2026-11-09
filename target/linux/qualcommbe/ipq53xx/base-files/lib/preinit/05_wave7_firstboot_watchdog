@@ -30,6 +30,22 @@ wave7_firstboot_dump_state() {
 		uci show network 2>&1 || true
 		echo "--- processes ---"
 		ps w 2>&1 || true
+		echo "--- procd, ubusd and blocked task kernel stacks ---"
+		for proc in /proc/[0-9]*; do
+			[ -r "$proc/comm" ] || continue
+			comm=$(cat "$proc/comm" 2>/dev/null) || continue
+			state=$(sed -n 's/^State:[[:space:]]*\([A-Z]\).*/\1/p' "$proc/status" 2>/dev/null)
+			case "$comm:$state" in
+				procd:*|ubusd:*|udevtrigger:*|*:D) ;;
+				*) continue ;;
+			esac
+			printf 'pid=%s comm=%s state=%s wchan=' "${proc##*/}" "$comm" "$state"
+			cat "$proc/wchan" 2>/dev/null || true
+			echo "kernel stack for pid=${proc##*/}:"
+			cat "$proc/stack" 2>&1 || true
+		done
+		echo "--- ubus startup filesystem state ---"
+		ls -ld /var/run /var/run/ubus /var/run/ubus/ubus.sock /var/run/ubus.sock /sys/fs/cgroup /sys/fs/cgroup/cgroup.subtree_control 2>&1 || true
 		echo "--- active kmodloader tasks (if any) ---"
 		for proc in /proc/[0-9]*; do
 			[ -r "$proc/comm" ] || continue
