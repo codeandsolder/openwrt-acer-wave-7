@@ -9,9 +9,13 @@ supervised vendor sysupgrade/observation harness deployed on Asus under
   collects boot/driver/network logs and reports radio-ready only if all three
   remote processors are running, both MLO links are visible, the wired peer
   is reachable, and the router's current-boot keep marker exists.
-  It separately records the actual MTD/UBI inventory and prints
-  NAND_SMEMPART_READY=1 only when the rootfs, rootfs_1, APPSBLENV and ART
-  factory partitions are discovered. NAND discovery does not override
+  It also records the actual MTD/UBI inventory. The companion
+  verify-factory-mtd.sh validates all 27 recorded factory NAND partitions
+  by name, size and erase geometry against factory-mtd.tsv, extracted
+  from the intact 2026-10-28 full NAND backup, ignoring additional
+  kernel-created UBI-volume MTD entries. It prints NAND_SMEMPART_READY=1
+  only when the complete physical NAND layout matches; discrepancies
+  are included in the capture. NAND discovery remains independent of
   the separate radio-ready decision.
 - wave7-fallback-watch.sh TRIAL_TAG: independently observes recovery to
   the stock vendor kernel and preserves pstore/raw ramoops evidence.
@@ -26,9 +30,10 @@ the NAND rootfs UBI volume. Do not run it as a diagnostic/preflight and do
 not reboot a known-working OpenWrt initramfs just to satisfy its vendor
 precondition. It does not provide a working U-Boot serial/TFTP recovery route.
 
-The current OpenWrt 6.18.60 lab image is revision d5d168bc3d. Its
-vendor-wrapped offline candidate and manifest are in the established
-Acer Wave 7 firmware work directory. The current live 6.18.55 image
+The current OpenWrt 6.18.60 lab image is revision aaf6bbd7da (includes
+SMEM partition discovery). The vendor-wrapped offline candidate is staged
+on Asus at /home/jan/firmware/wave7/trials/wave7-current-61860-aaf6bbd7da-smem.bin.
+It has not been flashed. The current live 6.18.55 image
 is revision a668b62dec and was used to validate the observer on 2026-11-09.
 
 The known-good observer baseline is saved privately on Asus at
