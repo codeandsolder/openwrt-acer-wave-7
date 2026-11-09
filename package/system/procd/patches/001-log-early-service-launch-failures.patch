@@ -1,14 +1,18 @@
 From: codeandsolder <codeandsolder@gmail.com>
-Subject: [PATCH] procd: report early service launch failures without logd
+Subject: [PATCH] procd: report early service launch failures before logd
 
-Procd starts early services before the syslog daemon is active. Their
-stdout/stderr was routed only to syslog, losing any early error. A failed
-execvp() returned status 127 with no diagnostic, and nonzero service
-exits were otherwise only debug-logged.
+The init manager must start ubusd before logd exists. In the early service
+path stderr was not captured, so launch errors and even ELF loader
+messages vanished. The original child silently exited 127 on execvp
+failure, and nonzero instance exits were only logged at debug level.
 
-Preserve early service messages in the kernel log when /dev/log is not
-yet a socket and report registration, execution and exit failures.
-The normal syslog path remains in use after /dev/log appears.
+Capture stderr for early services through procd's existing instance
+stream, route its output to kmsg when /dev/log is unavailable, and make
+the pre-exec child logger write to the redirected stderr. This also
+preserves the daemon loader's errors. Report startup registration,
+execution and nonzero exit failures.
+
+After logd starts, procd's normal syslog behavior is unchanged.
 
 Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 
@@ -29,7 +33,18 @@ diff --git a/state.c b/state.c
 diff --git a/service/instance.c b/service/instance.c
 --- a/service/instance.c
 +++ b/service/instance.c
-@@ -732,6 +732,8 @@
+@@ -712,6 +712,10 @@
+ 		closefd(_status);
+ 	}
+ 
++	/* The child can now report errors through procd's stderr stream. */
++	if (_stderr >= 0 && access("/dev/log", F_OK))
++		ulog_open(ULOG_STDIO, LOG_DAEMON, "procd");
++
+ 	if (!in->has_jail && in->user && in->pw_gid && initgroups(in->user, in->pw_gid)) {
+ 		ERROR("failed to initgroups() for user %s: %m\n", in->user);
+ 		exit(127);
+@@ -732,6 +736,8 @@
  	}
  
  	execvp(argv[0], argv);
@@ -38,7 +53,7 @@ diff --git a/service/instance.c b/service/instance.c
  	exit(127);
  }
  
-@@ -1199,7 +1201,13 @@
+@@ -1199,7 +1205,13 @@
  	else
  		arg0 = in->name;
  	snprintf(ident, sizeof(ident), "%s[%d]", arg0, in->proc.pid);
@@ -53,7 +68,7 @@ diff --git a/service/instance.c b/service/instance.c
  
  	do {
  		str = ustream_get_read_buf(s, &len);
-@@ -1219,7 +1227,7 @@
+@@ -1219,7 +1231,7 @@
  		ustream_consume(s, len);
  	} while (1);
  
@@ -62,7 +77,7 @@ diff --git a/service/instance.c b/service/instance.c
  }
  
  static void
-@@ -1520,6 +1528,9 @@
+@@ -1520,6 +1532,9 @@
  	P_DEBUG(2, "Instance %s::%s exit with error code %d after %ld seconds\n", in->srv->name, in->name, ret, runtime);
  
  	in->exit_code = instance_exit_code(ret);
@@ -72,3 +87,16 @@ diff --git a/service/instance.c b/service/instance.c
  	in->exit_signalled = WIFSIGNALED(ret);
  	if (!in->respawn_next || in->halt)
  		uloop_timeout_cancel(&in->timeout);
+diff --git a/service/service.c b/service/service.c
+--- a/service/service.c
++++ b/service/service.c
+@@ -1244,6 +1244,9 @@
+ 		blobmsg_add_string(&b, "user", user);
+ 	if (group)
+ 		blobmsg_add_string(&b, "group", group);
++
++	/* Early daemons must be able to report startup failures before logd. */
++	blobmsg_add_u8(&b, "stderr", true);
+ 
+ 	blobmsg_close_table(&b, instance);
+ 	blobmsg_close_table(&b, instances);
