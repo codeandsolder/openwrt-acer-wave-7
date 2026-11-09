@@ -300,3 +300,17 @@ reformatted or mounted as OpenWrt upperdir. Then verify normal LAN,
 all three Q6 remoteprocs and both MLO links before retaining the
 boot. Continue using temporary overlay until the separate
 `openwrt_data` UBIFS strategy has been tested.
+
+## Radio deferral correction for persistent overlays
+
+The former delayed-radio mechanism renamed the ath12k module list and
+created an overlay whiteout. On a persistent UBIFS upperdir that would
+hide the real autoload file on future boots. The new production
+preinit instead copies the original list to /tmp, temporarily
+bind-mounts a stub file over /etc/modules.d/ath12k during kmodloader
+startup, and unmounts that stub once both MLO radio processors are
+running. This preserves the real modules list on the persistent volume.
+Both bind and unbind were exercised on the running Wave 7. The
+initramfs-only path keeps its prior disposable-root behavior. The
+independent NAND-root verifier now also requires the restored modules
+list and exactly the OpenWrt UBIFS mounted on /overlay.
