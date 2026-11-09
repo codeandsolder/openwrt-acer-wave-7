@@ -29,7 +29,7 @@
 		 * the vendor root= with the UBI block device instead.
 		 * Retain the factory ubi.mtd=rootfs and rootwait args.
 		 */
-		bootargs-append = " ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2 panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
+		bootargs-append = " ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2 rootwait=90 panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
 	};
 
 	memory@40000000 {

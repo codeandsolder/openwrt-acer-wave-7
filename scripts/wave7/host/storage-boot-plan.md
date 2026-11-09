@@ -86,7 +86,7 @@ non-initramfs kernel FIT** and a **SquashFS root** in the
    **Important:** built kernel has `CONFIG_MTD_UBI_BLOCK=y` but
    `CONFIG_MTD_UBI_GLUEBI=n`; vendor
    `root=mtd:ubi_rootfs` will not expose a SquashFS block device.
-   Append `ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2`
+   Append `ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2 rootwait=90`
    (Linux's last `root=` wins), while retaining the vendor
    `ubi.mtd=rootfs` and `rootwait`. Validate this in the
    final FIT DTB; root must remain on the selected UBI slot.
@@ -134,3 +134,25 @@ fallback; only after successful boot, verify backup of the existing
 available LEBs, create a separately named OpenWrt UBIFS volume,
 and integrate it with the native early mount pipeline. A valid
 raw UBI header **does not** prove attach/write safety.
+
+
+## Trial boot and bounded root discovery
+
+The production DTS explicitly uses `rootwait=90` to override the
+factory's otherwise unbounded `rootwait`. Linux 6.18 accepts a
+numeric rootwait timeout and proceeds to a kernel panic on missing
+`/dev/ubiblock0_2` after at most 90 seconds of waiting. The
+existing `panic=10` reboot and vendor bootfail recovery path should
+then return to the stock slot without an infinite wait. This
+covers mount-device absence, **not** a controller/MTD kernel hang;
+the existing bootloader/watchdog and supervised recovery remain
+required.
+
+For the first production trial, do not arm keep-boot merely on LAN:
+verify `/proc/mounts` shows a SquashFS root from the
+`ubiblock0_2` device, the UBI device has the expected volume
+contents, and the `rootfs_overlay`/vendor `rootfs_data` was not
+reformatted or mounted as OpenWrt upperdir. Then verify normal LAN,
+all three Q6 remoteprocs and both MLO links before retaining the
+boot. Continue using temporary overlay until the separate
+`openwrt_data` UBIFS strategy has been tested.
