@@ -27,9 +27,14 @@
 		 * so vendor root=mtd:ubi_rootfs cannot mount SquashFS.
 		 * Create a UBI block device for volume 2, then override
 		 * the vendor root= with the UBI block device instead.
-		 * Retain the factory ubi.mtd=rootfs and rootwait args.
+		 * Retain factory ubi.mtd=rootfs (ubi0), and explicitly
+		 * attach rootfs_overlay as ubi1. The third attach parameter
+		 * 4/1024 reserves 16 PEB for bad blocks on this 512MiB chip,
+		 * preserving the vendor 318-LEB rootfs_data and the separate
+		 * 56-LEB OpenWrt data volume. UBI device 1 is explicit.
+		 * fstools must only mount openwrt_data, never vendor rootfs_data.
 		 */
-		bootargs-append = " ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2 rootwait=90 panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
+		bootargs-append = " ubi.mtd=rootfs_overlay,0,4,1 ubi.block=0,ubi_rootfs root=/dev/ubiblock0_2 rootwait=90 fstools_overlay_name=openwrt_data panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused";
 	};
 
 	memory@40000000 {

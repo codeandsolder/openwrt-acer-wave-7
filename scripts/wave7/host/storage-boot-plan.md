@@ -214,6 +214,50 @@ native fstools and validate reboot/power-cycle behavior. Verify
 the alternate vendor `rootfs_1` still matches its archived
 baseline before attempting these operations.
 
+## Dedicated persistent overlay — hardware-provisioned 2026-11-09
+
+After checksum-verifying the complete live 52,690,944-byte
+\`rootfs_overlay\` raw NAND partition, a **zstd-compressed recovery
+snapshot** was saved on Acer at
+\`/home/jan/projects/acer-wave7-firmware/device-backup-2026-11-09/rootfs_overlay-mtd23-bch8-20261109.raw.zst\`
+and independently checksum-mirrored to Asus
+\`/home/jan/firmware/wave7/backups/2026-11-09-rootfs-overlay/\`.
+The exact raw backup SHA-256 is
+\`22df4c4dce72aeb47eacee136d34fd8925a0f604b15dd70fd746dd59a888a8de\`;
+zstd round-trip, live NAND re-read, and both copies were verified.
+
+Attaching mtd23 \`rootfs_overlay\` with the default UBI bad-block
+limit (20 per 1024 full-chip blocks) reserved **80 PEB**, leaving
+**0 free LEB**. Linux 6.18 uses the full **4096-PEB flash chip**
+for this calculation, *not* the 402-PEB MTD partition; it
+over-reserves when applied independently to each partition.
+Detached and reattached UBI1 with an explicit limit
+\`ubiattach -d 1 -m 23 -b 4\`, reserving **16 PEB**
+(equivalent to 4% of this particular MTD) and exposing
+64 allocatable LEB. Existing vendor
+\`rootfs_data\` (ubi1 volume0) remains **318 LEB**, intact.
+
+Created **\`openwrt_data\`** as new dynamic
+\`ubi1_1\` with **56 LEB = 7,110,656 bytes**
+(6.78 MiB), leaving 8 free physical LEB beyond internal
+and bad-block reserves. The kernel's UBIFS driver initialized the
+empty volume when first mounted read/write. Created the standard
+\`upper\` and \`work\` directories, wrote/verified/synced a
+persistence marker, and unmounted cleanly. Zero bad NAND blocks
+and zero uncorrectable ECC failures, both vendor and new volumes
+verified by name and allocation. All prior vendor UBI data was
+left in place.
+
+**Pending the new boot build:** production board DTB appends
+\`ubi.mtd=rootfs_overlay,0,4,1\` (explicit UBI1 attach) and
+\`fstools_overlay_name=openwrt_data\` to make normal
+\`mount_root\` find only OpenWrt UBIFS. The root-gated watchdog
+requires \`/rom\` SquashFS from \`ubiblock0_2\` and
+\`/overlay\` UBIFS specifically from \`ubi1:openwrt_data\`,
+rejecting any other UBIFS mount. The rootfs overlay filesystem
+must be confirmed persistent across reboot before retaining this
+new firmware build.
+
 ## Persistence for mutable configuration
 
 The conventional SquashFS root is immutable by design. Consider a

@@ -78,9 +78,14 @@ wave7_firstboot_nand_root_ready() {
 		$3 == dev && $5 == "/rom" && / - squashfs / { found = 1 }
 		END { exit !found }
 	' /proc/self/mountinfo || return 1
-	# First native-root trial uses temporary RAM overlay exclusively.
-	# In particular the old vendor rootfs_data UBIFS must not be mounted.
-	awk '/ - ubifs / { bad = 1 } END { exit bad }' /proc/self/mountinfo
+	# This production boot uses its *own* UBIFS persistent upperdir.
+	# The vendor rootfs_data must remain unmounted; requiring an exact
+	# source and mountpoint prevents retaining boot with the wrong data.
+	awk '
+		$5 == "/overlay" && / - ubifs ubi1:openwrt_data / { found = 1 }
+		/ - ubifs / && !($5 == "/overlay" && / - ubifs ubi1:openwrt_data /) { bad = 1 }
+		END { exit (!found || bad) }
+	' /proc/self/mountinfo
 }
 
 wave7_firstboot_accept_link() {
