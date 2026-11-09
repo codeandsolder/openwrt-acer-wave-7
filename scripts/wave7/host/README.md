@@ -65,6 +65,6 @@ For persistent NAND root and vendor-preserving overlay design, see storage-boot-
 The distinct experimental production `wave7-nand-squashfs` branch builds
 a 22.55MB vendor OTA containing the **normal OpenWrt FIT and SquashFS**,
 not the vendor SquashFS. It passed full offline UBI byte/CRC verification
-but has not been booted on hardware. See storage-boot-plan.md for SHA256s
-and the staged artifact; the current live `d72fd34a45` BCH-8 initramfs
+and passed its first native NAND-root hardware boot on 2026-11-09. See storage-boot-plan.md for SHA256s
+and staged hardware-verified artifact; the previous working `d72fd34a45` BCH-8 initramfs
 remains the proven recovery baseline.
