@@ -78,6 +78,33 @@ The separate `wave7-current-61860-cfb425bcad-etc-modes.bin` is a
    size and erase geometry. Test external MT7925 two-link WPA3-SAE
    after the driver and hostapd start.
 
+### BCH-8 experiment (not the known-good image)
+
+The separate, **untested** ECC-8 candidate is staged on Asus as
+`/home/jan/firmware/wave7/trials/wave7-d72fd34a45-bch8.itb`
+(SHA-256 `01c6a24ba77d05f0c032003bb6319bbdead918e864aa1ce86cb2de5e777e0d2e`).
+It is built from the pushed `wave7-ecc8-validation` branch,
+revision `d72fd34a45`, with the same UBI suppression, radio firmware,
+and private MLO configuration; only the board NAND ECC strength is
+changed to BCH-8/512. Its wrapper
+`wave7-current-61860-d72fd34a45-bch8.bin` is **NAND-writing**.
+Do not confuse these two.
+
+With the *actual* U-Boot UART/TFTP path established and correct
+load address verified as above, substitute
+`wave7-d72fd34a45-bch8.itb` in the TFTP command and
+`wave7-openwrt-watch.sh <tag> 6.18.60 d72fd34a45` for the capture.
+The first hardware test should be **read-only** ART and factory MTD
+comparison against the 2026-10-28 physical NAND backup, followed by
+wired LAN and dual-link MLO checks. Preserve access to the verified
+`cfb425bcad` FIT for recovery.
+
+As of 2026-11-09, the **currently running** 6.18.60
+`cfb425bcad` kernel has `CONFIG_KEXEC_FILE` disabled (and no
+kexec helper or working overlay interface). There is no remotely
+verified RAM-only kernel replacement path from that live SSH session.
+The BCH-8 candidate has not been booted on hardware.
+
 Neither these commands nor `setenv` with no `saveenv` flash NAND.
 The bootloader's own boot/recovery behavior still has to be observed
 on the physical UART before treating a failed test as recoverable.

@@ -30,6 +30,53 @@ Linux 6.18.60 warns that the detected chip requires stronger ECC.
   The upstream QPIC driver already implements BCH-8 (13 ECC parity bytes,
   2 spare bytes) and needs no generic codeword rewrites.
 
+## Raw page reconstruction: four independent ART pages
+
+An extra read-only comparison was performed against the same archived ART
+partition on pages 2, 3, 4, and 16. The existing AArch64 `nanddump`
+binary was copied temporarily from the OpenWrt build to the running
+router's tmpfs and used with `-n -o --bb=dumpbad -s <page*2048>
+-l 2048 -f <file> /dev/mtd18`. Each sample is 2176 bytes (2048 main
+plus 128 OOB). ECC failure count stayed at 10 throughout these *raw*
+reads. All temporary binaries and raw sample files were deleted from
+router tmpfs afterward; private copies are retained on Acer.
+
+To undo the wrong BCH-4 driver's raw-output DMA scatter, split the 2176
+bytes into a 2048-byte data buffer and 128-byte OOB buffer, then reconstruct
+four consecutive 528-byte physical read segments. For each codeword
+`i=0..3` concatenate:
+
+- data `[516*i : 516*i+464]` (464 bytes)
+- OOB `[12*i : 12*i+1]` (one bad-block-marker byte)
+- data `[516*i+464 : 516*i+(500 if i==3 else 516)]`
+- OOB `[12*i+1 : 12*i+(28 if i==3 else 12)]`
+
+The actual NAND physical format is hypothesized to be 532 bytes per
+BCH-8 codeword. At offsets `532*i` within the recovered physical
+stream, the inferred main data are 452 bytes, followed by a one-byte
+bad-block marker, then 64 data bytes (48 for the last codeword).
+This yields 516+516+516+500=2048 source bytes to compare against the
+factory backup. Interpreting the same stream as BCH-4 instead uses a
+528-byte stride and 464+52 (last 464+36) main-byte split.
+
+| ART page | BCH-8 reconstructed bytes matching backup | BCH-4 interpretation |
+| --- | ---: | ---: |
+| 2 | 2030 / 2048 | 1747 / 2048 |
+| 3 | 2046 / 2048 | 1988 / 2048 |
+| 4 | 2047 / 2048 | 2039 / 2048 |
+| 16 | 2046 / 2048 | 1925 / 2048 |
+| **Total** | **8169 / 8192** | **7699 / 8192** |
+
+This quantitatively favors the BCH-8 codeword format on *four*
+independent pages without any flash writes. It is not equivalent to
+successfully decoding BCH-8 parity: there are still 23 mismatching
+bytes across these samples. Some occur at DMA transfer boundaries;
+their cause requires actual hardware with BCH-8 enabled. The
+BCH-4-configured raw transfer fetches only 4×528=2112 of the
+4×532=2128 BCH-8 physical codeword bytes, and cannot fully recover
+the final codeword's parity. Do **not** assume that the measured raw
+byte discrepancies are all genuine NAND wear or correctable ECC errors.
+
 ## Candidate and safe validation
 
 The `wave7-ecc8-validation` source branch changes only
@@ -46,6 +93,9 @@ read-only against the factory backup. Success requires exact binary
 agreement, zero ECC failures and correct 27-partition SMEM inventory.
 Check old bootloader/ART partitions as well as rootfs; do not erase,
 format, reattach or upgrade factory NAND as a diagnostic substitute.
+When testing, start by comparing pages 2/3/4/16 of the same ART
+partition to the archived bytes and checking `ecc_failures` before/after.
+Only then consider changing UBI policy or using NAND for a persistent root.
 
 Private ART dumps, radio MACs and backup binaries are **not** part of
 the public source tree. Experiment scratch is kept in
