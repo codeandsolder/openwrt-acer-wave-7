@@ -88,6 +88,25 @@ wave7_firstboot_nand_root_ready() {
 	' /proc/self/mountinfo
 }
 
+wave7_firstboot_commit_boot() {
+	# Qualcomm APPSBL increments bootfail every boot and switches rootfs
+	# slots at six. Match the vendor's mark_boot_ok, but only after the
+	# normal NAND-root trial has passed the existing safety gates.
+	case " $(cat /proc/cmdline 2>/dev/null) " in
+		*" root=/dev/ubiblock0_2 "*) ;;
+		*) return 0 ;;
+	esac
+	[ -s /etc/fw_env.config ] || return 1
+	local count
+	count=$(fw_printenv -n bootfail 2>/dev/null) || return 1
+	case "$count" in
+		0) return 0 ;;
+		''|*[!0-9]*) return 1 ;;
+	esac
+	fw_setenv bootfail 0 || return 1
+	[ "$(fw_printenv -n bootfail 2>/dev/null)" = 0 ]
+}
+
 wave7_firstboot_accept_link() {
 	# In an autonomous radio trial, LAN readiness alone must never disarm
 	# the hard recovery timer before the WLAN startup has completed.
@@ -99,6 +118,11 @@ wave7_firstboot_accept_link() {
 	wave7_firstboot_link_ready || return 1
 	touch /tmp/wave7-keep-boot
 	echo "<6>wave7-firstboot: lan carrier and management address are up; preserving trial boot" > /dev/kmsg 2>/dev/null || true
+	if wave7_firstboot_commit_boot; then
+		echo "<6>wave7-firstboot: bootloader bootfail cleared after accepted NAND boot" > /dev/kmsg 2>/dev/null || true
+	else
+		echo "<3>wave7-firstboot: could not clear bootfail; next reboot may return to vendor slot" > /dev/kmsg 2>/dev/null || true
+	fi
 	return 0
 }
 
