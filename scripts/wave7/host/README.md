@@ -30,22 +30,33 @@ the NAND rootfs UBI volume. Do not run it as a diagnostic/preflight and do
 not reboot a known-working OpenWrt initramfs just to satisfy its vendor
 precondition. It does not provide a working U-Boot serial/TFTP recovery route.
 
-The proven OpenWrt 6.18.60 lab image is revision cfb425bcad. Six
-supervised vendor OTA trials culminated in a successful running initramfs
-router, with all three Q6 processors, both MLO links, wired LAN and 27
-factory SMEM MTD partitions verified. Its live /tmp/wave7-keep-boot marker
-is intentionally armed; do not casually reboot this running router.
+The **current proven OpenWrt 6.18.60 lab image is d72fd34a45**
+(BCH-8/512). Seven supervised vendor OTA trials culminated in a
+successful NAND ECC-corrected initramfs router at 2026-11-09 16:35 CET:
+all 27 factory SMEM MTD partitions and ART calibration pages 2/3/4/16
+match the 2026-10-28 backup byte-for-byte, with 0 ECC failures and 5
+corrected bits. Three Q6 processors and both MLO links were running,
+LAN and the wired peer were reachable, and the live keep-boot marker
+was set before the failsafe deadline. This validates NAND reads and
+the AP, **not persistent rootfs or future power-cycle behavior**.
 
-A checksum-verified RAM-boot FIT copy is stored on Asus at
+The tested **BCH-8 RAM-boot FIT** on Asus is
+/home/jan/firmware/wave7/trials/wave7-d72fd34a45-bch8.itb
+(SHA-256 01c6a24ba77d05f0c032003bb6319bbdead918e864aa1ce86cb2de5e777e0d2e).
+The audited NAND-writing OTA, already used in successful trial seven, is
+/home/jan/firmware/wave7/trials/wave7-current-61860-d72fd34a45-bch8.bin
+(SHA-256 2581fc54b4c6b281dc02def9bfdad85d90a3201f2ee8861a879d08c550b220d8).
+
+The previous working **BCH-4 image** cfb425bcad remains stored
+separately on Asus at
 /home/jan/firmware/wave7/trials/wave7-cfb425bcad-known-good.itb
 (SHA-256 9b3a4a2b7fa5d7a59e7004eedca6ca89039ca1619c22fbb58c4dc016617a7353).
-The successfully tested NAND-writing OTA is
-/home/jan/firmware/wave7/trials/wave7-current-61860-cfb425bcad-etc-modes.bin.
-These are distinct from the untested BCH-8 NAND ECC validation variant.
+Its radio worked, but its NAND ECC setting demonstrably read factory
+ART data incorrectly; preserve it as historical recovery only.
 
-The complete sixth-trial observer snapshot and logs are stored privately
-on Asus and Acer in
-/home/jan/firmware/wave7/logs/current-61860-cfb425bcad-20261109/.
+Successful seventh-trial observer snapshot, ART validator logs, update
+log and recovery watcher are preserved on both Asus and Acer in
+/home/jan/firmware/wave7/logs/bch8-trial-20261109/.
 
 For the separate, read-only QPIC ECC investigation, see nand-ecc.md.
 For the controlled UART/U-Boot RAM boot plan, see ram-boot.md.

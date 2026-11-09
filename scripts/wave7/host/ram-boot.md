@@ -20,11 +20,11 @@ Acer build tree:
 `/home/jan/projects/acer-wave7-openwrt-current`
 
 Asus raw RAM-boot FIT:
-`/home/jan/firmware/wave7/trials/wave7-cfb425bcad-known-good.itb`
+`/home/jan/firmware/wave7/trials/wave7-d72fd34a45-bch8.itb`
 
-- **Linux:** 6.18.60, known-good revision cfb425bcad
+- **Linux:** 6.18.60, current hardware-tested BCH-8 revision d72fd34a45
 - **Size:** 17,563,648 bytes
-- **SHA-256:** 9b3a4a2b7fa5d7a59e7004eedca6ca89039ca1619c22fbb58c4dc016617a7353
+- **SHA-256:** 01c6a24ba77d05f0c032003bb6319bbdead918e864aa1ce86cb2de5e777e0d2e
 - **FIT default:** config@mi04.1-c2, ARM64 kernel load/entry 0x41000000
 - **DTB:** IPQ5332 Acer Wave 7 with QPIC/BAM and qcom,smem-part enabled
 - **Root:** embedded initramfs with the private 45-file Qualcomm radio
@@ -35,8 +35,9 @@ Asus raw RAM-boot FIT:
   mutating rootfs attachment before initramfs runs. UBI remains built in
   and can be attached explicitly later using `ubiattach` for ECC work.
 
-The separate `wave7-current-61860-cfb425bcad-etc-modes.bin` is a
+The separate `wave7-current-61860-d72fd34a45-bch8.bin` is a
 **NAND-writing vendor sysupgrade package**, not suitable for TFTP+bootm.
+It has been tested successfully; use the raw FIT above for U-Boot RAM boot.
 
 ## Actual hardware boot session
 
@@ -62,7 +63,7 @@ The separate `wave7-current-61860-cfb425bcad-etc-modes.bin` is a
 5. With confirmed networking, the intended RAM-only commands are:
 
    ```text
-   tftpboot 0x44000000 wave7-cfb425bcad-known-good.itb
+   tftpboot 0x44000000 wave7-d72fd34a45-bch8.itb
    iminfo 0x44000000
    bootm 0x44000000#config@mi04.1-c2
    ```
@@ -72,38 +73,28 @@ The separate `wave7-current-61860-cfb425bcad-etc-modes.bin` is a
    0x41000000 FIT kernel load address and recorded Q6 reserved regions.
    Check the live U-Boot `bdinfo` memory map before using it.
 6. From Asus, capture the first boot with the repo's
-   `wave7-openwrt-watch.sh <tag> 6.18.60 cfb425bcad`; inspect
+   `wave7-openwrt-watch.sh <tag> 6.18.60 d72fd34a45`; inspect
    `RADIO_MLO_READY` and `NAND_SMEMPART_READY` separately. The
    latter verifies all 27 recorded factory NAND partitions by name,
    size and erase geometry. Test external MT7925 two-link WPA3-SAE
    after the driver and hostapd start.
 
-### BCH-8 experiment (not the known-good image)
+### Verified BCH-8 hardware trial and retained rollback
 
-The separate, **untested** ECC-8 candidate is staged on Asus as
-`/home/jan/firmware/wave7/trials/wave7-d72fd34a45-bch8.itb`
-(SHA-256 `01c6a24ba77d05f0c032003bb6319bbdead918e864aa1ce86cb2de5e777e0d2e`).
-It is built from the pushed `wave7-ecc8-validation` branch,
-revision `d72fd34a45`, with the same UBI suppression, radio firmware,
-and private MLO configuration; only the board NAND ECC strength is
-changed to BCH-8/512. Its wrapper
-`wave7-current-61860-d72fd34a45-bch8.bin` is **NAND-writing**.
-Do not confuse these two.
+The seventh supervised 2026-11-09 vendor OTA successfully booted the
+BCH-8 `d72fd34a45` FIT. Live testing proved exact Oct 28 factory ART
+data recovery for four 2048-byte pages, ECC failures zero with five
+corrected bits, all 27 MTD partitions, LAN and dual-link MLO. It is
+**currently running from initramfs** with `/tmp/wave7-keep-boot` armed.
+The kernel lacks `CONFIG_KEXEC_FILE`; there is no verified SSH-only
+RAM-boot path for future version changes.
 
-With the *actual* U-Boot UART/TFTP path established and correct
-load address verified as above, substitute
-`wave7-d72fd34a45-bch8.itb` in the TFTP command and
-`wave7-openwrt-watch.sh <tag> 6.18.60 d72fd34a45` for the capture.
-The first hardware test should be **read-only** ART and factory MTD
-comparison against the 2026-10-28 physical NAND backup, followed by
-wired LAN and dual-link MLO checks. Preserve access to the verified
-`cfb425bcad` FIT for recovery.
-
-As of 2026-11-09, the **currently running** 6.18.60
-`cfb425bcad` kernel has `CONFIG_KEXEC_FILE` disabled (and no
-kexec helper or working overlay interface). There is no remotely
-verified RAM-only kernel replacement path from that live SSH session.
-The BCH-8 candidate has not been booted on hardware.
+Previous BCH-4 `cfb425bcad` FIT remains preserved on Asus as
+`wave7-cfb425bcad-known-good.itb`, SHA256
+`9b3a4a2b7fa5d7a59e7004eedca6ca89039ca1619c22fbb58c4dc016617a7353`.
+Its Wi-Fi worked but its NAND ECC setting caused data misalignment,
+so prefer the tested BCH-8 image for future NAND reads. Preserve
+UART/TFTP as a recovery path for the next persistent-root experiment.
 
 Neither these commands nor `setenv` with no `saveenv` flash NAND.
 The bootloader's own boot/recovery behavior still has to be observed
@@ -115,7 +106,7 @@ Without UART, the established `wave7-trial-flash.sh` workflow is the
 alternative. That workflow **writes NAND** and requires a deliberate
 return to vendor Linux 5.4.213 with `bootfail=0`; it arms independent
 OpenWrt and fallback/pstore observers before issuing sysupgrade.
-Six guarded hardware OTA trials were completed on 2026-11-09; the
-sixth validated 6.18.60 LAN, SMEM factory NAND enumeration and two-link
-MLO, with a keep-boot marker to retain the healthy initramfs boot.
-The BCH-8 NAND candidate documented in nand-ecc.md has NOT been flashed.
+Seven guarded hardware OTA trials were completed on 2026-11-09;
+the seventh verified BCH-8 and exact factory NAND ART reads together
+with the working LAN and two-link MLO boot. The current live image
+is still an initramfs trial, not a validated persistent rootfs.
