@@ -60,3 +60,4 @@ log and recovery watcher are preserved on both Asus and Acer in
 
 For the separate, read-only QPIC ECC investigation, see nand-ecc.md.
 For the controlled UART/U-Boot RAM boot plan, see ram-boot.md.
+For persistent NAND root and vendor-preserving overlay design, see storage-boot-plan.md.
