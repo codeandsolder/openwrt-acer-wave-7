@@ -114,6 +114,40 @@ They are stored separately in Asus `/home/jan/firmware/wave7/trials/`.
 Functional source commit `d72fd34a45` is now part of the canonical
 Wave 7 OpenWrt branch; later commits contain documentation and tools.
 
+### Read-only UBI slot metadata — 2026-11-09
+
+On the working BCH-8 kernel, read **only** the first two 128KiB PEBs
+from each existing rootfs MTD device; no UBI attach was attempted.
+The live `/proc/mtd` order is `mtd21=rootfs` and
+`mtd22=rootfs_1` (use partition names, not assumed indices, when
+automating later). Physical samples are stored privately at
+`/home/jan/projects/acer-wave7-firmware/work/nand-compat-20261109/ubi-header-inventory/`.
+
+All four EC headers have UBI# magic, version 1, VID offset 2048,
+data offset 4096, and **valid UBI CRCs**. All four corresponding VID
+headers have UBI! magic and **valid CRCs**; they are the two redundant
+`layout volume` logical eraseblocks 0 and 1. The UBI volume table
+records also have valid CRCs:
+
+| Active MTD partition | EC count | Image sequence | wifi_fw PEBs | kernel PEBs | ubi_rootfs PEBs |
+| --- | ---: | --- | ---: | ---: | ---: |
+| rootfs (mtd21) | 91 | 758524c0 | 87 | 143 | 230 |
+| rootfs_1 (mtd22) | 8 | 2736642e | 87 | 50 | 230 |
+
+Volume types are static `wifi_fw` and `kernel`, dynamic
+`ubi_rootfs`. The larger `kernel` allocation strongly suggests
+`rootfs` contains the current OpenWrt FIT and `rootfs_1` remains
+the vendor alternate, but **neither the bootloader's chosen slot nor
+the complete logical volume contents were proven by these headers**.
+ECC failures stayed at **0** for both samples; standby `rootfs_1`
+reported 4 corrected bits. This confirms readable ECC-corrected UBI
+metadata without scanning the entire NAND.
+
+Importantly, CRC-valid UBI headers do not establish safe attach/write
+behavior. UBI attach can mutate flash metadata and should not be used
+as an incidental read-only diagnostic. Continue using raw partition
+reads and header/VID verification while designing persistent boot.
+
 ### Repeatable read-only ART check
 
 On Asus, with the matching BCH-8 firmware actually running, execute:
