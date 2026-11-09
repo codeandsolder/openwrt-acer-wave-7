@@ -1,10 +1,13 @@
 # Wave 7 factory SPI-NAND ECC compatibility
 
-The *working* 6.18.60 `cfb425bcad` release enumerates GigaDevice
-512 MiB SPI NAND (2 KiB page, 128-byte OOB, 128 KiB erase blocks) and
-all 27 factory physical SMEM partitions, but its original board device
-tree inherited the vendor's **4-bit ECC per 512 bytes** setting.
-Linux 6.18.60 warns that the detected chip requires stronger ECC.
+The Wave 7's **current hardware-validated** Linux 6.18.60
+`d72fd34a45` image uses **BCH-8 ECC per 512 bytes** for the GigaDevice
+512 MiB SPI NAND (2 KiB page, 128-byte OOB, 128 KiB eraseblocks).
+The previous working MLO image `cfb425bcad` inherited the vendor's
+**BCH-4/512** setting. That geometry was wrong: the driver warned about
+weak ECC and returned byte-corrupted factory data. The fix is a single
+`nand-ecc-strength = <8>` board DTS change; the upstream QPIC
+controller already supports BCH-8.
 
 ## Reproducible read-only evidence
 
@@ -77,47 +80,61 @@ BCH-4-configured raw transfer fetches only 4×528=2112 of the
 the final codeword's parity. Do **not** assume that the measured raw
 byte discrepancies are all genuine NAND wear or correctable ECC errors.
 
-## Candidate and safe validation
+## Real hardware validation — PASS, 2026-11-09
 
-The `wave7-ecc8-validation` source branch changes only
-`nand-ecc-strength = <8>` in the Acer board DTS, retaining 512-byte
-steps and all radio/network/UBI settings. **It is an untested candidate,
-not the live router's current ECC configuration.**
+The seventh guarded vendor OTA trial booted FIT revision `d72fd34a45`
+on real IPQ5332 hardware at 16:35 CET. No custom controller changes
+or experimental NAND writes beyond the normal vendor OTA were needed.
 
-Do not change the running router's boot state merely to test ECC.
-Keep the last known-good FIT (`cfb425bcad`, SHA256
-`9b3a4a2b7fa5d7a59e7004eedca6ca89039ca1619c22fbb58c4dc016617a7353`)
-available separately. Once a controlled UART RAM boot is possible,
-boot the BCH-8 FIT without NAND writes and compare the same ART pages
-read-only against the factory backup. Success requires exact binary
-agreement, zero ECC failures and correct 27-partition SMEM inventory.
-Check old bootloader/ART partitions as well as rootfs; do not erase,
-format, reattach or upgrade factory NAND as a diagnostic substitute.
-When testing, start by comparing pages 2/3/4/16 of the same ART
-partition to the archived bytes and checking `ecc_failures` before/after.
-Only then consider changing UBI policy or using NAND for a persistent root.
+- `/sys/class/mtd/mtd18/ecc_strength` reported **8**.
+- **All 27 physical SMEM partitions** matched the factory inventory
+  by name, size and erase geometry.
+- The source-controlled read-only `verify-factory-art.sh` compared
+  pages 2, 3, 4 and 16 of current `/dev/mtd18` (`0:art`) against the
+  2026-10-28 factory backup, with **four exact 2048-byte matches**.
+- ECC counters went from **0 failures, 0 corrected bits** to
+  **0 failures, 5 corrected bits**. The hardware corrected raw
+  flash errors, producing exact factory data without any uncorrectable
+  ECC failures.
+- Kernel 6.18.60, procd/ubusd, wired LAN and peer 192.168.76.2,
+  all three Qualcomm Q6 UserPDs and 2-link WPA3-SAE Wi-Fi 7 MLO
+  (2412 and 5180 MHz) worked. The keep-boot marker was explicitly
+  armed at uptime 93.7 seconds after these checks; the router
+  remained online beyond 189 seconds.
+- Full seventh-trial evidence, SHA-verified on **both Acer and Asus**:
+  `/home/jan/firmware/wave7/logs/bch8-trial-20261109/`, particularly
+  `art-verify.log`, `openwrt-capture.txt`, `supervised-flash.log`
+  and `openwrt-watch.log`.
 
-### After a supervised BCH-8 hardware boot
+The working BCH-8 FIT is SHA256
+`01c6a24ba77d05f0c032003bb6319bbdead918e864aa1ce86cb2de5e777e0d2e`.
+The corresponding NAND-writing OTA is SHA256
+`2581fc54b4c6b281dc02def9bfdad85d90a3201f2ee8861a879d08c550b220d8`.
+They are stored separately in Asus `/home/jan/firmware/wave7/trials/`.
+Functional source commit `d72fd34a45` is now part of the canonical
+Wave 7 OpenWrt branch; later commits contain documentation and tools.
 
-Run the source-controlled, read-only comparison deployed on **Asus**
-(after the BCH-8 image `d72fd34a45` is actually running):
+### Repeatable read-only ART check
+
+On Asus, with the matching BCH-8 firmware actually running, execute:
 
 ```sh
 /home/jan/scripts/wave7/verify-factory-art.sh   /home/jan/firmware/wave7/reference/factory-art-20261028.bin   d72fd34a45
 ```
 
-The 2 MiB reference is the exact private Oct 28 physical ART backup,
-checksum-matched between Acer and Asus and stored with mode 0600.
-The tool refuses unexpected kernel revisions, ECC strength other than
-8, or an ART partition other than `mtd18 0:art`. It verifies all 27
-SMEM partitions, reads pages 2/3/4/16 from the live device **without
-writes**, compares to the exact private backup, checks ECC counters
-before/after, and prints `ART_BCH8_FACTORY_MATCH=1` only for exact
-matches with no additional ECC failures. It keeps temporary compare
-files only under a temporary `/tmp/wave7-art-ecc-*` directory and
-cleans them up on exit. Save the
-command's stdout/stderr in the supervised trial's normal evidence
-folder when it is finally used.
+The private 2 MiB ART factory reference on Asus is mode 0600 and
+checksum-verified against Acer's full 2026-10-28 NAND backup.
+The checker rejects the wrong kernel, release, ECC setting or ART
+partition **before reading NAND**. This negative guard was exercised
+against `cfb425bcad` and returned 3 as intended.
+
+This **does not** establish that a persistent NAND rootfs or
+explicit UBI attachment is safe: UBI automatic attach stays disabled,
+and the system still runs from initramfs. The next storage
+investigation should validate the remaining NAND boot partitions,
+read behavior of UBI volumes and bad-block metadata without erases
+or rootfs migrations. External MT7925 MLO station association has
+not yet been repeated with 6.18.60 because the test laptop is offline.
 
 Private ART dumps, radio MACs and backup binaries are **not** part of
 the public source tree. Experiment scratch is kept in
