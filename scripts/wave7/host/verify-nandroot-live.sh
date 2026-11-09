@@ -44,7 +44,8 @@ check grep -qx ath12k_wifi7 /etc/modules.d/ath12k
 check test -f /tmp/wave7-keep-boot
 echo 'ROOT_DEVICE=ubiblock0_2'
 echo 'ROOTFS_MOUNT=verified-squashfs'
-echo 'OPENWRT_UBIFS_MOUNT=verified-ubi1:openwrt_data'\necho 'VENDOR_UBIFS_MOUNT=absent'
+echo 'OPENWRT_UBIFS_MOUNT=verified-ubi1:openwrt_data'
+echo 'VENDOR_UBIFS_MOUNT=absent'
 echo 'KEEP_BOOT_ARMED=1'
 echo '=== ROOT_AND_OVERLAY ==='
 awk '$5 == "/" || $5 == "/rom" || $5 == "/overlay" {print}' /proc/self/mountinfo
