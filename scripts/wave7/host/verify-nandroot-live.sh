@@ -27,11 +27,24 @@ check awk -v dev="$dev" '
     $3 == dev && $5 == "/rom" && / - squashfs / { found = 1 }
     END { exit !found }
 ' /proc/self/mountinfo
-check awk '/ - ubifs / { bad = 1 } END { exit bad }' /proc/self/mountinfo
+check test "$(cat /sys/class/ubi/ubi1/mtd_num)" = 23
+check test "$(cat /sys/class/ubi/ubi1/reserved_for_bad)" = 16
+check test "$(cat /sys/class/ubi/ubi1_0/name)" = rootfs_data
+check test "$(cat /sys/class/ubi/ubi1_0/reserved_ebs)" = 318
+check test "$(cat /sys/class/ubi/ubi1_1/name)" = openwrt_data
+check test "$(cat /sys/class/ubi/ubi1_1/reserved_ebs)" = 56
+check awk '
+    $5 == "/overlay" && / - ubifs ubi1:openwrt_data / { found = 1 }
+    / - ubifs / && !($5 == "/overlay" && / - ubifs ubi1:openwrt_data /) { bad = 1 }
+    END { exit (!found || bad) }
+' /proc/self/mountinfo
+check test -d /overlay/upper
+check test -d /overlay/work
+check grep -qx ath12k_wifi7 /etc/modules.d/ath12k
 check test -f /tmp/wave7-keep-boot
 echo 'ROOT_DEVICE=ubiblock0_2'
 echo 'ROOTFS_MOUNT=verified-squashfs'
-echo 'VENDOR_UBIFS_MOUNT=absent'
+echo 'OPENWRT_UBIFS_MOUNT=verified-ubi1:openwrt_data'\necho 'VENDOR_UBIFS_MOUNT=absent'
 echo 'KEEP_BOOT_ARMED=1'
 echo '=== ROOT_AND_OVERLAY ==='
 awk '$5 == "/" || $5 == "/rom" || $5 == "/overlay" {print}' /proc/self/mountinfo

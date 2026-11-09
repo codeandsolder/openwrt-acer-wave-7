@@ -121,11 +121,25 @@ wave7_firstboot_defer_wifi_autoload() {
 		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: unknown module list' > /dev/kmsg 2>/dev/null || true
 		return 1
 	fi
-	if ! mv "$modules" "$saved"; then
-		echo '<3>wave7-firstboot: cannot defer ath12k_wifi7: module list not writable' > /dev/kmsg 2>/dev/null || true
-		return 1
+	if [ "$INITRAMFS" = 1 ]; then
+		if ! mv "$modules" "$saved"; then
+			echo '<3>wave7-firstboot: unable to save ath12k modules list' > /dev/kmsg 2>/dev/null || true
+			return 1
+		fi
+		printf 'ath12k\n' > "$modules"
+	else
+		# A persistent UBIFS upperdir must never receive a permanent
+		# whiteout for the actual ath12k modules list. Bind-mount a
+		# transient /tmp placeholder instead.
+		local stub=/tmp/wave7-ath12k-autoload-stub
+		cp "$modules" "$saved" || return 1
+		printf 'ath12k\n' > "$stub" || return 1
+		if ! mount --bind "$stub" "$modules"; then
+			rm -f "$saved" "$stub"
+			echo '<3>wave7-firstboot: bind-mount ath12k deferral failed' > /dev/kmsg 2>/dev/null || true
+			return 1
+		fi
 	fi
-	printf 'ath12k\n' > "$modules"
 	echo '<6>wave7-firstboot: ath12k_wifi7 autoload deferred; manual modprobe after wired management' > /dev/kmsg 2>/dev/null || true
 }
 
@@ -263,6 +277,15 @@ wave7_firstboot_arm_autoprobe() {
                 if [ "$(cat /sys/class/remoteproc/remoteproc1/state 2>/dev/null)" = running ] &&
                    [ "$(cat /sys/class/remoteproc/remoteproc2/state 2>/dev/null)" = running ] &&
                    wave7_firstboot_radio_registered; then
+                    if [ -f /tmp/wave7-ath12k-autoload-stub ]; then
+                        # Restore the original autoload list without writing
+                        # a persistent upperdir whiteout.
+                        if ! umount /etc/modules.d/ath12k; then
+                            echo '<3>wave7-autoprobe: failed to restore ath12k autoload list' > /dev/kmsg
+                            exit 1
+                        fi
+                        rm -f /tmp/wave7-ath12k-autoload-stub
+                    fi
                     touch /tmp/wave7-autoprobe-success
                     echo '<6>wave7-autoprobe: RADIO_STARTUP_SUCCESS' > /dev/kmsg
                     break
