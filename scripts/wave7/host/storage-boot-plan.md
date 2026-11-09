@@ -151,6 +151,10 @@ The BCH-8 initramfs FIT remains the known-good recovery baseline.
   check must inspect the actual root mount (SquashFS
   `ubiblock0_2`), all 27 factory MTD partitions, LAN, Wi-Fi
   and preserved alternate vendor boot slot before keep-boot.
+  The production preinit watchdog now enforces a matching
+  mountinfo major:minor on `/rom` and rejects any mounted
+  vendor UBIFS while deciding whether to set the keep-boot marker.
+  The proven initramfs boot path is unaffected.
 
 ## Persistence for mutable configuration
 
