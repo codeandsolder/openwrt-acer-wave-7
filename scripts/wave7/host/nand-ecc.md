@@ -97,6 +97,28 @@ When testing, start by comparing pages 2/3/4/16 of the same ART
 partition to the archived bytes and checking `ecc_failures` before/after.
 Only then consider changing UBI policy or using NAND for a persistent root.
 
+### After a supervised BCH-8 hardware boot
+
+Run the source-controlled, read-only comparison deployed on **Asus**
+(after the BCH-8 image `d72fd34a45` is actually running):
+
+```sh
+/home/jan/scripts/wave7/verify-factory-art.sh   /home/jan/firmware/wave7/reference/factory-art-20261028.bin   d72fd34a45
+```
+
+The 2 MiB reference is the exact private Oct 28 physical ART backup,
+checksum-matched between Acer and Asus and stored with mode 0600.
+The tool refuses unexpected kernel revisions, ECC strength other than
+8, or an ART partition other than `mtd18 0:art`. It verifies all 27
+SMEM partitions, reads pages 2/3/4/16 from the live device **without
+writes**, compares to the exact private backup, checks ECC counters
+before/after, and prints `ART_BCH8_FACTORY_MATCH=1` only for exact
+matches with no additional ECC failures. It keeps temporary compare
+files only under a temporary `/tmp/wave7-art-ecc-*` directory and
+cleans them up on exit. Save the
+command's stdout/stderr in the supervised trial's normal evidence
+folder when it is finally used.
+
 Private ART dumps, radio MACs and backup binaries are **not** part of
 the public source tree. Experiment scratch is kept in
 `/home/jan/projects/acer-wave7-firmware/work/nand-compat-20261109/`.
