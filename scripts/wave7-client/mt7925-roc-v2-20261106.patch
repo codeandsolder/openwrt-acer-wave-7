@@ -1,0 +1,162 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/main.c b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+index 15d95ad..c36ccb0 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -513,6 +513,25 @@ static void mt7925_roc_iter(void *priv, u8 *mac,
+ 	mt7925_mcu_abort_roc(phy, &mvif->bss_conf, phy->roc_token_id);
+ }
+ 
++struct mt7925_roc_abort_data {
++	struct mt792x_phy *phy;
++	u8 token;
++};
++
++/* Same as mt7925_roc_iter(), except that the token to abort is latched by the
++ * caller instead of read from phy->roc_token_id. Needed wherever a newer ROC
++ * may already have bumped roc_token_id while the old one is still being torn
++ * down - aborting with the newer token would revoke the wrong grant.
++ */
++static void mt7925_roc_token_iter(void *priv, u8 *mac,
++				  struct ieee80211_vif *vif)
++{
++	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
++	struct mt7925_roc_abort_data *data = priv;
++
++	mt7925_mcu_abort_roc(data->phy, &mvif->bss_conf, data->token);
++}
++
+ void mt7925_roc_abort_sync(struct mt792x_dev *dev)
+ {
+ 	struct mt792x_phy *phy = &dev->phy;
+@@ -532,6 +551,7 @@ EXPORT_SYMBOL_GPL(mt7925_roc_abort_sync);
+ 
+ void mt7925_roc_work(struct work_struct *work)
+ {
++	struct mt7925_roc_abort_data data;
+ 	struct mt792x_phy *phy;
+ 
+ 	phy = (struct mt792x_phy *)container_of(work, struct mt792x_phy,
+@@ -540,12 +560,28 @@ void mt7925_roc_work(struct work_struct *work)
+ 	if (!test_and_clear_bit(MT76_STATE_ROC, &phy->mt76->state))
+ 		return;
+ 
++	data.phy = phy;
++	data.token = phy->roc_token_id;
++
++	/* Report the expiry to mac80211 first, before the UNI_ROC_ABORT round
++	 * trip below. ieee80211_remain_on_channel_expired() only queues
++	 * mac80211's own hw_roc_done work, while mt792x_mutex_acquire() (which
++	 * also wakes the chip from PM) plus waiting for the MCU reply can take
++	 * tens of ms. Notifying afterwards keeps the finished ROC in
++	 * mac80211's roc_list for that whole window, and a mgmt_tx arriving in
++	 * it gets coalesced onto that dead ROC.
++	 *
++	 * The token is latched above because mac80211 may start the next ROC
++	 * (mt7925_set_roc() -> ++roc_token_id) as soon as it is notified, and
++	 * this abort must still revoke the old grant, not the new one.
++	 */
++	ieee80211_remain_on_channel_expired(phy->mt76->hw);
++
+ 	mt792x_mutex_acquire(phy->dev);
+ 	ieee80211_iterate_active_interfaces(phy->mt76->hw,
+ 					    IEEE80211_IFACE_ITER_RESUME_ALL,
+-					    mt7925_roc_iter, phy);
++					    mt7925_roc_token_iter, &data);
+ 	mt792x_mutex_release(phy->dev);
+-	ieee80211_remain_on_channel_expired(phy->mt76->hw);
+ }
+ 
+ static int mt7925_abort_roc(struct mt792x_phy *phy,
+@@ -571,14 +607,39 @@ static int mt7925_set_roc(struct mt792x_phy *phy,
+ 			  enum mt7925_roc_req type)
+ {
+ 	int err;
++	u8 token;
++
++	/* Every granted ROC arms phy->roc_timer (mt7925_mcu_roc_handle_grant()),
++	 * and an ungranted one holds the mt76 mutex for its whole 4s wait, so
++	 * "MT76_STATE_ROC set but roc_timer no longer pending" can only mean
++	 * the previous ROC's hold time is already over in the FW and just
++	 * mt7925_roc_work() has not run yet. Returning -EBUSY for that stale
++	 * ROC would hand the caller a channel it does not own -
++	 * mt7925_mgd_prepare_tx() ignores the return value, so auth/assoc
++	 * would go out off-channel. Finish the stale one here instead and
++	 * request the channel again.
++	 *
++	 * cancel_work() (not the _sync variant) is mandatory: every caller
++	 * holds the mt76 mutex and mt7925_roc_work() takes that same mutex.
++	 */
++	if (test_bit(MT76_STATE_ROC, &phy->mt76->state) &&
++	    !timer_pending(&phy->roc_timer)) {
++		cancel_work(&phy->roc_work);
++
++		if (test_and_clear_bit(MT76_STATE_ROC, &phy->mt76->state)) {
++			mt7925_mcu_abort_roc(phy, mconf, phy->roc_token_id);
++			ieee80211_remain_on_channel_expired(phy->mt76->hw);
++		}
++	}
+ 
+ 	if (test_and_set_bit(MT76_STATE_ROC, &phy->mt76->state))
+ 		return -EBUSY;
+ 
+ 	phy->roc_grant = false;
+ 
+-	err = mt7925_mcu_set_roc(phy, mconf, chan, duration, type,
+-				 ++phy->roc_token_id);
++	token = ++phy->roc_token_id;
++
++	err = mt7925_mcu_set_roc(phy, mconf, chan, duration, type, token);
+ 	if (err < 0) {
+ 		clear_bit(MT76_STATE_ROC, &phy->mt76->state);
+ 		goto out;
+@@ -2099,6 +2160,14 @@ static void mt7925_mgd_prepare_tx(struct ieee80211_hw *hw,
+ 	u16 duration = info->duration ? info->duration :
+ 		       jiffies_to_msecs(HZ);
+ 
++	/* info->was_assoc is set only by ieee80211_set_disassoc(), i.e. this is
++	 * the deauth/disassoc that tears the link down. That frame goes out on
++	 * the link we are already associated on, so the FW already holds a
++	 * channel grant for it and the ROC below is redundant.
++	 */
++	if (info->was_assoc)
++		return;
++
+ 	mt792x_mutex_acquire(dev);
+ 	mt7925_set_roc(mvif->phy, &mvif->bss_conf,
+ 		       mvif->bss_conf.mt76.ctx->def.chan, duration,
+@@ -2112,6 +2181,14 @@ static void mt7925_mgd_complete_tx(struct ieee80211_hw *hw,
+ {
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 
++	/* Paired with the was_assoc early return in mt7925_mgd_prepare_tx():
++	 * no ROC was requested for the deauth/disassoc, so there is nothing to
++	 * abort here. Aborting anyway would revoke the still-needed channel
++	 * grant (and could kill an unrelated userspace ROC).
++	 */
++	if (info->was_assoc)
++		return;
++
+ 	/* Keep the join ROC until the station is authorized, so that it
+ 	 * covers the 4-way handshake. mt7925_mac_sta_event() releases it.
+ 	 * On MLD, the active ROC is the MLO ROC, which must be released
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+index 26cdb3f..67a45fe 100644
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -368,6 +368,16 @@ static void mt7925_mcu_roc_handle_grant(struct mt792x_dev *dev,
+ 	/* should never happen */
+ 	WARN_ON_ONCE((le16_to_cpu(grant->tag) != UNI_EVENT_ROC_GRANT));
+ 
++	duration = le32_to_cpu(grant->max_interval);
++
++	/* Drop a grant that does not belong to the outstanding request:
++	 * validate the token before acting on the grant, because a late
++	 * grant for an already-aborted request would otherwise overwrite
++	 * band_idx and wake the waiter of a newer request.
++	 */
++	if (grant->tokenid != dev->phy.roc_token_id)
++		return;
++
+ 	if (grant->reqtype == MT7925_ROC_REQ_ROC)
+ 		ieee80211_ready_on_channel(hw);
+ 	else if (grant->reqtype == MT7925_ROC_REQ_JOIN)
