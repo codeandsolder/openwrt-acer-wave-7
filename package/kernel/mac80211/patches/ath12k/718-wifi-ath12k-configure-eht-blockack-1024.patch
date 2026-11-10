@@ -1,0 +1,56 @@
+From: Paulson Raja L <lraja@qti.qualcomm.com>
+Date: Sun, 3 Aug 2025 16:52:51 +0530
+Subject: [PATCH] wifi: ath12k: configure 1024 BlockAck window for EHT APs
+
+Configure EHT AP vdev BA mode for 1024 entries (instead of the HE 256
+default), and do so independently of the optional HE operation field.
+Keep HE operation parameter setup gated on the presence of that field.
+
+Adapted to OpenWrt backports 7.2 from Qualcomm's public downstream patch:
+Telecominfraproject/wlan-ap, ath12k/0514-UPSTREAM-CP-wifi-Fix-HE-operation-param-check-to-ena.patch
+Original upstream author: Paulson Raja L <lraja@qti.qualcomm.com>
+
+---
+diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -4922,17 +4922,21 @@
+ 		}
+ 		ath12k_control_beaconing(arvif, info);
+ 
+-		if (arvif->is_up && info->he_support &&
+-		    info->he_oper.params) {
+-			/* TODO: Extend to support 1024 BA Bitmap size */
++		if (arvif->is_up && info->he_support) {
++			param_value = info->eht_support ?
++				      WMI_BA_MODE_BUFFER_SIZE_1024 :
++				      WMI_BA_MODE_BUFFER_SIZE_256;
+ 			ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+ 							    WMI_VDEV_PARAM_BA_MODE,
+-							    WMI_BA_MODE_BUFFER_SIZE_256);
++							    param_value);
+ 			if (ret)
+ 				ath12k_warn(ar->ab,
+-					    "failed to set BA BUFFER SIZE 256 for vdev: %d\n",
+-					    arvif->vdev_id);
+-
++					    "failed to set BA BUFFER SIZE %u for vdev: %d: %d\n",
++					    info->eht_support ? 1024 : 256,
++					    arvif->vdev_id, ret);
++		}
++
++		if (arvif->is_up && info->he_support && info->he_oper.params) {
+ 			param_id = WMI_VDEV_PARAM_HEOPS_0_31;
+ 			param_value = info->he_oper.params;
+ 			ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.h b/drivers/net/wireless/ath/ath12k/wmi.h
+--- a/drivers/net/wireless/ath/ath12k/wmi.h
++++ b/drivers/net/wireless/ath/ath12k/wmi.h
+@@ -171,6 +171,7 @@
+ #define WMI_APPEND_TO_EXISTING_CHAN_LIST_FLAG 1
+ 
+ #define WMI_BA_MODE_BUFFER_SIZE_256  3
++#define WMI_BA_MODE_BUFFER_SIZE_1024 6
+ 
+ /* HW mode config type replicated from FW header
+  * @WMI_HOST_HW_MODE_SINGLE: Only one PHY is active.
