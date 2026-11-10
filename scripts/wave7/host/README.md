@@ -68,3 +68,29 @@ not the vendor SquashFS. It passed full offline UBI byte/CRC verification
 and passed its first native NAND-root hardware boot on 2026-11-09. See storage-boot-plan.md for SHA256s
 and staged hardware-verified artifact; the previous working `d72fd34a45` BCH-8 initramfs
 remains the proven recovery baseline.
+
+### IPQ5332 WLAN NoC early-association reproduction
+
+The wave7-noc-early-assoc-trial.sh LABEL experiment targets the Acer Wave 7
+lab on known-good revision dfe24ead9d. It requires separate wired SSH
+management, bootfail=0, the first-boot marker, a connected MLO station,
+no pre-existing NoC fatal and successful wired peer pings. It performs
+a normal router reboot, then observes the new boot until at least 340s
+of uptime. It never calls wifi reload, flashes firmware or modifies the
+client's connection profile.
+
+On Asus, ensure the MT7925 client's Wave7-MLO-Lab profile is already
+set to autoconnect=yes, then run the script with a fresh unique label.
+The output folder is created under
+/home/jan/firmware/wave7/logs/q6-noc-20261110/LABEL and includes a
+time-stamped TSV with parent remoteproc state, station count, NoC/WMI
+counters, radio power and bootfail. A newly observed NoC fatal triggers
+immediate collection of the devcoredumps, dmesg and logread through the
+read-only wave7-capture-devcoredump.sh helper. Existing evidence is not
+overwritten.
+
+Exit 0 means healthy with an MLO station, bootfail=0 and no observed NoC
+or failed WMI beacon commands through 340s; exit 3 means a fatal was
+observed and capture attempted. Other nonzero exit codes mean
+inconclusive or failed preflight. Do not count inconclusive as crashes.
+Record the client autoconnect state for every run.
