@@ -1,0 +1,48 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] soc: qcom: rearm inbound SMP2P IRQs after remote restart
+
+The remote leaves its SMEM items intact across SSR. An unchanged ready bit
+would be suppressed by the host last_value XOR. Reset that cached value on
+an actual new SSR transition, before checking the inbound signals.
+The Acer board already advertises qcom,smp2p-feature-ssr-ack.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/soc/qcom/smp2p.c
++++ b/drivers/soc/qcom/smp2p.c
+@@ -178,18 +178,32 @@
+ }
+ 
+ static bool qcom_smp2p_check_ssr(struct qcom_smp2p *smp2p)
+ {
+ 	struct smp2p_smem_item *in = smp2p->in;
++	struct smp2p_entry *entry;
+ 	bool restart;
+ 
+ 	if (!smp2p->ssr_ack_enabled)
+ 		return false;
+ 
+-	restart = in->flags & BIT(SMP2P_FLAGS_RESTART_DONE_BIT);
+-
+-	return restart != smp2p->ssr_ack;
++	restart = !!(in->flags & BIT(SMP2P_FLAGS_RESTART_DONE_BIT));
++	if (restart == smp2p->ssr_ack)
++		return false;
++
++	/*
++	 * The SMP2P SMEM buffer survives a remote restart. Its inbound bits
++	 * may be republished with the same value, and comparing against the
++	 * pre-restart cache would silently lose the new ready interrupt.
++	 * Reset the cache exactly once per newly observed SSR transition.
++	 */
++	list_for_each_entry(entry, &smp2p->inbound, node) {
++		if (entry->value)
++			entry->last_value = 0;
++	}
++
++	return true;
+ }
+ 
+ static void qcom_smp2p_do_ssr_ack(struct qcom_smp2p *smp2p)
+ {
+ 	struct smp2p_smem_item *out = smp2p->out;
