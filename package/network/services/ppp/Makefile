@@ -28,6 +28,11 @@ PKG_FIXUP:=autoreconf
 PKG_INSTALL:=1
 
 include $(INCLUDE_DIR)/package.mk
+# pppd always includes libpcap headers for demand/filter support, even
+# when building without the external pcap plugin.
+TARGET_CPPFLAGS += -I$(STAGING_DIR)/usr/include
+TARGET_LDFLAGS += -L$(STAGING_DIR)/usr/lib
+
 CONFIGURE_ARGS += \
 	--disable-cbcp \
 	--disable-eaptls \
