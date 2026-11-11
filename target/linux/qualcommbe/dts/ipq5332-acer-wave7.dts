@@ -296,6 +296,7 @@
 		qcom,tgt-mem-mode = <2>;
 		qcom,bdf-addr = <0x4bd00000 0x4bd00000 0x4bd00000 0 0 0>;
 		qcom,rproc = <&wcss_pd1>;
+		qcom,root-ssr-name = "q6wcss";
 		qcom,wsi-controller;
 
 		/* Two-chip MLO group: IPQ5332 -> QCN6432 -> IPQ5332.
@@ -342,6 +343,7 @@
 		qcom,pci_slot_id = <1>;
 
 		qcom,rproc = <&wcss_pd2>;
+		qcom,root-ssr-name = "q6wcss";
 		qcom,userpd-subsys-name = "q6v5_wcss_userpd2";
 
 		status = "okay";

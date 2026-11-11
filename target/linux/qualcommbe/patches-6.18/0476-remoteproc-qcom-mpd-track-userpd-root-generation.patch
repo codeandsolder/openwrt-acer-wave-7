@@ -1,0 +1,108 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] remoteproc: qcom: track UserPD parent firmware generation
+
+The root can be restarted by remoteproc recovery while its UserPDs
+still report RUNNING. A subsequent child teardown must not wait for
+a stop acknowledgment from the *previous* root firmware instance.
+
+Track a generation for each successful root boot and stamp the child
+after successful PAS/spawn. The child's stop handshake is only valid
+when its generation matches the active root; every teardown still
+executes PAS shutdown and the root boot-reference release.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -83,14 +83,16 @@
+ 	const char **firmware;
+ 	const char *userpd_firmware[MAX_UPD];
+ 	u8 userpd_asid[MAX_UPD];
+ 	u8 userpd_count;
+ 	struct userpd *upd[MAX_UPD];
++	atomic_t generation;
+ };
+ 
+ struct userpd {
+ 	u8 pd_asid;
++	u32 parent_generation;
+ 	struct device *dev;
+ 	struct qcom_rproc_ssr ssr_subdev;
+ 	struct qcom_q6v5 q6;
+ };
+ 
+@@ -139,10 +141,12 @@
+ 			dev_err(wcss->dev, "root WCSS shutdown after failed start: %d\n",
+ 				shutdown_ret);
+ 		goto err_unprepare;
+ 	}
+ 
++	atomic_inc(&wcss->generation);
++
+ 	return 0;
+ 
+ err_unprepare:
+ 	wcss->q6.running = false;
+ 	qcom_q6v5_unprepare(&wcss->q6);
+@@ -171,10 +175,12 @@
+ }
+ 
+ static int wcss_pd_start(struct rproc *rproc)
+ {
+ 	struct userpd *upd = rproc->priv;
++	struct rproc *parent = dev_get_drvdata(upd->dev->parent);
++	struct q6_wcss *wcss = parent->priv;
+ 	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret;
+ 
+ 	ret = qcom_scm_pas_auth_and_reset(pasid);
+ 	if (ret) {
+@@ -185,10 +191,14 @@
+ 	if (upd->q6.spawn_bit) {
+ 		ret = q6_wcss_spawn_pd(rproc);
+ 		if (ret)
+ 			return ret;
+ 	}
++
++	if (!ret)
++		WRITE_ONCE(upd->parent_generation,
++			   atomic_read(&wcss->generation));
+ 
+ 	return ret;
+ }
+ 
+ static int q6_wcss_stop(struct rproc *rproc)
+@@ -235,18 +245,21 @@
+  */
+ static int wcss_pd_stop(struct rproc *rproc)
+ {
+ 	struct userpd *upd = rproc->priv;
+ 	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
++	struct q6_wcss *wcss = rpd_rproc->priv;
+ 	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+ 	int ret, parent_ret;
+ 
+ 	/*
+ 	 * After root failure, child rproc can still report RUNNING even
+ 	 * though the firmware that would acknowledge the stop is gone.
+ 	 */
+ 	if (READ_ONCE(rpd_rproc->state) == RPROC_RUNNING &&
++	    READ_ONCE(upd->parent_generation) ==
++		atomic_read(&wcss->generation) &&
+ 	    upd->q6.stop_bit) {
+ 		ret = qcom_q6v5_request_stop(&upd->q6, NULL);
+ 		if (ret)
+ 			dev_warn(upd->dev, "UserPD stop handshake failed: %d\n", ret);
+ 	}
+@@ -946,10 +959,11 @@
+ 
+ 	wcss = rproc->priv;
+ 	wcss->dev = &pdev->dev;
+ 	wcss->desc = of_device_get_match_data(&pdev->dev);
+ 	wcss->firmware = firmware;
++	atomic_set(&wcss->generation, 0);
+ 
+ 	ret = q6_parse_userpd_metadata(wcss);
+ 	if (ret)
+ 		goto free_rproc;
+ 
