@@ -40,6 +40,7 @@ MAKE_FLAGS += TARGET="$(target)"
 TARGET_CFLAGS += -Dtarget_$(target)=1 -Wall
 # mtd.c includes libubox/md5.h, which is staged with the target headers.
 TARGET_CPPFLAGS += -I$(STAGING_DIR)/usr/include
+TARGET_LDFLAGS += -L$(STAGING_DIR)/usr/lib
 
 ifdef CONFIG_MTD_REDBOOT_PARTS
   MAKE_FLAGS += FIS_SUPPORT=1
