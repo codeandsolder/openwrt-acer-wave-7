@@ -7,6 +7,17 @@ wave7_firstboot_kmsg() {
 wave7_firstboot_dump_state() {
 	{
 		echo "diagnostic snapshot before failsafe panic"
+		# Capture the exact receive stage: physical PPE ingress,
+		# EDMA descriptor-source rejection, then CPU RX interrupts.
+		# Keep this bounded so the persistent ramoops console retains
+		# the watchdog reason and the preceding firmware boot.
+		echo "--- PPE ingress RX / drops ---"
+		cat /sys/kernel/debug/ppe/port_rx 2>&1 || true
+		echo "--- EDMA rejected RX descriptor sources ---"
+		grep -E 'src_port_inval(_type|_netdev)?[[:space:]]*=' \
+			/sys/kernel/debug/ppe/edma/stats/rx_ring_stats 2>&1 || true
+		echo "--- EDMA CPU RX interrupt counts ---"
+		grep -E 'rxdesc_1[2-5]$' /proc/interrupts 2>&1 || true
 		echo "board=$(board_name 2>/dev/null)"
 		echo "uptime=$(cat /proc/uptime 2>/dev/null)"
 		echo "--- /proc/modules ---"
