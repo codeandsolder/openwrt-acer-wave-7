@@ -1,0 +1,55 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: experiment skipping boot-only FIFO reset
+
+An intermittent IPQ5332/QCA8081 startup failure occurs if the first
+PHY poll reports link down and the next poll (~1.06s later) link up.
+That path toggles the SerDes FIFO reset and blocks all MAC RX despite
+PCS/MAC link and clocks reporting normal. Healthy boots see link up
+on the first poll and do not toggle the FIFO register.
+
+As a controlled A/B experiment, skip the initial link-down FIFO reset
+only until a real link-up has occurred, preserving the normal upstream
+reset/deassert behavior for subsequent link transitions. This changes
+one causal variable; it is not yet a confirmed hardware fix.
+
+Diagnostic build only; do not merge upstream without testing.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -174,6 +174,8 @@
+ struct qca808x_priv {
+ 	int led_polarity_mode;
+ 	int channel_id;
++	/* Avoid toggling the interface FIFO before the first actual link. */
++	bool seen_link_up;
+ 	/* Diagnostic-only, bounded one-time boot telemetry. */
+ 	u8 initial_status_samples;
+ 	u8 initial_link_events;
+@@ -648,6 +650,25 @@
+ {
+ 	struct qca808x_priv *priv = phydev->priv;
+ 	int ret;
++
++	/* The first PHY poll can race copper link negotiation. A transient
++	 * initial link-down indication is not a transition from a previously
++	 * established link; don't reset the SerDes FIFO just for this poll.
++	 * Keep the normal upstream reset on subsequent real link loss.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    !phydev->link && !priv->seen_link_up) {
++		if (priv->initial_link_events < 3) {
++			priv->initial_link_events++;
++			phydev_info(phydev,
++				    "wave7-diag: fifo[%u] initial-down-skipped state=%d\n",
++				    priv->initial_link_events, phydev->state);
++		}
++		return;
++	}
++
++	if (phydev->link)
++		priv->seen_link_up = true;
+ 
+ 	/* Assert interface sgmii fifo on link down, deassert it on link up,
+ 	 * the interface device address is always phy address added by 1.
