@@ -1,0 +1,70 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: ethernet: qualcomm: ppe: expose port2 MAC control snapshot
+
+Intermittent IPQ5332 SGMII receive failures leave GMAC, PPE ingress and
+EDMA RX counters at zero while the PHY reports link and PCS calibration
+complete. Offer a bounded, read-only snapshot of the port2 MAC enable,
+speed, mux and bridge-control registers to distinguish a missing GMAC
+RX enable from a fault upstream of an otherwise configured receiver.
+
+No hardware configuration or reset sequencing is changed.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c b/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c
+@@ -817,10 +817,39 @@
+ 
+ 	return count;
+ }
+ DEFINE_SHOW_STORE_ATTRIBUTE(ppe_packet_counter);
+ 
++/* Bounded, read-only MAC and mux state for diagnosing port2 missing RX. */
++static int ppe_port2_mac_regs_show(struct seq_file *seq, void *unused)
++{
++	static const struct {
++		const char *name;
++		u32 reg;
++	} registers[] = {
++		{ "port_mux_ctrl", PPE_PORT_MUX_CTRL_ADDR },
++		{ "port2_gmac_enable", PPE_PORT_GMAC_ADDR(2) + GMAC_ENABLE_ADDR },
++		{ "port2_gmac_speed", PPE_PORT_GMAC_ADDR(2) + GMAC_SPEED_ADDR },
++		{ "port2_gmac_ctrl0", PPE_PORT_GMAC_ADDR(2) + GMAC_CTRL0_ADDR },
++		{ "port2_bridge_ctrl", PPE_PORT_BRIDGE_CTRL_ADDR +
++				       PPE_PORT_BRIDGE_CTRL_INC * 2 },
++	};
++	struct ppe_device *ppe_dev = seq->private;
++	unsigned int val;
++	int ret, i;
++
++	for (i = 0; i < ARRAY_SIZE(registers); i++) {
++		ret = regmap_read(ppe_dev->regmap, registers[i].reg, &val);
++		if (ret)
++			seq_printf(seq, "%s error=%d\n", registers[i].name, ret);
++		else
++			seq_printf(seq, "%s=0x%08x\n", registers[i].name, val);
++	}
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ppe_port2_mac_regs);
++
+ void ppe_debugfs_setup(struct ppe_device *ppe_dev)
+ {
+ 	struct ppe_debugfs_entry *entry;
+ 	int ret;
+ 	int i;
+@@ -841,10 +870,13 @@
+ 
+ 		debugfs_create_file(debugfs_files[i].name, 0444,
+ 				    ppe_dev->debugfs_root, entry,
+ 				    &ppe_packet_counter_fops);
+ 	}
++
++	debugfs_create_file("port2_mac_regs", 0400, ppe_dev->debugfs_root,
++			    ppe_dev, &ppe_port2_mac_regs_fops);
+ 
+ 	/* TODO: Do we have to be so agressive and remove __all__ debugfs entries? */
+ 	ret = edma_debugfs_setup(ppe_dev);
+ 	if (ret) {
+ 		dev_err(ppe_dev->dev, "Error in EDMA debugfs setup API. ret: %d\n", ret);
