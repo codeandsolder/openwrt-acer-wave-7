@@ -1,0 +1,74 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: test full PCS calibration at first link-up
+
+IPQ5332 MPPE occasionally reports carrier-up but receives zero MAC frames
+when QCA8081 copper link is down during the first PCS configuration and
+only becomes active on the second PHY poll (~one second later). Toggling
+the QCA8081 SerDes FIFO is not necessary for the failure.
+
+For an isolated A/B experiment, perform the full PCS mode configuration
+again at the first established SGMII link, before the normal PCS adapter
+reset and MAC link-up. Reapply the SGMII in-band/force setting afterwards.
+Do not change behavior of other interfaces or subsequent link transitions.
+
+This is an experiment, not a confirmed fix.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -157,6 +157,7 @@
+ 	u8 diag_configs;
+ 	u8 diag_states;
+ 	u8 diag_link_ups;
++	bool first_link_mode_restarted;
+ };
+ 
+ /* PCS private data */
+@@ -985,6 +986,34 @@
+ 			 speed, duplex, neg_mode);
+ 	}
+ 
++	/* Diagnostic A/B: the first mode configuration may complete before
++	 * the external PHY reports copper link. Re-run full PCS calibration,
++	 * now with the PHY linked, to test whether the initial initialization
++	 * sequence leaves the SGMII receive datapath unready. Do this once
++	 * per first SGMII link-up on IPQ5332 MPPE only. Retain the existing
++	 * adapter reset and MAC link-up sequence below.
++	 */
++	if (qpcs->mppe && index == 0 &&
++	    interface == PHY_INTERFACE_MODE_SGMII &&
++	    !qpcs_mii->first_link_mode_restarted) {
++		qpcs_mii->first_link_mode_restarted = true;
++		dev_info(qpcs->dev,
++			 "wave7-diag: pcs first-link-mode-restart begin interface=%s\n",
++			 phy_modes(interface));
++
++		ret = ipq_pcs_config_mode(qpcs, interface);
++		if (ret)
++			goto err_first_link_restart;
++
++		/* Reapply force/in-band mode after full PCS initialization. */
++		ret = ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
++		if (ret)
++			goto err_first_link_restart;
++
++		dev_info(qpcs->dev,
++			 "wave7-diag: pcs first-link-mode-restart done\n");
++	}
++
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
+@@ -1015,6 +1044,11 @@
+ 	if (ret)
+ 		dev_err(qpcs->dev, "PCS link up fail for interface %s\n",
+ 			phy_modes(interface));
++	return;
++
++err_first_link_restart:
++	dev_err(qpcs->dev,
++		"wave7-diag: pcs first-link-mode-restart failed: %d\n", ret);
+ }
+ 
+ static const struct phylink_pcs_ops ipq_pcs_phylink_ops = {
