@@ -1,0 +1,88 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: log first link polls and FIFO transitions
+
+Record the first three QCA8081 PHY status polls and link-driven SerDes
+FIFO transitions to discriminate immediate link detection from a second
+one-second polling cycle during IPQ5332 wired-RX startup failures.
+
+No extra MDIO reads or PHY/PCS/MAC configuration changes. The FIFO
+write already occurred; only its existing result is now recorded.
+Logs saturate after three events per PHY, including across long uptime.
+
+Diagnostic build only; no permanent fix or production default.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/phy/qcom/qca808x.c b/drivers/net/phy/qcom/qca808x.c
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -174,6 +174,9 @@
+ struct qca808x_priv {
+ 	int led_polarity_mode;
+ 	int channel_id;
++	/* Diagnostic-only, bounded one-time boot telemetry. */
++	u8 initial_status_samples;
++	u8 initial_link_events;
+ 	struct qcom_phy_hw_stats hw_stats;
+ };
+ 
+@@ -443,6 +446,7 @@
+ static int qca808x_read_status(struct phy_device *phydev)
+ {
+ 	struct at803x_ss_mask ss_mask = { 0 };
++	struct qca808x_priv *priv = phydev->priv;
+ 	int ret;
+ 
+ 	ret = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_10GBT_STAT);
+@@ -505,6 +509,21 @@
+ 		}
+ 	}
+ 
++	/* The first PHY poll can see link down and be retried one second
++	 * later. Record only already-read software status: extra MDIO reads
++	 * would perturb the very startup timing being investigated.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    priv->initial_status_samples < 3) {
++		priv->initial_status_samples++;
++		phydev_info(phydev,
++			    "wave7-diag: status[%u] state=%d link=%u speed=%d interface=%s master_slave=%d\n",
++			    priv->initial_status_samples, phydev->state,
++			    phydev->link, phydev->speed,
++			    phy_modes(phydev->interface),
++			    phydev->master_slave_state);
++	}
++
+ 	return 0;
+ }
+ 
+@@ -627,13 +646,25 @@
+ 
+ static void qca808x_link_change_notify(struct phy_device *phydev)
+ {
++	struct qca808x_priv *priv = phydev->priv;
++	int ret;
++
+ 	/* Assert interface sgmii fifo on link down, deassert it on link up,
+ 	 * the interface device address is always phy address added by 1.
+ 	 */
+-	mdiobus_c45_modify_changed(phydev->mdio.bus, phydev->mdio.addr + 1,
+-				   MDIO_MMD_PMAPMD, QCA8081_PHY_SERDES_MMD1_FIFO_CTRL,
+-				   QCA8081_PHY_FIFO_RSTN,
+-				   phydev->link ? QCA8081_PHY_FIFO_RSTN : 0);
++	ret = mdiobus_c45_modify_changed(phydev->mdio.bus, phydev->mdio.addr + 1,
++					 MDIO_MMD_PMAPMD,
++					 QCA8081_PHY_SERDES_MMD1_FIFO_CTRL,
++					 QCA8081_PHY_FIFO_RSTN,
++					 phydev->link ? QCA8081_PHY_FIFO_RSTN : 0);
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    priv->initial_link_events < 3) {
++		priv->initial_link_events++;
++		phydev_info(phydev,
++			    "wave7-diag: fifo[%u] state=%d link=%u mdio_result=%d\n",
++			    priv->initial_link_events, phydev->state,
++			    phydev->link, ret);
++	}
+ }
+ 
+ static int qca808x_led_parse_netdev(struct phy_device *phydev, unsigned long rules,
