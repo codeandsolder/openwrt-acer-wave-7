@@ -25,6 +25,10 @@ wave7_firstboot_dump_state() {
 		/usr/bin/phytool read lan/25:1/0x9072 2>&1 || true
 		echo "--- IPQ5332 SGMII PCS1 status and calibration ---"
 		cat /sys/kernel/debug/ipq-pcs-7a10000.ethernet-pcs/link_state 2>&1 || true
+		echo "--- PPE port2 GMAC registers and mux state ---"
+		cat /sys/kernel/debug/ppe/port2_mac_regs 2>&1 || true
+		echo "--- NSS port2 MAC and SGMII RX/TX clock state ---"
+		awk 'NR < 3 || $1 ~ /^nss_cc_(uniphy_)?port2_(rx|tx|mac)/ { print }' /sys/kernel/debug/clk/clk_summary 2>&1 || true
 		echo "--- PPE ingress RX / drops ---"
 		cat /sys/kernel/debug/ppe/port_rx 2>&1 || true
 		echo "--- EDMA rejected RX descriptor sources ---"
