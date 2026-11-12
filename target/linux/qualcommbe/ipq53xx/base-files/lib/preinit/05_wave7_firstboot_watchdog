@@ -157,6 +157,65 @@ wave7_firstboot_accept_link() {
 	return 0
 }
 
+
+# Diagnostic A/B only: if PHY and PCS report link but no wired RX arrives,
+# pulse the QCA8081 SerDes FIFO reset once. Preserve all other register bits.
+# A successful pulse only proves a receive-path retraining problem; it is NOT
+# a permanent PHY fix. The independent hard panic still protects failures.
+wave7_firstboot_try_qca8081_fifo_retrain() {
+	local before original value cleared readback after
+	[ ! -e /tmp/wave7-keep-boot ] || return 0
+	[ -e /tmp/wave7-autoprobe-success ] || return 0
+	[ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 0
+	before=$(cat /sys/class/net/lan/statistics/rx_packets 2>/dev/null) || return 0
+	[ "$before" = 0 ] || return 0
+	# Never perturb a functioning link; this test is for a specific
+	# observed failure with copper carrier but no delivered frames.
+	wave7_firstboot_link_ready && return 0
+
+	echo '<6>wave7-firstboot: fifo-trial starting: LAN carrier=1 rx_packets=0' > /dev/kmsg 2>/dev/null || true
+	original=$(/usr/bin/phytool read lan/25:1/0x9072 2>/dev/null) || {
+		echo '<4>wave7-firstboot: fifo-trial failed to read MMD1 0x9072' > /dev/kmsg 2>/dev/null || true
+		return 0
+	}
+	case "$original" in
+		0x[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]) ;;
+		*)
+			echo '<4>wave7-firstboot: fifo-trial unexpected MDIO response' > /dev/kmsg 2>/dev/null || true
+			return 0
+			;;
+	esac
+	value=$((original))
+	if [ "$((value & 0x800))" -eq 0 ]; then
+		echo '<4>wave7-firstboot: fifo-trial reset-release already low, skip' > /dev/kmsg 2>/dev/null || true
+		return 0
+	fi
+	cleared=$(printf '0x%04x' "$((value & ~0x800))")
+	printf '<6>wave7-firstboot: fifo-trial assert reset original=%s asserted=%s\n' "$original" "$cleared" > /dev/kmsg 2>/dev/null || true
+	if ! /usr/bin/phytool write lan/25:1/0x9072 "$cleared"; then
+		echo '<3>wave7-firstboot: fifo-trial assert reset write failed' > /dev/kmsg 2>/dev/null || true
+		return 0
+	fi
+	sleep 0.2
+	if ! /usr/bin/phytool write lan/25:1/0x9072 "$original"; then
+		echo '<3>wave7-firstboot: fifo-trial release reset write failed; fallback remains armed' > /dev/kmsg 2>/dev/null || true
+		return 0
+	fi
+	readback=$(/usr/bin/phytool read lan/25:1/0x9072 2>/dev/null || true)
+	printf '<6>wave7-firstboot: fifo-trial release readback=%s expected=%s\n' "$readback" "$original" > /dev/kmsg 2>/dev/null || true
+	[ "$readback" = "$original" ] || return 0
+	sleep 2
+	after=$(cat /sys/class/net/lan/statistics/rx_packets 2>/dev/null || true)
+	printf '<6>wave7-firstboot: fifo-trial after rx_packets=%s (before=%s)\n' "$after" "$before" > /dev/kmsg 2>/dev/null || true
+	/usr/sbin/ethtool -S lan 2>&1 | awk '$1 ~ /^(rx_frames:|tx_frames:)$/ { print }' | wave7_firstboot_kmsg || true
+	cat /sys/kernel/debug/ppe/port_rx 2>&1 | wave7_firstboot_kmsg || true
+	if wave7_firstboot_accept_link; then
+		echo '<6>wave7-firstboot: fifo-trial recovered wired RX and accepted boot' > /dev/kmsg 2>/dev/null || true
+	else
+		echo '<4>wave7-firstboot: fifo-trial did not recover LAN; hard fallback remains armed' > /dev/kmsg 2>/dev/null || true
+	fi
+}
+
 # This opt-in trial preserves wired management before probing radio UserPDs.
 # Only the auto-probe module line is deferred; the driver remains installed
 # and can be explicitly loaded after boot with: modprobe ath12k_wifi7
@@ -386,6 +445,7 @@ wave7_firstboot_arm_watchdog() {
 		wave7_firstboot_accept_link && exit 0
 		wave7_firstboot_dump_state
 		wave7_firstboot_network_snapshot deadline
+		wave7_firstboot_try_qca8081_fifo_retrain
 		echo "<4>wave7-firstboot: diagnostic snapshot complete; hard panic remains armed" > /dev/kmsg 2>/dev/null || true
 	) &
 	echo $! > /tmp/wave7-firstboot-diagnostics.pid
