@@ -157,6 +157,48 @@ wave7_firstboot_accept_link() {
 	return 0
 }
 
+
+# Diagnostic experiment only: let phylink take a full down/up transition if
+# its carrier is falsely up while the hardware never receives Ethernet frames.
+# Unlike the QCA8081 FIFO-only trial this runs the MAC/PCS/PHY link callbacks.
+# An accepted boot still requires the normal peer/NAND/radio checks.
+wave7_firstboot_try_phylink_recycle() {
+	local before after
+	[ ! -e /tmp/wave7-keep-boot ] || return 0
+	[ -e /tmp/wave7-autoprobe-success ] || return 0
+	[ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 0
+	before=$(cat /sys/class/net/lan/statistics/rx_packets 2>/dev/null) || return 0
+	[ "$before" = 0 ] || return 0
+	wave7_firstboot_link_ready && return 0
+
+	echo '<6>wave7-firstboot: phylink-cycle starting: carrier=1 rx_packets=0' > /dev/kmsg 2>/dev/null || true
+	echo '<6>wave7-firstboot: phylink-cycle admin DOWN' > /dev/kmsg 2>/dev/null || true
+	if ! ip link set dev lan down; then
+		echo '<3>wave7-firstboot: phylink-cycle DOWN failed; no retry' > /dev/kmsg 2>/dev/null || true
+		return 0
+	fi
+	sleep 1
+	echo '<6>wave7-firstboot: phylink-cycle admin UP' > /dev/kmsg 2>/dev/null || true
+	if ! ip link set dev lan up; then
+		echo '<3>wave7-firstboot: phylink-cycle UP failed; hard fallback remains armed' > /dev/kmsg 2>/dev/null || true
+		return 0
+	fi
+	sleep 6
+	after=$(cat /sys/class/net/lan/statistics/rx_packets 2>/dev/null || true)
+	printf '<6>wave7-firstboot: phylink-cycle after rx_packets=%s (before=%s)\n' "$after" "$before" > /dev/kmsg 2>/dev/null || true
+	echo 'phylink-cycle GMAC MIB after' | wave7_firstboot_kmsg
+	/usr/sbin/ethtool -S lan 2>&1 | awk '$1 ~ /^(rx_frames:|tx_frames:)$/ { print }' | wave7_firstboot_kmsg || true
+	echo 'phylink-cycle PPE ingress after' | wave7_firstboot_kmsg
+	cat /sys/kernel/debug/ppe/port_rx 2>&1 | wave7_firstboot_kmsg || true
+	echo 'phylink-cycle PCS status after' | wave7_firstboot_kmsg
+	cat /sys/kernel/debug/ipq-pcs-7a10000.ethernet-pcs/link_state 2>&1 | wave7_firstboot_kmsg || true
+	if wave7_firstboot_accept_link; then
+		echo '<6>wave7-firstboot: phylink-cycle RECOVERED wired RX and accepted boot' > /dev/kmsg 2>/dev/null || true
+	else
+		echo '<4>wave7-firstboot: phylink-cycle did not recover LAN; hard fallback remains armed' > /dev/kmsg 2>/dev/null || true
+	fi
+}
+
 # This opt-in trial preserves wired management before probing radio UserPDs.
 # Only the auto-probe module line is deferred; the driver remains installed
 # and can be explicitly loaded after boot with: modprobe ath12k_wifi7
@@ -386,6 +428,7 @@ wave7_firstboot_arm_watchdog() {
 		wave7_firstboot_accept_link && exit 0
 		wave7_firstboot_dump_state
 		wave7_firstboot_network_snapshot deadline
+		wave7_firstboot_try_phylink_recycle
 		echo "<4>wave7-firstboot: diagnostic snapshot complete; hard panic remains armed" > /dev/kmsg 2>/dev/null || true
 	) &
 	echo $! > /tmp/wave7-firstboot-diagnostics.pid
