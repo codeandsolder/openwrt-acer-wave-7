@@ -1,0 +1,38 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: diagnose first-poll phylink sequencing
+
+For one QCA8081 first poll with copper link already established, report
+software link down while leaving the physical PHY and serial link intact.
+On the next real status read, normal state and link-up are reported.
+
+This intentionally separates phylink's first down->up notification order
+from late PHY copper autonegotiation and SerDes readiness. It does not
+execute the real copper-link-down seed branch and is diagnostic only.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -581,6 +581,22 @@
+ 		}
+ 	}
+ 
++	/* Diagnostic: distinguish a false-down first PHY poll from genuine
++	 * delayed copper negotiation. Report exactly one initially-linked
++	 * QCA8081 poll as link-down, leaving the actual PHY, PCS and MAC
++	 * hardware untouched. All subsequent polls report true MDIO state.
++	 * This intentionally does not enter the genuine link-down PHY seed
++	 * configuration branch earlier in this function.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    !priv->initial_status_samples && phydev->link) {
++		phydev_info(phydev,
++			    "wave7-diag: mask-first-link copper_link=1 speed=%d reported_link=0\n",
++			    phydev->speed);
++		phydev->link = false;
++		phydev->speed = SPEED_UNKNOWN;
++		phydev->duplex = DUPLEX_UNKNOWN;
++	}
+ 	/* The first PHY poll can see link down and be retried one second
+ 	 * later. Record only already-read software status: extra MDIO reads
+ 	 * would perturb the very startup timing being investigated.
