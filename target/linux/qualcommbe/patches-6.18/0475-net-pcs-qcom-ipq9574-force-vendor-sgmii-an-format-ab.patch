@@ -1,0 +1,86 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: test vendor SGMII AN format on MPPE
+
+The IPQ5332 UNIPHY1 has a stable MODE_CTRL bit 0 difference between
+the stock firmware (0x420, working wired RX) and failed OpenWrt boots
+(0x421, zero hardware RX despite carrier). The stock bit is
+reproducibly clear, but upstream configures bits 12:8 and 6:4 without
+changing bit 0, leaving its value inherited from the bootloader.
+
+Test clearing bit 0 together with SGMII mode selection on MPPE and
+record its pre/post values. Keep other interface modes and all
+QCA8081 FIFO/PCS reset behavior unchanged. This is an A/B experiment
+rather than a proven fix.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -38,6 +38,8 @@
+ #define PCS_MISC2_MODE_USXGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x7)
+ 
+ #define PCS_MODE_CTRL			0x46c
++/* SGMII AN format selector; stock QCA8081 has bit 0 clear. */
++#define PCS_MODE_AN_FORMAT_SELECT		BIT(0)
+ #define PCS_MODE_SEL_MASK		GENMASK(12, 8)
+ #define PCS_MODE_SGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x4)
+ #define PCS_MODE_QSGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x1)
+@@ -365,10 +367,10 @@
+ 			       phy_interface_t interface)
+ {
+ 	unsigned long rate = 125000000;
+-	unsigned int val, mask, misc2 = 0;
++	unsigned int val, mask, misc2 = 0, mode_ctrl = 0;
+ 	bool xpcs_mode = false;
+-	bool diag_mode;
+-	int ret;
++	bool diag_mode, vendor_an_format;
++	int diag_ret, ret;
+ 
+ 	diag_mode = qpcs->mppe && qpcs->diag_mode_reconfigs < 3;
+ 	if (diag_mode) {
+@@ -379,6 +381,20 @@
+ 			 phy_modes(interface));
+ 	}
+ 
++	/* IPQ5332 MPPE stock SGMII uses an AN-format selector bit
++	 * (MODE_CTRL[0] = 0), while OpenWrt has left that bit at the
++	 * bootloader's value. Keep this A/B experiment to that PCS mode.
++	 */
++	vendor_an_format = qpcs->mppe &&
++			   interface == PHY_INTERFACE_MODE_SGMII;
++	if (diag_mode && vendor_an_format) {
++		diag_ret = regmap_read(qpcs->regmap, PCS_MODE_CTRL,
++				       &mode_ctrl);
++		dev_info(qpcs->dev,
++			 "wave7-diag: pcs sgmii-an pre=%#010x read=%d\n",
++			 mode_ctrl, diag_ret);
++	}
++
+ 	/* Hold the affected port clocks off across mode reconfiguration. */
+ 	ipq_pcs_disable_port_clks(qpcs, interface);
+ 
+@@ -390,6 +406,8 @@
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 		mask |= PCS_MODE_SGMII_MODE_MASK;
++		if (vendor_an_format)
++			mask |= PCS_MODE_AN_FORMAT_SELECT;
+ 		val = PCS_MODE_SGMII | PCS_MODE_SGMII_MODE_MAC;
+ 		misc2 = PCS_MISC2_MODE_SGMII;
+ 		break;
+@@ -426,6 +444,14 @@
+ 	ret = regmap_update_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
+ 	if (ret)
+ 		goto err_clk;
++
++	if (diag_mode && vendor_an_format) {
++		diag_ret = regmap_read(qpcs->regmap, PCS_MODE_CTRL,
++				       &mode_ctrl);
++		dev_info(qpcs->dev,
++			 "wave7-diag: pcs sgmii-an post=%#010x read=%d mask=%#x\n",
++			 mode_ctrl, diag_ret, mask);
++	}
+ 
+ 	if (interface == PHY_INTERFACE_MODE_10G_QXGMII) {
+ 		ret = regmap_set_bits(qpcs->regmap, PCS_QP_USXG_OPTION,
