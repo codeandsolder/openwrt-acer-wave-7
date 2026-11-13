@@ -1,0 +1,145 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: ipq5332: reset UNIPHY before programming mode
+
+The new SYS/SOFT/AHB UNIPHY1 reset pulse was being applied after
+PCS_MODE_CTRL and PCS_MISC2 were configured, returning the mode
+register to the power-on value 0x1021 instead of SGMII 0x421.
+The QCA8081 still negotiated copper, but the host PCS reported
+link down and no packets reached the GMAC.
+
+Move the three-reset stage before the mode registers are programmed,
+keep the existing calibration order, and validate the selected mode
+immediately after calibration before enabling port clocks. Emit
+a bounded raw mode/MISC2 snapshot on the diagnostic target only.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -365,7 +365,7 @@
+ 			       phy_interface_t interface)
+ {
+ 	unsigned long rate = 125000000;
+-	unsigned int val, mask, misc2 = 0;
++	unsigned int val, mask, misc2 = 0, mode_expected, mode_mask;
+ 	bool xpcs_mode = false;
+ 	bool diag_mode;
+ 	int ret;
+@@ -385,6 +385,40 @@
+ 	/* Assert XPCS reset */
+ 	reset_control_assert(qpcs->xpcs_rstc);
+ 
++	/* IPQ5332 vendor SSDK pulses the UNIPHY soft, SYS and AHB resets
++	 * together, after mode selection and before VCO calibration.
++	 * Keep all three aligned with the vendor reset sequence.
++	 */
++	if (qpcs->sys_rstc || qpcs->soft_rstc || qpcs->ahb_rstc) {
++		ret = reset_control_assert(qpcs->soft_rstc);
++		if (ret)
++			goto err_clk;
++		ret = reset_control_assert(qpcs->sys_rstc);
++		if (ret)
++			goto err_reset;
++		ret = reset_control_assert(qpcs->ahb_rstc);
++		if (ret)
++			goto err_reset;
++
++		if (diag_mode)
++			dev_info(qpcs->dev,
++				 "wave7-diag: uniphy reset assert soft=%u sys=%u ahb=%u\n",
++				 !!qpcs->soft_rstc, !!qpcs->sys_rstc,
++				 !!qpcs->ahb_rstc);
++
++		msleep(100);
++		ret = reset_control_deassert(qpcs->soft_rstc);
++		if (ret)
++			goto err_reset;
++		ret = reset_control_deassert(qpcs->sys_rstc);
++		if (ret)
++			goto err_reset;
++		ret = reset_control_deassert(qpcs->ahb_rstc);
++		if (ret)
++			goto err_reset;
++		msleep(100);
++	}
++
+ 	/* Configure PCS interface mode */
+ 	mask = PCS_MODE_SEL_MASK;
+ 	switch (interface) {
+@@ -423,6 +457,8 @@
+ 		goto err_clk;
+ 	}
+ 
++	mode_expected = val;
++	mode_mask = mask;
+ 	ret = regmap_update_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
+ 	if (ret)
+ 		goto err_clk;
+@@ -453,39 +489,6 @@
+ 			goto err_clk;
+ 	}
+ 
+-	/* IPQ5332 vendor SSDK pulses the UNIPHY soft, SYS and AHB resets
+-	 * together, after mode selection and before VCO calibration.
+-	 * Keep all three aligned with the vendor reset sequence.
+-	 */
+-	if (qpcs->sys_rstc || qpcs->soft_rstc || qpcs->ahb_rstc) {
+-		ret = reset_control_assert(qpcs->soft_rstc);
+-		if (ret)
+-			goto err_clk;
+-		ret = reset_control_assert(qpcs->sys_rstc);
+-		if (ret)
+-			goto err_reset;
+-		ret = reset_control_assert(qpcs->ahb_rstc);
+-		if (ret)
+-			goto err_reset;
+-
+-		if (diag_mode)
+-			dev_info(qpcs->dev,
+-				 "wave7-diag: uniphy reset assert soft=%u sys=%u ahb=%u\n",
+-				 !!qpcs->soft_rstc, !!qpcs->sys_rstc,
+-				 !!qpcs->ahb_rstc);
+-
+-		msleep(100);
+-		ret = reset_control_deassert(qpcs->soft_rstc);
+-		if (ret)
+-			goto err_reset;
+-		ret = reset_control_deassert(qpcs->sys_rstc);
+-		if (ret)
+-			goto err_reset;
+-		ret = reset_control_deassert(qpcs->ahb_rstc);
+-		if (ret)
+-			goto err_reset;
+-		msleep(100);
+-	}
+ 
+ 	/* PCS PLL/calibration reset. IPQ5332 is MPPE: for its SGMII
+ 	 * personalities the vendor sequence restarts VCO calibration rather
+@@ -544,6 +547,27 @@
+ 		goto err_clk;
+ 	}
+ 
++	if (diag_mode) {
++		unsigned int actual_mode, actual_misc2;
++
++		ret = regmap_read(qpcs->regmap, PCS_MODE_CTRL, &actual_mode);
++		if (ret)
++			goto err_clk;
++		ret = regmap_read(qpcs->regmap, PCS_MISC2, &actual_misc2);
++		if (ret)
++			goto err_clk;
++
++		dev_info(qpcs->dev,
++			 "wave7-diag: uniphy post-reset mode=0x%08x misc2=0x%08x expected=0x%08x mask=0x%08x\n",
++			 actual_mode, actual_misc2, mode_expected, mode_mask);
++		if ((actual_mode & mode_mask) != (mode_expected & mode_mask)) {
++			dev_err(qpcs->dev,
++				"PCS mode lost after UNIPHY reset and calibration\n");
++			ret = -EIO;
++			goto err_clk;
++		}
++	}
++
+ 	/* Re-enable the port clocks disabled at entry */
+ 	ret = ipq_pcs_restore_port_clks(qpcs, interface);
+ 	if (ret)
