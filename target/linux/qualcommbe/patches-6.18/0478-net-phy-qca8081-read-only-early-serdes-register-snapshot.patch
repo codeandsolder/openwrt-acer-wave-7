@@ -1,0 +1,77 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: compare early SerDes registers with stock
+
+The PHY and host GMAC counters localize a sporadic Wave 7 zero-RX
+startup failure to the SerDes/PCS path, but simple PHY FIFO and PCS
+link bits are identical on good and failed boots. Stock vendor SSDK
+can read a richer SerDes management register set.
+
+Read nine registers on the final existing asynchronous delayed-work
+sample of each of the first two link transitions, using the same
+PHY+1 SGMII management address. No additional writes, resets, mode
+changes, or synchronous link-state MDIO operations. Include an error
+bitmap; treat all unknown vendor-specific register fields as raw data.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -405,6 +405,58 @@
+ 		    event, link, sample, mii_ctrl, mii_status,
+ 		    pma_ctrl, pma_status, fifo, errors);
+ 
++	/*
++	 * Sample additional documented-management addresses only on the
++	 * final asynchronous observation of an initial link transition.
++	 * Stock QCA8081 reference values come from SSDK read-only MDIO:
++	 * PHY C22.31, PHY+1 C22.17/.31, PHY+1 MMD1.2/.3/.9/.10/.30/.31.
++	 * Do not infer undocumented lock bits from any particular value.
++	 * This intentionally performs no synchronous MDIO in read_status
++	 * or link_change_notify, nor any MDIO writes.
++	 */
++	if (sample == 2 && event <= 2) {
++		int chip = mdiobus_read(bus, phydev->mdio.addr, 0x1f);
++		int spec = mdiobus_read(bus, phydev->mdio.addr + 1, 0x11);
++		int cfg = mdiobus_read(bus, phydev->mdio.addr + 1, 0x1f);
++		int id1 = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++					    MDIO_MMD_PMAPMD, 2);
++		int id2 = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++					    MDIO_MMD_PMAPMD, 3);
++		int stat9 = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++					      MDIO_MMD_PMAPMD, 9);
++		int stat10 = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++					       MDIO_MMD_PMAPMD, 10);
++		int ext30 = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++					       MDIO_MMD_PMAPMD, 30);
++		int ext31 = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++					       MDIO_MMD_PMAPMD, 31);
++		unsigned int diag_err = 0;
++
++		if (chip < 0)
++			diag_err |= BIT(0);
++		if (spec < 0)
++			diag_err |= BIT(1);
++		if (cfg < 0)
++			diag_err |= BIT(2);
++		if (id1 < 0)
++			diag_err |= BIT(3);
++		if (id2 < 0)
++			diag_err |= BIT(4);
++		if (stat9 < 0)
++			diag_err |= BIT(5);
++		if (stat10 < 0)
++			diag_err |= BIT(6);
++		if (ext30 < 0)
++			diag_err |= BIT(7);
++		if (ext31 < 0)
++			diag_err |= BIT(8);
++
++		phydev_info(phydev,
++			    "wave7-diag: serdes-extra event=%u link=%u phy31=%#x serdes17=%#x serdes31=%#x mmd1id=%#x/%#x mmd1ext=%#x/%#x/%#x/%#x errors=%#x\n",
++			    event, link, chip, spec, cfg, id1, id2,
++			    stat9, stat10, ext30, ext31, diag_err);
++	}
++
+ 	/* Three samples at approximately 20, 100 and 350 ms after each
+ 	 * event. Never poll repeatedly over the full firstboot window.
+ 	 */
