@@ -1,0 +1,33 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] clk: qcom: ipq5332: align NSSCC UNIPHY input order with DT
+
+The IPQ5332 NSSCC clock binding and ipq5332.dtsi both provide each
+UNIPHY RX clock before its TX clock. The driver's input-clock enum
+reverses those positions, causing the NSS RX clock to select the
+UNIPHY TX clock and vice versa. The related IPQ9574 NSSCC driver
+already follows the binding order.
+
+Correct only the DT input indices, not the internal hardware parent
+mux selectors. On Acer Wave7 the mismatch is visible in debugfs as
+port2 RX sourced by PCS::tx_clk and TX by PCS::rx_clk.
+
+This is an isolated A/B test for an intermittent SGMII zero-RX fault,
+not proof that the mismatch caused that specific failure.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/clk/qcom/nsscc-ipq5332.c
++++ b/drivers/clk/qcom/nsscc-ipq5332.c
+@@ -30,10 +30,10 @@
+ 	DT_CMN_PLL_NSS_CLK_200M,
+ 	DT_CMN_PLL_NSS_CLK_300M,
+ 	DT_GCC_GPLL0_OUT_AUX,
++	DT_UNIPHY0_NSS_RX_CLK,
+ 	DT_UNIPHY0_NSS_TX_CLK,
+-	DT_UNIPHY0_NSS_RX_CLK,
++	DT_UNIPHY1_NSS_RX_CLK,
+ 	DT_UNIPHY1_NSS_TX_CLK,
+-	DT_UNIPHY1_NSS_RX_CLK,
+ 	DT_XO,
+ };
+ 
