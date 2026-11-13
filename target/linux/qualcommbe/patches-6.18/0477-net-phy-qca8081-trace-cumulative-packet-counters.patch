@@ -1,0 +1,65 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: trace cached PHY receive counters at startup
+
+During a delayed-first-link warmboot, the PPE port2 GMAC reports zero RX
+frames despite SGMII carrier. Distinguish copper PHY reception from a
+host-side receive path fault using the QCA8081's already accumulated
+MMD7 packet counters (rx/tx and errors).
+
+Print bounded (once then every fifth successful update, max 120 updates)
+diagnostic observations from the existing PHY state-machine stats callback.
+No extra MDIO reads, register writes, reset operations, or other changes
+to PHY/PCS configuration. This is a diagnostic-only patch.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -184,6 +184,7 @@
+ 	u8 diag_serdes_events;
+ 	u8 diag_serdes_sample;
+ 	bool diag_serdes_link;
++	u8 diag_phy_counter_updates;
+ 	struct qcom_phy_hw_stats hw_stats;
+ };
+ 
+@@ -951,11 +952,38 @@
+ 			      active_low ? 0 : QCA808X_LED_ACTIVE_HIGH);
+ }
+ 
++#define QCA808X_DIAG_COUNTER_SAMPLE_LIMIT 120
++#define QCA808X_DIAG_COUNTER_LOG_INTERVAL 5
++
+ static int qca808x_update_stats(struct phy_device *phydev)
+ {
+ 	struct qca808x_priv *priv = phydev->priv;
++	int ret;
++
++	ret = qcom_phy_update_stats(phydev, &priv->hw_stats);
++	if (ret)
++		return ret;
+ 
+-	return qcom_phy_update_stats(phydev, &priv->hw_stats);
++	/* These are the driver's existing cumulative, periodically read PHY
++	 * MMD7 packet counters, not additional MDIO reads. In particular,
++	 * they can distinguish PHY reception from a stuck host GMAC RX.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    priv->diag_phy_counter_updates < QCA808X_DIAG_COUNTER_SAMPLE_LIMIT) {
++		priv->diag_phy_counter_updates++;
++		if (priv->diag_phy_counter_updates == 1 ||
++		    !(priv->diag_phy_counter_updates %
++		      QCA808X_DIAG_COUNTER_LOG_INTERVAL))
++			phydev_info(phydev,
++				    "wave7-diag: phy-counts tick=%u link=%u rx=%llu rx_err=%llu tx=%llu tx_err=%llu\n",
++				    priv->diag_phy_counter_updates, phydev->link,
++				    (unsigned long long)priv->hw_stats.rx_pkts,
++				    (unsigned long long)priv->hw_stats.rx_err_pkts,
++				    (unsigned long long)priv->hw_stats.tx_pkts,
++				    (unsigned long long)priv->hw_stats.tx_err_pkts);
++	}
++
++	return 0;
+ }
+ 
+ static void qca808x_get_phy_stats(struct phy_device *phydev,
