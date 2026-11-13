@@ -1,0 +1,33 @@
+Subject: [PATCH] net: phy: qca8081: isolate link-down seed rewrite in Wave 7 trial
+
+Diagnostic A/B only, not for upstream. Keep the initial config_init seed.
+The link-down read_status rewrite is the sole behavioral delta.
+
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -613,25 +613,6 @@
+ 			phydev->interface = PHY_INTERFACE_MODE_2500BASEX;
+ 		else
+ 			phydev->interface = PHY_INTERFACE_MODE_SGMII;
+-	} else {
+-		/* generate seed as a lower random value to make PHY linked as SLAVE easily,
+-		 * except for master/slave configuration fault detected or the master mode
+-		 * preferred.
+-		 *
+-		 * the reason for not putting this code into the function link_change_notify is
+-		 * the corner case where the link partner is also the qca8081 PHY and the seed
+-		 * value is configured as the same value, the link can't be up and no link change
+-		 * occurs.
+-		 */
+-		if (qca808x_has_fast_retrain_or_slave_seed(phydev)) {
+-			if (phydev->master_slave_state == MASTER_SLAVE_STATE_ERR ||
+-			    qca808x_is_prefer_master(phydev)) {
+-				qca808x_phy_ms_seed_enable(phydev, false);
+-			} else {
+-				qca808x_phy_ms_seed_enable(phydev, true);
+-			}
+-		}
+-	}
+ 
+ 	/* The first PHY poll can see link down and be retried one second
+ 	 * later. Record only already-read software status: extra MDIO reads
