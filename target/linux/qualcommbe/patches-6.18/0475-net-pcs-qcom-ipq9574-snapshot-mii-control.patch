@@ -1,0 +1,28 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: expose read-only MII control in link snapshot
+
+The IPQ5332 SGMII physical receiver can report carrier while GMAC sees
+zero frames after the copper PHY first links late. Add a bounded raw
+MII control readback, including force-mode and adapter reset bits,
+beside the already captured PCS status. Do not alter configuration,
+register writes, timing-sensitive callbacks or link-state handling.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -1338,6 +1338,14 @@
+ 	for (i = 0; i < PCS_MAX_MII_NRS; i++) {
+ 		if (!qpcs->qpcs_mii[i])
+ 			continue;
++		ret = regmap_read(qpcs->regmap, PCS_MII_CTRL(i), &val);
++		if (ret)
++			seq_printf(s, "mii%d_control error=%d\n", i, ret);
++		else
++			seq_printf(s,
++				   "mii%d_control=0x%08x force=%u adapter_reset=%u\n",
++				   i, val, !!(val & PCS_MII_FORCE_MODE),
++				   !!(val & PCS_MII_ADPT_RESET));
+ 		ret = regmap_read(qpcs->regmap, PCS_MII_STS(i), &val);
+ 		if (ret)
+ 			seq_printf(s, "mii%d_status error=%d\n", i, ret);
