@@ -4,7 +4,31 @@ wave7_firstboot_kmsg() {
 	done
 }
 
+
+# Raw read-only PHY and SerDes MDIO snapshots. The QCA8081 copper PHY
+# is address 0x18, and its separately addressed SGMII SerDes is 0x19.
+# Do not reinterpret undocumented SerDes bits as line-status proofs.
+# Run only from the post-startup diagnostic worker, never PHY callbacks.
+wave7_firstboot_rx_path_snapshot() {
+	local label="$1"
+	{
+		echo "--- QCA8081 copper/SerDes MDIO snapshot: $label ---"
+		for reg in lan/24/1 lan/25/0 lan/25/1 lan/25:1/0 lan/25:1/1 lan/25:1/0x9072; do
+			printf '%s=' "$reg"
+			/usr/bin/phytool read "$reg" 2>&1 || true
+		done
+		echo "--- IPQ5332 PCS MII control and status: $label ---"
+		cat /sys/kernel/debug/ipq-pcs-7a10000.ethernet-pcs/link_state 2>&1 || true
+		echo "--- NSS port2 receive/transmit clock parents: $label ---"
+		for clk in nss_cc_port2_rx_clk_src nss_cc_port2_tx_clk_src; do
+			file="/sys/kernel/debug/clk/$clk/clk_parent"
+			[ -r "$file" ] && printf '%s parent=%s\n' "$clk" "$(cat "$file")"
+		done
+	} | wave7_firstboot_kmsg
+}
+
 wave7_firstboot_dump_state() {
+	wave7_firstboot_rx_path_snapshot failsafe
 	{
 		echo "diagnostic snapshot before failsafe panic"
 		# Capture the exact receive stage: physical PPE ingress,
@@ -18,13 +42,6 @@ wave7_firstboot_dump_state() {
 		/usr/sbin/ethtool -S lan 2>&1 | awk '
 			$1 ~ /^(rx_frames:|rx_unicast_g:|rx_broadcast_g:|rx_multicast_g:|rx_crc_err:|rx_fifo_overflow:|rx_drop_frames:|rx_len_err:|tx_frames:|tx_unicast:|tx_underflow_err:)$/ { print }
 		' || true
-		echo "--- QCA8081 neighbor SerDes FIFO reset state ---"
-		# The copper PHY is MDIO 0x18; its SerDes FIFO is exposed by
-		# the neighbor address 0x19, Clause 45 MMD1 register 0x9072.
-		# Bit 11 must be released when the copper link is up.
-		/usr/bin/phytool read lan/25:1/0x9072 2>&1 || true
-		echo "--- IPQ5332 SGMII PCS1 status and calibration ---"
-		cat /sys/kernel/debug/ipq-pcs-7a10000.ethernet-pcs/link_state 2>&1 || true
 		echo "--- PPE port2 GMAC registers and mux state ---"
 		cat /sys/kernel/debug/ppe/port2_mac_regs 2>&1 || true
 		echo "--- NSS port2 MAC and SGMII RX/TX clock state ---"
@@ -190,8 +207,7 @@ wave7_firstboot_try_phylink_recycle() {
 	/usr/sbin/ethtool -S lan 2>&1 | awk '$1 ~ /^(rx_frames:|tx_frames:)$/ { print }' | wave7_firstboot_kmsg || true
 	echo 'phylink-cycle PPE ingress after' | wave7_firstboot_kmsg
 	cat /sys/kernel/debug/ppe/port_rx 2>&1 | wave7_firstboot_kmsg || true
-	echo 'phylink-cycle PCS status after' | wave7_firstboot_kmsg
-	cat /sys/kernel/debug/ipq-pcs-7a10000.ethernet-pcs/link_state 2>&1 | wave7_firstboot_kmsg || true
+	wave7_firstboot_rx_path_snapshot after-phylink-cycle
 	if wave7_firstboot_accept_link; then
 		echo '<6>wave7-firstboot: phylink-cycle RECOVERED wired RX and accepted boot' > /dev/kmsg 2>/dev/null || true
 	else
@@ -245,6 +261,9 @@ wave7_firstboot_defer_wifi_autoload() {
 # Each snapshot is small enough for the ramoops persistent console.
 wave7_firstboot_network_snapshot() {
     local label="$1"
+    # The hard-fallback diagnostics already take the same complete
+    # receiver snapshot immediately before this network-only report.
+    [ "$label" = deadline ] || wave7_firstboot_rx_path_snapshot "$label"
     {
         printf 'network snapshot %s uptime=' "$label"
         cat /proc/uptime
