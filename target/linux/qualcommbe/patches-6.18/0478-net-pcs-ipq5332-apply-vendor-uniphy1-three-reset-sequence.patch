@@ -1,0 +1,110 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom: give IPQ5332 UNIPHY1 the vendor reset sequence
+
+The IPQ5332 PCS driver has optional SYS and soft reset handling, but
+ipq5332.dtsi supplies only the XPCS reset. The vendor SSDK resets soft,
+SYS and AHB together for 100ms before VCO calibration, and releases
+them for another 100ms. The current PCS mode configuration silently skips
+this reset stage entirely, and on late QCA8081 copper link the PHY counts
+RX packets but the host GMAC receives none.
+
+Supply the actual GCC UNIPHY1 reset controllers from the stock IPQ5332
+devicetree and perform the three-line reset sequence with error handling.
+Only UNIPHY1 is changed for the isolated Wave 7 diagnostic; UNIPHY0 is
+left unchanged as a control. Diagnostic message confirms reset activation.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -179,6 +179,7 @@
+ 	struct reset_control *xpcs_rstc;
+ 	struct reset_control *sys_rstc;
+ 	struct reset_control *soft_rstc;
++	struct reset_control *ahb_rstc;
+ };
+ 
+ #define phylink_pcs_to_qpcs_mii(_pcs)	\
+@@ -452,15 +453,37 @@
+ 			goto err_clk;
+ 	}
+ 
+-	/* Pulse the resets as the vendor SSDK does: both held for
+-	 * 100ms, then another 100ms to settle after release.
++	/* IPQ5332 vendor SSDK pulses the UNIPHY soft, SYS and AHB resets
++	 * together, after mode selection and before VCO calibration.
++	 * Keep all three aligned with the vendor reset sequence.
+ 	 */
+-	if (qpcs->sys_rstc || qpcs->soft_rstc) {
+-		reset_control_assert(qpcs->sys_rstc);
+-		reset_control_assert(qpcs->soft_rstc);
++	if (qpcs->sys_rstc || qpcs->soft_rstc || qpcs->ahb_rstc) {
++		ret = reset_control_assert(qpcs->soft_rstc);
++		if (ret)
++			goto err_clk;
++		ret = reset_control_assert(qpcs->sys_rstc);
++		if (ret)
++			goto err_reset;
++		ret = reset_control_assert(qpcs->ahb_rstc);
++		if (ret)
++			goto err_reset;
++
++		if (diag_mode)
++			dev_info(qpcs->dev,
++				 "wave7-diag: uniphy reset assert soft=%u sys=%u ahb=%u\n",
++				 !!qpcs->soft_rstc, !!qpcs->sys_rstc,
++				 !!qpcs->ahb_rstc);
++
+ 		msleep(100);
+-		reset_control_deassert(qpcs->sys_rstc);
+-		reset_control_deassert(qpcs->soft_rstc);
++		ret = reset_control_deassert(qpcs->soft_rstc);
++		if (ret)
++			goto err_reset;
++		ret = reset_control_deassert(qpcs->sys_rstc);
++		if (ret)
++			goto err_reset;
++		ret = reset_control_deassert(qpcs->ahb_rstc);
++		if (ret)
++			goto err_reset;
+ 		msleep(100);
+ 	}
+ 
+@@ -566,6 +589,10 @@
+ 
+ 	return 0;
+ 
++err_reset:
++	reset_control_deassert(qpcs->soft_rstc);
++	reset_control_deassert(qpcs->sys_rstc);
++	reset_control_deassert(qpcs->ahb_rstc);
+ err_clk:
+ 	/* Best-effort restore of the clocks disabled at entry */
+ 	ipq_pcs_restore_port_clks(qpcs, interface);
+@@ -1411,6 +1438,11 @@
+ 		return dev_err_probe(dev, PTR_ERR(qpcs->soft_rstc),
+ 				     "Failed to get uniphy soft reset\n");
+ 
++	qpcs->ahb_rstc = devm_reset_control_get_optional_exclusive(dev, "ahb");
++	if (IS_ERR(qpcs->ahb_rstc))
++		return dev_err_probe(dev, PTR_ERR(qpcs->ahb_rstc),
++				     "Failed to get uniphy AHB reset\n");
++
+ 	ret = ipq_pcs_clk_register(qpcs);
+ 	if (ret)
+ 		return ret;
+--- a/arch/arm64/boot/dts/qcom/ipq5332.dtsi
++++ b/arch/arm64/boot/dts/qcom/ipq5332.dtsi
+@@ -642,7 +642,11 @@
+ 				 <&gcc GCC_UNIPHY1_AHB_CLK>;
+ 			clock-names = "sys",
+ 				      "ahb";
+-			resets = <&gcc GCC_UNIPHY1_XPCS_ARES>;
++			resets = <&gcc GCC_UNIPHY1_XPCS_ARES>,
++				 <&gcc GCC_UNIPHY1_SYS_CLK_ARES>,
++				 <&gcc GCC_UNIPHY1_BCR>,
++				 <&gcc GCC_UNIPHY1_AHB_CLK_ARES>;
++			reset-names = "xpcs", "sys", "soft", "ahb";
+ 			#clock-cells = <1>;
+ 			status = "disabled";
+ 
