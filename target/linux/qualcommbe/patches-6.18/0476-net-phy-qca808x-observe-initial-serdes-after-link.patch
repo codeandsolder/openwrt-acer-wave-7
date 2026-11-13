@@ -1,0 +1,139 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: asynchronously sample early QCA8081 SerDes
+
+The reproducible IPQ5332 zero-RX issue occurs when the first copper
+PHY status poll is link-down and the next poll ~1s later links at 1G.
+PHY-side SerDes MII/MMD control and status all match healthy boots by
+40s, so collect bounded observations immediately after the first link
+events, without adding MDIO operations to phylib's synchronous
+status/notify callbacks.
+
+Capture 3 samples per event, beginning 20ms after the notification.
+Limit to the first 3 events and cancel work on driver removal.
+Preserve all existing PHY/PCS reset and FIFO behavior.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -5,6 +5,7 @@
+ #include <linux/of.h>
+ #include <linux/reset.h>
+ #include <linux/clk.h>
++#include <linux/workqueue.h>
+ #include <dt-bindings/net/qcom,qca808x.h>
+ 
+ #include "../phylib.h"
+@@ -177,6 +178,12 @@
+ 	/* Diagnostic-only, bounded one-time boot telemetry. */
+ 	u8 initial_status_samples;
+ 	u8 initial_link_events;
++	/* Bounded, asynchronous SerDes snapshots after the first link events. */
++	struct delayed_work diag_serdes_work;
++	struct phy_device *diag_phydev;
++	u8 diag_serdes_events;
++	u8 diag_serdes_sample;
++	bool diag_serdes_link;
+ 	struct qcom_phy_hw_stats hw_stats;
+ };
+ 
+@@ -357,6 +364,68 @@
+ 		__set_bit(PHY_INTERFACE_MODE_2500BASEX, possible);
+ }
+ 
++static void qca808x_diag_serdes_work(struct work_struct *work)
++{
++	struct qca808x_priv *priv =
++		container_of(to_delayed_work(work), struct qca808x_priv,
++			     diag_serdes_work);
++	struct phy_device *phydev = priv->diag_phydev;
++	struct mii_bus *bus = phydev->mdio.bus;
++	unsigned int event = READ_ONCE(priv->diag_serdes_events);
++	unsigned int sample = READ_ONCE(priv->diag_serdes_sample);
++	bool link = READ_ONCE(priv->diag_serdes_link);
++	int mii_ctrl, mii_status, pma_ctrl, pma_status, fifo;
++	unsigned int errors = 0;
++
++	/* Deliberately outside the PHY state-machine and link-change callbacks:
++	 * synchronous MDIO reads alter the very timing being investigated.
++	 */
++	mii_ctrl = mdiobus_read(bus, phydev->mdio.addr + 1, MII_BMCR);
++	mii_status = mdiobus_read(bus, phydev->mdio.addr + 1, MII_BMSR);
++	pma_ctrl = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++				    MDIO_MMD_PMAPMD, MDIO_CTRL1);
++	pma_status = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++				      MDIO_MMD_PMAPMD, MDIO_STAT1);
++	fifo = mdiobus_c45_read(bus, phydev->mdio.addr + 1,
++				MDIO_MMD_PMAPMD, QCA8081_PHY_SERDES_MMD1_FIFO_CTRL);
++	if (mii_ctrl < 0)
++		errors |= BIT(0);
++	if (mii_status < 0)
++		errors |= BIT(1);
++	if (pma_ctrl < 0)
++		errors |= BIT(2);
++	if (pma_status < 0)
++		errors |= BIT(3);
++	if (fifo < 0)
++		errors |= BIT(4);
++
++	phydev_info(phydev,
++		    "wave7-diag: serdes event=%u link=%u sample=%u mii=%#x/%#x pma=%#x/%#x fifo=%#x errors=%#x\n",
++		    event, link, sample, mii_ctrl, mii_status,
++		    pma_ctrl, pma_status, fifo, errors);
++
++	/* Three samples at approximately 20, 100 and 350 ms after each
++	 * event. Never poll repeatedly over the full firstboot window.
++	 */
++	if (event != READ_ONCE(priv->diag_serdes_events))
++		return;
++
++	if (sample < 2) {
++		static const unsigned int next_ms[] = { 80, 250 };
++
++		WRITE_ONCE(priv->diag_serdes_sample, sample + 1);
++		mod_delayed_work(system_unbound_wq, &priv->diag_serdes_work,
++				 msecs_to_jiffies(next_ms[sample]));
++	}
++}
++
++static void qca808x_remove(struct phy_device *phydev)
++{
++	struct qca808x_priv *priv = phydev->priv;
++
++	cancel_delayed_work_sync(&priv->diag_serdes_work);
++}
++
+ static int qca808x_probe(struct phy_device *phydev)
+ {
+ 	struct device *dev = &phydev->mdio.dev;
+@@ -379,6 +448,8 @@
+ 		return ret;
+ 
+ 	priv->channel_id = ch_id;
++	priv->diag_phydev = phydev;
++	INIT_DELAYED_WORK(&priv->diag_serdes_work, qca808x_diag_serdes_work);
+ 	phydev->priv = priv;
+ 
+ 	return 0;
+@@ -664,6 +735,13 @@
+ 			    "wave7-diag: fifo[%u] state=%d link=%u mdio_result=%d\n",
+ 			    priv->initial_link_events, phydev->state,
+ 			    phydev->link, ret);
++
++		/* Defer the MDIO reads; the notify path itself remains unchanged. */
++		WRITE_ONCE(priv->diag_serdes_events, priv->initial_link_events);
++		WRITE_ONCE(priv->diag_serdes_link, phydev->link);
++		WRITE_ONCE(priv->diag_serdes_sample, 0);
++		mod_delayed_work(system_unbound_wq, &priv->diag_serdes_work,
++				 msecs_to_jiffies(20));
+ 	}
+ }
+ 
+@@ -1250,6 +1328,7 @@
+ 	.name			= "Qualcomm QCA8081",
+ 	.flags			= PHY_POLL_CABLE_TEST,
+ 	.probe			= qca808x_probe,
++	.remove			= qca808x_remove,
+ 	.config_intr		= at803x_config_intr,
+ 	.handle_interrupt	= at803x_handle_interrupt,
+ 	.get_tunable		= at803x_get_tunable,
