@@ -5,7 +5,7 @@ The link-down read_status rewrite is the sole behavioral delta.
 
 --- a/drivers/net/phy/qcom/qca808x.c
 +++ b/drivers/net/phy/qcom/qca808x.c
-@@ -613,25 +613,6 @@
+@@ -613,24 +613,6 @@
  			phydev->interface = PHY_INTERFACE_MODE_2500BASEX;
  		else
  			phydev->interface = PHY_INTERFACE_MODE_SGMII;
@@ -27,7 +27,6 @@ The link-down read_status rewrite is the sole behavioral delta.
 -				qca808x_phy_ms_seed_enable(phydev, true);
 -			}
 -		}
--	}
+ 	}
  
  	/* The first PHY poll can see link down and be retried one second
- 	 * later. Record only already-read software status: extra MDIO reads
