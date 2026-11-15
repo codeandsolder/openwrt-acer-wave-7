@@ -1,0 +1,65 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: recalibrate MPPE SGMII on every media link up
+
+The first-link-down packet blackhole is fixed by deferring the first
+UNIPHY SGMII calibration until the external PHY reports media link up.
+
+However, a supervised nine-second copper flap on an already accepted
+boot reproduces the same bidirectional packet blackhole: phylink
+reports PCS link-up success and carrier 1G, but GMAC RX does not
+advance for 30 seconds. The second pcs_link_up() does not reconfigure
+UNIPHY because its interface mode is already set to SGMII. The
+on-device watchdog recovered without physical intervention.
+
+For IPQ5332 MPPE index0 out-of-band SGMII, calibrate the PCS on each
+media link-up callback, before phylink enables the MAC. Keep other
+PCS instances, in-band SGMII and 2500BASE-X unchanged. This extends
+the proven first-link ordering to subsequent carrier transitions.
+
+Experiment-only: source compiled and hardware-flap re-test required.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -1000,26 +1000,33 @@
+ 	}
+ 
+ 	/*
+-	 * Complete deferred first-time out-of-band MPPE SGMII setup only
+-	 * after the external copper PHY has established its media link.
++	 * Configure MPPE SGMII after each external PHY media link-up,
++	 * including recovery after a carrier loss. The PHY SerDes and
++	 * UNIPHY may have lost frame alignment even though their
++	 * reported carrier and calibration status are healthy.
++	 *
++	 * This callback runs before phylink's MAC link-up callback.
+ 	 */
+ 	if (qpcs->mppe && index == 0 &&
+ 	    neg_mode == PHYLINK_PCS_NEG_OUTBAND &&
+-	    interface == PHY_INTERFACE_MODE_SGMII &&
+-	    qpcs->interface != interface) {
++	    interface == PHY_INTERFACE_MODE_SGMII) {
++		bool initial = qpcs->interface != interface;
+ 		ret = ipq_pcs_config_mode(qpcs, interface);
+ 		if (ret) {
+-			dev_err(qpcs->dev, "Deferred SGMII mode setup failed: %d\n", ret);
++			dev_err(qpcs->dev, "SGMII media-link mode setup failed: %d\n", ret);
+ 			return;
+ 		}
+ 
+ 		ret = ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
+ 		if (ret) {
+-			dev_err(qpcs->dev, "Deferred SGMII force mode failed: %d\n", ret);
++			dev_err(qpcs->dev, "SGMII media-link force mode failed: %d\n", ret);
+ 			return;
+ 		}
+ 
+-		dev_info(qpcs->dev, "wave7-diag: first-media SGMII mode ready\n");
++		if (initial)
++			dev_info(qpcs->dev, "wave7-diag: first-media SGMII mode ready\n");
++		else
++			dev_info(qpcs->dev, "wave7-diag: relink-media SGMII mode ready\n");
+ 	}
+ 
+ 	switch (interface) {
