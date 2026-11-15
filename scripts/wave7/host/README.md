@@ -30,7 +30,7 @@ the NAND rootfs UBI volume. Do not run it as a diagnostic/preflight and do
 not reboot a known-working OpenWrt initramfs just to satisfy its vendor
 precondition. It does not provide a working U-Boot serial/TFTP recovery route.
 
-The **current proven OpenWrt 6.18.60 lab image is d72fd34a45**
+The **historical 2026-11-09 proven OpenWrt 6.18.60 RAM-boot lab image was d72fd34a45**
 (BCH-8/512). Seven supervised vendor OTA trials culminated in a
 successful NAND ECC-corrected initramfs router at 2026-11-09 16:35 CET:
 all 27 factory SMEM MTD partitions and ART calibration pages 2/3/4/16
@@ -69,6 +69,18 @@ and passed its first native NAND-root hardware boot on 2026-11-09. See storage-b
 and staged hardware-verified artifact; the previous working `d72fd34a45` BCH-8 initramfs
 remains the proven recovery baseline.
 
+## Current native lab image (2026-11-15)
+
+Installed and accepted NAND-native OpenWrt6.18.60 is
+r0+38249-3b1851eda6, packed sysupgrade SHA256
+a952779383ba6d6c0847951354af2d59a96e46b9422fba4fb0cda6e92a9877da.
+After proving experimental FIFO link-change suppression ineffective, we
+reinstalled this accepted image with guarded OTA; bootfail0, keepboot,
+Q6 processors 3/3, MLO AP links 2/2 and wired peer all passed.
+Primary source branch remains wave7-q6-phy-path-integration. The
+authoritative evolving status is the Notion page:
+https://app.notion.com/p/400f74be902081c0a3bef13c819b8320
+
 ## Q6 SSR validation (2026-11-15)
 
 The native integrated firmware `r0+38244-b5e17c3979` was accepted on
@@ -84,16 +96,38 @@ recovery experiment has independent observers and a genuinely associated MLO
 station. The separate Nov 15 Notion implementation checkpoint records the
 hardware status and acceptance gates; source-side instructions live here.
 
-The MT7925 test station is Dell Wyse `jan@10.1.0.221` (`wifi7-lab.home`),
-with *cold-storage* SentinelX ED25519 identity fingerprint
-`SHA256:gkna44mF0A7Mmm/7PLJSh4kfWkFYFsa/MfPClaIQaxg` (private key stays only
-on cold-storage). Access was proven with a time-limited Acer Tailscale
-`TCP-LISTEN:22221` relay to Wyse TCP/22; Acer/Asus default SSH keys cannot
-log into the Wyse. The Wyse `Wave7-MLO-Lab` profile is normally
-`connection.autoconnect=no`; reconnect manually when needed, retaining the
-independent `eno1` management interface. The extra `q6-ssr-observer.sh`
-captures root/child state and AP/STA/peer health at bounded intervals to an
-Asus trial directory; it does not trigger any crash.
+The MT7925 test station is Dell Wyse wifi7-lab.home. Its independent
+Ethernet management interface eno1 is 10.1.0.221/16, and Wi-Fi interface
+wlp2s0 is normally 192.168.76.145/24. As of 2026-11-15, Acer connects
+to Wyse directly over Ethernet: use SSH host alias wyse-eth, configured
+under /home/jan/.ssh/config on Acer, user jan, with the already-existing
+Acer identity ~/.ssh/cold-storage-wrangler (Ed25519 public-key SHA256:
+ZdGRoup5Sy7Jy37osT1wTMi66B8+XlUU5mjH93T3IMU). Its public key was
+added idempotently to Wyse authorized_keys, preserving the existing key.
+The separate cold-storage SentinelX key was not copied. The former
+temporary Acer Tailscale TCP port 22221 SSH relay is no longer needed
+and was stopped and verified inactive after enrollment.
+
+The Wyse Wi-Fi profile Wave7-MLO-Lab intentionally has
+connection.autoconnect=no; to re-associate without touching independent
+wired management, run on Acer:
+
+    ssh wyse-eth 'sudo -n nmcli connection up Wave7-MLO-Lab ifname wlp2s0'
+
+After the Nov15 rollback, router-to-Wyse ICMP initially failed despite
+association, but recovered without changes to the AP: 2/2 router-to-Wyse
+and 5/5 Wyse-to-router ping succeeded later. Avoid treating just-associated
+STA ARP/ping transients as persistent WLAN failure.
+
+Wyse's clock had been stuck on 2026-10-20 (RTC near Jan 2012) with NTP
+disabled. On Nov15, normal systemd-timesyncd was enabled via
+sudo timedatectl set-ntp true. It is now enabled, active and
+NTPSynchronized=yes (pool.ntp.org stratum 2), enabling correct alignment
+of timestamps across Wave7, Redmi and Wyse.
+
+The extra q6-ssr-observer.sh captures root/child state and AP/STA/peer
+health at bounded intervals to an Asus trial directory; it does not
+trigger any crash. Root-Q6 in-place SSR remains UNTESTED.
 
 With an MLO STA active, the guard also accepts an optional fourth argument:
 the station IPv4 address. At expiry it verifies that a station is associated
