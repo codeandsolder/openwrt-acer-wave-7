@@ -68,3 +68,18 @@ not the vendor SquashFS. It passed full offline UBI byte/CRC verification
 and passed its first native NAND-root hardware boot on 2026-11-09. See storage-boot-plan.md for SHA256s
 and staged hardware-verified artifact; the previous working `d72fd34a45` BCH-8 initramfs
 remains the proven recovery baseline.
+
+## Q6 SSR validation (2026-11-15)
+
+The native integrated firmware `r0+38244-b5e17c3979` was accepted on
+real hardware; boot success alone does not prove in-place root-Q6 recovery.
+`observe-q6-ssr.sh --check` and `--capture` run **on Asus** via the already
+configured Wave 7 root SSH identity, without changing hardware state. Captures
+are SHA-manifested in `/home/jan/firmware/wave7/trials/20261115-q6-phy-integration/q6-ssr`.
+
+`q6-recovery-guard.sh --check` is the read-only on-device preflight of a
+boot-ID-bound and per-trial-token guarded recovery timer. Its crash-recovery
+branch is **not validated** and must not be armed until the control-plane
+recovery experiment has independent observers and a genuinely associated MLO
+station. The separate Nov 15 Notion implementation checkpoint records the
+hardware status and acceptance gates; source-side instructions live here.
