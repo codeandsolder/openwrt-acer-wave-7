@@ -22,7 +22,7 @@ export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTI
 test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*')"
 [[ $(ip route get 10.1.0.2) == *"dev wlan0"* ]] || { echo 'Asus local Redmi route is not direct' >&2; exit 2; }
 expected=$(sha256sum "$root/wave7-postboot-link-monitor.sh" | cut -d' ' -f1)
-[[ "$expected" == 43ff465573fec585cd3e91f09cba2861436b7c587c3639f187b9ae7c0dfe6cb1 ]]
+[[ "$expected" == 0c7cb75e4f272b6cb1b0cd4cdfcf8c4a3d441aecfeafa49542d8d795b268ed67 ]]
 old=$(ssh_wave '
  set -eu
  test "$(uname -r)" = 6.18.60
@@ -59,6 +59,7 @@ waveunit="wave7-openwrt-watch-$tag.service"
 fallbackunit="wave7-fallback-watch-$tag.service"
 armed=0
 complete=0
+cut=0
 cleanup() {
   code=$?
   trap - EXIT
@@ -67,11 +68,17 @@ cleanup() {
       f=/tmp/wave7-$tag-$suffix
       [[ ! -s $f ]] || cp -p "$f" "$out/" || :
     done
-    if (( complete )); then
+    if (( complete || ! cut )); then
+      # Before a link cut, cancel the guard even if setup failed; leaving
+      # the 145s timer active after an aborted trial risks a false reboot.
+      ssh_wave 'rm -f /tmp/wave7-postboot-trial.arm /tmp/wave7-postboot-link-monitor.ready /tmp/wave7-postboot-link-monitor.done; for pf in /tmp/wave7-postboot-hard-guard.pid /tmp/wave7-postboot-monitor.pid; do if test -s "$pf"; then kill "$(cat "$pf")" 2>/dev/null || :; fi; done; rm -f /tmp/wave7-postboot-hard-guard.pid /tmp/wave7-postboot-monitor.pid' >/dev/null 2>&1 || :
       systemctl --user stop "$waveunit" "$fallbackunit" >/dev/null 2>&1 || :
     else
-      log 'Not accepted or no complete result: independent recovery observers remain armed.'
+      log 'Interrupted trial after link cut: recovery guards remain armed.'
     fi
+  elif (( ! cut )); then
+    # Failure during file staging, before either external observer exists.
+    ssh_wave 'rm -f /tmp/wave7-postboot-link-monitor.sh /tmp/wave7-postboot-hard-guard.sh' >/dev/null 2>&1 || :
   fi
   exit "$code"
 }
@@ -84,20 +91,23 @@ actual=$(ssh_wave 'sha256sum /tmp/wave7-postboot-link-monitor.sh' | cut -d' ' -f
 [[ "$actual" == "$expected" ]]
 scp -q -O -i /home/jan/.ssh/wave7-root-rsa -o BatchMode=yes -o IdentitiesOnly=yes  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null  "$root/wave7-postboot-hard-guard.sh" root@192.168.76.1:/tmp/wave7-postboot-hard-guard.sh
 guard_hash=$(sha256sum "$root/wave7-postboot-hard-guard.sh" | cut -d' ' -f1)
-[[ "$guard_hash" == fbd706840b83a1b4cd8654b0d767d8811615ab6452f6165c03f4672f281a9f80 ]]
+[[ "$guard_hash" == cab2911bbb1909cd05c07cbc78bbba63f0230c84156463c7f06ac997e2f3e006 ]]
 remote_guard_hash=$(ssh_wave 'sha256sum /tmp/wave7-postboot-hard-guard.sh' | cut -d' ' -f1)
 [[ "$remote_guard_hash" == "$guard_hash" ]]
-ssh_wave 'chmod 700 /tmp/wave7-postboot-link-monitor.sh /tmp/wave7-postboot-hard-guard.sh; test -c /dev/kmsg; test -w /proc/sysrq-trigger; test "$(cat /proc/sys/kernel/panic)" -ge 1'
+ssh_wave 'chmod 700 /tmp/wave7-postboot-link-monitor.sh /tmp/wave7-postboot-hard-guard.sh; test -c /dev/kmsg; test -w /proc/sysrq-trigger; test "$(cat /proc/sys/kernel/panic)" -ge 1; /bin/ash /tmp/wave7-postboot-link-monitor.sh --check; /bin/ash /tmp/wave7-postboot-hard-guard.sh --check' > "$out/ondevice-preflight.txt"
 log "On-router recovery observer staged; original healthy boot=$old"
 systemd-run --user --quiet --unit="wave7-openwrt-watch-$tag" \
  --property=RuntimeMaxSec=900 -- \
  /home/jan/scripts/wave7/controlled-link/watch-new-boot-id.sh "$tag" "$old" ea66890908
+armed=1
 systemd-run --user --quiet --unit="wave7-fallback-watch-$tag" \
  --property=RuntimeMaxSec=900 -- /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
 armed=1
 systemctl --user is-active --quiet "$waveunit"
 systemctl --user is-active --quiet "$fallbackunit"
 ssh_wave 'set -eu
+ test ! -e /tmp/wave7-postboot-trial.arm
+ printf "%s\n" "$(cat /proc/sys/kernel/random/boot_id)" > /tmp/wave7-postboot-trial.arm
  test ! -e /tmp/wave7-postboot-hard-guard.pid
  start-stop-daemon -S -b -m -p /tmp/wave7-postboot-hard-guard.pid   -x /bin/ash -- /tmp/wave7-postboot-hard-guard.sh "$(cat /proc/sys/kernel/random/boot_id)"   </dev/null >/dev/null 2>&1 || :
  sleep 1
@@ -123,6 +133,7 @@ ssh_redmi 'set -eu
  echo REDMI_RESTORE_TIMER_ARMED
 ' > "$out/redmi-control.txt" 2>&1
 # The link cut can interrupt SSH. Restore is already independently armed.
+cut=1
 ssh_redmi 'ip link set lan2 down' >> "$out/redmi-control.txt" 2>&1 || :
 log 'Redmi lan2 cut with independent nine-second restore armed.'
 sleep 13
@@ -163,6 +174,6 @@ if (( ! complete )); then
   log 'No accepted post-test result within deadline; recovery observers stay active.'
   exit 4
 fi
-ssh_wave 'if test -s /tmp/wave7-postboot-hard-guard.pid; then kill "$(cat /tmp/wave7-postboot-hard-guard.pid)" 2>/dev/null || :; fi; rm -f /tmp/wave7-postboot-link-monitor.sh /tmp/wave7-postboot-link-monitor.log /tmp/wave7-postboot-link-monitor.ready /tmp/wave7-postboot-link-monitor.done /tmp/wave7-postboot-monitor.pid /tmp/wave7-postboot-hard-guard.sh /tmp/wave7-postboot-hard-guard.pid' >/dev/null 2>&1 || :
+ssh_wave 'rm -f /tmp/wave7-postboot-trial.arm; if test -s /tmp/wave7-postboot-hard-guard.pid; then kill "$(cat /tmp/wave7-postboot-hard-guard.pid)" 2>/dev/null || :; fi; rm -f /tmp/wave7-postboot-link-monitor.sh /tmp/wave7-postboot-link-monitor.log /tmp/wave7-postboot-link-monitor.ready /tmp/wave7-postboot-link-monitor.done /tmp/wave7-postboot-monitor.pid /tmp/wave7-postboot-hard-guard.sh /tmp/wave7-postboot-hard-guard.pid' >/dev/null 2>&1 || :
 (cd "$out"; find . -maxdepth 1 -type f ! -name evidence.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence.sha256; sha256sum -c evidence.sha256 | tail -8)
 echo "EVIDENCE=$out"

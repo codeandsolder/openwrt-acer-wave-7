@@ -24,3 +24,25 @@ Never count carrier1 alone as datapath recovery: test peer and RX counters.
 Postboot link interruption 2026-11-14 at 21:49 CET *without* these guards
 stranded wired management (no ARP replies despite Redmi carrier1). A physical
 Wave 7 power-cycle was requested; see the Notion Wave 7 current-state hub.
+
+## 2026-11-15 follow-up, no hardware flap
+
+The hard guard requires a **per-boot arming token**
+ at startup, again after its timeout, and
+immediately before recovery. Cancelling a trial invalidates that token;
+the launcher also stops detached processes and removes readiness markers
+on an aborted setup. The launcher marks the first started Asus observer
+as armed so partially completed watcher setup can be cleaned up.
+
+The monitor records a bounded raw SerDes+GMAC snapshot on **success** as
+well as the already-supported RX-stalled and RX-advancing peer-failure
+paths. Both on-router scripts have read-only  entry points.
+
+Validation: Bash/Ash syntax and ShellCheck warning level PASS, Asus
+ PASS, staged monitor
+ **PASS** on Wave7 (,
+, peer reachable). The independent hard-guard runtime
+execution was blocked by platform safeguards and is **NOT validated**.
+No arming process, hardware flap, reboot or firmware flash occurred.
+**Do not treat this source change as validated autonomous recovery** until
+the complete guard launch/cancel/failure lifecycle is exercised.

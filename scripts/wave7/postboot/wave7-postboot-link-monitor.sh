@@ -4,6 +4,18 @@
 # kernel evidence by sysrq panic. A new boot then uses the existing
 # firstboot watchdog/stock fallback. No reboot for an inconclusive test.
 set -eu
+# Read-only on-device runtime preflight: no marker, timer, or link change.
+if [ "${1:-}" = "--check" ]; then
+  test -r /sys/class/net/lan/statistics/rx_packets
+  test -r /sys/class/net/lan/carrier
+  command -v phytool >/dev/null
+  command -v ethtool >/dev/null
+  phytool read lan/0x19:1/0x001e
+  phytool read lan/0x19:1/0x007d
+  ping -I br-lan -c 2 -W 1 192.168.76.2 >/dev/null
+  echo "POSTBOOT_MONITOR_CHECK_PASS rx=$(cat /sys/class/net/lan/statistics/rx_packets)"
+  exit 0
+fi
 path=/tmp/wave7-postboot-link-monitor
 logfile=$path.log
 ready=$path.ready
@@ -45,6 +57,15 @@ while :; do
     fi
     if [ "$peer_ok" = 1 ] && [ "$rx1" -gt "$rx_at_up" ]; then
       log "SUCCESS after-flap peer2-of-2 rx_at_up=$rx_at_up rx_after=$rx1 elapsed=$((now - start))s"
+      # Healthy post-flap SerDes register comparison against the failed path.
+      if command -v phytool >/dev/null 2>&1; then
+        for reg in 0x0009 0x001e 0x001f 0x006e 0x007d 0x9072; do
+          value=$(phytool read "lan/0x19:1/$reg" 2>&1 || echo READ_ERROR)
+          log "serdes[recovered].$reg=$value"
+        done
+      fi
+      ethtool -S lan | grep -E 'rx_frames:|tx_frames:|rx_crc_err:' |
+        head -12 | while IFS= read -r line; do log "mib[recovered] $line"; done
       printf 'SUCCESS boot=%s rx_at_up=%s rx1=%s\n' "$expected" "$rx_at_up" "$rx1" > "$donefile"
       exit 0
     fi
