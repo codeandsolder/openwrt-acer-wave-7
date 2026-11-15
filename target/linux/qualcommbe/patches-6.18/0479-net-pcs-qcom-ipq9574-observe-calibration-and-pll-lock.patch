@@ -1,0 +1,63 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: trace PLL lock at SGMII startup
+
+Qualcomm's UNIPHY_OFFSET_CALIB_4 register at 0x1e0 identifies PLL_LOCKED
+as bit 6 and SAMPLER_READY as bit 0, besides CALIB_DONE at bit 7.
+The IPQ5332 PCS driver already polls CALIB_DONE at this exact address.
+
+Log the already-read status at PCS mode-ready without another read.
+For the first four link-up callbacks, take one read-only MMIO sample
+after adapter reset programming and log its value.
+
+Source-only experiment; no behavior or register writes are added.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -24,6 +24,8 @@
+ 
+ #define PCS_CALIBRATION			0x1e0
+ #define PCS_CALIBRATION_DONE		BIT(7)
++#define PCS_CALIBRATION_PLL_LOCKED	BIT(6)
++#define PCS_CALIBRATION_SAMPLER_READY	BIT(0)
+ 
+ /* 25MHz reference clock output to an external PHY */
+ #define PCS_CLKOUT_50M_CTRL		0x610
+@@ -563,6 +565,14 @@
+ 		dev_info(qpcs->dev,
+ 			 "wave7-diag: pcs mode-ready[%u] interface=%s rate=%lu\n",
+ 			 qpcs->diag_mode_reconfigs, phy_modes(interface), rate);
++
++	/* Reuse the already-polled calibration status: no extra MMIO read. */
++	if (diag_mode)
++		dev_info(qpcs->dev,
++			 "wave7-diag: pcs calib-ready[%u] raw=%#x pll=%u sample=%u\n",
++			 qpcs->diag_mode_reconfigs, val,
++			 !!(val & PCS_CALIBRATION_PLL_LOCKED),
++			 !!(val & PCS_CALIBRATION_SAMPLER_READY));
+ 
+ 	return 0;
+ 
+@@ -1012,6 +1022,21 @@
+ 			 "wave7-diag: pcs link-up-result[%u] result=%d\n",
+ 			 qpcs_mii->diag_link_ups, ret);
+ 
++	if (diag_link_up) {
++		unsigned int calibration = 0;
++		int read_err;
++
++		/* A single MMIO read after programming the PCS adapter reset. */
++		read_err = regmap_read(qpcs->regmap, PCS_CALIBRATION,
++				       &calibration);
++		dev_info(qpcs->dev,
++			 "wave7-diag: pcs calib-link[%u] raw=%#x pll=%u sample=%u err=%d\n",
++			 qpcs_mii->diag_link_ups, calibration,
++			 !!(calibration & PCS_CALIBRATION_PLL_LOCKED),
++			 !!(calibration & PCS_CALIBRATION_SAMPLER_READY),
++			 read_err);
++	}
++
+ 	if (ret)
+ 		dev_err(qpcs->dev, "PCS link up fail for interface %s\n",
+ 			phy_modes(interface));
