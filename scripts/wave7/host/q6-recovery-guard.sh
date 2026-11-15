@@ -31,8 +31,10 @@ for d in /sys/class/remoteproc/remoteproc0 /sys/class/remoteproc/remoteproc1 /sy
 done
 test "$(iw dev 2>/dev/null | grep -Ec 'link ID[[:space:]]+[01]')" -eq 2 || ok=0
 ping -I br-lan -c 2 -W 1 192.168.76.2 >/dev/null 2>&1 || ok=0
+iw dev 2>/dev/null | awk '/link ID[[:space:]]+[01]/{links++} /txpower/ && $2+0>0{powered++} END{exit !(links==2&&powered>=2)}' || ok=0
 if [ "$ok" -eq 1 ]; then
   echo '<6>wave7-q6-guard: basic recovery healthy, no reboot' > /dev/kmsg
+  if [ -r "$arm" ] && [ "$(cat "$arm")" = "$token" ]; then rm -f "$arm"; fi
   exit 0
 fi
 test -r "$arm" || exit 0
