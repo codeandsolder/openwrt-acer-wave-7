@@ -1,0 +1,97 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: trace cached packet counts after each carrier edge
+
+A postboot QCA8081 carrier flap can leave the PHY and host PCS reporting
+link up, yet host GMAC receive frames stop advancing. Earlier bounded
+PHY MMD7 packet logging stopped after the first 120 state-machine ticks,
+so it omitted the later failure.
+
+Re-arm a bounded observation window on each QCA8081 PHY link event and
+print cached RX/TX packet totals, errors and successive deltas for the
+following 60 state-machine statistics updates. The existing Qualcomm
+PHY stats callback is the ONLY reader of the read-clear MMD7 counters.
+This patch performs no additional MDIO reads, no register writes and
+does not change the PHY/PCS link configuration or polling interval.
+
+This diagnostic differentiates copper ingress activity (RX) from PHY
+external MAC ingress activity (TX) after a real postboot carrier flap.
+The host PPE/GMAC counters are captured separately by the trial monitor.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -185,6 +185,12 @@
+ 	u8 diag_serdes_sample;
+ 	bool diag_serdes_link;
+ 	u8 diag_phy_counter_updates;
++	/* Re-arm bounded read-only MMD7 counter tracing on every link edge. */
++	u8 diag_phy_path_window;
++	u8 diag_phy_path_sample;
++	u32 diag_phy_path_edges;
++	u64 diag_phy_path_prev_rx;
++	u64 diag_phy_path_prev_tx;
+ 	struct qcom_phy_hw_stats hw_stats;
+ };
+ 
+@@ -781,6 +787,21 @@
+ 					 QCA8081_PHY_SERDES_MMD1_FIFO_CTRL,
+ 					 QCA8081_PHY_FIFO_RSTN,
+ 					 phydev->link ? QCA8081_PHY_FIFO_RSTN : 0);
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID)) {
++		priv->diag_phy_path_edges++;
++		priv->diag_phy_path_window = 60;
++		priv->diag_phy_path_sample = 0;
++		priv->diag_phy_path_prev_rx = priv->hw_stats.rx_pkts;
++		priv->diag_phy_path_prev_tx = priv->hw_stats.tx_pkts;
++		phydev_info(phydev,
++			    "wave7-diag: phy-path edge=%u link=%u fifo_ret=%d rx=%llu tx=%llu rx_err=%llu tx_err=%llu\n",
++			    priv->diag_phy_path_edges, phydev->link, ret,
++			    (unsigned long long)priv->hw_stats.rx_pkts,
++			    (unsigned long long)priv->hw_stats.tx_pkts,
++			    (unsigned long long)priv->hw_stats.rx_err_pkts,
++			    (unsigned long long)priv->hw_stats.tx_err_pkts);
++	}
++
+ 	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
+ 	    priv->initial_link_events < 3) {
+ 		priv->initial_link_events++;
+@@ -1032,6 +1053,38 @@
+ 				    (unsigned long long)priv->hw_stats.rx_pkts,
+ 				    (unsigned long long)priv->hw_stats.rx_err_pkts,
+ 				    (unsigned long long)priv->hw_stats.tx_pkts,
++				    (unsigned long long)priv->hw_stats.tx_err_pkts);
++	}
++
++	/*
++	 * The state machine already reads clear-on-read MMD7 counters through
++	 * qcom_phy_update_stats(). Sample its cached 64-bit totals on every
++	 * postboot link edge; do not consume these registers a second time.
++	 * RX is copper ingress, TX is PHY external-MAC ingress.
++	 */
++	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
++	    priv->diag_phy_path_window) {
++		u64 rx = priv->hw_stats.rx_pkts;
++		u64 tx = priv->hw_stats.tx_pkts;
++		u64 rx_delta = rx - priv->diag_phy_path_prev_rx;
++		u64 tx_delta = tx - priv->diag_phy_path_prev_tx;
++
++		priv->diag_phy_path_prev_rx = rx;
++		priv->diag_phy_path_prev_tx = tx;
++		priv->diag_phy_path_sample++;
++		priv->diag_phy_path_window--;
++
++		if (priv->diag_phy_path_sample == 1 ||
++		    !(priv->diag_phy_path_sample % 2))
++			phydev_info(phydev,
++				    "wave7-diag: phy-path sample=%u edge=%u link=%u rx=%llu drx=%llu tx=%llu dtx=%llu rx_err=%llu tx_err=%llu\n",
++				    priv->diag_phy_path_sample,
++				    priv->diag_phy_path_edges, phydev->link,
++				    (unsigned long long)rx,
++				    (unsigned long long)rx_delta,
++				    (unsigned long long)tx,
++				    (unsigned long long)tx_delta,
++				    (unsigned long long)priv->hw_stats.rx_err_pkts,
+ 				    (unsigned long long)priv->hw_stats.tx_err_pkts);
+ 	}
+ 
