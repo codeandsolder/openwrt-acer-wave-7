@@ -1,0 +1,74 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: qcom-ipq9574: defer initial MPPE outband SGMII until media link
+
+IPQ5332 with QCA8081 can enter an unrecoverable bidirectional packet
+blackhole when the first copper PHY status poll sees link down,
+although subsequent PCS and PHY link statuses report up, PCS PLL
+lock/calibration are good, PHY receives copper frames, and MAC
+transmits frames. The same image works if copper link is already up
+when host UNIPHY configures its SGMII mode.
+
+For MPPE index0 out-of-band SGMII, delay only the initial mode
+configuration until the first PHY link-up callback, prior to MAC
+link-up. Run the existing PCS mode and force-mode setup once, then
+perform the usual speed programming and adapter reset.
+
+This is a mechanism-driven A/B; not validated on hardware yet.
+The previously tested full PCS reinit AFTER a broken first-link path
+is a different operation and was unsuccessful.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -579,6 +579,20 @@
+ 				phy_interface_t interface)
+ {
+ 	int ret;
++
++	/*
++	 * On MPPE with an external out-of-band SGMII PHY, media link may
++	 * still be down when phylink first configures the PCS. Calibrating
++	 * UNIPHY before the PHY has enabled its serial datapath can leave
++	 * the two interfaces unable to exchange frames after copper links.
++	 * Defer the FIRST calibration until pcs_link_up(), which is called
++	 * before mac_link_up() with a known-good PHY media link.
++	 */
++	if (qpcs->mppe && index == 0 &&
++	    neg_mode == PHYLINK_PCS_NEG_OUTBAND &&
++	    interface == PHY_INTERFACE_MODE_SGMII &&
++	    qpcs->interface != interface)
++		return 0;
+ 
+ 	/* Configure the PCS mode if required */
+ 	if (qpcs->interface != interface) {
+@@ -985,6 +999,29 @@
+ 			 speed, duplex, neg_mode);
+ 	}
+ 
++	/*
++	 * Complete deferred first-time out-of-band MPPE SGMII setup only
++	 * after the external copper PHY has established its media link.
++	 */
++	if (qpcs->mppe && index == 0 &&
++	    neg_mode == PHYLINK_PCS_NEG_OUTBAND &&
++	    interface == PHY_INTERFACE_MODE_SGMII &&
++	    qpcs->interface != interface) {
++		ret = ipq_pcs_config_mode(qpcs, interface);
++		if (ret) {
++			dev_err(qpcs->dev, "Deferred SGMII mode setup failed: %d\n", ret);
++			return;
++		}
++
++		ret = ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
++		if (ret) {
++			dev_err(qpcs->dev, "Deferred SGMII force mode failed: %d\n", ret);
++			return;
++		}
++
++		dev_info(qpcs->dev, "wave7-diag: first-media SGMII mode ready\n");
++	}
++
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 	case PHY_INTERFACE_MODE_QSGMII:
