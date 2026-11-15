@@ -21,7 +21,7 @@ token=$(cat /proc/sys/kernel/random/uuid)
 printf '%s\n' "$token" >/tmp/wave7-remote-loopback.arm
 rm -f /tmp/wave7-remote-loopback.restored
 start-stop-daemon -S -b -m -p /tmp/wave7-remote-loopback.pid \
-  -x /bin/ash -- /tmp/wave7-remote-loopback-restore.sh "$boot" "$original" "$token"
+  -x /bin/ash -- /tmp/wave7-remote-loopback-wave7-restore.sh "$boot" "$original" "$token"
 sleep 1
 test -s /tmp/wave7-remote-loopback.pid
 kill -0 "$(cat /tmp/wave7-remote-loopback.pid)"
