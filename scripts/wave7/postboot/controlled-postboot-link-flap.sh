@@ -91,7 +91,7 @@ actual=$(ssh_wave 'sha256sum /tmp/wave7-postboot-link-monitor.sh' | cut -d' ' -f
 [[ "$actual" == "$expected" ]]
 scp -q -O -i /home/jan/.ssh/wave7-root-rsa -o BatchMode=yes -o IdentitiesOnly=yes  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null  "$root/wave7-postboot-hard-guard.sh" root@192.168.76.1:/tmp/wave7-postboot-hard-guard.sh
 guard_hash=$(sha256sum "$root/wave7-postboot-hard-guard.sh" | cut -d' ' -f1)
-[[ "$guard_hash" == cab2911bbb1909cd05c07cbc78bbba63f0230c84156463c7f06ac997e2f3e006 ]]
+[[ "$guard_hash" == 0ebab819c54031653b8c26fa86d1b06ccc3898ffe1dd46f687fd2165fc233de5 ]]
 remote_guard_hash=$(ssh_wave 'sha256sum /tmp/wave7-postboot-hard-guard.sh' | cut -d' ' -f1)
 [[ "$remote_guard_hash" == "$guard_hash" ]]
 ssh_wave 'chmod 700 /tmp/wave7-postboot-link-monitor.sh /tmp/wave7-postboot-hard-guard.sh; test -c /dev/kmsg; test -w /proc/sysrq-trigger; test "$(cat /proc/sys/kernel/panic)" -ge 1; /bin/ash /tmp/wave7-postboot-link-monitor.sh --check; /bin/ash /tmp/wave7-postboot-hard-guard.sh --check' > "$out/ondevice-preflight.txt"
@@ -107,9 +107,11 @@ systemctl --user is-active --quiet "$waveunit"
 systemctl --user is-active --quiet "$fallbackunit"
 ssh_wave 'set -eu
  test ! -e /tmp/wave7-postboot-trial.arm
- printf "%s\n" "$(cat /proc/sys/kernel/random/boot_id)" > /tmp/wave7-postboot-trial.arm
+ trial=$(cat /proc/sys/kernel/random/uuid)
+ test -n "$trial"
+ printf "%s\n" "$trial" > /tmp/wave7-postboot-trial.arm
  test ! -e /tmp/wave7-postboot-hard-guard.pid
- start-stop-daemon -S -b -m -p /tmp/wave7-postboot-hard-guard.pid   -x /bin/ash -- /tmp/wave7-postboot-hard-guard.sh "$(cat /proc/sys/kernel/random/boot_id)"   </dev/null >/dev/null 2>&1 || :
+ start-stop-daemon -S -b -m -p /tmp/wave7-postboot-hard-guard.pid   -x /bin/ash -- /tmp/wave7-postboot-hard-guard.sh "$(cat /proc/sys/kernel/random/boot_id)" "$trial"   </dev/null >/dev/null 2>&1 || :
  sleep 1
  test -s /tmp/wave7-postboot-hard-guard.pid
  kill -0 "$(cat /tmp/wave7-postboot-hard-guard.pid)"

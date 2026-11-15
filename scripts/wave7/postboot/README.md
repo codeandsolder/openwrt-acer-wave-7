@@ -48,3 +48,29 @@ reboot or firmware flash occurred.
 
 Do not treat this source change as validated autonomous recovery
 until the complete guard launch/cancel/failure lifecycle is exercised.
+
+## 2026-11-15 isolated behavioral tests (no live watchdog)
+
+`test-hard-guard.sh` exercises the **production guard shell control flow**
+using a disposable transformed copy, with boot-id, arming token, kernel-log
+output and recovery request all redirected into a private temporary fixture.
+Mocked ping/sleep commands make success, failure, cancellation and timing
+deterministic; the test explicitly rejects any unredirected device path in
+its runnable copy. It runs on Acer as a normal user with Bash, POSIX sh,
+ShellCheck and ripgrep. No hardware reset and no kernel crash request occurs.
+
+All **13** cases PASS: missing/wrong token, wrong boot, first and eventual
+healthy responses, persistent three-probe failure (only a fixture recovery
+request), token cancellation just after arming and just before recovery,
+boot ID changing during the delay, a new same-boot trial replacing the old
+token at two stages and during successful ping, and cancellation of a real
+child process while it sleeps. The guard now accepts **boot ID and unique
+trial UUID** separately; the controller obtains the UUID from the kernel
+and pins the updated guard SHA. An old process cannot authorize recovery
+using a newer same-boot trial's token.
+
+This validates shell decisions in isolation, **not the OpenWrt
+start-stop-daemon launch path nor kernel-panic/fallback behavior**. The
+existing hard-guard runtime check on Wave 7 remains blocked; do not claim
+that an automated recovery has been demonstrated, and do not schedule
+another physical link flap on the basis of these tests alone.
