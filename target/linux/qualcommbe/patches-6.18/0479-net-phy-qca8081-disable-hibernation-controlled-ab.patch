@@ -1,0 +1,82 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: isolate QCA8081 hibernation for Wave 7
+
+The QCA8081 hardware register manual documents DEBUG_PORT11 bit 15 as
+ENABLEHIBERNATION, reset enabled. qca808x.c documents entry roughly ten
+seconds after copper loss. On Wave 7, a controlled late-first-link boot
+fails with PHY copper RX advancing while host GMAC RX remains zero.
+
+Test the hibernation hypothesis without modifying FIFO, PHY seed,
+phylink or PCS calibration: read the debug register, disable only the
+hibernation enable bit during config_init, then read back and log both
+values. Reject an unconfirmed write so the A/B trial cannot silently
+claim the intended PHY state.
+
+This is diagnostic firmware, not a general upstream power-policy change.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -509,11 +509,11 @@
+ }
+ 
+ static int qca808x_config_init(struct phy_device *phydev)
+ {
+ 	struct qca808x_priv *priv = phydev->priv;
+-	int ret;
++	int before, after, ret;
+ 
+ 	/* Default to LED Active High if active-low not in DT */
+ 	if (priv->led_polarity_mode == -1) {
+ 		ret = phy_set_bits_mmd(phydev, MDIO_MMD_AN,
+ 				       QCA808X_MMD7_LED_POLARITY_CTRL,
+@@ -560,13 +560,45 @@
+ 	ret = qcom_phy_counter_config(phydev);
+ 	if (ret)
+ 		return ret;
+ 
+ 	/* Configure adc threshold as 100mv for the link 10M */
+-	return at803x_debug_reg_mask(phydev, QCA808X_PHY_DEBUG_ADC_THRESHOLD,
+-				     QCA808X_ADC_THRESHOLD_MASK,
+-				     QCA808X_ADC_THRESHOLD_100MV);
++	ret = at803x_debug_reg_mask(phydev, QCA808X_PHY_DEBUG_ADC_THRESHOLD,
++				    QCA808X_ADC_THRESHOLD_MASK,
++				    QCA808X_ADC_THRESHOLD_100MV);
++	if (ret < 0)
++		return ret;
++
++	/*
++	 * Wave 7 A/B: QCA8081 enters hibernation after roughly 10 seconds
++	 * without a copper peer. Hold it awake when the first link arrives
++	 * after host SGMII PCS calibration. No other link handling changes.
++	 */
++	before = at803x_debug_reg_read(phydev, QCA808X_DBG_AN_TEST);
++	if (before < 0)
++		return before;
++
++	ret = at803x_debug_reg_mask(phydev, QCA808X_DBG_AN_TEST,
++				    QCA808X_HIBERNATION_EN, 0);
++	if (ret < 0)
++		return ret;
++
++	after = at803x_debug_reg_read(phydev, QCA808X_DBG_AN_TEST);
++	if (after < 0)
++		return after;
++
++	phydev_info(phydev,
++		    "wave7-hib-ab: debug11 before=%#x after=%#x enabled_before=%u enabled_after=%u\n",
++		    before, after,
++		    !!(before & QCA808X_HIBERNATION_EN),
++		    !!(after & QCA808X_HIBERNATION_EN));
++
++	/* The test is invalid if the requested PHY configuration did not hold. */
++	if (after & QCA808X_HIBERNATION_EN)
++		return -EIO;
++
++	return 0;
+ }
+ 
+ static int qca808x_read_status(struct phy_device *phydev)
+ {
+ 	struct at803x_ss_mask ss_mask = { 0 };
