@@ -15,6 +15,7 @@ fi
 boot=$1
 token=$2
 delay=$3
+client=${4:-}
 test "$delay" -ge 90
 test "$delay" -le 300
 test "$(cat /proc/sys/kernel/random/boot_id)" = "$boot"
@@ -32,6 +33,10 @@ done
 test "$(iw dev 2>/dev/null | grep -Ec 'link ID[[:space:]]+[01]')" -eq 2 || ok=0
 ping -I br-lan -c 2 -W 1 192.168.76.2 >/dev/null 2>&1 || ok=0
 iw dev 2>/dev/null | awk '/link ID[[:space:]]+[01]/{links++} /txpower/ && $2+0>0{powered++} END{exit !(links==2&&powered>=2)}' || ok=0
+if [ -n "$client" ]; then
+  test "$(iw dev ap-mld0 station dump | grep -c "^Station " || :)" -gt 0 || ok=0
+  ping -I br-lan -c 2 -W 1 "$client" >/dev/null 2>&1 || ok=0
+fi
 if [ "$ok" -eq 1 ]; then
   echo '<6>wave7-q6-guard: basic recovery healthy, no reboot' > /dev/kmsg
   if [ -r "$arm" ] && [ "$(cat "$arm")" = "$token" ]; then rm -f "$arm"; fi
