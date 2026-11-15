@@ -170,6 +170,8 @@ if ! ssh_redmi 'test "$(cat /sys/class/net/lan2/operstate)" = up; test "$(cat /s
 fi
 log 'Redmi physical interface restored; checking Wave7 on-router result.'
 ssh_redmi 'for n in rx_packets tx_packets rx_bytes tx_bytes; do printf "%s=" "$n"; cat "/sys/class/net/lan2/statistics/$n"; done' > "$out/redmi-lan2-after.txt" || :
+recovered_after_reboot=0
+captured_reboot=0
 for ((i=1; i<=100; i++)); do
   result=$(ssh_wave 'cat /tmp/wave7-postboot-link-monitor.done 2>/dev/null' 2>/dev/null || :)
   if [[ $result == SUCCESS* ]]; then
@@ -192,8 +194,37 @@ for ((i=1; i<=100; i++)); do
     complete=1
     break
   fi
+  # After the monitor panics we must save the original failing-boot
+  # pstore and autonomously accept the new boot. Otherwise an already
+  # healthy router retains an unnecessary external fallback watch.
+  new_boot=$(ssh_wave 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || :)
+  if [[ $new_boot =~ ^[0-9a-f-]{36}$ && $new_boot != "$old" ]]; then
+    if (( ! captured_reboot )); then
+      ssh_wave 'tar -C /sys/fs/pstore -cf - .' > "$out/failed-boot-pstore.tar" 2> "$out/pstore-stderr.txt" || :
+      ssh_wave 'echo BOOT=$(cat /proc/sys/kernel/random/boot_id); echo REV=$(sed -n "s/^DISTRIB_REVISION=//p" /etc/openwrt_release); dmesg' > "$out/newboot-observed.txt" 2>&1 || :
+      captured_reboot=1
+      log "POSTBOOT_RECOVERY_OBSERVED boot=$new_boot original=$old"
+    fi
+    new_state=$(ssh_wave 'set -e
+      grep -q 3b1851eda6 /etc/openwrt_release
+      test "$(fw_printenv -n bootfail)" = 0
+      test -e /tmp/wave7-keep-boot
+      test "$(iw dev | grep -Ec "link ID[[:space:]]+[01]")" = 2
+      for x in /sys/class/remoteproc/remoteproc0 /sys/class/remoteproc/remoteproc1 /sys/class/remoteproc/remoteproc2; do
+        test "$(cat "$x/state")" = running
+      done
+      ping -I br-lan -c 2 -W 1 192.168.76.2 >/dev/null
+      echo ACCEPTED' 2>/dev/null || :)
+    if [[ $new_state == ACCEPTED ]]; then
+      recovered_after_reboot=1
+      complete=1
+      log "NATIVE_POSTPANIC_RECOVERY_ACCEPTED boot=$new_boot; PHY soft reset did not recover old boot"
+      break
+    fi
+  fi
   # In failed receive path the on-router observer preserves its own
-  # kernel trace with SysRq, and boot/fallback observers stay active.
+  # kernel trace with SysRq, and boot/fallback observers stay active until
+  # the new boot has completed *all* native acceptance checks.
   sleep 2
 done
 if (( ! complete )); then
@@ -203,3 +234,7 @@ fi
 ssh_wave 'rm -f /tmp/wave7-postboot-trial.arm; if test -s /tmp/wave7-postboot-hard-guard.pid; then kill "$(cat /tmp/wave7-postboot-hard-guard.pid)" 2>/dev/null || :; fi; rm -f /tmp/postboot-monitor.sh /tmp/wave7-postboot-link-monitor.log /tmp/wave7-postboot-link-monitor.ready /tmp/wave7-postboot-link-monitor.done /tmp/wave7-postboot-link-monitor.down /tmp/wave7-postboot-monitor.pid /tmp/hard-guard.sh /tmp/wave7-postboot-hard-guard.pid' >/dev/null 2>&1 || :
 (cd "$out"; find . -maxdepth 1 -type f ! -name evidence.sha256 -print0 | sort -z | xargs -0 sha256sum > evidence.sha256; sha256sum -c evidence.sha256 | tail -8)
 echo "EVIDENCE=$out"
+if (( recovered_after_reboot )); then
+  echo "PHY_SOFT_RESET_NEGATIVE_POSTPANIC_RECOVERED"
+  exit 4
+fi
