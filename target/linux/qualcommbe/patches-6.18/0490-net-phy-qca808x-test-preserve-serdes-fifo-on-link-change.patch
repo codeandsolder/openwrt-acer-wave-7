@@ -19,7 +19,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/phy/qcom/qca808x.c
 +++ b/drivers/net/phy/qcom/qca808x.c
-@@ -773,48 +773,46 @@
+@@ -773,48 +773,45 @@
  
  	return __genphy_config_aneg(phydev, ret);
  }
@@ -38,8 +38,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 -					 QCA8081_PHY_FIFO_RSTN,
 -					 phydev->link ? QCA8081_PHY_FIFO_RSTN : 0);
 +
-+	/*
-+	 * Experiment: leave the QCA8081 PHY+1 SGMII FIFO unchanged across
++	/* Experiment: leave the QCA8081 PHY+1 SGMII FIFO unchanged across
 +	 * copper carrier transitions. Acer stock qca-ssdk's QCA8081 notify
 +	 * callback is a no-op, whereas upstream Linux toggles FIFO_RSTN.
 +	 * Keep the same diagnostics to distinguish a new state-machine
