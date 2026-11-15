@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Read-only decoder of the firmware-captured Qualcomm QNoC syndrome.
+
+Translate DSP virtual addresses through the UserPD1 ELF's physical
+PT_LOAD mapping and the root Q6 ELF devcoredump. This never reads MMIO.
+"""
+import argparse
+import json
+import struct
+from pathlib import Path
+
+FW067_NOC_CONFIG_GLOBAL = 0xB0497FDC
+DESCRIPTOR_STRIDE = 0x60
+QNOCC4_OFFSETS = (0x10, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C)
+NAMES = (
+    "ERRVALID", "ERRLOG0_LO", "ERRLOG0_HI", "ERRLOG1_LO", "ERRLOG1_HI",
+    "ERRLOG2_LO", "ERRLOG2_HI", "ERRLOG3_LO", "ERRLOG3_HI",
+)
+SNAPSHOT_OFFSETS = (0x48, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40, 0x44)
+REG_INDEX_OFFSETS = (0x06, 0x0A, 0x0C, 0x0E, 0x10, 0x12, 0x14, 0x16, 0x18)
+
+
+def load_segments(blob):
+    if blob[:6] != b"\x7fELF\x01\x01":
+        raise ValueError("expected ELF32 little endian")
+    phoff = struct.unpack_from("<I", blob, 0x1C)[0]
+    entsize, count = struct.unpack_from("<HH", blob, 0x2A)
+    if entsize < 32 or count > 512:
+        raise ValueError("invalid program-header table")
+    segs = []
+    for i in range(count):
+        off = phoff + i * entsize
+        if off + 32 > len(blob):
+            raise ValueError("truncated ELF program-header table")
+        kind, fileoff, va, pa, filesz, memsz, _, _ = struct.unpack_from("<IIIIIIII", blob, off)
+        if kind == 1 and memsz and pa:
+            segs.append((va, pa, fileoff, filesz, memsz))
+    if not segs:
+        raise ValueError("no loadable physical ELF segments")
+    return segs
+
+
+def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
+    fw_segments = load_segments(firmware)
+    core_segments = load_segments(core)
+
+    def read(virtual, length):
+        for va, pa, _, _, memsz in fw_segments:
+            if va <= virtual and virtual + length <= va + memsz:
+                phys = pa + virtual - va
+                for _, cp, coff, csize, _ in core_segments:
+                    if cp <= phys and phys + length <= cp + csize:
+                        start = coff + phys - cp
+                        if start + length > len(core):
+                            raise ValueError("truncated coredump segment")
+                        return core[start:start+length]
+        raise ValueError(f"missing snapshot of virtual address {virtual:#010x} + {length}")
+
+    def u32(a): return struct.unpack("<I", read(a, 4))[0]
+    def u16(a): return struct.unpack("<H", read(a, 2))[0]
+    def name(a): return read(a, 48).split(b"\0", 1)[0].decode("ascii")
+
+    header = u32(global_addr)
+    count, entries = u32(header), u32(header + 4)
+    if not 1 <= count <= 16:
+        raise ValueError(f"invalid NoC instance count: {count}")
+    output = {"firmware_noc_global": f"{global_addr:#010x}", "instance_count": count,
+              "instances": []}
+    for i in range(count):
+        desc = entries + i * DESCRIPTOR_STRIDE
+        offsets_ptr = u32(desc + 4)
+        offsets = [u16(offsets_ptr + off) for off in REG_INDEX_OFFSETS]
+        values = [u32(desc + off) for off in SNAPSHOT_OFFSETS]
+        rec = {
+            "name": name(u32(desc)),
+            "index": i,
+            "mmio_base": f"{u32(desc + 8):#010x}",
+            "qnoc4_layout_matches_firmware": tuple(offsets) == QNOCC4_OFFSETS,
+            "registers": {label: {"offset": f"{off:#04x}", "snapshot": f"{v:#010x}"}
+                          for label, off, v in zip(NAMES, offsets, values)},
+        }
+        if rec["qnoc4_layout_matches_firmware"]:
+            rec["logged_u64"] = {
+                f"ERRLOG{j}": f"0x{values[2*j+2]:08x}{values[2*j+1]:08x}"
+                for j in range(4)
+            }
+        output["instances"].append(rec)
+    return output
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--firmware-mdt", type=Path, required=True)
+    ap.add_argument("--core", type=Path, required=True, action="append")
+    ap.add_argument("--config-global", type=lambda s: int(s, 0), default=FW067_NOC_CONFIG_GLOBAL)
+    opts = ap.parse_args()
+    firmware = opts.firmware_mdt.read_bytes()
+    for filename in opts.core:
+        info = decode(firmware, filename.read_bytes(), opts.config_global)
+        info["source_core"] = str(filename)
+        print(json.dumps(info, indent=2))
+
+
+if __name__ == "__main__":
+    main()
