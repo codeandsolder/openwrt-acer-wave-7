@@ -1,0 +1,40 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: ipq9574: expose read-only analog state in debugfs
+
+The QCA8081 copper PHY can report a good 1G link while no SGMII
+frames cross the PHY/host PCS boundary. The existing PCS debugfs
+snapshot reports PCS mode, calibration and MII link, but omits the
+PLL reset control, external PHY reference clock output enable and
+link detection source.
+
+Include those three existing register values in the existing
+read-only snapshot. This does not program registers, change link
+recovery, consume read-clear packet counters or induce an experiment.
+
+The reference output bit and reset control register are diagnostic
+configuration readbacks, not proof of a physically locked CDR.
+The next matched healthy/faulted boot comparison must determine
+whether these fields differ.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -1335,14 +1335,17 @@
+ 		const char *name;
+ 		unsigned int reg;
+ 	} regs[] = {
+ 		{ "calibration", PCS_CALIBRATION },
+ 		{ "mode_ctrl", PCS_MODE_CTRL },
+ 		{ "misc2", PCS_MISC2 },
+ 		{ "vco_cal_ctrl", PCS_VCO_CAL_CTRL },
++		{ "pll_reset", PCS_PLL_RESET },
++		{ "clkout_50m_ctrl", PCS_CLKOUT_50M_CTRL },
++		{ "link_detect", PCS_LINK_DETECT },
+ 	};
+ 	struct ipq_pcs *qpcs = s->private;
+ 	unsigned int val;
+ 	int ret, i;
+ 
+ 	seq_printf(s, "interface=%s mppe=%u\n",
+ 		   phy_modes(qpcs->interface), qpcs->mppe);
