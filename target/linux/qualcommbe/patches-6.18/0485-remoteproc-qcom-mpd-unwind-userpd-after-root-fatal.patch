@@ -1,0 +1,62 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] remoteproc: qcom: release UserPD and root references after root crash
+
+Do not await a UserPD stop ACK from firmware after the parent root Q6
+has crashed. PAS shutdown and the root boot-reference release must run
+even if the handshaking or the PAS call itself fails, to avoid leaking
+references that poison subsequent attempts.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -236,29 +236,34 @@
+ static int wcss_pd_stop(struct rproc *rproc)
+ {
+ 	struct userpd *upd = rproc->priv;
+ 	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
+ 	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
+-	int ret;
+-
+-	if (rproc->state != RPROC_CRASHED && upd->q6.stop_bit) {
++	int ret, parent_ret;
++
++	/*
++	 * After root failure, child rproc can still report RUNNING even
++	 * though the firmware that would acknowledge the stop is gone.
++	 */
++	if (READ_ONCE(rpd_rproc->state) == RPROC_RUNNING &&
++	    upd->q6.stop_bit) {
+ 		ret = qcom_q6v5_request_stop(&upd->q6, NULL);
+-		if (ret) {
+-			dev_err(upd->dev, "pd not stopped\n");
+-			return ret;
+-		}
++		if (ret)
++			dev_warn(upd->dev, "UserPD stop handshake failed: %d\n", ret);
+ 	}
+ 
+ 	ret = qcom_scm_pas_shutdown(pasid);
+-	if (ret) {
+-		dev_err(upd->dev, "failed to power down pd\n");
+-		return ret;
+-	}
+-
+-	rproc_shutdown(rpd_rproc);
+-
+-	return 0;
++	if (ret)
++		dev_err(upd->dev, "failed to power down UserPD: %d\n", ret);
++
++	/* Drop the root boot reference even when the UserPD stop failed. */
++	parent_ret = rproc_shutdown(rpd_rproc);
++	if (parent_ret)
++		dev_err(upd->dev, "failed to release root WCSS reference: %d\n",
++			parent_ret);
++
++	return ret ? ret : parent_ret;
+ }
+ 
+ static void *q6_wcss_da_to_va(struct rproc *rproc, u64 da, size_t len,
+ 			      bool *is_iomem)
+ {

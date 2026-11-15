@@ -1,0 +1,34 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] remoteproc: qcom: stop live firmware after host-reported crash
+
+The rproc core sets CRASHED for both physical fatal interrupts and
+host-reported crashes. Use the actual firmware running flag to decide
+whether a graceful SMP2P stop is needed. Based on Bjorn Andersson's
+upstream fix for this failure mode.
+
+Link: https://git.zx2c4.com/linux-rng/commit/?id=0ea50486978f109e6d4c32267fab01ed654a2160
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5.c
++++ b/drivers/remoteproc/qcom_q6v5.c
+@@ -210,16 +210,17 @@
+  *
+  * Return: 0 on success, negative errno on failure
+  */
+ int qcom_q6v5_request_stop(struct qcom_q6v5 *q6v5, struct qcom_sysmon *sysmon)
+ {
++	bool was_running = q6v5->running;
+ 	int ret;
+ 
+ 	q6v5->running = false;
+ 
+-	/* Don't perform SMP2P dance if remote isn't running */
+-	if (q6v5->rproc->state != RPROC_RUNNING || qcom_sysmon_shutdown_acked(sysmon))
++	/* A host-reported crash needs a stop if firmware is still running. */
++	if (!was_running || qcom_sysmon_shutdown_acked(sysmon))
+ 		return 0;
+ 
+ 	qcom_smem_state_update_bits(q6v5->state,
+ 				    BIT(q6v5->stop_bit), BIT(q6v5->stop_bit));
+ 

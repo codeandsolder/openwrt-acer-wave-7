@@ -1,0 +1,180 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: restart UserPDs after a crashed root Q6 recovers
+
+The root Qualcomm WCSS remoteproc may crash and reboot while the two
+Wi-Fi UserPDs still appear RUNNING to Linux. Their firmware and QMI
+channels are nevertheless gone, leaving a phantom AP and WMI -ESHUTDOWN.
+
+Subscribe to the root SSR notifier identified by the board device tree.
+After a *crashed* root successfully restarts, schedule the existing
+ath12k reset worker for each affected AHB/hybrid device. This uses the
+existing MLO-group coordination, rather than issuing child remoteproc
+operations inside the parent's SSR callback (and deadlocking its lock).
+
+Pair with remoteproc root-generation tracking to suppress stale child
+stop ACK waits and with the WCSS lifecycle cleanup patches.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -7,10 +7,11 @@
+ #include <linux/dma-mapping.h>
+ #include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/platform_device.h>
+ #include <linux/remoteproc.h>
++#include <linux/remoteproc/qcom_rproc.h>
+ #include "ahb.h"
+ #include "debug.h"
+ #include "hif.h"
+ #include "pcic.h"
+ 
+@@ -646,22 +647,103 @@
+ 
+ 	return 0;
+ }
+ 
+ /*
++ * A root-Q6 crash does not change the state of its child remoteprocs,
++ * although both UserPD firmware instances have ceased executing.
++ * Observe the actual root SSR event and use the existing ath12k group
++ * reset worker to stop, reload and start both UserPDs.
++ *
++ * The notifier runs under the root remoteproc recovery lock: never
++ * attempt a child rproc shutdown synchronously from this callback.
++ */
++static int ath12k_ahb_root_ssr_notifier(struct notifier_block *nb,
++					unsigned long event, void *data)
++{
++	struct ath12k_ahb *ab_ahb = container_of(nb, struct ath12k_ahb,
++						 root_ssr_nb);
++	struct ath12k_base *ab = ab_ahb->ab;
++	const struct qcom_ssr_notify_data *ssr = data;
++
++	if (event == QCOM_SSR_BEFORE_SHUTDOWN && ssr->crashed) {
++		WRITE_ONCE(ab_ahb->root_ssr_crashed, true);
++		return NOTIFY_OK;
++	}
++
++	if (event != QCOM_SSR_AFTER_POWERUP ||
++	    !READ_ONCE(ab_ahb->root_ssr_crashed))
++		return NOTIFY_DONE;
++
++	WRITE_ONCE(ab_ahb->root_ssr_crashed, false);
++	if (test_bit(ATH12K_FLAG_QMI_FW_READY_COMPLETE, &ab->dev_flags) &&
++	    !test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags)) {
++		ath12k_warn(ab, "root Q6 restarted after crash; resetting UserPD\n");
++		queue_work(ab->workqueue_aux, &ab->reset_work);
++	}
++
++	return NOTIFY_OK;
++}
++
++static void ath12k_ahb_unregister_root_ssr(struct ath12k_base *ab)
++{
++	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
++
++	if (!ab_ahb->root_ssr_cookie)
++		return;
++
++	qcom_unregister_ssr_notifier(ab_ahb->root_ssr_cookie,
++				     &ab_ahb->root_ssr_nb);
++	ab_ahb->root_ssr_cookie = NULL;
++}
++
++/*
+  * Resolve the child remoteproc at probe, but start it only at HIF power_up.
+  * The child loader boots the root Q6 and holds its own parent reference.
+  */
+ static int ath12k_ahb_configure_rproc(struct ath12k_base *ab)
+ {
+-	return ath12k_ahb_get_rproc(ab);
++	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
++	const char *root_ssr;
++	int ret;
++
++	ret = ath12k_ahb_get_rproc(ab);
++	if (ret)
++		return ret;
++
++	/* Only devices naming a root MultiPD SSR subscribe to it. */
++	if (!of_property_present(ab->dev->of_node, "qcom,root-ssr-name"))
++		return 0;
++
++	ret = of_property_read_string(ab->dev->of_node,
++				      "qcom,root-ssr-name", &root_ssr);
++	if (ret)
++		goto err_put_rproc;
++
++	ab_ahb->root_ssr_nb.notifier_call = ath12k_ahb_root_ssr_notifier;
++	ab_ahb->root_ssr_cookie =
++		qcom_register_ssr_notifier(root_ssr, &ab_ahb->root_ssr_nb);
++	if (IS_ERR_OR_NULL(ab_ahb->root_ssr_cookie)) {
++		ret = ab_ahb->root_ssr_cookie ?
++			PTR_ERR(ab_ahb->root_ssr_cookie) : -EOPNOTSUPP;
++		ab_ahb->root_ssr_cookie = NULL;
++		goto err_put_rproc;
++	}
++
++	return 0;
++
++err_put_rproc:
++	rproc_put(ab_ahb->tgt_rproc);
++	ab_ahb->tgt_rproc = NULL;
++	return ret;
+ }
+ 
+ static void ath12k_ahb_deconfigure_rproc(struct ath12k_base *ab)
+ {
+ 	struct ath12k_ahb *ab_ahb = ath12k_ab_to_ahb(ab);
+ 
++	ath12k_ahb_unregister_root_ssr(ab);
+ 	rproc_put(ab_ahb->tgt_rproc);
+ }
+ 
+ static int ath12k_ahb_resource_init(struct ath12k_base *ab)
+ {
+@@ -971,10 +1053,14 @@
+ 
+ static void ath12k_ahb_remove(struct platform_device *pdev)
+ {
+ 	struct ath12k_base *ab = platform_get_drvdata(pdev);
+ 
++	set_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags);
++	ath12k_ahb_unregister_root_ssr(ab);
++	cancel_work_sync(&ab->reset_work);
++
+ 	if (test_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags)) {
+ 		ath12k_ahb_power_down(ab, false);
+ 		goto qmi_fail;
+ 	}
+ 
+--- a/drivers/net/wireless/ath/ath12k/ahb.h
++++ b/drivers/net/wireless/ath/ath12k/ahb.h
+@@ -5,10 +5,11 @@
+  */
+ #ifndef ATH12K_AHB_H
+ #define ATH12K_AHB_H
+ 
+ #include <linux/clk.h>
++#include <linux/notifier.h>
+ #include <linux/platform_device.h>
+ #include "core.h"
+ 
+ #define ATH12K_AHB_RECOVERY_TIMEOUT (3 * HZ)
+ 
+@@ -26,10 +27,13 @@
+ 	struct ath12k_base *ab;
+ 	struct rproc *tgt_rproc;
+ 	struct clk *xo_clk;
+ 	u32 userpd_id;
+ 	bool userpd_booted;
++	struct notifier_block root_ssr_nb;
++	void *root_ssr_cookie;
++	bool root_ssr_crashed;
+ 	const struct ath12k_ahb_ops *ahb_ops;
+ 	const struct ath12k_ahb_device_family_ops *device_family_ops;
+ };
+ 
+ struct ath12k_ahb_driver {

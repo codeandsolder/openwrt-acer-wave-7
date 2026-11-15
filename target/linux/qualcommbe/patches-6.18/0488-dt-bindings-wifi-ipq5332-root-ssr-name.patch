@@ -1,0 +1,30 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] dt-bindings: wifi: document root WCSS SSR notifier name
+
+The IPQ5332 AHB and QCN6432 hybrid UserPDs share a root remoteproc.
+Allow each WiFi node to identify the corresponding root SSR notification
+source. This keeps crash/recovery routing separate from its child
+qcom,rproc phandle.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/Documentation/devicetree/bindings/net/wireless/qcom,ipq5332-wifi.yaml
++++ b/Documentation/devicetree/bindings/net/wireless/qcom,ipq5332-wifi.yaml
+@@ -159,10 +159,17 @@
+     $ref: /schemas/types.yaml#/definitions/phandle
+     description:
+       Phandle to the Qualcomm Hexagon DSP(q6 remote processor), which is utilized
+       for offloading WiFi processing tasks, this q6 remote processor operates in
+       conjunction with WiFi.
++
++  qcom,root-ssr-name:
++    $ref: /schemas/types.yaml#/definitions/string
++    description:
++      Name of the shared root-WCSS remoteproc restart notification source.
++      WiFi UserPDs on the same Q6 register for this source to recover after
++      a root crash without waiting for the previous firmware instance.
+ 
+   qcom,smem-states:
+     $ref: /schemas/types.yaml#/definitions/phandle-array
+     description: States used by the AP to signal the remote processor
+     items:

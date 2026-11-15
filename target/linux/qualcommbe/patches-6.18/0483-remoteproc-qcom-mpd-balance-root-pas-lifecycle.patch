@@ -1,0 +1,82 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] remoteproc: qcom: balance root WCSS PAS and IRQ lifecycle on errors
+
+Check q6v5_prepare, unwind PAS after a failed root-ready wait, and always
+unprepare the handover IRQ and interconnect request on shutdown failure.
+A failed attempt must not poison subsequent root start/recovery attempts.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/remoteproc/qcom_q6v5_mpd.c
++++ b/drivers/remoteproc/qcom_q6v5_mpd.c
+@@ -117,22 +117,37 @@
+ {
+ 	struct q6_wcss *wcss = rproc->priv;
+ 	int ret;
+ 	const struct wcss_data *desc = wcss->desc;
+ 
+-	qcom_q6v5_prepare(&wcss->q6);
++	ret = qcom_q6v5_prepare(&wcss->q6);
++	if (ret)
++		return ret;
+ 
+ 	ret = qcom_scm_pas_auth_and_reset(desc->pasid);
+ 	if (ret) {
+-		dev_err(wcss->dev, "wcss_reset failed\n");
+-		return ret;
+-	}
+-
+-	ret = qcom_q6v5_wait_for_start(&wcss->q6, 5 * HZ);
+-	if (ret == -ETIMEDOUT)
+-		dev_err(wcss->dev, "start timed out\n");
+-
++		dev_err(wcss->dev, "wcss_reset failed: %d\n", ret);
++		goto err_unprepare;
++	}
++
++	ret = qcom_q6v5_wait_for_start(&wcss->q6, 10 * HZ);
++	if (ret) {
++		int shutdown_ret;
++
++		dev_err(wcss->dev, "root WCSS start failed: %d\n", ret);
++		shutdown_ret = qcom_scm_pas_shutdown(desc->pasid);
++		if (shutdown_ret)
++			dev_err(wcss->dev, "root WCSS shutdown after failed start: %d\n",
++				shutdown_ret);
++		goto err_unprepare;
++	}
++
++	return 0;
++
++err_unprepare:
++	wcss->q6.running = false;
++	qcom_q6v5_unprepare(&wcss->q6);
+ 	return ret;
+ }
+ 
+ static int q6_wcss_spawn_pd(struct rproc *rproc)
+ {
+@@ -181,17 +196,18 @@
+ 	struct q6_wcss *wcss = rproc->priv;
+ 	const struct wcss_data *desc = wcss->desc;
+ 	int ret;
+ 
+ 	ret = qcom_scm_pas_shutdown(desc->pasid);
+-	if (ret) {
+-		dev_err(wcss->dev, "not able to shutdown\n");
+-		return ret;
+-	}
++	if (ret)
++		dev_err(wcss->dev, "root WCSS shutdown failed: %d\n", ret);
++
++	/* Do not leak a handover IRQ or the ICC vote on shutdown failure. */
++	wcss->q6.running = false;
+ 	qcom_q6v5_unprepare(&wcss->q6);
+ 
+-	return 0;
++	return ret;
+ }
+ 
+ /**
+  * wcss_pd_stop() - Stop WCSS user pd
+  * @rproc:	rproc handle
