@@ -3,12 +3,33 @@
 # Per-trial, boot-bound, independently timed recovery guard.
 set -eu
 arm=/tmp/wave7-q6-ssr-trial.arm
+# Only link records from the named AP MLD; exclude unrelated radios.
+check_mlo_info() {
+  awk '
+    $1 == "-" && $2 == "link" && $3 == "ID" {
+      if ($4 == "0") { id = 0; n0++ }
+      else if ($4 == "1") { id = 1; n1++ }
+      else { id = -1 }
+      next
+    }
+    $1 == "txpower" {
+      if (id == 0) p0 = $2 + 0
+      if (id == 1) p1 = $2 + 0
+    }
+    END { exit !(n0 == 1 && n1 == 1 && p0 > 0 && p1 > 0) }
+  '
+}
+if [ "$1" = "--test-mlo-info" ]; then
+  check_mlo_info
+  exit
+fi
 if [ "$1" = "--check" ]; then
   test -r /proc/sys/kernel/random/boot_id
   test -r /sys/class/remoteproc/remoteproc0/state
   test -c /dev/kmsg
   command -v ping >/dev/null
   command -v iw >/dev/null
+  iw dev ap-mld0 info | check_mlo_info
   echo Q6_GUARD_CHECK_PASS
   exit 0
 fi
@@ -30,9 +51,8 @@ ok=1
 for d in /sys/class/remoteproc/remoteproc0 /sys/class/remoteproc/remoteproc1 /sys/class/remoteproc/remoteproc2; do
   test "$(cat "$d/state" 2>/dev/null)" = running || ok=0
 done
-test "$(iw dev 2>/dev/null | grep -Ec 'link ID[[:space:]]+[01]')" -eq 2 || ok=0
+iw dev ap-mld0 info 2>/dev/null | check_mlo_info || ok=0
 ping -I br-lan -c 2 -W 1 192.168.76.2 >/dev/null 2>&1 || ok=0
-iw dev 2>/dev/null | awk '/link ID[[:space:]]+[01]/{links++} /txpower/ && $2+0>0{powered++} END{exit !(links==2&&powered>=2)}' || ok=0
 if [ -n "$client" ]; then
   test "$(iw dev ap-mld0 station dump | grep -c "^Station " || :)" -gt 0 || ok=0
   ping -I br-lan -c 2 -W 1 "$client" >/dev/null 2>&1 || ok=0
