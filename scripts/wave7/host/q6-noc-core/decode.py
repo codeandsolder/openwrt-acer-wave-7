@@ -20,6 +20,25 @@ SNAPSHOT_OFFSETS = (0x48, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40, 0x44)
 REG_INDEX_OFFSETS = (0x06, 0x0A, 0x0C, 0x0E, 0x10, 0x12, 0x14, 0x16, 0x18)
 
 
+def qualcomm_noc_filter_fields(errlog0_low, errlog1_high):
+    """Decode only fields defined by Qualcomm's published NoC driver.
+
+    Ref: qualcomm-linux/trusted-firmware-a, qcom-next,
+    drivers/qti/icb/noc_error.c:qti_noc_error_handle_filter().
+    Qualcomm explicitly derives errcode via (ERRLOG0_LOW >> 8) & 7,
+    extid via ERRLOG1_HIGH & 0xffffff00, and calls the excluded
+    low byte the MID field. No SoC-specific route/target lookup here.
+    """
+    return {
+        "errcode_numeric": (errlog0_low >> 8) & 0x7,
+        "mid": f"0x{errlog1_high & 0xff:02x}",
+        "extid": f"0x{errlog1_high & 0xffffff00:08x}",
+        "mapped_initiator": None,
+        "mapped_target": None,
+    }
+
+
+
 def load_segments(blob):
     if blob[:6] != b"\x7fELF\x01\x01":
         raise ValueError("expected ELF32 little endian")
@@ -84,6 +103,10 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
                 f"ERRLOG{j}": f"0x{values[2*j+2]:08x}{values[2*j+1]:08x}"
                 for j in range(4)
             }
+            if values[0] & 1:
+                rec["qti_source_backed_filter_fields"] = qualcomm_noc_filter_fields(
+                    errlog0_low=values[1], errlog1_high=values[4],
+                )
         output["instances"].append(rec)
     return output
 

@@ -24,6 +24,28 @@ Both independent crashes produced identical UMACNOC registers:
 - ERRLOG2 low/high: 0x00002000 / 0x00000000
 - ERRLOG3 low/high: 0 / 0
 
+### Source-backed Qualcomm filter fields (2026-11-15 follow-up)
+
+Qualcomm's 2026 first-party Trusted Firmware driver, rather than a
+generic NVIDIA/NXP NoC implementation, extracts:
+- errcode = (ERRLOG0_LOW >> 8) & 0x7 : **1**
+- MID = ERRLOG1_HIGH & 0xff : **0x1d**
+- EXTID = ERRLOG1_HIGH & 0xffffff00 : **0x00008400**
+
+The driver uses the resulting EXTID and error code to filter certain
+fault classes, but does not publish an IPQ5332 UMACNOC initiator,
+target, route aperture, or human-readable error-code map.
+Consequently MID=0x1d is a raw field, **not a mapped initiator**,
+and errcode=1 is reported numerically rather than guessed to be
+DECERR/SLVERR. We do not assert a CPU physical address for ERRLOG2.
+The decoder outputs qti_source_backed_filter_fields only when its
+firmware-verified QNoC4 layout matches and ERRVALID is set; other
+NoC instances retain only the raw register values.
+
+Primary source:
+https://github.com/qualcomm-linux/trusted-firmware-a/blob/qcom-next/drivers/qti/icb/noc_error.c
+(qti_noc_error_handle_filter, exact bit shifts and MID mask).
+
 These are **64-bit register pairs** with offsets 0x20..0x3c matching
 Qualcomm's published QNoC4 error logger definition, verified against
 the *actual firmware descriptor table*. The NoC handler code at
