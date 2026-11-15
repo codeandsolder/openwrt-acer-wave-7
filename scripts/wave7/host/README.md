@@ -83,3 +83,23 @@ branch is **not validated** and must not be armed until the control-plane
 recovery experiment has independent observers and a genuinely associated MLO
 station. The separate Nov 15 Notion implementation checkpoint records the
 hardware status and acceptance gates; source-side instructions live here.
+
+The MT7925 test station is Dell Wyse `jan@10.1.0.221` (`wifi7-lab.home`),
+with *cold-storage* SentinelX ED25519 identity fingerprint
+`SHA256:gkna44mF0A7Mmm/7PLJSh4kfWkFYFsa/MfPClaIQaxg` (private key stays only
+on cold-storage). Access was proven with a time-limited Acer Tailscale
+`TCP-LISTEN:22221` relay to Wyse TCP/22; Acer/Asus default SSH keys cannot
+log into the Wyse. The Wyse `Wave7-MLO-Lab` profile is normally
+`connection.autoconnect=no`; reconnect manually when needed, retaining the
+independent `eno1` management interface. The extra `q6-ssr-observer.sh`
+captures root/child state and AP/STA/peer health at bounded intervals to an
+Asus trial directory; it does not trigger any crash.
+
+With an MLO STA active, the guard also accepts an optional fourth argument:
+the station IPv4 address. At expiry it verifies that a station is associated
+and the AP can ping that address, in addition to root/child `running`,
+positive transmit power on two AP links, and wired peer reachability.
+**This is still an unvalidated recovery primitive**, not an established
+crash-recovery acceptance test. Never start it without an independent
+management observer and a real client; always remove the matching arm token
+when aborting an experiment.
