@@ -39,6 +39,52 @@ def qualcomm_noc_filter_fields(errlog0_low, errlog1_high):
 
 
 
+
+# Older Qualcomm Gladiator observer (not this QNoC4 incarnation) uses
+# this FlexNoC transport encoding. Retain its names as *candidate*
+# interpretation only; the numeric errcode has a separate, direct
+# Qualcomm QNoC4 confirmation in qualcomm_noc_filter_fields().
+_LEGACY_QCOM_OBS_ERROR_CODES = (
+    "target/slave error", "address decode error", "unsupported request",
+    "disconnected target or domain", "security violation",
+    "hidden security violation", "timeout", "reserved",
+)
+_LEGACY_QCOM_OBS_OPCODES = (
+    "incremental read", "wrapped read", "linked read", "exclusive read",
+    "write", "wrapped write", "conditional write", "reserved",
+    "preamble", "urgency packet",
+)
+
+
+def legacy_qcom_observer_interpretation(errlog0_low):
+    """Candidate packet semantics from Qualcomm's older OBS decoder.
+
+    Qualcomm msm gladiator_erp_v2.c (historical, different logger
+    generation) defines OBS_TRANS_OPCODE_MASK=0x1e, shift=1 and
+    OBS_ERROR_TYPE_MASK=0x700, shift=8. These *might* describe the
+    same FlexNoC packet encoding as IPQ5332 QNoC4, but the latter's
+    per-SoC protocol equivalence is not yet established.
+    """
+    opcode=(errlog0_low >> 1) & 0xF
+    errcode=(errlog0_low >> 8) & 0x7
+    return {
+        "status": "candidate_other_qualcomm_observer_generation_not_verified_qnoc4",
+        "raw_opcode": opcode,
+        "candidate_opcode": (
+            _LEGACY_QCOM_OBS_OPCODES[opcode]
+            if opcode < len(_LEGACY_QCOM_OBS_OPCODES) else None
+        ),
+        "candidate_errcode": _LEGACY_QCOM_OBS_ERROR_CODES[errcode],
+        "raw_lock_bit": errlog0_low & 1,
+        "raw_len1": (errlog0_low >> 16) & 0x7f,
+        "source": (
+            "Qualcomm kernel/msm drivers/soc/qcom/gladiator_erp_v2.c "
+            "(legacy OBS decoder, not confirmed for IPQ5332 QNoC4)"
+        ),
+    }
+
+
+
 def load_segments(blob):
     if blob[:6] != b"\x7fELF\x01\x01":
         raise ValueError("expected ELF32 little endian")
@@ -106,6 +152,9 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
             if values[0] & 1:
                 rec["qti_source_backed_filter_fields"] = qualcomm_noc_filter_fields(
                     errlog0_low=values[1], errlog1_high=values[4],
+                )
+                rec["legacy_observer_protocol_hypothesis"] = (
+                    legacy_qcom_observer_interpretation(values[1])
                 )
         output["instances"].append(rec)
     return output
