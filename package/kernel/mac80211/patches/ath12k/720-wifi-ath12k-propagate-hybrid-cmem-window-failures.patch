@@ -1,0 +1,264 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: propagate hybrid CMEM window failures
+
+QCN6432 uses a dynamic PCI register window for copy-cache PPT writes.
+Do not silently write through a stale window after selection times out.
+The old selector also skipped clearing nonzero window bits when the
+requested window was zero. Return errors through the hybrid HIF,
+descriptor setup, partner copy-cache programming and MLO startup.
+
+Follow Qualcomm's upstream QCN6432 error-propagation design, while
+fixing the stale-window comparison in this older hybrid port.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -1182,8 +1182,11 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	for (i = 0; i < ag->num_devices; i++)
+-		ath12k_dp_partner_cc_init(ag->ab[i]);
++	for (i = 0; i < ag->num_devices; i++) {
++		ret = ath12k_dp_partner_cc_init(ag->ab[i]);
++		if (ret)
++			goto err_mlo_teardown;
++	}
+ 
+ 	ret = ath12k_mac_mlo_ready(ag);
+ 	if (ret)
+diff --git a/drivers/net/wireless/ath/ath12k/dp.c b/drivers/net/wireless/ath/ath12k/dp.c
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1300,7 +1300,7 @@
+ 			       enum ath12k_dp_desc_type type)
+ {
+ 	u32 cmem_base;
+-	int i, start, end;
++	int i, start, end, ret;
+ 
+ 	cmem_base = ab->qmi.dev_mem[ATH12K_QMI_DEVMEM_CMEM_INDEX].start;
+ 
+@@ -1324,26 +1324,41 @@
+ 		u32 ppt_addr = cmem_base + ATH12K_PPT_ADDR_OFFSET(i);
+ 		u32 paddr = dp->spt_info[i].paddr >> ATH12K_SPT_4K_ALIGN_OFFSET;
+ 
+-		if (ab->hif.ops->cmem_write32 && ab->hif.bus == ATH12K_BUS_HYBRID)
+-			ath12k_hif_cmem_write32(ab, ppt_addr, paddr);
+-		else
++		if (ab->hif.bus == ATH12K_BUS_HYBRID) {
++			if (!ab->hif.ops->cmem_write32)
++				return -EOPNOTSUPP;
++
++			ret = ath12k_hif_cmem_write32(ab, ppt_addr, paddr);
++			if (ret)
++				return ret;
++		} else {
+ 			ath12k_hif_write32(ab, ppt_addr, paddr);
++		}
+ 	}
+ 
+ 	return 0;
+ }
+ 
+-void ath12k_dp_partner_cc_init(struct ath12k_base *ab)
++int ath12k_dp_partner_cc_init(struct ath12k_base *ab)
+ {
+ 	struct ath12k_hw_group *ag = ab->ag;
+-	int i;
++	struct ath12k_dp *partner_dp;
++	int i, ret;
+ 
+ 	for (i = 0; i < ag->num_devices; i++) {
+ 		if (ag->ab[i] == ab)
+ 			continue;
+ 
+-		ath12k_dp_cmem_init(ab, ath12k_ab_to_dp(ag->ab[i]), ATH12K_DP_RX_DESC);
++		partner_dp = ath12k_ab_to_dp(ag->ab[i]);
++		ret = ath12k_dp_cmem_init(ab, partner_dp, ATH12K_DP_RX_DESC);
++		if (ret) {
++			ath12k_err(ab, "partner RX copy-cache initialization failed: %d\n",
++				   ret);
++			return ret;
++		}
+ 	}
++
++	return 0;
+ }
+ 
+ static u32 ath12k_dp_get_num_spt_pages(struct ath12k_base *ab)
+diff --git a/drivers/net/wireless/ath/ath12k/dp.h b/drivers/net/wireless/ath/ath12k/dp.h
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -680,7 +680,7 @@
+ }
+ 
+ void ath12k_dp_vdev_tx_attach(struct ath12k *ar, struct ath12k_link_vif *arvif);
+-void ath12k_dp_partner_cc_init(struct ath12k_base *ab);
++int ath12k_dp_partner_cc_init(struct ath12k_base *ab);
+ int ath12k_dp_pdev_alloc(struct ath12k_base *ab);
+ void ath12k_dp_pdev_pre_alloc(struct ath12k *ar);
+ void ath12k_dp_pdev_free(struct ath12k_base *ab);
+diff --git a/drivers/net/wireless/ath/ath12k/hif.h b/drivers/net/wireless/ath/ath12k/hif.h
+--- a/drivers/net/wireless/ath/ath12k/hif.h
++++ b/drivers/net/wireless/ath/ath12k/hif.h
+@@ -12,8 +12,8 @@
+ struct ath12k_hif_ops {
+ 	u32 (*read32)(struct ath12k_base *ab, u32 address);
+ 	void (*write32)(struct ath12k_base *ab, u32 address, u32 data);
+-	u32 (*cmem_read32)(struct ath12k_base *sc, u32 address);
+-	void (*cmem_write32)(struct ath12k_base *sc, u32 address, u32 data);
++	int (*cmem_read32)(struct ath12k_base *sc, u32 address, u32 *value);
++	int (*cmem_write32)(struct ath12k_base *sc, u32 address, u32 data);
+ 	void (*irq_enable)(struct ath12k_base *ab);
+ 	void (*irq_disable)(struct ath12k_base *ab);
+ 	int (*start)(struct ath12k_base *ab);
+@@ -131,10 +131,10 @@
+ 	return ab->hif.ops->read32(ab, address);
+ }
+ 
+-static inline void ath12k_hif_cmem_write32(struct ath12k_base *ab, u32 address,
+-					   u32 data)
++static inline int ath12k_hif_cmem_write32(struct ath12k_base *ab, u32 address,
++					  u32 data)
+ {
+-	ab->hif.ops->cmem_write32(ab, address, data);
++	return ab->hif.ops->cmem_write32(ab, address, data);
+ }
+ 
+ static inline void ath12k_hif_write32(struct ath12k_base *ab, u32 address,
+diff --git a/drivers/net/wireless/ath/ath12k/pcic.c b/drivers/net/wireless/ath/ath12k/pcic.c
+--- a/drivers/net/wireless/ath/ath12k/pcic.c
++++ b/drivers/net/wireless/ath/ath12k/pcic.c
+@@ -93,68 +93,71 @@
+ 	iowrite32(WINDOW_ENABLE_BIT | window, ab->mem + WINDOW_REG_ADDRESS);
+ }
+ 
+-static void ath12k_pcic_select_static_window(struct ath12k_base *ab, u32 addr)
++static int ath12k_pcic_select_static_window(struct ath12k_base *ab, u32 addr)
+ {
+-	u32 curr_window, cur_val, prev_window = 0;
+-	u32 window = u32_get_bits(addr, WINDOW_VALUE_MASK);
+-	u32 read_val = 0;
+-	int retry = 0;
++	u32 old_window, new_window, window_bits;
++	int retry;
+ 
+-	prev_window = readl_relaxed(ab->mem + WINDOW_REG_ADDRESS);
++	window_bits = u32_get_bits(addr, WINDOW_VALUE_MASK);
++	old_window = readl_relaxed(ab->mem + WINDOW_REG_ADDRESS);
++	new_window = WINDOW_ENABLE_BIT |
++		     (old_window & ~GENMASK(5, 0)) | window_bits;
+ 
+-	/* Clear out last 6 bits of window register */
+-	prev_window = prev_window & ~(0x3f);
+-
+-	/* Write the new last 6 bits of window register. Only window 1 values
+-	 * are changed. Window 2 and 3 are unaffected.
+-	 */
+-	curr_window = prev_window | window;
+-
+-	/* Skip writing into window register if the read value
+-	 * is same as calculated value.
++	/* Compare complete register contents. The old code incorrectly
++	 * skipped writes when selecting the zero window from a nonzero one.
+ 	 */
+-	if (curr_window == prev_window)
+-		return;
++	if (new_window == old_window)
++		return 0;
+ 
+-	cur_val = WINDOW_ENABLE_BIT | curr_window;
+-	writel_relaxed(cur_val, ab->mem + WINDOW_REG_ADDRESS);
++	writel_relaxed(new_window, ab->mem + WINDOW_REG_ADDRESS);
+ 
+-	read_val = readl_relaxed(ab->mem + WINDOW_REG_ADDRESS);
+-
+-	/* If value written is not yet reflected, wait till it is reflected */
+-	while ((read_val != cur_val) && (retry < 10)) {
+-		mdelay(1);
+-		read_val = readl_relaxed(ab->mem + WINDOW_REG_ADDRESS);
+-		retry++;
++	for (retry = 0; retry < 10; retry++) {
++		if (readl_relaxed(ab->mem + WINDOW_REG_ADDRESS) == new_window)
++			return 0;
++		usleep_range(1000, 2000);
+ 	}
+-	if (retry == 10)
+-		ath12k_warn(ab, "Failed to set static window for cmem init\n");
++
++	ath12k_warn(ab, "Failed to set static window for cmem init\n");
++	return -ETIMEDOUT;
+ }
+ 
+-u32 ath12k_pcic_cmem_read32(struct ath12k_base *ab, u32 addr)
++int ath12k_pcic_cmem_read32(struct ath12k_base *ab, u32 addr, u32 *value)
+ {
+-	u32 val;
++	int ret;
+ 
+-	if (addr < WINDOW_START)
+-		return readl_relaxed(ab->mem + addr);
++	if (!value)
++		return -EINVAL;
+ 
+-	ath12k_pcic_select_static_window(ab, addr);
+-
+-	val = readl_relaxed(ab->mem + WINDOW_START + (addr & WINDOW_RANGE_MASK));
++	if (addr < WINDOW_START) {
++		*value = readl_relaxed(ab->mem + addr);
++		return 0;
++	}
+ 
+-	return val;
++	ret = ath12k_pcic_select_static_window(ab, addr);
++	if (ret)
++		return ret;
++
++	*value = readl_relaxed(ab->mem + WINDOW_START +
++			       (addr & WINDOW_RANGE_MASK));
++	return 0;
+ }
+ 
+-void ath12k_pcic_cmem_write32(struct ath12k_base *ab, u32 addr, u32 value)
++int ath12k_pcic_cmem_write32(struct ath12k_base *ab, u32 addr, u32 value)
+ {
++	int ret;
++
+ 	if (addr < WINDOW_START) {
+ 		writel_relaxed(value, ab->mem + addr);
+-		return;
++		return 0;
+ 	}
+ 
+-	ath12k_pcic_select_static_window(ab, addr);
+-
+-	writel_relaxed(value, ab->mem + WINDOW_START + (addr & WINDOW_RANGE_MASK));
++	ret = ath12k_pcic_select_static_window(ab, addr);
++	if (ret)
++		return ret;
++
++	writel_relaxed(value, ab->mem + WINDOW_START +
++		       (addr & WINDOW_RANGE_MASK));
++	return 0;
+ }
+ 
+ u32 ath12k_pcic_get_window_start(struct ath12k_base *ab, u32 offset)
+diff --git a/drivers/net/wireless/ath/ath12k/pcic.h b/drivers/net/wireless/ath/ath12k/pcic.h
+--- a/drivers/net/wireless/ath/ath12k/pcic.h
++++ b/drivers/net/wireless/ath/ath12k/pcic.h
+@@ -61,9 +61,9 @@
+ int ath12k_pcic_map_service_to_pipe(struct ath12k_base *ab, u16 service_id,
+ 				    u8 *ul_pipe, u8 *dl_pipe);
+ void ath12k_pcic_free_hybrid_irq(struct ath12k_base *ab);
+-void ath12k_pcic_cmem_write32(struct ath12k_base *ab, u32 addr,
+-			      u32 value);
+-u32 ath12k_pcic_cmem_read32(struct ath12k_base *ab, u32 addr);
++int ath12k_pcic_cmem_write32(struct ath12k_base *ab, u32 addr,
++			     u32 value);
++int ath12k_pcic_cmem_read32(struct ath12k_base *ab, u32 addr, u32 *value);
+ void ath12k_pcic_ext_irq_enable(struct ath12k_base *ab);
+ void ath12k_pcic_ext_irq_disable(struct ath12k_base *ab);
+ u32 ath12k_pcic_get_window_start(struct ath12k_base *ab, u32 offset);
