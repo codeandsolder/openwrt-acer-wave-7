@@ -20,10 +20,11 @@ def certs(path):
             if fingerprint:
                 found[fingerprint.group(1)]=(i,n,x.strip())
     return found
-for f in map(Path,sys.argv[1:]):
-    print(f"\n== {f} ==")
-    result=certs(f)
-    print("CERTIFICATES",len(result))
-    for sha,(offset,n,info) in result.items():
-        print("OFFSET",offset,"SIZE",n,"SHA256_FINGERPRINT",sha)
-        print(info)
+if __name__ == "__main__":
+    for f in map(Path,sys.argv[1:]):
+        print(f"\n== {f} ==")
+        result=certs(f)
+        print("CERTIFICATES",len(result))
+        for sha,(offset,n,info) in result.items():
+            print("OFFSET",offset,"SIZE",n,"SHA256_FINGERPRINT",sha)
+            print(info)

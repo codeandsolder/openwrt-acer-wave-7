@@ -18,6 +18,7 @@ import tarfile
 import tempfile
 
 from audit import IMAGES, inspect_family
+from signing_gate import assess
 
 ACCEPTED_SHA = "a952779383ba6d6c0847951354af2d59a96e46b9422fba4fb0cda6e92a9877da"
 ACCEPTED_REV = "r0+38249-3b1851eda6"
@@ -203,6 +204,13 @@ def main():
         check("created 0 devices" in extracted,
               "unprivileged extraction did not exclude only /dev/console")
         baseline_manifest = read_manifest(root)
+        signing = assess(
+            root / "lib/firmware/ath12k/IPQ5332/hw1.0/q6_fw0.b01",
+            args.candidate / "IPQ5332/hw1.0/q6_fw0.b01",
+        )
+        check(signing["root_fingerprint_equal"],
+              "candidate uses a different Qualcomm signing root; "
+              "do not package into a production Acer trial")
         firmware_identity(root)
         changed_firmware = 0
         for source_soc, stem, dest_soc in STEMS:
@@ -306,6 +314,8 @@ def main():
             "source_repo_commit": cmd(["git", "-C", str(repo), "rev-parse", "HEAD"]).strip(),
             "trial_revision": TRIAL_REV,
             "firmware_release": SOURCE_VERSION,
+            "signing_roots_equal": signing["root_fingerprint_equal"],
+            "signing_intermediates_equal": signing["intermediate_fingerprint_equal"],
             "signed_complete_image_families": 5,
             "load_segments": new_firmware["used_physical_intervals"],
             "firmware_files_copied": changed_firmware,

@@ -219,3 +219,36 @@ New JSON is only in Asus
 /home/jan/firmware/wave7/analysis/20261115-q6-noc/qnoc4-legacy-hypotheses.json,
 SHA256 04d5095fb2c38a02be17af23f06bd168390a623610027d21545650c3fbab54f4.
 No new crash, register read, or firmware image needed.
+
+## Separate passive kernel NoC event recorder, 2026-11-16
+
+The WBE1.4 hardware A/B produced a new NOC ERROR DETECTED at
+uptime406s, but the existing passive devcd recorder saw no full ELF
+core. The NoC event service captures kernel diagnostic text even
+when Q6 SSR recovers without producing a core.
+
+Independent Asus user service wave7-q6-noc-events.service runs
+watch-noc-events.sh --run every 8 seconds, in parallel with the
+existing passive devcoredump service. It uses read-only SSH to
+inspect boot UUID, revision and filtered dmesg error lines. On a
+new error it takes a bounded 15-second full kernel dmesg snapshot,
+remoteproc states and devcd directory listing.
+It rejects samples where the router rebooted between probe and
+snapshot. Per-boot per-event hashes deduplicate across restarts;
+files and SHA256 manifests are archived atomically.
+No router-side file writes, reboots, module loads or MMIO.
+
+Asus operational paths:
+- /home/jan/scripts/wave7/q6-noc-core/watch-noc-events.sh
+- /home/jan/.config/systemd/user/wave7-q6-noc-events.service
+- /home/jan/firmware/wave7/captures/q6-noc-events/
+
+At installation Nov16 18:17 CET both this service and the existing
+devcore collector were enabled and active (jan user linger=yes).
+Accepted boot 04dddd01-ac63-48a4-8f75-afbf491e03c2 showed no
+new NOC ERROR DETECTED lines. Check with --check or systemctl.
+
+The offline test-watch-noc-events.sh runs a bounded fake SSH fixture
+to verify preflight, full log capture, different-boot rejection,
+restart dedup and removal of incomplete temporary files. It does
+not induce a hardware Q6 crash.
