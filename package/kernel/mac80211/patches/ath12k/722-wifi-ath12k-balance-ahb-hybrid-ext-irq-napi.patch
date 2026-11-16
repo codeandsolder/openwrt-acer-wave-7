@@ -1,0 +1,76 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: balance grouped AHB and hybrid IRQ disables
+
+Multiple interrupts sharing one NAPI group can concurrently disable
+the same IRQ before napi_schedule() rejects the second schedule.
+The single NAPI completion enables the IRQ only once, leaving it
+permanently masked, stalling descriptor completion and transmission.
+
+Use napi_schedule_prep() before masking grouped interrupts, and
+only unmask them after a successful napi_complete_done(). Extend
+the upstream IPQ5332 AHB fix to the QCN6432 hybrid PCI IRQ path,
+which also groups independent MSI vectors under one NAPI instance.
+
+Upstream AHB fix: 216dd4fc5743
+("wifi: ath12k: fix IRQ disable imbalance in AHB ext interrupt handler")
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/wireless/ath/ath12k/ahb.c b/drivers/net/wireless/ath/ath12k/ahb.c
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -418,10 +418,8 @@
+ 	int work_done;
+ 
+ 	work_done = ath12k_dp_service_srng(dp, irq_grp, budget);
+-	if (work_done < budget) {
+-		napi_complete_done(napi, work_done);
++	if (work_done < budget && napi_complete_done(napi, work_done))
+ 		ath12k_ahb_ext_grp_enable(irq_grp);
+-	}
+ 
+ 	if (work_done > budget)
+ 		work_done = budget;
+@@ -436,9 +434,10 @@
+ 	/* last interrupt received for this group */
+ 	irq_grp->timestamp = jiffies;
+ 
+-	ath12k_ahb_ext_grp_disable(irq_grp);
+-
+-	napi_schedule(&irq_grp->napi);
++	if (napi_schedule_prep(&irq_grp->napi)) {
++		ath12k_ahb_ext_grp_disable(irq_grp);
++		__napi_schedule(&irq_grp->napi);
++	}
+ 
+ 	return IRQ_HANDLED;
+ }
+diff --git a/drivers/net/wireless/ath/ath12k/pcic.c b/drivers/net/wireless/ath/ath12k/pcic.c
+--- a/drivers/net/wireless/ath/ath12k/pcic.c
++++ b/drivers/net/wireless/ath/ath12k/pcic.c
+@@ -340,10 +340,8 @@
+ 	int work_done;
+ 
+ 	work_done = ath12k_dp_service_srng(dp, irq_grp, budget);
+-	if (work_done < budget) {
+-		napi_complete_done(napi, work_done);
++	if (work_done < budget && napi_complete_done(napi, work_done))
+ 		ath12k_pcic_ext_grp_enable(irq_grp);
+-	}
+ 
+ 	if (work_done > budget)
+ 		work_done = budget;
+@@ -360,9 +358,10 @@
+ 	/* last interrupt received for this group */
+ 	irq_grp->timestamp = jiffies;
+ 
+-	ath12k_pcic_ext_grp_disable(irq_grp);
+-
+-	napi_schedule(&irq_grp->napi);
++	if (napi_schedule_prep(&irq_grp->napi)) {
++		ath12k_pcic_ext_grp_disable(irq_grp);
++		__napi_schedule(&irq_grp->napi);
++	}
+ 
+ 	return IRQ_HANDLED;
+ }
