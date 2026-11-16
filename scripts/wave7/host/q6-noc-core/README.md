@@ -252,3 +252,31 @@ The offline test-watch-noc-events.sh runs a bounded fake SSH fixture
 to verify preflight, full log capture, different-boot rejection,
 restart dedup and removal of incomplete temporary files. It does
 not induce a hardware Q6 crash.
+
+### Continuous kernel-message capture — 2026-11-16
+
+The original eight-second poll has a blind spot: a fatal followed by
+rapid reboot/rollback can erase the current boot's ring before the
+second SSH request. A separate optional Asus user service
+\`wave7-q6-noc-kmsg.service\` uses a **read-only** long-lived SSH
+\`cat /dev/kmsg\` file descriptor instead of polling. \`/dev/kmsg\`
+has a per-open reader cursor; unlike \`/proc/kmsg\`, reading does
+not drain the system's global message queue. The accepted Wave7 BusyBox
+\`dmesg\` does not support follow mode; live hardware successfully
+returned records from \`/dev/kmsg\` without modifications.
+
+Each SSH connection emits a boot UUID and revision before the stream.
+An exact \`NOC ERROR DETECTED\` record is identified by its per-boot
+kernel sequence number; it is saved atomically and SHA256-checked
+**before** requesting a full dmesg/remoteproc/devcoredump snapshot.
+The context snapshot is only accepted when its boot UUID matches the
+stream and it still contains the fatal line. Even if that second SSH
+fails because the router rebooted, the original event record persists.
+Reconnecting to the same boot deduplicates by boot UUID and kmsg sequence.
+
+Scripts: \`watch-noc-kmsg.sh\`, \`test-watch-noc-kmsg.sh\`, and
+\`wave7-q6-noc-kmsg.service\`. The fake-SSH regression exercises a
+router-reboot race, event persistence, later context recovery, SHA
+verification, and reconnect deduplication. Run both the streaming
+service and the independent eight-second poll to keep complementary
+channels. Neither causes hardware tests or firmware changes.
