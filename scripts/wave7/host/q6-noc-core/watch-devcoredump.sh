@@ -33,12 +33,47 @@ mkdir -p -- "$capture_dir"
 exec 9>"$capture_dir/.monitor.lock"
 flock -n 9 || { log 'Another devcoredump monitor is already running'; exit 1; }
 declare -A seen=()
+active_partial=''
+cleanup_partial() {
+  if [[ -n $active_partial ]]; then
+    rm -f -- "$active_partial"
+  fi
+}
+trap cleanup_partial EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 log "MONITOR_STARTED poll_seconds=$poll_seconds directory=$capture_dir"
+
+# Devcoredump sysfs entries are kernel-generated ELF files. A successful SSH
+# exit status does not prove the stream includes all ELF PT_LOAD payloads.
+# Reject incomplete transfers before content-addressing them as durable cores.
+validate_elf_dump() {
+  local path=$1 hdr ph type off filesz end size
+  local load_count=0 max_end=0
+  if ! hdr=$(LC_ALL=C readelf -hW "$path" 2>&1); then
+    return 1
+  fi
+  if ! [[ $hdr =~ Type:[[:space:]]*CORE[[:space:]] ]]; then
+    return 1
+  fi
+  if ! ph=$(LC_ALL=C readelf -lW "$path" 2>&1); then
+    return 1
+  fi
+  size=$(stat -c %s -- "$path")
+  while read -r type off _ _ filesz _; do
+    [[ $off =~ ^0x[0-9a-fA-F]+$ && $filesz =~ ^0x[0-9a-fA-F]+$ ]] || continue
+    end=$((16#${off#0x} + 16#${filesz#0x}))
+    if (( end > max_end )); then max_end=$end; fi
+    if [[ $type == LOAD ]]; then (( load_count+=1 )); fi
+  done <<< "$ph"
+  (( load_count >= 1 && max_end <= size ))
+}
 capture_one() {
   local devcd=$1
   [[ $devcd =~ ^devcd[0-9]+$ ]] || { log "Invalid dump identifier: $devcd"; return 2; }
   local part hash dest context
   part=$(mktemp "$capture_dir/.capture.XXXXXXXX")
+  active_partial=$part
   # Reading this sysfs entry is safe. Writing to it discards the dump.
   if ! remote "cat /sys/class/devcoredump/$devcd/data" > "$part"; then
     rm -f -- "$part"
@@ -48,6 +83,12 @@ capture_one() {
   if [[ ! -s $part ]]; then
     rm -f -- "$part"
     log "FAILED_EMPTY $devcd (retry)"
+    return 1
+  fi
+  if ! validate_elf_dump "$part"; then
+    rm -f -- "$part"
+    active_partial=''
+    log "FAILED_INVALID_ELF $devcd (truncated/corrupt stream, retry)"
     return 1
   fi
   read -r hash _ < <(sha256sum "$part")
@@ -65,6 +106,7 @@ capture_one() {
     mv -- "$part" "$dest"
     log "CAPTURED $devcd sha256=$hash bytes=$(stat -c %s "$dest")"
   fi
+  active_partial=''
   if [[ ! -e $context ]]; then
     local tmpctx
     tmpctx=$(mktemp "$capture_dir/.context.XXXXXXXX")
