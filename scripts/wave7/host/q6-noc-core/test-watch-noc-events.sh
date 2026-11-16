@@ -21,6 +21,12 @@ case "$last" in
     echo ' 85: 40 2 0 0 GICv2m-pMSI-soc@0:wifi 14 Edge pci2_wlan_dp_8'
     echo ' 12: 5000 5000 5000 5000 GIC-0 20 Level arch_timer'
     echo ====WAVE7_IRQS_END====
+    echo ====WAVE7_CLOCKS====
+    echo " gcc_pcie3x2_axi_m_clk 0 0 0 266666666 0 0 50000 Y deviceless no_connection_id"
+    echo " gcc_snoc_pcie3_2lane_m_clk 0 0 0 266666666 0 0 50000 Y 1800000.clock-controller icc"
+    echo " gcc_pcie3x2_phy_ahb_clk 0 0 0 99999999 0 0 50000 N deviceless no_connection_id"
+    echo " gcc_pcie3x1_0_axi_m_clk 0 0 0 240000000 0 0 50000 Y deviceless no_connection_id"
+    echo ====WAVE7_CLOCKS_END====
     echo "WAVE7_UPTIME=${WAVE7_TEST_UPTIME:-406.75}"
     echo WAVE7_STATION_COUNT=1
     ;;
@@ -61,6 +67,12 @@ rg -Fq $'406.75\t1\t70\t1300\trxdma2host-monitor-destination-mac1' "$irq"
 rg -Fq $'406.75\t1\t55\t8\tce1' "$irq"
 rg -Fq $'406.75\t1\t85\t42\tpci2_wlan_dp_8' "$irq"
 ! rg -Fq 'arch_timer' "$irq"
+clock_file="$tmp/captures/clocks-12345678-aaaa-bbbb-cccc-0123456789ab.tsv"
+test -s "$clock_file"
+rg -Fq $'406.75\tgcc_pcie3x2_axi_m_clk\t0\t0\t266666666\tY' "$clock_file"
+rg -Fq $'406.75\tgcc_pcie3x2_phy_ahb_clk\t0\t0\t99999999\tN' "$clock_file"
+rg -Fq $'406.75\tgcc_snoc_pcie3_2lane_m_clk\t0\t0\t266666666\tY' "$clock_file"
+! rg -Fq 'gcc_pcie3x1_0_axi_m_clk' "$clock_file"
 find "$tmp/captures" -maxdepth 1 -name '*.kernel.txt' -exec rg -Fq 'ERRLOG1=0x841d' {} \;
 timeout 3 "$script" --run > "$tmp/restart.log" 2>&1 || test "$?" -eq 124
 ! rg -q 'NOC_EVENT_ARCHIVED' "$tmp/restart.log"

@@ -358,3 +358,34 @@ JSON now includes error_clear with the table-derived MMIO address and
 null snapshot. Static handler write-value/instruction evidence is
 attached only for the verified layout. Synthetic two-instance ELF
 tests cover layout mapping, variant layout, and reserved index values.
+
+### Q6-owned PCIe2 clock hardware state capture
+
+Wave 7 intentionally leaves all Linux PCIe controller nodes disabled;
+stock Acer 067 root-Q6 firmware contains its own register-level
+clock-operation descriptors for all nine QCN6432-connected 2-lane PCIe
+resources. The Linux common-clock framework shows enable_count=0
+while the gate can still be physically on (hardware_enabled=Y).
+The Q6 firmware descriptor CBCR aliases map to GCC physical
+0x01828030/38/40/48/68/70/80 and 0x0182e048/7c.
+
+The existing read-only Asus NoC/IRQ collector now records
+clocks-<boot-id>.tsv alongside irq-<boot-id>.tsv. Every SSH probe
+extracts just the 2-lane PCIe names matching gcc_pcie3x2_* or
+gcc_snoc_pcie3_2lane_* from the kernel clock_summary debugfs.
+Each row contains UTC, router uptime, clock name, CCF enable_count,
+CCF prepare_count, rate_hz, hardware_enabled=Y/N, and firmware revision.
+The same already-proven adaptive 2-second sampling applies during
+the first 150 seconds, then the normal 8-second cadence applies.
+
+These rows can demonstrate clock gate state transitions near an
+occurring NoC fault; they are **not** a physical initiator/target
+decoder, and sampled absence of transitions cannot exclude a very
+brief clock glitch. Hardware_enabled is the driver's readback as
+exposed by debugfs, not an independent bus scope. On a kernel without
+the debugfs summary or with a missing clock, recording is optional
+and cannot prevent the primary crash/core/IRQ collector from running.
+
+The mock SSH test verifies Y and N hardware states, zero CCF users,
+correct clocks selected, exclusion of unrelated PCIe0 clocks,
+NoC archive deduplication, and adaptive sampling.
