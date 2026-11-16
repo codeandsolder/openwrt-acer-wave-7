@@ -125,3 +125,50 @@ secureboot/PAS authentication, QMI/WMI/MPD ABI, Wi-Fi/MLO/WSI, and
 whether UMACNOC root fault recurs. Use independent Asus rollback
 observers, accepted SHA-pinned restore, separate Wyse Ethernet
 management, and no false acceptance on old revision string.
+
+## Guarded on-hardware WBE1.4 A/B (2026-11-16)
+
+Asus-side `flash-wbe14.sh --check|--run` validates the exact trial
+SHA256 `8d80ca8123770aa7db1f934197f6ef513d5ce737cffa90154e00a8d185c0d2c7`
+and accepted rollback SHA256
+`a952779383ba6d6c0847951354af2d59a96e46b9422fba4fb0cda6e92a9877da`.
+It requires the accepted `r0+38249-3b1851eda6` 6.18.60 boot,
+bootfail0, accepted firstboot marker, 3 running Q6, MLO2,
+Redmi LAN peer, Asus Q6 core collector and independently reachable
+Wyse Ethernet via Acer SSH. All are checked *before* image staging.
+
+The `--run` action stages **both** exact SHA-verified images to
+router `/tmp`, invokes `sysupgrade -T -n` on each (format verification,
+not flash), arms and checks two autonomous Asus `systemd --user`
+services, then calls the native `sysupgrade -n` for the trial.
+One Asus observer (`wbe14-watch.sh`) watches for the new boot ID and
+*exact* trial revision `r0+38249-wbe14-01734-test`, and waits for
+three running Q6 processors, both AP MLO links, working Redmi LAN,
+firstboot keep-boot marker and bootfail0. It monitors kernel logs for
+new NOC ERROR DETECTED events, and demands 360 seconds of continuous
+health before a trial can be considered temporarily stable. For
+unhealthy **reachable and already firstboot-accepted** trial boots,
+it can independently stage/verify/sysupgrade the exact prior accepted
+image, then require a rebooted accepted revision. The second existing
+Asus watcher independently observes/captures vendor slot fallback
+and pstore. The 120-second firstboot SysRq watchdog and bootfail4
+APPSBL fallback handle faults too early to permit native sysupgrade.
+
+A vendor fallback is reported as `VENDOR_FALLBACK` for later native
+restore, not falsely counted as success or silently flashed with an
+OpenWrt-only uploader. If neither router nor vendor becomes reachable,
+this protocol cannot magically power-cycle the router; preserve the
+record and use separately available physical recovery. Don't replace
+this with the old *vendor-only* `wave7-trial-flash.sh`, which rejects
+native kernel 6.18.60.
+
+Asus installed scripts are under `/home/jan/scripts/wave7/wbe14-ab/`,
+trial evidence goes under
+`/home/jan/firmware/wave7/trials/20261116-wbe14-compat/runs/`,
+and journal logs belong to per-run `wave7-wbe14-supervisor-*` and
+`wave7-fallback-watch-*` user services. User lingering must remain on.
+Before flashing, run `wbe14-watch.sh --selftest` and both scripts with
+`bash -n`/`shellcheck`, then `flash-wbe14.sh --check`. This probe was
+actually run on Asus on the accepted router on Nov16 at 17:36 CET:
+`PREFLIGHT_PASS`, accepted boot ID
+`9e3660cf-ea28-43f7-8f58-dcb81f5696d3`.
