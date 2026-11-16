@@ -18,6 +18,17 @@ cycle/phase. Acer keeps timestamped results in
 
 ## Phase B: real router restarts
 
+The Wyse profile must have NetworkManager connection.autoconnect=yes
+before the first router restart. Original value was no on the lab Wyse;
+a first controlled reboot correctly passed all router boot/Q6/AP checks
+but failed the automatic Wyse reconnect because NetworkManager stopped
+retrying after its SSID-not-found timeout. The original no setting is
+saved on Acer in wyse-autoconnect-original.txt. For this test the profile
+has been explicitly configured to yes and reconnected successfully.
+The reboot harness now checks this prerequisite before issuing a reset.
+Restore the original profile preference after test completion, if desired.
+
+
 Run router-reboots.sh --check COUNT and then --run COUNT on Asus.
 These are full router /sbin/reboot operations, not Wi-Fi reloads.
 Each accepted restart requires:
