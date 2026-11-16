@@ -235,3 +235,67 @@ adds a bounded read-only `dmesg` snapshot immediately upon detecting
 an error, before starting a native restore, to avoid this gap in
 future guarded experiments. This **source improvement was not
 hardware-retested**, and does not justify repeating the same A/B.
+
+## WBE1.6 survey and production signing-chain blocker — Nov16 2026
+
+Qualcomm October2026 upstream ath12k QCN6432 support reports both
+IPQ5332 hw1.0 and QCN6432 hw1.0 on the same matched
+WLAN.WBE.1.6-01322-QCAHKSWPL_SILICONZ-1. This is primary-source
+Tested-on evidence but NOT a public downloadable binary:
+https://kernel.googlesource.com/pub/scm/linux/kernel/git/ath/ath/+/9b5a7ca569c98cca3e94eb8484d69d32df71ca00
+
+Complete older WBE1.6-01270 signed split-firmware sets exist in
+Telecom Infra Project wlan-ap at immutable GitHub commit
+4ebbb3a53afbc142802851a3a0e405bd671b5289,
+feeds/qca-wifi-7/ath12k-firmware/files/IPQ5332_peb.
+Downloaded all 28 actual signed files (24 IPQ + 4 QCN IU), with
+every size and Git blob SHA checked against GitHub manifests.
+IPQ q6_fw2 was also copied within the scoped archive to the
+QCN6432 path matching Acer's dual-alias firmware layout.
+All five full MDT plus indexed bNN files passed our ELF structural
+audit, with 14 non-overlapping physical PT_LOAD intervals inside
+Acer WCSS region 0x4a900000..0x4ca00000, and identical
+WLAN.WBE.1.6-01270 version strings in both radio UserPDs.
+Physical load offsets differ from WBE1.3 and 1.4; no runtime ABI
+compatibility has been established.
+
+HARD BLOCKER: TIP WBE1.6-01270 embedded Qualcomm cert root is
+SRoT MBNv7 Image Signing Test Root CA 6 with SHA256 certificate
+fingerprint
+9C:8D:23:85:5A:64:9D:52:B0:9A:13:A9:08:5E:D1:AA:9E:23:0E:0F:95:60:91:CF:B5:20:4F:9A:5F:81:D2:8B.
+Acer accepted WBE1.3 and its actually boot-tested GL WBE1.4
+use the production Root CA 6 with fingerprint
+6D:8D:59:5F:C1:AD:2F:80:38:3F:26:64:53:F9:B4:8B:35:F4:8A:09:7C:C8:1B:1E:C2:82:16:1C:56:1D:47:F6.
+The test root differs in both subject and cert bits. TIP's
+separate ipq53xx/base-files/firmware/IPQ5332 q6_fw0.b01
+also has the same TEST root. Neither source is qualified
+for production Acer secureboot; do not flash them.
+
+Reproducible X.509 gate, called automatically by the isolated
+native sysupgrade builder before any rootfs firmware modification:
+
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python 3.13 python scripts/wave7/host/q6-firmware-audit/signing_gate.py --accepted files/lib/firmware/ath12k/IPQ5332/hw1.0/q6_fw0.b01 --candidate /home/jan/firmware/wave7/trials/20261116-wbe16-survey/tip-01270/IPQ5332/hw1.0/q6_fw0.b01 --report /home/jan/firmware/wave7/trials/20261116-wbe16-survey/wbe16-01270-signing-result.json
+
+Matched production root accepted vs GL WBE1.4: PASS (exit0);
+production vs TIP test root: DIFFERENT_EMBEDDED_ROOT (exit3).
+The gate reports root, intermediate and leaf fingerprints and
+source-known names. It does not verify MBN signed hash tables,
+device fuse policy, Qualcomm PAS auth or runtime compatibility.
+Intermediate certificate rotation under a common root could
+be legitimate; the builder gates on the root, while reporting
+the intermediate match as distinct evidence. This prevents
+test-root firmwares accidentally being packaged for production.
+
+Files and evidence (off Git):
+/home/jan/firmware/wave7/trials/20261116-wbe16-survey/
+- source/tip-commit.txt and 3 GitHub manifests + selected TSVs
+- tip-01270/ verified complete root/UserPD/IU images
+- tip-01270-structural-audit.json
+- tip-01270-certificates.txt
+- wbe16-01270-signing-result.json
+- wbe14-signing-result.json
+
+Next route: search a truly production-signed complete matched WBE1.6+
+family, especially 1.6-01322, or trace the UMACNOC raw hardware
+MID0x1d/EXTID0x8400 route via original Qualcomm NoC data. The
+recorded failure on WBE1.4 rules that release out as a cure.
