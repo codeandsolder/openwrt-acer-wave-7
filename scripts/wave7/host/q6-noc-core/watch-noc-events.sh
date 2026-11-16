@@ -23,6 +23,11 @@ probe() {
     echo "====WAVE7_IRQS===="
     cat /proc/interrupts
     echo "====WAVE7_IRQS_END===="
+    # Root Q6 owns the physical PCIe2 gates: no Linux clock refcounts.
+    # The hardware-enabled state in clk_summary is still observable.
+    echo "====WAVE7_CLOCKS===="
+    grep -E "gcc_pcie3x2_|gcc_snoc_pcie3_2lane_"       /sys/kernel/debug/clk/clk_summary 2>/dev/null || :
+    echo "====WAVE7_CLOCKS_END===="
     printf "WAVE7_UPTIME=%s\\n" "$(cut -d " " -f1 /proc/uptime)"
     printf "WAVE7_STATION_COUNT=%s\\n" "$(iw dev ap-mld0 station dump | grep -c "^Station " || :)"'
 }
@@ -67,6 +72,24 @@ irq_sample() {
     }
   '
 }
+clock_sample() {
+  local response=$1 wallclock=$2 uptime=$3 revision=$4
+  # Kernel debugfs clk_summary columns:
+  # name enable_count prepare_count protect_count rate accuracy phase
+  # duty_cycle hardware_enabled. A zero CCF count is not a gate-off
+  # indication when root Q6 owns the clock directly.
+  printf '%s\n' "$response" | awk -v wall="$wallclock" -v up="$uptime" \
+    -v rev="$revision" '
+    /^====WAVE7_CLOCKS====$/ { active = 1; next }
+    /^====WAVE7_CLOCKS_END====$/ { active = 0; next }
+    active && ($1 ~ /^gcc_pcie3x2_/ || $1 ~ /^gcc_snoc_pcie3_2lane_/) &&
+      NF >= 9 && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ &&
+      $5 ~ /^[0-9]+$/ && $9 ~ /^[YN]$/ {
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+        wall, up, $1, $2, $3, $5, $9, rev
+    }
+  '
+}
 if [[ $mode == --check ]]; then
   response=$(probe)
   read_probe "$response"
@@ -96,7 +119,13 @@ while true; do
     if [[ ! -s $irq_file ]]; then
       printf 'captured_utc\trouter_uptime_s\tassociated_stations\tirq_number\tcount\tirq_name\trevision\n' >> "$irq_file"
     fi
-    irq_sample "$response" "$(date -u -Is)" "$uptime" "$stations" "$revision" >> "$irq_file"
+    captured=$(date -u -Is)
+    irq_sample "$response" "$captured" "$uptime" "$stations" "$revision" >> "$irq_file"
+    clock_file="$dir/clocks-$boot.tsv"
+    if [[ ! -s $clock_file ]]; then
+      printf 'captured_utc\trouter_uptime_s\tclock_name\tenable_count\tprepare_count\trate_hz\thardware_enabled\trevision\n' > "$clock_file"
+    fi
+    clock_sample "$response" "$captured" "$uptime" "$revision" >> "$clock_file"
     if [[ -n $events ]]; then
       fingerprint=$(printf '%s\n' "$events" | sha256sum | cut -d' ' -f1)
       target="$dir/noc-$boot-$fingerprint.kernel.txt"
