@@ -280,3 +280,28 @@ router-reboot race, event persistence, later context recovery, SHA
 verification, and reconnect deduplication. Run both the streaming
 service and the independent eight-second poll to keep complementary
 channels. Neither causes hardware tests or firmware changes.
+
+## Pre-fatal IRQ and associated-station history (2026-11-16)
+
+The existing Asus `wave7-q6-noc-events.service` now samples a small
+selection of wireless and Q6 IRQ counters in the **same SSH/dmesg poll**
+(every 8 seconds by default). No additional service, router package, or
+router-side configuration is required. It records one tab-separated file per
+router boot:
+
+    /home/jan/firmware/wave7/captures/q6-noc-events/irq-<boot-uuid>.tsv
+
+Columns are capture UTC, router monotonic uptime seconds, number of associated
+MLO stations, Linux IRQ number, cumulative IRQ count summed across CPUs, IRQ
+name, and OpenWrt revision. Selection is by the kernel's actual registered
+IRQ name (CE, WLAN PCI MSI, REO/WBM/RXDMA, SMP2P, Q6), not an assumed IRQ
+number. Interrupt rates are deltas of consecutive **cumulative** counters
+on the same boot and same IRQ, divided by monotonic uptime deltas; counters
+may reset on driver rebind. The existing per-event kernel archives still
+capture full dmesg and independent `/dev/kmsg` streaming remains active.
+
+A live 2026-11-16 connected-versus-disconnected MT7925 comparison saw
+`rxdma2host-monitor-destination-mac1` at roughly 1.3k interrupts/s in both
+conditions (no association dependency), but did not determine whether that
+level is abnormal. The IRQ samples are intended to expose **changes
+preceding** a future natural NoC fatal, not to claim this is the cause.
