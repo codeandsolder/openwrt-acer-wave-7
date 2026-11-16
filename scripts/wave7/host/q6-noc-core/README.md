@@ -322,3 +322,39 @@ Optional overrides: WAVE7_NOC_EARLY_POLL_SECONDS (2..base interval),
 WAVE7_NOC_EARLY_WINDOW_SECONDS (30..600), and existing
 WAVE7_NOC_POLL_SECONDS (2..300). Probe failures use normal intervals.
 Boot-specific irq-<uuid>.tsv files retain the same schema.
+
+### Firmware NoC ERRCLR operation (Acer stock 067)
+
+The decoder now reads all 10 relevant firmware register-index table
+entries (including the previously omitted ERRCLR at index offset
++0x08), rather than inferring the clear offset from another chip.
+On both November 10 and November 16 WBE1.3-03279 Q6 fatal cores,
+the tables assign ERRVALID=0x10, ERRCLR=0x18, ERRLOG0_LO=0x20.
+UMACNOC clear MMIO = 0xe5140000 + 0x18 = 0xe5140018.
+WCSS_CFGBUS clear MMIO = 0xe5008000 + 0x18 = 0xe5008018.
+
+Direct Hexagon disassembly of the matching Acer 067 firmware ELF
+at /home/jan/firmware/wave7/trials/20261115-q6-noc/q6_fw1-067-analysis.elf
+establishes the handler's intended error-clear operation:
+
+- 0xb032a6bc: initialize R24 = 1.
+- 0xb032a6f4 onward: copy logger error registers into descriptor
+  snapshots before clearing.
+- 0xb032a844: R3 = memw(R27 + 0x08) (physical MMIO base).
+- 0xb032a84c: R4 = memuh(memw(R27 + 0x04) + 0x08)
+  (the descriptor's ERRCLR register offset).
+- 0xb032a850: memw(R3 + R4) = R24 (write 1 to ERRCLR).
+
+The handler then continues to report the saved error. This evidence
+comes from static firmware instructions and the dynamic table decoded
+from captured memory; it is not live-MMIO readback proving that the
+fabric accepted the clear. The handler nevertheless explicitly
+attempts to clear the logger after saving the syndrome. Repeated
+byte-identical fatal syndromes therefore suggest the same failed
+transaction/configuration recurring, rather than necessarily one
+uncleared stale latch.
+
+JSON now includes error_clear with the table-derived MMIO address and
+null snapshot. Static handler write-value/instruction evidence is
+attached only for the verified layout. Synthetic two-instance ELF
+tests cover layout mapping, variant layout, and reserved index values.

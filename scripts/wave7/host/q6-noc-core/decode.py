@@ -11,13 +11,16 @@ from pathlib import Path
 
 FW067_NOC_CONFIG_GLOBAL = 0xB0497FDC
 DESCRIPTOR_STRIDE = 0x60
-QNOCC4_OFFSETS = (0x10, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C)
+# Layout order: ERRVALID, ERRCLR, then the eight 32-bit ERRLOG words.
+# The firmware handler reads each offset from the table instead of
+# embedding the hardware register offset in every MMIO instruction.
+QNOCC4_OFFSETS = (0x10, 0x18, 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C)
 NAMES = (
     "ERRVALID", "ERRLOG0_LO", "ERRLOG0_HI", "ERRLOG1_LO", "ERRLOG1_HI",
     "ERRLOG2_LO", "ERRLOG2_HI", "ERRLOG3_LO", "ERRLOG3_HI",
 )
 SNAPSHOT_OFFSETS = (0x48, 0x28, 0x2C, 0x30, 0x34, 0x38, 0x3C, 0x40, 0x44)
-REG_INDEX_OFFSETS = (0x06, 0x0A, 0x0C, 0x0E, 0x10, 0x12, 0x14, 0x16, 0x18)
+REG_INDEX_OFFSETS = (0x06, 0x08, 0x0A, 0x0C, 0x0E, 0x10, 0x12, 0x14, 0x16, 0x18)
 
 
 def qualcomm_noc_filter_fields(errlog0_low, errlog1_high):
@@ -136,15 +139,38 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
         offsets_ptr = u32(desc + 4)
         offsets = [u16(offsets_ptr + off) for off in REG_INDEX_OFFSETS]
         values = [u32(desc + off) for off in SNAPSHOT_OFFSETS]
+        base = u32(desc + 8)
+        clear_offset = offsets[1]
         rec = {
             "name": name(u32(desc)),
             "index": i,
-            "mmio_base": f"{u32(desc + 8):#010x}",
+            "mmio_base": f"{base:#010x}",
             "qnoc4_layout_matches_firmware": tuple(offsets) == QNOCC4_OFFSETS,
             "registers": {label: {"offset": f"{off:#04x}", "snapshot": f"{v:#010x}"}
-                          for label, off, v in zip(NAMES, offsets, values)},
+                          for label, off, v in zip(NAMES, offsets[:1] + offsets[2:], values)},
+            "error_clear": {
+                "register_offset": f"{clear_offset:#04x}",
+                "mmio_address": (
+                    f"{base + clear_offset:#010x}"
+                    if clear_offset != 0xffff and base + clear_offset <= 0xffffffff
+                    else None
+                ),
+                "snapshot": None,
+            },
         }
         if rec["qnoc4_layout_matches_firmware"]:
+            # Reversed Acer 067 UserPD1 handler:
+            # 0xb032a6bc: R24=1;
+            # 0xb032a844: R3=[descriptor+8] (MMIO base);
+            # 0xb032a84c: R4=memuh([descriptor+4]+8) (ERRCLR offset);
+            # 0xb032a850: memw(R3+R4)=R24.
+            # This is the intended write in the error-handling path,
+            # not a measurement that the write reached the hardware.
+            rec["error_clear"]["static_firmware_handler"] = {
+                "write_value": "0x00000001",
+                "write_instruction": "0xb032a850",
+                "interpretation": "handler_writes_clear_after_snapshot_not_live_mmio_observation",
+            }
             rec["logged_u64"] = {
                 f"ERRLOG{j}": f"0x{values[2*j+2]:08x}{values[2*j+1]:08x}"
                 for j in range(4)
