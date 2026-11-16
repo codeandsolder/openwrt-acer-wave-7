@@ -1,0 +1,14 @@
+[Unit]
+Description=Stream Wave7 kernel NoC faults via read-only /dev/kmsg SSH
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/jan/scripts/wave7/q6-noc-core/watch-noc-kmsg.sh --run
+Restart=on-failure
+RestartSec=12
+Nice=10
+UMask=0077
+
+[Install]
+WantedBy=default.target
