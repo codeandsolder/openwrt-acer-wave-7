@@ -1,0 +1,15 @@
+[Unit]
+Description=Capture naturally occurring Wave 7 Q6 DSP devcoredumps (read-only SSH)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/home/jan/scripts/wave7/q6-noc-core/watch-devcoredump.sh --run
+Restart=on-failure
+RestartSec=15
+Nice=10
+UMask=0077
+Environment=WAVE7_Q6_POLL_SECONDS=15
+
+[Install]
+WantedBy=default.target
