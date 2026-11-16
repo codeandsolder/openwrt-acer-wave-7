@@ -150,3 +150,32 @@ Configurable environment: WAVE7_Q6_SSH_HOST, WAVE7_Q6_SSH_KEY,
 WAVE7_Q6_DUMP_DIR and WAVE7_Q6_POLL_SECONDS. The existing Nov15
 guarded root-Q6 crash/recovery acceptance remains the proof of
 in-place recovery; this service is only a passive evidence collector.
+
+### 2026-11-16 capture integrity hardening
+
+The monitor now validates the streamed ELF CORE before archiving: a
+successful SSH command is not enough. It confirms a parseable ELF core,
+at least one PT_LOAD segment, and sufficient file length to include
+every program-header payload. The validation is generic for ELF32 or
+ELF64 and does not impose a board-specific core length. On an incomplete
+transfer it logs FAILED_INVALID_ELF, removes the partial file, and
+retries while the devcd entry remains available. Termination also
+removes any in-progress temporary file.
+
+We replaced the earlier small synthetic fixture test with a test using
+one genuine November10 Qualcomm DSP6 core, supplied with environment
+WAVE7_TEST_CORE (default Asus archive path). It runs a fake SSH server
+that returns first 4096 bytes with successful exit status, and checks
+the truncated ELF is rejected. Then it returns the entire 34,603,092
+byte archived core and checks the stored bytes and content SHA256
+205b8f51a87102f6cf7c4b2062cafbe7d9deaa520b701616e181c7ef6a5dee60
+against the original. It also checks the preserved metadata and
+duplicate suppression after monitor restart. Asus validated:
+ARCHIVED_Q6_CORE_TRUNCATION_REJECTION_DEDUP_METADATA_PASS.
+
+The validated source was atomically installed on Asus and its user
+systemd service restarted normally at 2026-11-16 15:22:47 CET,
+active PID 3637016, NRestarts=0, no new live devcd or fault injection.
+This establishes real-core transfer correctness in offline simulation,
+not that a future naturally occurring live devcd has already been
+captured. The collector still does not alter the router or recovery.
