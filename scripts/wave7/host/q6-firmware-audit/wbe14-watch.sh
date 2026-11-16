@@ -23,7 +23,7 @@ state_read() {
     echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || :)";
     echo "keep=$(test -e /tmp/wave7-keep-boot && echo 1 || echo 0)";
     echo "ap=$(iw dev ap-mld0 info 2>/dev/null | grep -Ec "link ID[[:space:]]+[01]" || :)";
-    echo "q6=$(for p in /sys/class/remoteproc/remoteproc0 /sys/class/remoteproc/remoteproc1 /sys/class/remoteproc/remoteproc2; do test "$(cat "$p/state" 2>/dev/null)" = running || exit 1; done && echo 3 || echo 0)";
+    echo "q6=$(healthy=1; for p in /sys/class/remoteproc/remoteproc0 /sys/class/remoteproc/remoteproc1 /sys/class/remoteproc/remoteproc2; do test "$(cat "$p/state" 2>/dev/null)" = running || healthy=0; done; if [ "$healthy" = 1 ]; then echo 3; else echo 0; fi)";
     echo "ping=$(ping -I br-lan -c 1 -W 1 192.168.76.2 >/dev/null 2>&1 && echo 1 || echo 0)";
     echo "noc=$(dmesg | grep -c "NOC ERROR DETECTED" || :)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)";
@@ -80,6 +80,17 @@ restore_from_trial() {
   local reason=$1
   log "ROLLBACK_REQUESTED reason=$reason"
   printf 'ROLLBACK_TRIGGERED\n' > "$output/status"
+  # Snapshot first, while the failing UserPD firmware is still running.
+  # The original A/B caught a fresh NoC error but rebooted before the
+  # full fatal line/params could be preserved. This passive bounded copy
+  # prevents losing that most useful correlation on a future trial.
+  if timeout 15 ssh "${ssh_opts[@]}" "$host" \
+    'echo BOOT; cat /proc/sys/kernel/random/boot_id; echo FW; cat /etc/openwrt_version; echo Q6; for r in /sys/class/remoteproc/remoteproc*; do echo "$(basename "$r")=$(cat "$r/state")"; done; echo DMESG; dmesg' \
+    > "$output/pre-rollback-dmesg.txt" 2>&1; then
+    log 'FAULT_KERNEL_LOG_ARCHIVED'
+  else
+    log 'FAULT_KERNEL_LOG_UNAVAILABLE'
+  fi
   # Native upgrade requires accepted NAND root and bootfail0/keep marker.
   # Only execute while current new trial boot matches the expected revision
   # and is reachable. If firstboot guard has not accepted, let bootfail

@@ -172,3 +172,66 @@ Before flashing, run `wbe14-watch.sh --selftest` and both scripts with
 actually run on Asus on the accepted router on Nov16 at 17:36 CET:
 `PREFLIGHT_PASS`, accepted boot ID
 `9e3660cf-ea28-43f7-8f58-dcb81f5696d3`.
+
+## Real guarded WBE1.4 hardware A/B — FAILED NoC, rollback PASS
+
+Executed 2026-11-16, Asus run
+`/home/jan/firmware/wave7/trials/20261116-wbe14-compat/runs/wbe14-01734-20261116-173922/`.
+Exact candidate SHA256 `8d80ca8123770aa7db1f934197f6ef513d5ce737cffa90154e00a8d185c0d2c7`.
+The same accepted Linux 6.18.60 kernel and Acer board calibration
+were used; only the coherent WBE1.4-01734 signed Qualcomm family
+and explicit trial release strings changed.
+
+- 17:39 CET: two local Asus independent observer services armed,
+  exact candidate and rollback SHA verified on router, both passed
+  `sysupgrade -T -n`; native sysupgrade stage2 started.
+- 17:40:25 CET: first **real WBE1.4** NAND boot UUID
+  `b7384820-ff98-4068-aee1-536de51ed623`, revision
+  `r0+38249-wbe14-01734-test`, bootfail5.
+- Uptime53s: 3/3 Q6 processors running, 2/2 MLO AP links and
+  Redmi wired peer. At uptime95s native firstboot watchdog accepted
+  root/radio/LAN and committed bootfail0, keep-boot marker.
+- Via Acer's out-of-band SSH to Wyse Ethernet, manually activated the
+  already-configured `Wave7-MLO-Lab` Wi-Fi station using `sudo nmcli`.
+  Wyse MT7925 joined both MLO links (2412/5200 MHz), EHT 2x2, and
+  client-to-router ICMP passed 5/5. This kept Ethernet management
+  independent; original Wi-Fi profile remains autoconnect=no.
+- 17:46:54 CET: at **trial uptime406s**, kernel dmesg's
+  `NOC ERROR DETECTED` count changed from **0 to 1**. This is a
+  genuine recurrent fatal string on the new WBE1.4 firmware after
+  nearly five minutes of *continuous healthy service*. The 2026
+  Qualcomm first-party QNoC4 code's exact MID/EXTID values were only
+  captured from older WBE1.3 full crash cores; **the WBE1.4 fatal
+  did not yield new preserved full DSP coredump**, so exact logger
+  bytes/param values for this incident are not proven identical.
+- 17:46:57 CET: autonomous Asus supervisor, seeing the new NoC event,
+  uploaded and reverified exact accepted image, tested with native
+  `sysupgrade -T -n`, and initiated native `sysupgrade -n` rollback.
+  No physical power cycle, sysrq panic or vendor fallback required.
+- 17:47:56 CET: accepted `r0+38249-3b1851eda6` came up on fresh boot
+  `04dddd01-ac63-48a4-8f75-afbf491e03c2`, initially bootfail5;
+  by 17:49:44 CET the production firstboot gate had committed
+  **bootfail0**, keep-boot marker and 3/3 Q6, MLO2, Redmi 3/3
+  ICMP and no fresh NoC messages. The one-shot Asus watchers were
+  stopped; normal passive Q6 core collection remained enabled.
+
+**Decision:** GL WBE1.4-01734 does not fix the intermittent IPQ5332
+UMACNOC firmware fatal; keep accepted WBE1.3-03279 native baseline.
+The tested native firstboot bootfail fallback and Asus independent
+same-slot rollback both worked. This is an actual negative hardware
+A/B, not a build or OTA-parser-only inference. Do not rerun the same
+WBE1.4 trial without a new causal hypothesis. Next work: locate
+actual UMACNOC initiator/target route map, or investigate complete
+later Qualcomm WBE1.6/1.7 families with matching board-data ABI.
+
+Captured evidence (on Asus, scoped): `preflight.txt`,
+`sysupgrade.log`, `observer.log`, `restore.log`,
+`last-trial-state.txt` (contains NoC count1, uptime406),
+`accepted-after-rollback.txt`, `status=ROLLED_BACK`, and
+`evidence.sha256` with all checks PASS. No test logs or signed
+firmware blobs in Git. No separate pre-rollback full DSP core was
+captured. A subsequent source-only improvement to `wbe14-watch.sh`
+adds a bounded read-only `dmesg` snapshot immediately upon detecting
+an error, before starting a native restore, to avoid this gap in
+future guarded experiments. This **source improvement was not
+hardware-retested**, and does not justify repeating the same A/B.
