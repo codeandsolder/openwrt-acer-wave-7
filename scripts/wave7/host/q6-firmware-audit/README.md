@@ -64,3 +64,64 @@ Only attempt a complete separate native image with a real overlay,
 verified SHA, independent Asus reboot/rollback guards and working Wyse
 Ethernet management. Do not commit firmware blobs or leave modified
 binary assets in the primary Git checkout.
+
+## Isolated firmware-only native sysupgrade candidate — 2026-11-16
+
+The actual on-device accepted 3b1851eda6 sysupgrade (not an older
+local kernel build) was SHA-pinned to:
+a952779383ba6d6c0847951354af2d59a96e46b9422fba4fb0cda6e92a9877da.
+It is retained on Acer under
+/home/jan/firmware/wave7/trials/20261116-wbe14-compat/image-build/
+and on Asus under the earlier accepted trials directory.
+
+From the Acer primary OpenWrt checkout, run:
+
+    d=/home/jan/firmware/wave7/trials/20261116-wbe14-compat
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python 3.13 python scripts/wave7/host/q6-firmware-audit/build_candidate.py --accepted-image "$d/image-build/accepted-3b1851eda6-sysupgrade.bin" --candidate "$d/gl-fw14" --out "$d/image-build/wave7-wbe14-01734-kernel3b1851eda6-sysupgrade.bin"
+
+Actually built and offline verified, 2026-11-16:
+- Native Acer Wave7 sysupgrade length 15,790,406 bytes
+- SHA256 8d80ca8123770aa7db1f934197f6ef513d5ce737cffa90154e00a8d185c0d2c7
+- Kernel/DTB byte-identical to accepted image, SHA256
+  869fb4c8a0459d7bea8bb11fe8645af35feb4e14e01e53125a9a4be4a1c95bf2
+- Complete Qualcomm WBE1.4-01734 root Q6, two UserPD and both IU sets
+- Signed QCN6432 UserPD2 duplicates coherent at both Acer DTS lookup paths
+- All Acer board.bin, caldata, regulatory files, qdss and radio config retained
+- 41 explicit changed rootfs entries: all complete split firmware pieces,
+  release metadata, and /etc/wave7-firmware-trial marker; 0 unexpected
+- Original /etc/os-release is a symlink to ../usr/lib/os-release;
+  its target is updated without changing the symlink
+- Distinct trial release r0+38249-wbe14-01734-test avoids accidental
+  acceptance by watchers looking for original 3b1851eda6 revision
+- The one device inode, /dev/console, is excluded for unprivileged
+  extraction and recreated with OpenWrt's original mksquashfs pseudo
+  definition; verified by listing resulting SquashFS
+- Original OpenWrt XZ/256KiB SquashFS compression options reproduced,
+  then the entire candidate is extracted and checked against staging
+- Packaged with OpenWrt scripts/sysupgrade-tar.sh and fwtool -I metadata;
+  repacked device/board/metadata/kernel and extracted contents verified
+- One scoped temporary workdir automatically removed; only sysupgrade
+  binary, SHA256, report JSON and accepted baseline image kept
+- Builder refuses to overwrite an output that already exists; no
+  repo rootfs overlay files are touched and no kernel is recompiled
+
+Targeted source tests without re-running full firmware builds:
+
+    PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python 3.13 python scripts/wave7/host/q6-firmware-audit/test_build_candidate.py
+
+ON-ROUTER IMAGE ACCEPTANCE TEST PASSED:
+Asus independent copy SHA matched; on running Acer Wave7 root@192.168.76.1
+the exact SHA-matched candidate was staged to a temporary /tmp file and
+/sbin/sysupgrade -T -n /tmp/wave7-wbe14-01734-sysupgrade-TEST-ONLY.bin
+exited 0 on 2026-11-16 16:53 CET. Boot ID stayed
+9e3660cf-ea28-43f7-8f58-dcb81f5696d3, bootfail0, MLO2, 3/3
+remoteprocs running. The temporary file was deleted from router.
+Asus retains candidate and router-sysupgrade-test.log in its own
+/home/jan/firmware/wave7/trials/20261116-wbe14-compat directory.
+
+This is a native installable-format candidate, NOT a successful
+WBE1.4 boot. Separate guarded hardware A/B is still needed for
+secureboot/PAS authentication, QMI/WMI/MPD ABI, Wi-Fi/MLO/WSI, and
+whether UMACNOC root fault recurs. Use independent Asus rollback
+observers, accepted SHA-pinned restore, separate Wyse Ethernet
+management, and no false acceptance on old revision string.
