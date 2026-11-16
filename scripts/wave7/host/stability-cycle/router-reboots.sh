@@ -119,15 +119,38 @@ for ((i=1;i<=count;i++)); do
   ((sawnew)) || failed NO_NEW_BOOT_WITHIN_270S
   ((ready)) || failed NEW_BOOT_NOT_HEALTHY_WITHIN_270S
   elapsed=$(( $(date +%s)-start ))
+  # Bootfail/keepboot acceptance happens around 95s. The original Q6
+  # UMACNOC fatal has recurred at 99.9s: do not mistake this immediately
+  # post-acceptance SSR for a subsequent Wyse association-only problem.
+  sleep 12
+  monitors || failed MONITOR_STOPPED_DURING_POSTBOOT_SOAK
+  current=$(state) || failed ROUTER_LOST_DURING_POSTBOOT_SOAK
+  [[ $(get "$current" boot) == "$newboot" ]] || failed SECOND_REBOOT_DURING_POSTBOOT_SOAK
+  [[ $(get "$current" noc) == 0 ]] || failed Q6_NOC_FATAL_AFTER_BOOT_ACCEPTANCE
+  healthy "$current" || failed UNHEALTHY_DURING_POSTBOOT_SOAK
+
   associated=0
   for ((k=0;k<12;k++)); do
     if client; then associated=1; break; fi
     sleep 3
   done
-  ((associated)) || failed WYSE_NOT_DUAL_LINK_WITH_PING
+  if (( !associated )); then
+    # The client failure may be a consequence of a newly recovered
+    # remoteproc rather than an independent MLO association failure.
+    if current=$(state 2>/dev/null); then
+      [[ $(get "$current" noc) == 0 ]] ||
+        failed Q6_NOC_FATAL_DURING_WYSE_RECONNECT
+      [[ $(get "$current" boot) == "$newboot" ]] ||
+        failed ROUTER_REBOOT_DURING_WYSE_RECONNECT
+      healthy "$current" ||
+        failed ROUTER_UNHEALTHY_DURING_WYSE_RECONNECT
+    fi
+    failed WYSE_NOT_DUAL_LINK_WITH_PING
+  fi
   sleep 10
   monitors || failed MONITOR_STOPPED
   current=$(state) || failed ROUTER_LOST_AFTER_CLIENT
+  [[ $(get "$current" noc) == 0 ]] || failed Q6_NOC_FATAL_AFTER_CLIENT
   healthy "$current" || failed UNHEALTHY_AFTER_CLIENT
   [[ $(get "$current" boot) == "$newboot" ]] || failed SECOND_REBOOT
   printf '%s\t%d\t%s\t%s\t%d\t1\t0\n' "$(date -u +%FT%TZ)" "$i" "$previous" "$newboot" "$elapsed" >> "$run/reboots.tsv"

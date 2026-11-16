@@ -39,8 +39,14 @@ Each accepted restart requires:
 - Wyse reachable independently via Ethernet and both MLO client links
   restored with two successful WLAN pings to Wave 7.
 - All three independent Asus NoC/IRQ/core collectors active.
-- Additional ten seconds after successful boot to preserve passive IRQ
-  snapshot before attempting the next reboot.
+- A 12-second post-firstboot-acceptance stabilization window, followed
+  by another explicit NoC/boot-ID/Q6/MLO health check **before** probing
+  client reassociation; a 99.9-second Q6 fatal previously occurred after
+  acceptance at 95s and was mistakenly classified as a Wyse-only error.
+- Additional ten seconds after successful client reconnection to preserve
+  a passive IRQ snapshot before attempting the next reboot.
+- A second NoC check if Wyse fails, giving root-Q6 fatal priority over
+  client symptom classification and preserving the original boot.
 
 Stop on the first bad boot, mismatched revision, lost monitor, NoC fatal,
 unreachable client, or 270-second timeout. Save failure diagnostics
