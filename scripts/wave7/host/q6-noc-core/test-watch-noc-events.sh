@@ -15,6 +15,14 @@ case "$last" in
     echo BOOT_ID=12345678-aaaa-bbbb-cccc-0123456789ab
     echo REV=r0+38249-wbe14-01734-test
     echo '[ 406.00000] NOC ERROR DETECTED'
+    echo ====WAVE7_IRQS====
+    echo ' 55: 5 3 0 0 GIC-0 455 Edge ce1'
+    echo ' 70: 1100 200 0 0 GIC-0 516 Edge rxdma2host-monitor-destination-mac1'
+    echo ' 85: 40 2 0 0 GICv2m-pMSI-soc@0:wifi 14 Edge pci2_wlan_dp_8'
+    echo ' 12: 5000 5000 5000 5000 GIC-0 20 Level arch_timer'
+    echo ====WAVE7_IRQS_END====
+    echo WAVE7_UPTIME=406.75
+    echo WAVE7_STATION_COUNT=1
     ;;
   *'====ROUTER_CONTEXT===='*)
     echo ====ROUTER_CONTEXT====
@@ -47,9 +55,17 @@ unset WAVE7_TEST_STALE_BOOT
 timeout 4 "$script" --run > "$tmp/first.log" 2>&1 || test "$?" -eq 124
 rg 'NOC_EVENT_ARCHIVED' "$tmp/first.log"
 [[ $(find "$tmp/captures" -maxdepth 1 -name '*.kernel.txt' | wc -l) == 1 ]]
+irq="$tmp/captures/irq-12345678-aaaa-bbbb-cccc-0123456789ab.tsv"
+test -s "$irq"
+rg -Fq $'406.75\t1\t70\t1300\trxdma2host-monitor-destination-mac1' "$irq"
+rg -Fq $'406.75\t1\t55\t8\tce1' "$irq"
+rg -Fq $'406.75\t1\t85\t42\tpci2_wlan_dp_8' "$irq"
+! rg -Fq 'arch_timer' "$irq"
 find "$tmp/captures" -maxdepth 1 -name '*.kernel.txt' -exec rg -Fq 'ERRLOG1=0x841d' {} \;
 timeout 3 "$script" --run > "$tmp/restart.log" 2>&1 || test "$?" -eq 124
 ! rg -q 'NOC_EVENT_ARCHIVED' "$tmp/restart.log"
 [[ $(find "$tmp/captures" -maxdepth 1 -name '*.kernel.txt' | wc -l) == 1 ]]
+[[ $(rg -c -F $'406.75\t1\t70\t1300\trxdma2host-monitor-destination-mac1' "$irq") -ge 2 ]]
+[[ $(rg -c -F $'captured_utc\trouter_uptime_s' "$irq") == 1 ]]
 test -z "$(find "$tmp/captures" -maxdepth 1 -name '.noc.partial.*' -print -quit)"
 echo NOC_EVENT_CAPTURE_RESTART_DEDUP_PASS

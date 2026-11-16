@@ -15,14 +15,53 @@ log() { printf '%s %s\n' "$(date -Is)" "$*"; }
 probe() {
   remote 'echo "BOOT_ID=$(cat /proc/sys/kernel/random/boot_id)";
     echo "REV=$(cat /etc/openwrt_version)";
-    dmesg | grep -F "NOC ERROR DETECTED" || :'
+    dmesg | grep -F "NOC ERROR DETECTED" || :
+    echo "====WAVE7_IRQS===="
+    cat /proc/interrupts
+    echo "====WAVE7_IRQS_END===="
+    printf "WAVE7_UPTIME=%s\\n" "$(cut -d " " -f1 /proc/uptime)"
+    printf "WAVE7_STATION_COUNT=%s\\n" "$(iw dev ap-mld0 station dump | grep -c "^Station " || :)"'
 }
 read_probe() {
   local response=$1
   boot=$(printf '%s\n' "$response" | sed -n 's/^BOOT_ID=//p' | head -1)
   revision=$(printf '%s\n' "$response" | sed -n 's/^REV=//p' | head -1)
   events=$(printf '%s\n' "$response" | rg -F 'NOC ERROR DETECTED' || :)
-  [[ $boot =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ && $revision == r0+* ]]
+  uptime=$(printf '%s\n' "$response" | sed -n 's/^WAVE7_UPTIME=//p' | head -1)
+  stations=$(printf '%s\n' "$response" | sed -n 's/^WAVE7_STATION_COUNT=//p' | head -1)
+  [[ $boot =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ &&
+     $revision == r0+* &&
+     $uptime =~ ^[0-9]+(\.[0-9]+)?$ &&
+     $stations =~ ^[0-9]+$ &&
+     $response == *'====WAVE7_IRQS===='* &&
+     $response == *'====WAVE7_IRQS_END===='* ]]
+}
+irq_sample() {
+  local response=$1 wallclock=$2 uptime=$3 stations=$4 revision=$5
+  # Select by registered IRQ name, not by an assumed SoC IRQ number.
+  # Numeric per-CPU columns are summed; preserve each IRQ's actual identity.
+  printf '%s\n' "$response" | awk -v wall="$wallclock" -v up="$uptime" \
+    -v sta="$stations" -v rev="$revision" '
+    /^====WAVE7_IRQS====$/ { active = 1; next }
+    /^====WAVE7_IRQS_END====$/ { active = 0; next }
+    active && $1 ~ /^[0-9]+:$/ {
+      id = substr($1, 1, length($1) - 1)
+      total = 0
+      for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++)
+        total += $i
+      if (i == 2)
+        next
+      name = $NF
+      if (name ~ /^ce[0-9]+$/ ||
+          name ~ /^pci[0-9]+_wlan_/ ||
+          name ~ /^(rxdma|reo|wbm|host2)/ ||
+          name ~ /^smp2p-/ ||
+          $0 ~ /q6v5/) {
+        printf "%s\t%s\t%s\t%s\t%.0f\t%s\t%s\n",
+          wall, up, sta, id, total, name, rev
+      }
+    }
+  '
 }
 if [[ $mode == --check ]]; then
   response=$(probe)
@@ -42,6 +81,11 @@ trap 'exit 130' INT
 log "NOC_MONITOR_STARTED poll=${poll}s dir=$dir"
 while true; do
   if response=$(probe 2>/dev/null) && read_probe "$response"; then
+    irq_file="$dir/irq-$boot.tsv"
+    if [[ ! -s $irq_file ]]; then
+      printf 'captured_utc\trouter_uptime_s\tassociated_stations\tirq_number\tcount\tirq_name\trevision\n' >> "$irq_file"
+    fi
+    irq_sample "$response" "$(date -u -Is)" "$uptime" "$stations" "$revision" >> "$irq_file"
     if [[ -n $events ]]; then
       fingerprint=$(printf '%s\n' "$events" | sha256sum | cut -d' ' -f1)
       target="$dir/noc-$boot-$fingerprint.kernel.txt"
