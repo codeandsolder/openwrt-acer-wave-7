@@ -95,3 +95,58 @@ page https://app.notion.com/p/414f74be90208197b26df2c42bd0556a .
 The existing coordinated Q6/UserPD/ath12k recovery patches were
 already verified working; this is investigation of the origin, not
 recovery. No new flash, reset, cable cut or live MMIO probe was done.
+
+## Passive Q6 crash-core capture (2026-11-16)
+
+The accepted Wave 7 router is monitored independently by Asus,
+without any router filesystem or firmware change. Asus systemd user
+unit: wave7-q6-devcoredump-capture.service. Source is in this folder:
+watch-devcoredump.sh, test-watch-devcoredump.sh and
+wave7-q6-devcoredump-capture.service. The installed Asus script is
+/home/jan/scripts/wave7/q6-noc-core/watch-devcoredump.sh.
+
+On Asus, inspect:
+
+    systemctl --user status wave7-q6-devcoredump-capture.service
+    journalctl --user -u wave7-q6-devcoredump-capture.service
+    /home/jan/scripts/wave7/q6-noc-core/watch-devcoredump.sh --check
+
+The unit is enabled and active, with jan Linger=yes; it should
+survive logout and host reboot. Polls occur every 15 seconds over
+independent Asus SSH to the router at 192.168.76.1, reading only
+/sys/class/devcoredump/devcd*/data. The poller never writes to
+router sysfs, injects a fault, touches Q6 recovery or uses Wi-Fi STA
+connectivity. The accepted Q6 coredump mode is enabled, so the kernel
+uses its buffered dev_coredumpv mechanism and recovery does not wait
+for a userspace read. Kernel devcoredump entries expire normally.
+
+The Asus output directory is
+/home/jan/firmware/wave7/captures/q6-devcore/
+with private permissions (umask 077). Dumps are named by SHA256 and
+include per-dump .context.txt containing router boot ID, release,
+remoteproc states, dmesg excerpt and ELF header. Byte-identical
+captures deduplicate after a full cmp check, never overwriting an
+existing core. Partial streams are removed and retried while the
+entry is available; reused devcd names after disappearance can be
+processed as new events. No binary cores are stored in Git.
+
+At deployment 2026-11-16 14:42 CET the accepted router showed no
+pending devcd entry, bootfail0, MLO2 and three running Q6 processors.
+Only the prior natural crash #1 and test injection crash #2 existed
+in that boot; no new spontaneous core was claimed or forced.
+
+Preflight --check was verified on Asus over its real SSH identity;
+Bash syntax and ShellCheck both passed. The fake SSH fixture test
+test-watch-devcoredump.sh (run on Asus) verified initial ELF streaming,
+SHA-based naming, context, restart dedup and cleanup, without talking
+to the router or leaving any test fixtures. The mock is not a live
+33MB dump validation; wait for a natural crash to test that path.
+
+To remove the monitoring service intentionally:
+
+    systemctl --user disable --now wave7-q6-devcoredump-capture.service
+
+Configurable environment: WAVE7_Q6_SSH_HOST, WAVE7_Q6_SSH_KEY,
+WAVE7_Q6_DUMP_DIR and WAVE7_Q6_POLL_SECONDS. The existing Nov15
+guarded root-Q6 crash/recovery acceptance remains the proof of
+in-place recovery; this service is only a passive evidence collector.
