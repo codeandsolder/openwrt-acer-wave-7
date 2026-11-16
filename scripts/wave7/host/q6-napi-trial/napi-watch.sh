@@ -125,7 +125,12 @@ for ((i=0;i<1000;i++)); do
     rev=$(value "$state" rev)
     kernel=$(value "$state" kernel)
     boot=$(value "$state" boot)
-    [[ $boot =~ ^[a-f0-9-]{36}$ ]] || { sleep 2; continue; }
+    # An invalid/missing boot ID cannot count toward continuous health.
+    [[ $boot =~ ^[a-f0-9-]{36}$ ]] || {
+      healthy_since=0
+      sleep 2
+      continue
+    }
     if [[ $kernel == 5.4.213 ]]; then
       log "VENDOR_FALLBACK boot=$boot"
       printf 'VENDOR_FALLBACK\n' > "$output/status"
@@ -144,6 +149,12 @@ for ((i=0;i<1000;i++)); do
         trial_boot=$boot
         first_seen=$now
         log "CANDIDATE_BOOT_SEEN boot=$boot"
+      elif [[ $boot != "$trial_boot" ]]; then
+        # Restart the soak after a reboot, even if the revision matches.
+        healthy_since=0
+        trial_boot=$boot
+        first_seen=$now
+        log "CANDIDATE_REBOOT_SEEN boot=$boot"
       fi
       printf '%s\n' "$state" > "$output/last-trial-state.txt"
       if (( rollback_triggered )); then
@@ -167,10 +178,19 @@ for ((i=0;i<1000;i++)); do
         fi
       fi
     else
+      healthy_since=0
       log "UNKNOWN_NEW_REVISION rev=$rev boot=$boot; no action"
     fi
-  elif (( i % 12 == 0 )); then
-    log 'SSH_UNREACHABLE awaiting_router_or_vendor_fallback'
+  else
+    # Require an uninterrupted sequence of affirmative health checks.
+    # A missed SSH probe is not evidence of a failure, but it does
+    # invalidate a continuous-observation claim.
+    if (( healthy_since != 0 )); then
+      healthy_since=0
+      log 'SOAK_RESET_UNOBSERVED ssh_probe_unavailable'
+    elif (( i % 12 == 0 )); then
+      log 'SSH_UNREACHABLE awaiting_router_or_vendor_fallback'
+    fi
   fi
   sleep 2
 done

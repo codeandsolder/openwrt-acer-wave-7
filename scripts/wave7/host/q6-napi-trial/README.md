@@ -50,7 +50,11 @@ bootloader bootfail/vendor fallback owns recovery; no blind upgrade.
 The observer flow was proven on the WBE1.4 A/B of 2026-11-16 when a
 NoC fatal caused an exact-SHA native accepted rollback. The revised
 decision logic has an offline selftest. Unreachable targets leave
-independent observers running, not a forced upgrade.
+independent observers running, not a forced upgrade. A missed SSH
+health probe or a reboot restarts the 900-second continuous-health timer
+for future trials; the Nov16 first candidate's previously completed
+901-second gate included one approximately 30-second SSH-observation gap
+during throughput load, before that stricter timer change.
 
 Use Wyse via ssh wyse-eth (ethernet management eno1 and MT7925 client
 wlp2s0); preserve Asus irq-<boot>.tsv, /dev/kmsg and devcore collectors.
