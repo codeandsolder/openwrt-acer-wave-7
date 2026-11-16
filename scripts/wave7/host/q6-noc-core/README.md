@@ -179,3 +179,43 @@ active PID 3637016, NRestarts=0, no new live devcd or fault injection.
 This establishes real-core transfer correctness in offline simulation,
 not that a future naturally occurring live devcd has already been
 captured. The collector still does not alter the router or recovery.
+
+### 2026-11-16: Qualcomm legacy observer protocol interpretation
+
+We identified a second, older Qualcomm first-party source for
+encoded NoC packet fields: Android/Qualcomm kernel file
+drivers/soc/qcom/gladiator_erp_v2.c (MSM/Gladiator observer, **not** the
+IPQ5332 QNoC4 block):
+https://android.googlesource.com/kernel/msm/+/a16b037ec055c8850000da3c283f207217cc966b/drivers/soc/qcom/gladiator_erp_v2.c
+
+The driver defines OBS_ERROR_TYPE_MASK=0x700, shift8;
+OBS_TRANS_OPCODE_MASK=0x1e, shift1; enum OBS_SLV=0, OBS_DEC=1,
+OBS_UNS=2, OBS_DISC=3, OBS_SEC=4, OBS_HIDE=5, OBS_TMO=6;
+enum OBS_RD=0, OBS_RDW=1, OBS_RDL=2, OBS_RDX=3, OBS_WR=4,
+OBS_WRW=5, OBS_WRC=6, OBS_RESERVED=7, OBS_PRE=8, OBS_URG=9.
+
+Applying that OLDER Qualcomm logger packet interpretation to the
+observed QNoC4 ERRLOG0_LOW=0x00012105 gives error code1 (legacy
+"address decode error"; source initiator NIU), opcode2 (legacy
+"linked read"), lock-bit1, length1-field1. The numeric QNoC4 code1
+is independently confirmed by first-party NEW Qualcomm 2026 TF-A,
+but the symbolic meanings and opcode in IPQ5332 QNoC4 are still
+UNCONFIRMED. The decoder therefore emits these as
+legacy_observer_protocol_hypothesis with explicit provenance and a
+not_verified_qnoc4 marker, separate from source-backed confirmed
+numeric qti_source_backed_filter_fields.
+
+This is NOT proof of which block issued the transaction, its full
+address, nor that IPQ5332 actually emits linked reads. test_decode.py
+tests the mapping including unknown opcode values and the exact
+captured word. The revised decoder was run on BOTH independently
+archived full Q6 DSP cores on Asus; output agrees completely:
+BOTH_REAL_CORE_IDENTICAL;
+VERIFIED_QNOC4_ERROR_CODE_1;
+LEGACY_QCOM_OBSERVER_CANDIDATE_DEC_LINKED_READ;
+NO_FABRIC_ROUTE_NAME.
+
+New JSON is only in Asus
+/home/jan/firmware/wave7/analysis/20261115-q6-noc/qnoc4-legacy-hypotheses.json,
+SHA256 04d5095fb2c38a02be17af23f06bd168390a623610027d21545650c3fbab54f4.
+No new crash, register read, or firmware image needed.
