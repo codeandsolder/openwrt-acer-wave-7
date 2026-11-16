@@ -53,8 +53,9 @@ monitors() {
 client() {
   local report
   report=$(timeout 20 ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 acer \
-    'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 wyse-eth "iw dev wlp2s0 link; ip -4 route get 10.1.0.2; ping -I wlp2s0 -c 2 -W 2 192.168.76.1"' 2>/dev/null) || return 1
-  [[ $report == *'SSID: Wave7-MLO-Lab'* &&
+    'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 wyse-eth "nmcli -g connection.autoconnect con show Wave7-MLO-Lab; iw dev wlp2s0 link; ip -4 route get 10.1.0.2; ping -I wlp2s0 -c 2 -W 2 192.168.76.1"' 2>/dev/null) || return 1
+  [[ $report == yes$'\n'* &&
+     $report == *'SSID: Wave7-MLO-Lab'* &&
      $report == *'Link 0 BSSID'* &&
      $report == *'Link 1 BSSID'* &&
      $report == *'dev eno1'* &&
