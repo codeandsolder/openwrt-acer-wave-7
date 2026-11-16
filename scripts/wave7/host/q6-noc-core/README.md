@@ -305,3 +305,20 @@ A live 2026-11-16 connected-versus-disconnected MT7925 comparison saw
 conditions (no association dependency), but did not determine whether that
 level is abnormal. The IRQ samples are intended to expose **changes
 preceding** a future natural NoC fatal, not to claim this is the cause.
+
+### Adaptive early-boot IRQ sampling
+
+Default polling is now 2 seconds for the first 150 seconds of each
+router boot, returning to the existing 8-second polling interval
+for later uptime. This uses the same read-only SSH/dmesg/IRQ probe
+and collector service, rather than creating another service or touching
+the router filesystem. The faster startup cadence is motivated by the
+new NoC fatal at uptime 99.899s: previous 8-second samples
+straddled a large QCN6432 RX monitor ring IRQ-rate transition.
+The IRQ rate is observational and does not establish causality; the
+QCN6432 DP group 8 is a monitor ring, not the regular data ring.
+
+Optional overrides: WAVE7_NOC_EARLY_POLL_SECONDS (2..base interval),
+WAVE7_NOC_EARLY_WINDOW_SECONDS (30..600), and existing
+WAVE7_NOC_POLL_SECONDS (2..300). Probe failures use normal intervals.
+Boot-specific irq-<uuid>.tsv files retain the same schema.

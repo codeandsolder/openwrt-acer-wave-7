@@ -6,7 +6,11 @@ mode=${1:---check}
 [[ $mode == --check || $mode == --run ]] || exit 2
 dir=${WAVE7_NOC_EVENT_DIR:-/home/jan/firmware/wave7/captures/q6-noc-events}
 poll=${WAVE7_NOC_POLL_SECONDS:-8}
+early_poll=${WAVE7_NOC_EARLY_POLL_SECONDS:-2}
+early_window=${WAVE7_NOC_EARLY_WINDOW_SECONDS:-150}
 [[ $poll =~ ^[0-9]+$ ]] && (( poll >= 2 && poll <= 300 )) || exit 2
+[[ $early_poll =~ ^[0-9]+$ ]] && (( early_poll >= 2 && early_poll <= poll )) || exit 2
+[[ $early_window =~ ^[0-9]+$ ]] && (( early_window >= 30 && early_window <= 600 )) || exit 2
 key=${WAVE7_Q6_SSH_KEY:-/home/jan/.ssh/wave7-root-rsa}
 host=${WAVE7_Q6_SSH_HOST:-root@192.168.76.1}
 ssh_opts=(-n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
@@ -80,7 +84,14 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 log "NOC_MONITOR_STARTED poll=${poll}s dir=$dir"
 while true; do
+  sleep_seconds=$poll
   if response=$(probe 2>/dev/null) && read_probe "$response"; then
+    # The same read-only probe runs at 2s intervals only during early
+    # Q6/UserPD startup. A previous NoC fatal occurred at uptime 99.9s;
+    # the normal 8s cadence straddled its crucial IRQ transition.
+    if (( 10#${uptime%%.*} <= early_window )); then
+      sleep_seconds=$early_poll
+    fi
     irq_file="$dir/irq-$boot.tsv"
     if [[ ! -s $irq_file ]]; then
       printf 'captured_utc\trouter_uptime_s\tassociated_stations\tirq_number\tcount\tirq_name\trevision\n' >> "$irq_file"
@@ -124,5 +135,5 @@ while true; do
   else
     log 'NOC_PROBE_UNAVAILABLE retrying'
   fi
-  sleep "$poll"
+  sleep "$sleep_seconds"
 done

@@ -21,7 +21,7 @@ case "$last" in
     echo ' 85: 40 2 0 0 GICv2m-pMSI-soc@0:wifi 14 Edge pci2_wlan_dp_8'
     echo ' 12: 5000 5000 5000 5000 GIC-0 20 Level arch_timer'
     echo ====WAVE7_IRQS_END====
-    echo WAVE7_UPTIME=406.75
+    echo "WAVE7_UPTIME=${WAVE7_TEST_UPTIME:-406.75}"
     echo WAVE7_STATION_COUNT=1
     ;;
   *'====ROUTER_CONTEXT===='*)
@@ -68,4 +68,19 @@ timeout 3 "$script" --run > "$tmp/restart.log" 2>&1 || test "$?" -eq 124
 [[ $(rg -c -F $'406.75\t1\t70\t1300\trxdma2host-monitor-destination-mac1' "$irq") -ge 2 ]]
 [[ $(rg -c -F $'captured_utc\trouter_uptime_s' "$irq") == 1 ]]
 test -z "$(find "$tmp/captures" -maxdepth 1 -name '.noc.partial.*' -print -quit)"
+# Verify that early uptime uses the same read-only SSH probe:
+# two or more samples within five seconds; one after the cutoff.
+export WAVE7_NOC_POLL_SECONDS=8
+export WAVE7_NOC_EARLY_POLL_SECONDS=2
+export WAVE7_TEST_UPTIME=90.0
+mkdir -p "$tmp/early"
+WAVE7_NOC_EVENT_DIR="$tmp/early" timeout 5 "$script" --run > "$tmp/early.log" 2>&1 || test "$?" -eq 124
+early_file="$tmp/early/irq-12345678-aaaa-bbbb-cccc-0123456789ab.tsv"
+[[ $(rg -c -F $'90.0\t1\t70\t1300\trxdma2host-monitor-destination-mac1' "$early_file") -ge 2 ]]
+export WAVE7_TEST_UPTIME=406.75
+mkdir -p "$tmp/late"
+WAVE7_NOC_EVENT_DIR="$tmp/late" timeout 5 "$script" --run > "$tmp/late.log" 2>&1 || test "$?" -eq 124
+late_file="$tmp/late/irq-12345678-aaaa-bbbb-cccc-0123456789ab.tsv"
+[[ $(rg -c -F $'406.75\t1\t70\t1300\trxdma2host-monitor-destination-mac1' "$late_file") == 1 ]]
+echo NOC_EVENT_ADAPTIVE_POLL_TEST_PASS
 echo NOC_EVENT_CAPTURE_RESTART_DEDUP_PASS
