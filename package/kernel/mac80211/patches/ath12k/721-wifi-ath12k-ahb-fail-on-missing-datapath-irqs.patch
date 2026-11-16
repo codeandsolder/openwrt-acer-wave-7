@@ -1,0 +1,163 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: fail AHB setup on missing datapath IRQs
+
+Report AHB CE and DP IRQ acquisition failures rather than leaving
+unserviced rings active. The old DP path silently continued even when
+platform IRQ lookup or request_irq failed. Release partially registered
+IRQs and NAPI dummy netdevs on probe failure and normal platform removal.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+diff --git a/drivers/net/wireless/ath/ath12k/ahb.c b/drivers/net/wireless/ath/ath12k/ahb.c
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -443,6 +443,50 @@
+ 	return IRQ_HANDLED;
+ }
+ 
++static void ath12k_ahb_free_irq(struct ath12k_base *ab)
++{
++	struct ath12k_ext_irq_grp *irq_grp;
++	int i, j, irq_idx, irq;
++
++	for (i = 0; i < ATH12K_EXT_IRQ_GRP_NUM_MAX; i++) {
++		irq_grp = &ab->ext_irq_grp[i];
++
++		for (j = 0; j < irq_grp->num_irq; j++) {
++			irq_idx = irq_grp->irqs[j];
++			irq = ab->irq_num[irq_idx];
++			if (irq <= 0)
++				continue;
++
++			devm_free_irq(ab->dev, irq, irq_grp);
++			irq_clear_status_flags(irq,
++					       IRQ_NOAUTOEN | IRQ_DISABLE_UNLAZY);
++			ab->irq_num[irq_idx] = 0;
++		}
++		irq_grp->num_irq = 0;
++
++		if (irq_grp->napi_ndev) {
++			netif_napi_del(&irq_grp->napi);
++			free_netdev(irq_grp->napi_ndev);
++			irq_grp->napi_ndev = NULL;
++		}
++	}
++
++	for (i = 0; i < ab->hw_params->ce_count; i++) {
++		struct ath12k_ce_pipe *ce_pipe = &ab->ce.ce_pipe[i];
++
++		if (ath12k_ce_get_attr_flags(ab, i) & CE_ATTR_DIS_INTR)
++			continue;
++
++		irq_idx = ATH12K_IRQ_CE0_OFFSET + i;
++		irq = ab->irq_num[irq_idx];
++		if (irq <= 0)
++			continue;
++
++		devm_free_irq(ab->dev, irq, ce_pipe);
++		ab->irq_num[irq_idx] = 0;
++	}
++}
++
+ static int ath12k_ahb_config_ext_irq(struct ath12k_base *ab)
+ {
+ 	const struct ath12k_hw_ring_mask *ring_mask;
+@@ -459,8 +503,10 @@
+ 		irq_grp->grp_id = i;
+ 
+ 		irq_grp->napi_ndev = alloc_netdev_dummy(0);
+-		if (!irq_grp->napi_ndev)
+-			return -ENOMEM;
++		if (!irq_grp->napi_ndev) {
++			ret = -ENOMEM;
++			goto err_free_irqs;
++		}
+ 
+ 		netif_napi_add(irq_grp->napi_ndev, &irq_grp->napi,
+ 			       ath12k_ahb_ext_grp_napi_poll);
+@@ -506,18 +552,34 @@
+ 
+ 			irq = platform_get_irq_byname(ab->pdev,
+ 						      irq_name[irq_idx]);
+-			ab->irq_num[irq_idx] = irq;
++			if (irq < 0) {
++				ret = irq;
++				ath12k_err(ab, "missing IRQ %s: %d\n",
++					   irq_name[irq_idx], ret);
++				goto err_free_irqs;
++			}
++
+ 			irq_set_status_flags(irq, IRQ_NOAUTOEN | IRQ_DISABLE_UNLAZY);
+ 			ret = devm_request_irq(ab->dev, irq,
+ 					       ath12k_ahb_ext_interrupt_handler,
+ 					       IRQF_TRIGGER_RISING,
+ 					       irq_name[irq_idx], irq_grp);
+-			if (ret)
+-				ath12k_warn(ab, "failed request_irq for %d\n", irq);
++			if (ret) {
++				irq_clear_status_flags(irq,
++						       IRQ_NOAUTOEN | IRQ_DISABLE_UNLAZY);
++				ath12k_err(ab, "failed request IRQ %s: %d\n",
++					   irq_name[irq_idx], ret);
++				goto err_free_irqs;
++			}
++			ab->irq_num[irq_idx] = irq;
+ 		}
+ 	}
+ 
+ 	return 0;
++
++err_free_irqs:
++	ath12k_ahb_free_irq(ab);
++	return ret;
+ }
+ 
+ static int ath12k_ahb_config_irq(struct ath12k_base *ab)
+@@ -541,18 +603,27 @@
+ 
+ 		INIT_WORK(&ce_pipe->intr_wq, ath12k_ahb_ce_workqueue);
+ 		irq = platform_get_irq_byname(ab->pdev, irq_name[irq_idx]);
++		if (irq < 0) {
++			ret = irq;
++			ath12k_err(ab, "missing CE IRQ %s: %d\n",
++				   irq_name[irq_idx], ret);
++			goto err_free_irqs;
++		}
++
+ 		ret = devm_request_irq(ab->dev, irq, ath12k_ahb_ce_interrupt_handler,
+ 				       IRQF_TRIGGER_RISING, irq_name[irq_idx],
+ 				       ce_pipe);
+ 		if (ret)
+-			return ret;
++			goto err_free_irqs;
+ 
+ 		ab->irq_num[irq_idx] = irq;
+ 	}
+ 
+-	/* Configure external interrupts */
+-	ret = ath12k_ahb_config_ext_irq(ab);
++	/* Configure external interrupts; its failure path also frees CE IRQs. */
++	return ath12k_ahb_config_ext_irq(ab);
+ 
++err_free_irqs:
++	ath12k_ahb_free_irq(ab);
+ 	return ret;
+ }
+ 
+@@ -993,6 +1064,8 @@
+ err_deinit_arch:
+ 	ab_ahb->device_family_ops->arch_deinit(ab);
+ err_rproc_deconfigure:
++	if (ab->hif.bus != ATH12K_BUS_HYBRID)
++		ath12k_ahb_free_irq(ab);
+ 	ath12k_ahb_deconfigure_rproc(ab);
+ err_ce_free:
+ 	ath12k_ce_free_pipes(ab);
+@@ -1042,6 +1115,7 @@
+ 		return;
+ 	}
+ 
++	ath12k_ahb_free_irq(ab);
+ 	ath12k_hal_srng_deinit(ab);
+ 	ath12k_ce_free_pipes(ab);
+ 	ath12k_ahb_resource_deinit(ab);
