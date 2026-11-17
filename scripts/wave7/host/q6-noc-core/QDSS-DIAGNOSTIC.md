@@ -439,6 +439,34 @@ seventh-trial files:
     uv run --no-project python -B inspect-noc-stream.py coresight/trace-id39.bin --output coresight/structural-records.json
     uv run --no-project python -B test_coresight_trace.py -v
 
+### Source-only repeatability fix after seventh trial
+
+The seventh hardware trial left the driver with `configured=1`,
+`active=0`, `start_requested=1`, `etr_ready=1` after MODE_OFF.
+The stale `start_requested` latch incorrectly prevented another
+explicit `start` without reinitializing QDSS. Patch 723 now clears
+that latch **only after MODE_OFF succeeds**, retaining the accepted
+ETR mapping and the stopped `raw_etr` snapshot until another start
+or an explicit cancellation. A delayed firmware SAVE is archived
+but cannot reset the ETR mapping of an already-active new session.
+
+This change is **source-only** until a separate matched-module,
+independently guarded image is built and hardware-tested; it is not
+part of seventh trial image `64ef394b1e`. Continue observing the
+seventh image as accepted diagnostic evidence, not new production
+baseline. Verify repeat-start capability on a future guarded test
+before allowing repeated captures without full restart.
+
+The first extracted ATID `0x39` stream also shows 1,007
+non-dominant 16-byte family candidates concentrated in **45
+clusters** using a 512-byte maximum inter-candidate gap, across
+44 of 238 source-stream 4KiB windows. Many clusters repeat similar
+headers (`0x1c` around 22 records and `0x58` around eight).
+This points to structured recurring activity, but it does **not**
+establish that the clusters represent the Wyse test pings.
+Correlate using an idle/controlled-traffic differential before
+assigning transaction semantics.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
