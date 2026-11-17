@@ -54,8 +54,17 @@
 			no-map;
 		};
 
+		/* WBE1.3 QDSS ETR: split from unassigned Wi-Fi spare region,
+		 * preserving the total reserved-memory footprint. Its Q6
+		 * allocation must be verified before a trace-enabled boot.
+		 */
 		wcss_spare0: wifi-reserved@4cb00000 {
-			reg = <0x0 0x4cb00000 0x0 0x300000>;
+			reg = <0x0 0x4cb00000 0x0 0x200000>;
+			no-map;
+		};
+
+		q6_etr: wifi-etr@4cd00000 {
+			reg = <0x0 0x4cd00000 0x0 0x100000>;
 			no-map;
 		};
 
@@ -287,9 +296,10 @@
 		                  "txmon2host-monitor-destination-mac1",
 		                  "umac-reset";
 
-		memory-region = <&q6_region>, <&q6_region>, <&m3_dump>, <&q6_caldb>, <&mlo_mem>;
+		memory-region = <&q6_region>, <&q6_region>, <&m3_dump>, <&q6_caldb>,
+				<&mlo_mem>, <&q6_etr>;
 		memory-region-names = "host-ddr-mem", "q6-region", "m3-dump",
-				      "q6-caldb", "mlo-global-mem";
+				      "q6-caldb", "mlo-global-mem", "q6-etr-dump";
 		/* Exact IPQ5332 settings from the running stock 067 device tree.
 		 * The generic ath12k BDF fallback points to 0x4c300000 instead.
 		 */
