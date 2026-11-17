@@ -26,6 +26,7 @@ state_read() {
     echo "q6=$(healthy=1; for p in /sys/class/remoteproc/remoteproc0 /sys/class/remoteproc/remoteproc1 /sys/class/remoteproc/remoteproc2; do test "$(cat "$p/state" 2>/dev/null)" = running || healthy=0; done; if [ "$healthy" = 1 ]; then echo 3; else echo 0; fi)";
     echo "ping=$(ping -I br-lan -c 1 -W 1 192.168.76.2 >/dev/null 2>&1 && echo 1 || echo 0)";
     echo "noc=$(dmesg | grep -c "NOC ERROR DETECTED" || :)";
+    echo "qdss=$(cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/umacnoc_qdss/status 2>/dev/null || echo unavailable)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)";
   '
 }
@@ -149,20 +150,27 @@ for ((i=0;i<1000;i++)); do
         trial_boot=$boot
         first_seen=$now
         log "CANDIDATE_BOOT_SEEN boot=$boot"
+        log "QDSS_BOOT_STATUS $(value "$state" qdss)"
       elif [[ $boot != "$trial_boot" ]]; then
         # Restart the soak after a reboot, even if the revision matches.
         healthy_since=0
         trial_boot=$boot
         first_seen=$now
         log "CANDIDATE_REBOOT_SEEN boot=$boot"
+        log "QDSS_REBOOT_STATUS $(value "$state" qdss)"
       fi
       printf '%s\n' "$state" > "$output/last-trial-state.txt"
       if (( rollback_triggered )); then
         if (( i % 6 == 0 )); then log 'AWAITING_ACCEPTED_ROLLBACK_BOOT'; fi
       elif trial_healthy "$state"; then
-        if (( healthy_since == 0 )); then healthy_since=$now; log 'CANDIDATE_HEALTHY_FIRST_SEEN'; fi
+        if (( healthy_since == 0 )); then
+          healthy_since=$now
+          log 'CANDIDATE_HEALTHY_FIRST_SEEN'
+          log "QDSS_HEALTHY_STATUS $(value "$state" qdss)"
+        fi
         if (( now - healthy_since >= 900 )); then
           log "CANDIDATE_SOAK_PASS duration=$((now-healthy_since))s"
+          log "QDSS_SOAK_PASS_STATUS $(value "$state" qdss)"
           printf 'CANDIDATE_SOAK_PASS\n' > "$output/status"
           exit 0
         fi
