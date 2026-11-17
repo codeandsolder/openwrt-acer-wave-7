@@ -43,6 +43,9 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 [[ $(systemctl --user is-active wave7-q6-noc-kmsg.service) == active ]] || abort 'read-only kmsg capture service not running'
 [[ $(systemctl --user is-active wave7-q6-noc-events.service) == active ]] || abort 'NoC IRQ/dmesg history capture service not running'
 test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*')" || abort 'another trial guard is active'
+# The independent raw collector owns one global flock. An older,
+# completed trial may retain that lock until its capture deadline.
+test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-qdss-capture-*')" || abort 'another QDSS raw collector is active'
 echo "PREFLIGHT_PASS predecessor_boot=$old_boot source_image_sha=$image_sha accepted_restore_sha=$rollback_sha"
 [[ $action == --run ]] || exit 0
 
@@ -68,6 +71,17 @@ echo "STAGED_QDSS_TRIAL_AND_ROLLBACK_IMAGES_PASS tag=$tag"
 unit=wave7-qdss-supervisor-$tag
 fallback=wave7-fallback-watch-$tag
 collector=wave7-qdss-capture-$tag
+flash_started=0
+cleanup_preflash_abort() {
+  local rc=$?
+  if (( rc != 0 && !flash_started )); then
+    # A failed collector (e.g. lock contention) must not strand two
+    # independently armed fallback guards for a flash never started.
+    systemctl --user stop "$unit.service" "$fallback.service" "$collector.service" >/dev/null 2>&1 || :
+    printf 'ABORTED_PRE_FLASH_NO_NAND_WRITES\n' > "$run_dir/status"
+  fi
+}
+trap cleanup_preflash_abort EXIT
 [[ -x /home/jan/scripts/wave7/qdss-trial/watch-qdss-devcore.sh ]] || abort 'raw collector not installed'
 /home/jan/scripts/wave7/qdss-trial/watch-qdss-devcore.sh --check
 systemd-run --user --quiet --unit="$collector" --property=RuntimeMaxSec=2100 -- \
@@ -84,6 +98,9 @@ systemctl --user is-active --quiet "$collector.service" || abort 'QDSS raw colle
 echo "SUPERVISORS_ARMED tag=$tag"
 # No fallback to force-flash. If the original boot is not verified and
 # systemd supervisors cannot be armed, exit before any NAND writes.
+# After this boundary, any SSH disconnect can be the expected reboot:
+# leave the independent guards running even if the controller exits.
+flash_started=1
 set +e
 timeout 125 ssh "${ssh_opts[@]}" "$host" "/sbin/sysupgrade -n '$trial_remote'" > "$run_dir/sysupgrade.log" 2>&1
 flash_rc=$?
