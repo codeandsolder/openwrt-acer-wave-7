@@ -479,3 +479,63 @@ This direct QDSP6 firmware flow is stronger evidence for argument
 provenance than simply interpreting an unrelated newer NoC logger.
 The IPQ5332 UMACNOC path 0x3b routing table and base map still
 must be obtained before assigning an absolute target address.
+
+### Independent UserPD2 NoC snapshot decoding from root-Q6 cores (November 17)
+
+A second Qualcomm WBE1.3 image already present in the Acer stock 067
+firmware contains NoC error handler code and a *different* hardware
+NoC descriptor table. The separate UserPD2 (external QCN6432 radio)
+ELF is:
+
+    /home/jan/projects/acer-wave7-firmware/Acer_Predator_T7c/wifi-fw-067/q6_fw2.b02
+
+In both recorded November 10 and November 16 root-Q6 crash cores,
+the UserPD2 descriptor table is at virtual address 0xd04ae108,
+preceded by a **direct** instance-count/header at VA 0xd04ae2e8
+(count 5, descriptor array pointer 0xd04ae108). By contrast, the
+UserPD1 decoder resolves an indirect config global at 0xb0497fdc.
+The decoder accepts either layout using an explicitly supplied
+--config-header for direct headers, or the existing --config-global
+for an indirect global. The register-offset index sequence is
+found in the *actual firmware table*, not assumed to use a fixed
+prefix width across unrelated DSP images.
+
+Use the same two root-Q6 core files with each UserPD's own ELF map:
+
+    python scripts/wave7/host/q6-noc-core/decode.py \
+      --firmware-mdt /home/jan/projects/acer-wave7-firmware/Acer_Predator_T7c/wifi-fw-067/q6_fw2.b02 \
+      --config-header 0xd04ae2e8 \
+      --core /home/jan/firmware/wave7/analysis/20261116-reboot18-noc/old-nov10-repro2-q6-core.elf \
+      --core /home/jan/firmware/wave7/analysis/20261116-reboot18-noc/q6-root-crash-99e6d9da.elf
+
+| WBE1.3 UserPD2 logger | MMIO base | Nov 10 saved error | Nov 16 saved error |
+| --- | --- | --- | --- |
+| UMACNOC | 0x1a140000 | ERRVALID=0, all ERRLOG=0 | same |
+| PCNOC | 0x1bf00000 | ERRVALID=0, all ERRLOG=0 | same |
+| SNOC | 0x1be80000 | ERRVALID=0, all ERRLOG=0 | same |
+| PMUNOC | 0x1bf8a000 | ERRVALID=0, all ERRLOG=0 | same |
+| WCSS_CFGBUS | 0x1a008000 | ERRVALID=0, all ERRLOG=0 | same |
+
+The corresponding UserPD1 logger, MMIO 0xe5140000, independently
+retained ERRVALID=1, ERRLOG0/1/2 identical across both crashes.
+This distinguishes the **UserPD1/IPQ5332 internal UMACNOC fabric**
+from UserPD2/QCN6432's *own* UMACNOC instance (0x1a140000).
+The external QCN6432's 12 datapath IRQ groups are not evidence that
+its own on-chip NoC failed; the monitor IRQ outlier was a correlation.
+
+Important nuance: these are *software-captured descriptor fields from
+the root-Q6 coredump*, not live reads of every physical logger.
+A zero field can also mean the UserPD2 handler was not invoked
+before the root crash. Therefore the PD2 snapshots support focusing
+the investigation on UserPD1 UMACNOC without proving an impossible
+QCN-originated initiator.
+
+The direct header and all five instances were verified using two
+real 33 MiB Q6 root coredumps, with the resulting reproducible data
+saved on Acer:
+
+    /home/jan/firmware/wave7/analysis/20261116-reboot18-noc/noc-userpd2-5instances.json
+
+Offline unit coverage also includes a synthetic 5-instance ELF with
+an alternative register-table prefix offset, preserving explicit
+MMIO/ERRCLR validation without guessing instance counts.

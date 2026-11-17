@@ -75,9 +75,14 @@ class QualcommFilterFieldsTest(unittest.TestCase):
 
 
 
-def build_two_instance_elf_pair(clear_offset=0x18):
-    """Synthetic physical dump and VA mapping; exercises real decoder logic."""
-    page=bytearray(0x1000)
+def build_noc_elf_pair(clear_offset=0x18, *,
+                               offset_start=0x06,
+                               names=(b"UMACNOC", b"WCSS_CFGBUS"),
+                               bases=(0xe5140000, 0xe5008000)):
+    """Synthetic Elf32 VA/PA image with variable NoC descriptor layout."""
+    if len(names) != len(bases):
+        raise ValueError("one base address per NoC instance")
+    page=bytearray(0x2000)
     base=0x1000
 
     def put32(address,value):
@@ -87,21 +92,21 @@ def build_two_instance_elf_pair(clear_offset=0x18):
         struct.pack_into("<H",page,address-base,value)
 
     put32(0x1010,0x1020)  # Global pointer to descriptor array metadata.
-    put32(0x1020,2)
+    put32(0x1020,len(names))
     put32(0x1024,0x1100)
-    for i,name in enumerate((b"UMACNOC",b"WCSS_CFGBUS")):
+    for i,(name,mmio) in enumerate(zip(names,bases)):
         desc=0x1100+0x60*i
-        put32(desc,0x1300+0x40*i)
-        page[0x300+0x40*i:0x300+0x40*i+len(name)]=name
-        put32(desc+4,0x1400)
-        put32(desc+8,0xe5140000 if not i else 0xe5008000)
+        nameva=0x1600+0x40*i
+        put32(desc,nameva)
+        page[nameva-base:nameva-base+len(name)]=name
+        put32(desc+4,0x1500)
+        put32(desc+8,mmio)
         values=(1,0x12105,0x7f,0x3b,0x841d,0x2000,0,0,0) if not i else (0,)*9
         for offset,value in zip(module.SNAPSHOT_OFFSETS,values):
             put32(desc+offset,value)
-    for position,offset in zip(module.REG_INDEX_OFFSETS,
-                               (0x10,clear_offset,0x20,0x24,0x28,0x2c,
-                                0x30,0x34,0x38,0x3c)):
-        put16(0x1400+position,offset)
+    for j,offset in enumerate((0x10,clear_offset,0x20,0x24,0x28,0x2c,
+                               0x30,0x34,0x38,0x3c)):
+        put16(0x1500+offset_start+2*j,offset)
 
     def elf(payload):
         blob=bytearray(0x100+len(payload))
@@ -117,7 +122,7 @@ def build_two_instance_elf_pair(clear_offset=0x18):
 
 class FirmwareClearRegisterTest(unittest.TestCase):
     def test_clear_mmio_is_derived_from_firmware_descriptor(self):
-        fw,core=build_two_instance_elf_pair()
+        fw,core=build_noc_elf_pair()
         result=module.decode(fw,core,global_addr=0x1010)
         a,b=result["instances"]
         self.assertTrue(a["qnoc4_layout_matches_firmware"])
@@ -126,10 +131,9 @@ class FirmwareClearRegisterTest(unittest.TestCase):
         self.assertEqual(a["error_clear"]["mmio_address"],"0xe5140018")
         self.assertEqual(b["error_clear"]["mmio_address"],"0xe5008018")
         self.assertIsNone(a["error_clear"]["snapshot"])
-        self.assertEqual(a["error_clear"]["static_firmware_handler"]["write_value"],
-                         "0x00000001")
-        self.assertIn("not_live_mmio_observation",
-                      a["error_clear"]["static_firmware_handler"]["interpretation"])
+        # Synthetic ELF has no Acer UserPD1 instructions, so no
+        # firmware-specific static write claim is warranted.
+        self.assertNotIn("static_firmware_handler", a["error_clear"])
         self.assertEqual(a["logged_u64"]["ERRLOG1"],"0x0000841d0000003b")
         self.assertEqual(a["qti_source_backed_filter_fields"]["mid"],"0x1d")
         fields=a["route_address_fields"]
@@ -139,15 +143,35 @@ class FirmwareClearRegisterTest(unittest.TestCase):
         self.assertIsNone(fields["absolute_address"])
         self.assertNotIn("route_address_fields",b)
 
+    def test_second_pd_five_nocs_with_shifted_offset_table(self):
+        names=(b"UMACNOC", b"PCNOC", b"SNOC", b"PMUNOC", b"WCSS_CFGBUS")
+        bases=(0x1a140000, 0x1bf00000, 0x1be80000, 0x1bf8a000, 0x1a008000)
+        fw,core=build_noc_elf_pair(offset_start=2,
+                                             names=names,bases=bases)
+        result=module.decode(fw,core,config_header=0x1020)
+        self.assertEqual(result["instance_count"],5)
+        self.assertIsNone(result["firmware_noc_global"])
+        self.assertEqual([r["name"] for r in result["instances"]],
+                         [name.decode() for name in names])
+        for r,base in zip(result["instances"],bases):
+            self.assertTrue(r["qnoc4_layout_matches_firmware"])
+            self.assertEqual(r["register_index_start"],"0x02")
+            self.assertEqual(r["mmio_base"],f"{base:#010x}")
+            self.assertEqual(r["error_clear"]["mmio_address"],
+                             f"{base+0x18:#010x}")
+            self.assertNotIn("static_firmware_handler",r["error_clear"])
+        self.assertEqual(result["instances"][0]["logged_u64"]["ERRLOG1"],
+                         "0x0000841d0000003b")
+
     def test_unrecognized_clear_offset_does_not_claim_firmware_path(self):
-        fw,core=build_two_instance_elf_pair(clear_offset=0x1c)
+        fw,core=build_noc_elf_pair(clear_offset=0x1c)
         rec=module.decode(fw,core,global_addr=0x1010)["instances"][0]
         self.assertFalse(rec["qnoc4_layout_matches_firmware"])
         self.assertEqual(rec["error_clear"]["mmio_address"],"0xe514001c")
         self.assertNotIn("static_firmware_handler",rec["error_clear"])
 
     def test_invalid_register_index_remains_unmapped(self):
-        fw,core=build_two_instance_elf_pair(clear_offset=0xffff)
+        fw,core=build_noc_elf_pair(clear_offset=0xffff)
         rec=module.decode(fw,core,global_addr=0x1010)["instances"][0]
         self.assertFalse(rec["qnoc4_layout_matches_firmware"])
         self.assertIsNone(rec["error_clear"]["mmio_address"])

@@ -153,7 +153,8 @@ def load_segments(blob):
     return segs
 
 
-def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
+def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL,
+           config_header=None):
     fw_segments = load_segments(firmware)
     core_segments = load_segments(core)
 
@@ -173,16 +174,39 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
     def u16(a): return struct.unpack("<H", read(a, 2))[0]
     def name(a): return read(a, 48).split(b"\0", 1)[0].decode("ascii")
 
-    header = u32(global_addr)
+    # Different UserPD binaries expose the same descriptor structure
+    # through different roots: UserPD1 a pointer-to-header global,
+    # UserPD2 a direct table header. Explicitly select either form.
+    header = u32(global_addr) if config_header is None else config_header
     count, entries = u32(header), u32(header + 4)
     if not 1 <= count <= 16:
         raise ValueError(f"invalid NoC instance count: {count}")
-    output = {"firmware_noc_global": f"{global_addr:#010x}", "instance_count": count,
-              "instances": []}
+    output = {
+        "firmware_noc_global": (
+            f"{global_addr:#010x}" if config_header is None else None
+        ),
+        "firmware_noc_header": f"{header:#010x}",
+        "instance_count": count,
+        "instances": [],
+    }
     for i in range(count):
         desc = entries + i * DESCRIPTOR_STRIDE
         offsets_ptr = u32(desc + 4)
-        offsets = [u16(offsets_ptr + off) for off in REG_INDEX_OFFSETS]
+        # Register-index tables can have different prefix entries
+        # between multiprocessor firmware variants. Find the complete,
+        # contiguous QNoC4 register sequence instead of hardcoding
+        # UserPD1's index +0x06 for all UserPDs.
+        layout_start = next((
+            start for start in range(0, 0x12, 2)
+            if tuple(u16(offsets_ptr + start + 2 * j)
+                     for j in range(len(QNOCC4_OFFSETS))) == QNOCC4_OFFSETS
+        ), None)
+        selected_indices = (
+            tuple(layout_start + 2 * j
+                  for j in range(len(QNOCC4_OFFSETS)))
+            if layout_start is not None else REG_INDEX_OFFSETS
+        )
+        offsets = [u16(offsets_ptr + off) for off in selected_indices]
         values = [u32(desc + off) for off in SNAPSHOT_OFFSETS]
         base = u32(desc + 8)
         clear_offset = offsets[1]
@@ -190,7 +214,10 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
             "name": name(u32(desc)),
             "index": i,
             "mmio_base": f"{base:#010x}",
-            "qnoc4_layout_matches_firmware": tuple(offsets) == QNOCC4_OFFSETS,
+            "qnoc4_layout_matches_firmware": layout_start is not None,
+            "register_index_start": (
+                f"{layout_start:#04x}" if layout_start is not None else None
+            ),
             "registers": {label: {"offset": f"{off:#04x}", "snapshot": f"{v:#010x}"}
                           for label, off, v in zip(NAMES, offsets[:1] + offsets[2:], values)},
             "error_clear": {
@@ -204,18 +231,23 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
             },
         }
         if rec["qnoc4_layout_matches_firmware"]:
-            # Reversed Acer 067 UserPD1 handler:
-            # 0xb032a6bc: R24=1;
-            # 0xb032a844: R3=[descriptor+8] (MMIO base);
-            # 0xb032a84c: R4=memuh([descriptor+4]+8) (ERRCLR offset);
-            # 0xb032a850: memw(R3+R4)=R24.
-            # This is the intended write in the error-handling path,
-            # not a measurement that the write reached the hardware.
-            rec["error_clear"]["static_firmware_handler"] = {
-                "write_value": "0x00000001",
-                "write_instruction": "0xb032a850",
-                "interpretation": "handler_writes_clear_after_snapshot_not_live_mmio_observation",
-            }
+            if config_header is None and global_addr == FW067_NOC_CONFIG_GLOBAL:
+                # The following instruction addresses belong to UserPD1
+                # only. Do not attribute them to UserPD2's different ELF.
+                # Reversed Acer 067 UserPD1 handler:
+                # 0xb032a6bc: R24=1;
+                # 0xb032a844: R3=[descriptor+8] (MMIO base);
+                # 0xb032a84c: R4=memuh([descriptor+4]+8) (ERRCLR offset);
+                # 0xb032a850: memw(R3+R4)=R24.
+                # This is intended write, not live MMIO readback.
+                rec["error_clear"]["static_firmware_handler"] = {
+                    "write_value": "0x00000001",
+                    "write_instruction": "0xb032a850",
+                    "interpretation": (
+                        "handler_writes_clear_after_snapshot_"
+                        "not_live_mmio_observation"
+                    ),
+                }
             rec["logged_u64"] = {
                 f"ERRLOG{j}": f"0x{values[2*j+2]:08x}{values[2*j+1]:08x}"
                 for j in range(4)
@@ -239,11 +271,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--firmware-mdt", type=Path, required=True)
     ap.add_argument("--core", type=Path, required=True, action="append")
-    ap.add_argument("--config-global", type=lambda s: int(s, 0), default=FW067_NOC_CONFIG_GLOBAL)
+    ap.add_argument("--config-global", type=lambda s: int(s, 0),
+                    default=FW067_NOC_CONFIG_GLOBAL)
+    ap.add_argument("--config-header", type=lambda s: int(s, 0),
+                    help="Direct NoC instance table header VA, e.g. UserPD2")
     opts = ap.parse_args()
     firmware = opts.firmware_mdt.read_bytes()
     for filename in opts.core:
-        info = decode(firmware, filename.read_bytes(), opts.config_global)
+        info = decode(firmware, filename.read_bytes(), opts.config_global,
+                      config_header=opts.config_header)
         info["source_core"] = str(filename)
         print(json.dumps(info, indent=2))
 
