@@ -220,6 +220,20 @@ and independent Asus 900-second supervisor, vendor fallback and raw QDSS
 collector before the flash command. Do not treat the presence of this
 image or validation as a completed trial.
 
+### Future observer checkpoint snapshots
+
+For subsequent trials, the updated Asus-side `qdss-watch.sh` source
+reads the single IPQ5332 `umacnoc_qdss/status` debugfs line with every
+read-only health sample, and preserves it in `last-trial-state.txt`.
+It records **QDSS_BOOT_STATUS**, **QDSS_REBOOT_STATUS**,
+**QDSS_HEALTHY_STATUS** and **QDSS_SOAK_PASS_STATUS** markers at their
+respective transitions. This avoids relying on manual SSH to reconstruct
+preconfiguration indications. QDSS status is observational only:
+missing debugfs produces `unavailable` and does not affect rollback
+decisions. The fifth trial was armed using the previous observer script;
+this additional instrumentation is source-tested for later trials and
+must not be edited into a currently running guard.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
