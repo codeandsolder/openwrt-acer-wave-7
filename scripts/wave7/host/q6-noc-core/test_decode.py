@@ -34,6 +34,28 @@ class QualcommFilterFieldsTest(unittest.TestCase):
         # fabricated packet name based on this older Qualcomm mapping.
         self.assertIsNone(module.legacy_qcom_observer_interpretation(0x1e)["candidate_opcode"])
 
+    def test_route_and_address_offset_from_actual_noc_fatal(self):
+        info = module.noc_route_and_address_fields(
+            0x00012105, 0x3b, 0x2000, 0,
+        )
+        self.assertEqual(info["error_code"], 1)
+        self.assertEqual(info["error_name"], "address decode error")
+        self.assertEqual(info["path_id_raw"], "0x0000003b")
+        self.assertEqual(info["address_offset_raw"], "0x0000000000002000")
+        self.assertIsNone(info["absolute_address"])
+        self.assertIsNone(info["path_initiator"])
+        self.assertIsNone(info["path_target"])
+
+    def test_address_offset_uses_both_32bit_registers(self):
+        info = module.noc_route_and_address_fields(
+            0x00000605, 0x173, 0x00100000, 0x8,
+        )
+        self.assertEqual(info["error_name"], "timeout")
+        self.assertEqual(info["path_id_raw"], "0x00000173")
+        self.assertEqual(info["address_offset_raw"], "0x0000000800100000")
+        self.assertIsNone(info["address_base"])
+        self.assertIsNone(info["absolute_address"])
+
     def test_boundary_masks(self):
         self.assertEqual(module.qualcomm_noc_filter_fields(0x700, 0xffffffff), {
             "errcode_numeric": 7,
@@ -110,6 +132,12 @@ class FirmwareClearRegisterTest(unittest.TestCase):
                       a["error_clear"]["static_firmware_handler"]["interpretation"])
         self.assertEqual(a["logged_u64"]["ERRLOG1"],"0x0000841d0000003b")
         self.assertEqual(a["qti_source_backed_filter_fields"]["mid"],"0x1d")
+        fields=a["route_address_fields"]
+        self.assertEqual(fields["path_id_raw"],"0x0000003b")
+        self.assertEqual(fields["address_offset_raw"],"0x0000000000002000")
+        self.assertEqual(fields["error_name"],"address decode error")
+        self.assertIsNone(fields["absolute_address"])
+        self.assertNotIn("route_address_fields",b)
 
     def test_unrecognized_clear_offset_does_not_claim_firmware_path(self):
         fw,core=build_two_instance_elf_pair(clear_offset=0x1c)

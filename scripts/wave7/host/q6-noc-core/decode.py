@@ -41,6 +41,51 @@ def qualcomm_noc_filter_fields(errlog0_low, errlog1_high):
     }
 
 
+# Packet-location fields from Qualcomm NoC logger implementations.
+# Qualcomm's newer NoC driver verifies the QNoC4 offsets and errcode
+# bits, while downstream NoC decoders consistently call ERRLOG1_LOW
+# the route/path and ERRLOG2 the relative address (not a global PA).
+# The memory map associated with a route is SoC-specific and unavailable
+# for IPQ5332 UMACNOC. In particular, never add a guessed base here.
+_NOC_ERRCODES = (
+    "target error",
+    "address decode error",
+    "unsupported request",
+    "disconnected target",
+    "security violation",
+    "hidden security violation",
+    "timeout",
+    "unknown",
+)
+
+
+def noc_route_and_address_fields(errlog0_low, errlog1_low,
+                                 errlog2_low, errlog2_high):
+    """Numeric QNoC path, relative address and named error code.
+
+    Qualcomm's published CAMNOC / QNoC-family error decoder names
+    error types 0..6, agreeing with the QTI QNoC4 error-code extraction.
+    Independent Qualcomm NoC reports use ERRLOG1_LOW as the route/path
+    identifier and ERRLOG2_LOW/HIGH as the address *offset*. Neither
+    supplies the IPQ5332-specific route table or physical address base.
+    """
+    code = (errlog0_low >> 8) & 7
+    return {
+        "error_code": code,
+        "error_name": _NOC_ERRCODES[code],
+        "path_id_raw": f"0x{errlog1_low:08x}",
+        "address_offset_raw": f"0x{(errlog2_high << 32) | errlog2_low:016x}",
+        "address_base": None,
+        "absolute_address": None,
+        "path_initiator": None,
+        "path_target": None,
+        "semantic_scope": (
+            "qnoc_family_route_and_relative_address;"
+            "ipq5332_path_table_and_address_base_not_available"
+        ),
+    }
+
+
 
 
 # Older Qualcomm Gladiator observer (not this QNoC4 incarnation) uses
@@ -178,6 +223,10 @@ def decode(firmware, core, global_addr=FW067_NOC_CONFIG_GLOBAL):
             if values[0] & 1:
                 rec["qti_source_backed_filter_fields"] = qualcomm_noc_filter_fields(
                     errlog0_low=values[1], errlog1_high=values[4],
+                )
+                rec["route_address_fields"] = noc_route_and_address_fields(
+                    errlog0_low=values[1], errlog1_low=values[3],
+                    errlog2_low=values[5], errlog2_high=values[6],
                 )
                 rec["legacy_observer_protocol_hypothesis"] = (
                     legacy_qcom_observer_interpretation(values[1])

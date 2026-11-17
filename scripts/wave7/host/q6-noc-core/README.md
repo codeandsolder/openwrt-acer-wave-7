@@ -389,3 +389,53 @@ and cannot prevent the primary crash/core/IRQ collector from running.
 The mock SSH test verifies Y and N hardware states, zero CCF users,
 correct clocks selected, exclusion of unrelated PCIe0 clocks,
 NoC archive deduplication, and adaptive sampling.
+
+### QNoC route and relative address fields (2026-11-17)
+
+The firmware-captured QNoC4 ERRLOG payload contains more useful
+information than MID/EXTID alone. The decoder now reports the route
+field from ERRLOG1_LOW and the 64-bit relative address from the
+combined ERRLOG2_HIGH/ERRLOG2_LOW pair. It also names the error
+type using Qualcomm's published NoC error enumeration: numeric
+errcode=1 means address decode error, whereas 6 means timeout.
+
+The exact observed syndrome in both 2026-11-10 and 2026-11-16
+independent UMACNOC fatal core images is:
+
+- ERRLOG0_LOW 0x00012105 -> errcode=1 (address decode).
+- ERRLOG0_HIGH 0x0000007f; other packet-header fields retain the
+  earlier candidate status until IPQ5332-specific confirmation.
+- ERRLOG1_LOW 0x0000003b -> route/path field 0x3b.
+- ERRLOG1_HIGH 0x0000841d -> MID=0x1d, EXTID=0x8400
+  (Qualcomm 2026 TF-A qti_noc_error_handle_filter()).
+- ERRLOG2_LOW 0x00002000, ERRLOG2_HIGH 0 -> address offset 0x2000.
+  This is a NoC-relative address, not the absolute CPU physical address.
+- ERRLOG3 both halves zero.
+
+Corroborating sources:
+- Qualcomm-owned TF-A drivers/qti/icb/noc_error.c, 2026, declares
+  actual QNoC4 error-code and MID/EXTID field extraction:
+  https://github.com/ARM-software/arm-trusted-firmware/blob/master/drivers/qti/icb/noc_error.c
+- Qualcomm kernel/mSM CAMNOC error decoder lists code 1 as
+  "Address decode error" and code 6 as "Timeout Error":
+  https://android.googlesource.com/kernel/msm/+/2f6b519315371029d73e92ac468cc846daef5e8f/drivers/media/platform/msm/ais/cam_cpas/cpas_top/cam_cpastop_hw.c
+- A documented Qualcomm NoC decode independently prints
+  ERRLOG1_LOW as path, ERRLOG2 as Address offset, and combines
+  the latter with a separate per-target base:
+  https://gist.github.com/strongtz/50bbd71a9f41d0d1aa9849b8cf1dce21
+- An IPQ5332/WBE1.4 router NoC fault showing ERRLOG1 route IDs,
+  ERRLOG2 address offsets and decoded initiator/target labels
+  (different NoC and code 6, not our UMACNOC fault):
+  https://forum.gl-inet.com/t/be6500-reboot-under-sustained-wi-fi-upload-load/66780
+
+Critical missing component: IPQ5332 UMACNOC-specific route table
+for path 0x3b and its corresponding address-space/base map.
+Without those we cannot reconstruct the absolute address or identify
+the initiator/target. The output deliberately includes null
+address_base, absolute_address, path_initiator, and path_target
+rather than inventing hardware endpoint names. This new error-code
+classification prioritizes investigating an unmapped/incorrectly
+addressed target; power/clock fault may still cause that indirectly.
+
+Synthetic tests verify both 32-bit halves of the address offset,
+path reporting, exact Acer fatal values, and unknown path mappings.
