@@ -195,6 +195,31 @@ Both freshly compiled native ath12k modules have byte-identical
 `pahole --hex -C ath12k_base` layouts. Do not flash or call the new
 counters hardware-validated on the basis of compilation alone.
 
+### Fifth diagnostic image prepared offline (next guarded trial)
+
+The source-only early MEM_REQ telemetry has now been packaged into a
+**whitelist-verified but not flashed** whole-image diagnostic
+`r0+38249-qdss-2f69a883f6`, 15,677,772 bytes, SHA256
+`328469022e7b4e99759494f0520dc8f01d67fd66cefd3fa13f90d341f8423157`.
+Offline report:
+`/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/image-build/wave7-umacnoc-qdss-2f69a883f6-sysupgrade.report.json`.
+The SHA-pinned accepted NAPI compressed kernel is byte-identical, ETR DTB
+and original stock trace profile are identical to the prior fourth trial.
+Its only approved rootfs changes versus accepted NAPI are the same eight
+paths: four revision-identity entries, trial marker, profile and the
+matched pair of native ath12k modules. No unrelated files change.
+The packaged main module SHA256 is
+`13ea03a3b2560d4f0473b8947a7eff04521f1d7da0bed200ce000d784851590a`;
+companion Wi-Fi7 module SHA256 is
+`ad018471227526232b07d072a1839e676f3fa692063534b968eef9d706dc420a`.
+
+Guard scripts for this candidate require live predecessor
+`r0+38249-qdss-f086787166`, rollback to exact accepted NAPI SHA256
+`18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622`,
+and independent Asus 900-second supervisor, vendor fallback and raw QDSS
+collector before the flash command. Do not treat the presence of this
+image or validation as a completed trial.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
