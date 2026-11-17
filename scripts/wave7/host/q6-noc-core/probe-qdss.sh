@@ -16,6 +16,12 @@ remote() {
   ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "$@"
 }
 abort() { echo "QDSS_PROBE_BLOCKED: $*" >&2; exit 3; }
+# Wyse management goes over independent wired SSH, while its wlp2s0
+# traffic uses the MT7925 MLO station. No client auto-connect mutation.
+wyse() {
+  ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 acer \
+    "ssh -n -T -o BatchMode=yes -o ConnectTimeout=4 wyse-eth \"$1\""
+}
 [[ $(id -un) == jan && -r $key ]] || abort 'wrong identity'
 [[ $(sha256sum "$image" | cut -d' ' -f1) == "$image_sha" ]] || abort 'candidate image hash'
 XDG_RUNTIME_DIR=/run/user/$(id -u)
@@ -41,6 +47,8 @@ status=$(remote "cat '$qdss/status'") || abort 'debugfs unavailable'
 for service in wave7-q6-devcoredump-capture.service wave7-q6-noc-events.service wave7-q6-noc-kmsg.service; do
   systemctl --user is-active --quiet "$service" || abort "missing passive $service"
 done
+wyse_link=$(wyse 'iw dev wlp2s0 link') || abort 'Wyse MLO station unreachable'
+[[ $wyse_link == *"Connected to"* ]] || abort "Wyse WLAN station disconnected: $wyse_link"
 if [[ $action == --check ]]; then
   printf 'QDSS_PROBE_PREFLIGHT_PASS\n%s\n%s\n' "$state" "$status"
   exit 0
@@ -73,7 +81,14 @@ remote 'dmesg' > "$out/post-start-dmesg.txt" || :
 printf 'QDSS_START_RC=%d\n' "$start_rc"
 cat "$out/post-start-status.txt"
 if (( start_rc == 0 )) && rg -q 'active=1' "$out/post-start-status.txt"; then
-  remote 'ping -I br-lan -c 6 -W 1 192.168.76.2' > "$out/traffic.txt" 2>&1 || :
+  # Exercise the WLAN NoC, not just the copper path. The Wyse has a
+  # separate wired management route, so this cannot strand supervision.
+  set +e
+  wyse 'ping -I wlp2s0 -c 12 -i 0.2 -W 2 192.168.76.1' > "$out/wlan-traffic.txt" 2>&1
+  wlan_ping_rc=$?
+  set -e
+  printf '%d\n' "$wlan_ping_rc" > "$out/wlan-traffic-rc.txt"
+  remote 'ping -I br-lan -c 6 -W 1 192.168.76.2' > "$out/wired-control.txt" 2>&1 || :
   sleep 3
   set +e
   timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/stop'" > "$out/stop-output.txt" 2>&1
