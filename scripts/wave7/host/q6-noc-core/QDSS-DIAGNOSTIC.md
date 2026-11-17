@@ -234,6 +234,47 @@ decisions. The fifth trial was armed using the previous observer script;
 this additional instrumentation is source-tested for later trials and
 must not be edited into a currently running guard.
 
+### Explicit-start fixed-ETR provisioning experiment (source only)
+
+The fifth hardware trial \`r0+38249-qdss-2f69a883f6\` passed its full
+901-second continuous-health soak at 07:25:45 CET, but the early
+\`mem_req_seen=0\` counter and missing ETR persist. This is *not* a
+NoC-fatal fix or a captured QDSS trace.
+
+Qualcomm QSDK normally receives QMI indication 0x003f before replying
+with 0x0040 MEM_INFO, then waits one second before 0x0045 MODE_ON.
+Acer's matching WBE1.3 firmware has a QDSS 0x0040 MEM_INFO request
+handler. That suggests a useful experimental discriminator: would WCSS
+accept the exact pre-reserved type6 ETR even without first issuing 0x3f?
+
+Patch 723 now tests this **only after explicit debugfs start**. If a
+firmware-driven 0x3f has already provisioned the ETR, it follows the
+normal path. Otherwise the host maps only the dedicated original
+\`q6-etr-dump\` reservation at 0x4cd00000 (1 MiB), sends an unsolicited
+QMI 0x0040 with type6/base/size, checks firmware success, delays one
+second, and sends 0x0045 MODE_ON. Successful firmware responses are
+necessary but not sufficient: verify active status, stop SAVE indication,
+and actual nonempty devcoredump before concluding it works.
+
+A late firmware 0x3f always gets its own 0x40 response, including
+after proactive provision; inconsistent extra requests no longer
+discard an already-accepted trace session. The common explicit-start
+path also handles starting from a freshly configured state after an
+earlier stop (rather than uploading a profile and doing nothing).
+Debugfs status adds \`etr_alloc_size\` and \`proactive_mem_info\`.
+A rejected unsolicited 0x40 causes the explicit start to fail without
+enabling trace mode. Normal boot remains upload-only, with no
+unsolicited memory mapping or trace mode request.
+
+This branch is a guarded diagnostic, not production. Source must be
+built with both ABI-matched ath12k modules, exact original compressed
+kernel/DTB/profile and whitelist-verification. Preserve independent
+Asus NoC observer, vendor fallback, raw devcore collector and original
+accepted NAPI rollback. Do not restart the 99-reboot corpus. The
+discriminator is a single bounded explicit start/stop test after the
+router passes firstboot health, followed by archive and decoding of
+the raw trace if firmware actually emits it.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.

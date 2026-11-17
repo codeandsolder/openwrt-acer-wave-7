@@ -183,16 +183,18 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_REQUEST_MEM:
-@@ -4599,12 +4692,25 @@
+@@ -4599,12 +4692,27 @@
  			if (ret < 0)
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
 +		case ATH12K_QMI_EVENT_QDSS_REQ_MEM:
 +			ret = ath12k_qdss_handle_mem_req(ab, event->data);
-+			if (ret) {
++			if (ret)
++				/* Keep an already-accepted ETR mapping if a late or
++				 * inconsistent firmware request fails; explicit stop
++				 * remains available to recover this trace session.
++				 */
 +				ath12k_warn(ab, "QDSS: ETR request failed: %d\n", ret);
-+				ath12k_qdss_cleanup(ab);
-+			}
 +			break;
 +		case ATH12K_QMI_EVENT_QDSS_SAVE:
 +			ret = ath12k_qdss_handle_save(ab, event->data);
@@ -209,7 +211,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  		kfree(event);
  		spin_lock(&qmi->event_lock);
  	}
-@@ -4618,6 +4724,7 @@
+@@ -4618,6 +4726,7 @@
  	memset(&ab->qmi.target, 0, sizeof(struct target_info));
  	memset(&ab->qmi.target_mem, 0, sizeof(struct target_mem_chunk));
  	ab->qmi.ab = ab;
@@ -217,7 +219,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  
  	ab->qmi.target_mem_mode = ab->target_mem_mode;
  	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,
-@@ -4657,6 +4764,7 @@
+@@ -4657,6 +4766,7 @@
  	qmi_handle_release(&ab->qmi.handle);
  	cancel_work_sync(&ab->qmi.event_work);
  	destroy_workqueue(ab->qmi.event_wq);
@@ -225,7 +227,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  	ath12k_qmi_free_target_mem_chunk(ab);
-@@ -4669,3 +4777,46 @@
+@@ -4669,3 +4779,46 @@
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  }
@@ -284,7 +286,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
  	ATH12K_QMI_EVENT_MAX,
  };
  
-@@ -166,6 +168,24 @@
+@@ -166,6 +168,27 @@
  	struct m3_mem_region aux_uc_mem;
  	unsigned int service_ins_id;
  	struct dev_mem_info dev_mem[ATH12K_QMI_WLFW_MAX_DEV_MEM_NUM_V01];
@@ -301,6 +303,9 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
 +		bool configured;
 +		bool active;
 +		bool start_requested;
++		/* Exact size last acknowledged through WLFW QMI 0x40. */
++		u32 etr_alloc_size;
++		bool proactive_mem_info;
 +		/* QMI indications may precede QDSS profile download. */
 +		atomic_t mem_req_seen;
 +		atomic_t mem_req_before_config;
@@ -313,7 +318,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,597 @@
+@@ -0,0 +1,641 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -463,6 +468,62 @@ new file mode 100644
 +
 +static void ath12k_qdss_reset_locked(struct ath12k_qmi *qmi);
 +
++
++/* QSDK normally waits for WLFW 0x3f before sending ETR info. IPQ5332
++ * firmware also implements the 0x40 mem-info handler, but may never issue
++ * the optional trace memory indication. For an *explicit* debugfs start
++ * attempt a provisioned ETR first, then trace mode; ordinary boot sends
++ * neither memory info nor trace mode.
++ *
++ * Caller holds qdss.lock. Retain an accepted mapping even if MODE_ON fails:
++ * stop_and_capture can then send MODE_OFF and release the reservation.
++ */
++static int ath12k_qdss_provision_locked(struct ath12k_base *ab, u32 size,
++				       bool proactive)
++{
++	struct ath12k_qmi *qmi = &ab->qmi;
++	bool mapped = !!qmi->qdss.etr;
++	int ret;
++
++	if (!qmi->qdss.configured || !size || size > qmi->qdss.size)
++		return -EINVAL;
++
++	if (mapped) {
++		/* Even after proactive provisioning, a later firmware 0x3f
++		 * indication must receive its own 0x40 acknowledgment.
++		 */
++		if (qmi->qdss.active && size != qmi->qdss.etr_alloc_size)
++			return -EBUSY;
++	} else {
++		qmi->qdss.etr = ioremap(qmi->qdss.base, qmi->qdss.size);
++		if (!qmi->qdss.etr)
++			return -ENOMEM;
++	}
++
++	if (proactive)
++		ath12k_info(ab, "QDSS: probing FW acceptance of reserved ETR with unsolicited MEM_INFO 0x40\n");
++
++	ret = ath12k_qdss_qmi_send_mem_info(ab, qmi->qdss.base, size);
++	if (ret) {
++		if (!mapped) {
++			iounmap(qmi->qdss.etr);
++			qmi->qdss.etr = NULL;
++		}
++		ath12k_warn(ab, "QDSS: FW ETR MEM_INFO 0x40 failed: %d (proactive %u)\n",
++			    ret, proactive);
++		return ret;
++	}
++	qmi->qdss.etr_alloc_size = size;
++	if (proactive)
++		qmi->qdss.proactive_mem_info = true;
++	ath12k_info(ab, "QDSS: FW ETR MEM_INFO accepted addr %pa size %#x proactive %u\n",
++		    &qmi->qdss.base, size, proactive);
++	/* Firmware ETR setup may take up to one second (Qualcomm QSDK). */
++	msleep(1000);
++	return 0;
++}
++
++
 +/* With CNSS_QDSS_CFG_MISS cleared the firmware may wait for its config
 + * during BDF bring-up, so download the profile there. The QDSS ETR memory
 + * reservation itself does NOT imply that tracing should start. An explicit
@@ -478,41 +539,51 @@ new file mode 100644
 +		return -EOPNOTSUPP;
 +
 +	mutex_lock(&qmi->qdss.lock);
-+	if (qmi->qdss.configured) {
-+		if (!request_trace)
-+			goto out_unlock;
-+		if (qmi->qdss.start_requested || qmi->qdss.active) {
-+			ret = -EBUSY;
++	if (!qmi->qdss.configured) {
++		rmem = ath12k_core_get_reserved_mem_by_name(ab, "q6-etr-dump");
++		if (!rmem || rmem->size != ATH12K_QDSS_ETR_MAX ||
++		    !IS_ALIGNED(rmem->base, PAGE_SIZE)) {
++			ret = -EINVAL;
 +			goto out_unlock;
 +		}
-+		qmi->qdss.start_requested = true;
-+		if (qmi->qdss.etr) {
-+			/* Firmware already accepted our ETR mapping during boot. */
-+			ret = ath12k_qdss_mode(ab, true);
-+			if (!ret)
-+				qmi->qdss.active = true;
-+			else
-+				qmi->qdss.start_requested = false;
++		qmi->qdss.base = rmem->base;
++		qmi->qdss.size = rmem->size;
++		WRITE_ONCE(qmi->qdss.configured, true);
++
++		ret = ath12k_qdss_send_config(ab);
++		if (ret) {
++			ath12k_warn(ab, "QDSS: firmware configuration failed: %d\n", ret);
++			ath12k_qdss_reset_locked(qmi);
++			goto out_unlock;
 +		}
-+		goto out_unlock;
 +	}
 +
-+	rmem = ath12k_core_get_reserved_mem_by_name(ab, "q6-etr-dump");
-+	if (!rmem || rmem->size != ATH12K_QDSS_ETR_MAX ||
-+	    !IS_ALIGNED(rmem->base, PAGE_SIZE)) {
-+		ret = -EINVAL;
++	if (!request_trace)
++		goto out_unlock;
++	if (qmi->qdss.start_requested || qmi->qdss.active) {
++		ret = -EBUSY;
 +		goto out_unlock;
 +	}
-+	qmi->qdss.base = rmem->base;
-+	qmi->qdss.size = rmem->size;
-+	qmi->qdss.start_requested = request_trace;
-+	WRITE_ONCE(qmi->qdss.configured, true);
-+
-+	ret = ath12k_qdss_send_config(ab);
++	qmi->qdss.start_requested = true;
++	if (!qmi->qdss.etr) {
++		/* A firmware 0x3f may precede our debugfs request; if it
++		 * did not, test fixed-ETR provisioning with unsolicited 0x40.
++		 */
++		ret = ath12k_qdss_provision_locked(ab, qmi->qdss.size, true);
++		if (ret)
++			goto out_clear_start;
++	}
++	ret = ath12k_qdss_mode(ab, true);
 +	if (ret) {
-+		ath12k_warn(ab, "QDSS: firmware configuration failed: %d\n", ret);
-+		ath12k_qdss_reset_locked(qmi);
++		ath12k_warn(ab, "QDSS: FW MODE_ON rejected: %d\n", ret);
++		goto out_clear_start;
 +	}
++	qmi->qdss.active = true;
++	ath12k_info(ab, "QDSS: tracing started after ETR provision\n");
++	goto out_unlock;
++
++out_clear_start:
++	qmi->qdss.start_requested = false;
 +out_unlock:
 +	mutex_unlock(&qmi->qdss.lock);
 +	return ret;
@@ -573,50 +644,25 @@ new file mode 100644
 +
 +	if (!ath12k_qdss_supported(ab))
 +		return -EOPNOTSUPP;
-+
 +	if (req->mem_seg_len != 1 ||
 +	    req->mem_seg[0].type != ATH12K_QDSS_MEM_TYPE)
 +		return -EINVAL;
 +	size = req->mem_seg[0].size;
 +
 +	mutex_lock(&qmi->qdss.lock);
-+	if (!qmi->qdss.configured || qmi->qdss.etr ||
-+	    !size || size > qmi->qdss.size) {
-+		ret = -EINVAL;
-+		goto out_unlock;
-+	}
-+
-+	qmi->qdss.etr = ioremap(qmi->qdss.base, qmi->qdss.size);
-+	if (!qmi->qdss.etr) {
-+		ret = -ENOMEM;
-+		goto out_unlock;
-+	}
-+
-+	ret = ath12k_qdss_qmi_send_mem_info(ab, qmi->qdss.base, size);
++	ret = ath12k_qdss_provision_locked(ab, size, false);
 +	if (ret)
-+		goto out_unmap;
++		goto out_unlock;
 +
-+	/* Qualcomm QSDK explicitly allows up to one second after MEM_INFO
-+	 * for WCSS to finish configuring its ETR sink.
-+	 */
-+	msleep(1000);
-+	if (qmi->qdss.start_requested) {
++	if (qmi->qdss.start_requested && !qmi->qdss.active) {
 +		ret = ath12k_qdss_mode(ab, true);
-+		if (ret)
-+			goto out_unmap;
-+		qmi->qdss.active = true;
-+		ath12k_info(ab, "QDSS: WCSS UMACNOC tracing active, ETR %pa size %#x\n",
-+			    &qmi->qdss.base, size);
-+	} else {
-+		ath12k_info(ab, "QDSS: ETR memory provisioned at %pa size %#x, tracing idle\n",
-+			    &qmi->qdss.base, size);
++		if (!ret) {
++			qmi->qdss.active = true;
++			ath12k_info(ab, "QDSS: FW-initiated ETR tracing active\n");
++		}
++	} else if (!qmi->qdss.active) {
++		ath12k_info(ab, "QDSS: FW-initiated ETR ready; tracing idle\n");
 +	}
-+	goto out_unlock;
-+
-+out_unmap:
-+	iounmap(qmi->qdss.etr);
-+	qmi->qdss.etr = NULL;
-+	WRITE_ONCE(qmi->qdss.configured, false);
 +out_unlock:
 +	mutex_unlock(&qmi->qdss.lock);
 +	return ret;
@@ -783,6 +829,8 @@ new file mode 100644
 +	WRITE_ONCE(qmi->qdss.configured, false);
 +	qmi->qdss.active = false;
 +	qmi->qdss.start_requested = false;
++	qmi->qdss.etr_alloc_size = 0;
++	qmi->qdss.proactive_mem_info = false;
 +	if (qmi->qdss.etr) {
 +		iounmap(qmi->qdss.etr);
 +		qmi->qdss.etr = NULL;
@@ -867,15 +915,16 @@ new file mode 100644
 +{
 +	struct ath12k_base *ab = file->private_data;
 +	struct ath12k_qmi *qmi = &ab->qmi;
-+	char status[224];
++	char status[300];
 +	int len;
 +
 +	mutex_lock(&qmi->qdss.lock);
 +	len = scnprintf(status, sizeof(status),
-+			"configured=%u active=%u start_requested=%u etr_ready=%u etr_base=%pa etr_size=%u mem_req_seen=%d mem_req_before_config=%d mem_req_invalid=%d\n",
++			"configured=%u active=%u start_requested=%u etr_ready=%u etr_base=%pa etr_size=%u etr_alloc_size=%u proactive_mem_info=%u mem_req_seen=%d mem_req_before_config=%d mem_req_invalid=%d\n",
 +			qmi->qdss.configured, qmi->qdss.active,
 +			qmi->qdss.start_requested, !!qmi->qdss.etr,
 +			&qmi->qdss.base, qmi->qdss.size,
++			qmi->qdss.etr_alloc_size, qmi->qdss.proactive_mem_info,
 +			atomic_read(&qmi->qdss.mem_req_seen),
 +			atomic_read(&qmi->qdss.mem_req_before_config),
 +			atomic_read(&qmi->qdss.mem_req_invalid));
