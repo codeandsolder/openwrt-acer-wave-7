@@ -6,9 +6,9 @@ umask 077
 action=$1
 [[ $action == --check || $action == --run ]] || exit 2
 root=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-revision=r0+38249-qdss-eeae36fccc
-image=$root/image-build/wave7-umacnoc-qdss-eeae36fccc-sysupgrade.bin
-image_sha=bc4806ad80e3e5d83fd21aeefae4a4549f0d1aee970c2d75d818671d1c80e5c5
+revision=r0+38249-qdss-952743842b
+image=$root/image-build/wave7-umacnoc-qdss-952743842b-sysupgrade.bin
+image_sha=598d7ed97e106cbdfe6b279aa4338dce5aa7d3b9136d1314ca35ab81ca84e095
 key=/home/jan/.ssh/wave7-root-rsa
 host=root@192.168.76.1
 qdss=/sys/kernel/debug/ath12k/ahb-c000000.wifi/umacnoc_qdss
@@ -57,7 +57,7 @@ if [[ $action == --check ]]; then
 fi
 [[ $# == 3 ]] || abort 'provide exact guarded run directory'
 run_dir=$2
-[[ $run_dir == "$root"/runs/qdss-eeae36fccc-* && -d $run_dir ]] ||
+[[ $run_dir == "$root"/runs/qdss-952743842b-* && -d $run_dir ]] ||
   abort 'invalid run directory'
 tag=$(basename "$run_dir")
 systemctl --user is-active --quiet "wave7-qdss-supervisor-$tag.service" || abort 'native guard inactive'
