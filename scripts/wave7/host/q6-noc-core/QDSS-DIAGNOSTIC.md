@@ -350,6 +350,38 @@ No reboot, repeated retry or PHY changes; the external guard retains
 independent rollback responsibility. A QMI rejection is recorded
 rather than silently treating the trace as active.
 
+### Seventh diagnostic: independent stopped-ETR snapshot
+
+The sixth QMI experiment proved the physical ETR buffer could be provisioned
+and TRACE_ON enabled without receiving firmware QMI 0x003f. However, MODE_OFF
+did not cause a firmware 0x0041 SAVE indication, so the raw devcoredump
+collector had nothing to archive even though all QMI requests succeeded.
+
+A seventh matched-module native diagnostic implements a root-only
+\`raw_etr\` debugfs binary file. Reading the file after MODE_OFF takes
+a one-time private copy of at most the exact 1MiB dedicated no-map
+ETR reservation under \`qdss.lock\`, then streams the immutable snapshot
+through ordinary read offsets. Reads are rejected while the writer
+is active, when ETR has not been mapped, or if the allocated length is
+invalid. It uses \`vmalloc\` and releases temporary memory on close;
+it does not wait for asynchronous SAVE and does not modify the ETR.
+
+The controls are \`status\`, \`start\`, \`stop\` and \`raw_etr\` (no
+\`stop_and_capture\` compatibility alias). The new independent Asus
+operator reads exactly one snapshot to
+\`evidence/proactive-etr-probe/trace-etr.bin\` after MODE_OFF succeeds,
+requiring a complete 1048576-byte file, recording its SHA-256 and
+preserving the kmsg/QDSS lifecycle alongside it. The companion
+\`analyze-etr.py\` script reports nonzero/filler byte distributions,
+per-page occupancy, entropy and bounded hex samples without assuming
+that a CoreSight stream is already present or decoded.
+
+All other properties remain identical to the sixth diagnostic:
+production kernel Q6 firmware and rootfs unchanged except permitted
+tracing changes, separate diagnostic DTB with reserved ETR, native
+matched-module pair, guard, original accepted NAPI rollback, and
+one intentional low-volume trace experiment after boot health.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
