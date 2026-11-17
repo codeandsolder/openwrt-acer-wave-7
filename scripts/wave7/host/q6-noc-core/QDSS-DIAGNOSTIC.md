@@ -327,6 +327,27 @@ running across the expected SSH disconnect. Bash syntax and
 ShellCheck were run on the modified script. This resolves the aborted
 trial's observer-leak without changing firmware.
 
+### Sixth trial bounded QDSS probe operator script
+
+\`scripts/wave7/host/q6-noc-core/probe-qdss.sh\` is the Asus-side
+one-shot probe for the SHA-pinned \`48b2476bd6\` diagnostic. Use
+\`probe-qdss.sh --check\` only after the sixth boot is accepted; this
+validates exact image SHA, live revision and bootloader state, Q6 3/3,
+MLO2, wired peer, no NoC fatal, passive collectors and QDSS configured
+but idle.
+
+\`probe-qdss.sh --run /home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/runs/<exact sixth trial directory>\`
+additionally requires three independent one-off Asus observer units
+active and the matching candidate boot ID. It archives pre-start kernel
+log and QDSS state, issues exactly one explicit debugfs start to test
+QMI 0x40, and records its status/result. Only if trace actually becomes
+active does it emit six low-rate wired packets, stop and request SAVE,
+then inspect the independent raw devcoredump collector. All evidence
+lands under that guarded run's \`evidence/proactive-etr-probe\`.
+No reboot, repeated retry or PHY changes; the external guard retains
+independent rollback responsibility. A QMI rejection is recorded
+rather than silently treating the trace as active.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
