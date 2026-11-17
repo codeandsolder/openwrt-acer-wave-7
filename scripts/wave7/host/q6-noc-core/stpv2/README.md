@@ -40,6 +40,22 @@ on Asus under
 Its demultiplexed ATID0x39 stream SHA256 is
 `1f9e43a7f364480d7961a07ab8507e874368d7f87e4304b7e8c3b23396168104`.
 
+The offline CSV records all decoded events, including NULL filler and
+unsupported-opcode indicators. For a paired same-boot ETR comparison,
+decode the two raw snapshots separately with the CoreSight deformatter,
+run this STPv2 adapter once on each extracted ATID stream, then compare:
+
+```sh
+uv run --no-project python -B compare_events.py \
+  idle-events.csv wlan-load-events.csv \
+  --output stpv2-differential.json
+```
+
+The comparison normalizes decoded data packet frequencies rather than
+pretending to reconstruct absolute time spans across a wrapping ETR.
+It ranks packet payloads enriched or depleted in the traffic sample;
+a payload differential is not automatically a NoC RouteId.
+
 The Zephyr STPv2 decoder explicitly does not implement all uncommon
 opcodes. Unsupported events are reported rather than guessed.
 MERROR or discontinuous timestamps also mean the capture cannot be

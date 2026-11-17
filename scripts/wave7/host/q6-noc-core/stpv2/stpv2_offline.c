@@ -23,12 +23,7 @@ static bool cb(enum mipi_stp_decoder_ctrl_type type, union mipi_stp_decoder_data
     if (type == STP_DECODER_CHANNEL) current_channel = data.id;
     if (type == STP_DATA4 || type == STP_DATA8 || type == STP_DATA16 ||
         type == STP_DATA32 || type == STP_DATA64) by_major[current_major & 0xff]++;
-    if (event_file && (type == STP_DECODER_MAJOR || type == STP_DECODER_CHANNEL ||
-        type == STP_DECODER_FREQ || type == STP_DECODER_FLAG ||
-        type == STP_DECODER_MERROR || type == STP_DECODER_GERROR ||
-        type == STP_DECODER_ASYNC || type == STP_DECODER_VERSION ||
-        type == STP_DATA4 || type == STP_DATA8 || type == STP_DATA16 ||
-        type == STP_DATA32 || type == STP_DATA64)) {
+    if (event_file) {
         fprintf(event_file, "%zu,%d,%u,%u,%d,%" PRIu64 ",0x%016" PRIx64 "\n",
                 sequence, type, current_major, current_channel, (int)marked,
                 ts ? *ts : 0, data.data);
