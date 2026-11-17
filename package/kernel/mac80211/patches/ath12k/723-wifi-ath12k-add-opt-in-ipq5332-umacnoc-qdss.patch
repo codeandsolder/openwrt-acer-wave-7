@@ -203,7 +203,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
 +
 +	ret = qmi_txn_init(&ab->qmi.handle, &txn,
 +			   qmi_wlanfw_respond_mem_resp_msg_v01_ei, &resp);
-+	if (ret)
++	if (ret < 0)
 +		return ret;
 +
 +	ret = qmi_send_request(&ab->qmi.handle, NULL, &txn,
@@ -262,7 +262,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,524 @@
+@@ -0,0 +1,528 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -299,8 +299,9 @@ new file mode 100644
 +	struct qmi_txn txn;
 +	int ret;
 +
++	/* qmi_txn_init() returns a nonnegative transaction ID on success. */
 +	ret = qmi_txn_init(&ab->qmi.handle, &txn, resp_ei, response);
-+	if (ret)
++	if (ret < 0)
 +		return ret;
 +
 +	ret = qmi_send_request(&ab->qmi.handle, NULL, &txn, id, max_req_len,
@@ -530,7 +531,7 @@ new file mode 100644
 +		req.seg_id = seg_id;
 +		ret = qmi_txn_init(&ab->qmi.handle, &txn,
 +				   ath12k_qdss_data_resp_ei, resp);
-+		if (ret)
++		if (ret < 0)
 +			break;
 +		ret = qmi_send_request(&ab->qmi.handle, NULL, &txn,
 +				       ATH12K_QDSS_QMI_DATA, 7,
@@ -561,7 +562,10 @@ new file mode 100644
 +		}
 +	}
 +	kfree(resp);
-+	return ret;
++	/* qmi_txn_wait() also returns a positive decoded byte count on
++	 * success, which must not propagate as a failed trace save.
++	 */
++	return ret < 0 ? ret : 0;
 +}
 +
 +int ath12k_qdss_handle_save(struct ath12k_base *ab,
