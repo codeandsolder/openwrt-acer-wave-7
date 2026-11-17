@@ -138,8 +138,9 @@ fi
 printf 'openwrt_unit=%s\nfallback_unit=%s\n' "$OPEN_UNIT" "$FALLBACK_UNIT"
 
 echo '=== VALIDATE / ARM / FLASH ==='
+flash_transcript="/tmp/wave7-${TAG}-flash-session.log"
 set +e
-"${SSH[@]}" sh -s -- "$PRISTINE" "$CHECK" "$EXPECT" "$SIZE" <<'REMOTE_FLASH'
+"${SSH[@]}" sh -s -- "$PRISTINE" "$CHECK" "$EXPECT" "$SIZE" >"$flash_transcript" 2>&1 <<'REMOTE_FLASH'
 set -eu
 PRISTINE=$1
 CHECK=$2
@@ -168,6 +169,17 @@ echo FLASHING_NOW
 REMOTE_FLASH
 flash_rc=$?
 set -e
+cat "$flash_transcript"
+
+# A dropped SSH session is expected after the router begins flashing.
+# Conversely, the remote stock image validator may reject an image
+# *before* any NAND write. Only the explicit marker is evidence that
+# execution reached the flashing phase; an SSH exit code alone isn't.
+if ! rg -q '^FLASHING_NOW$' "$flash_transcript"; then
+    systemctl --user stop "$OPEN_UNIT" "$FALLBACK_UNIT" >/dev/null 2>&1 || :
+    echo "PREFLIGHT_FLASH_ABORTED: remote did not reach FLASHING_NOW (rc=$flash_rc)" >&2
+    exit 6
+fi
 
 echo "flash_ssh_rc=$flash_rc"
 echo "openwrt_capture=/tmp/wave7-${TAG}-openwrt-capture.txt"
