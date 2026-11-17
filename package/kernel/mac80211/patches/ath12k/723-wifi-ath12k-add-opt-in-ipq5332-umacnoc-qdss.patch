@@ -318,7 +318,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,790 @@
+@@ -0,0 +1,846 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -919,6 +919,60 @@ new file mode 100644
 +	.llseek = noop_llseek,
 +};
 +
++/* Profile download at BDF time can be acknowledged before the Q6 NoC
++ * trace parser or sink is ready. A stopped-only post-boot re-download
++ * is a separate, opt-in experiment to determine whether firmware
++ * subsequently emits the missing QMI 0x3f memory request.
++ *
++ * It does not enable trace mode, change the reserved memory mapping,
++ * reboot WCSS, or clear any existing ETR data. The 0x3f callback
++ * enqueues its handling onto the existing ordered QMI event worker.
++ */
++static ssize_t ath12k_qdss_reload_config_write(struct file *file,
++						const char __user *buf,
++						size_t count, loff_t *ppos)
++{
++	struct ath12k_base *ab = file->private_data;
++	struct ath12k_qmi *qmi = &ab->qmi;
++	unsigned int trigger;
++	int ret;
++
++	if (*ppos)
++		return -EINVAL;
++	ret = kstrtouint_from_user(buf, count, 0, &trigger);
++	if (ret)
++		return ret;
++	if (trigger != 1)
++		return -EINVAL;
++
++	mutex_lock(&qmi->qdss.lock);
++	if (!qmi->qdss.configured) {
++		ret = -ENODATA;
++		goto out_unlock;
++	}
++	if (qmi->qdss.active || qmi->qdss.start_requested) {
++		ret = -EBUSY;
++		goto out_unlock;
++	}
++
++	ret = ath12k_qdss_send_config(ab);
++	if (!ret) {
++		ath12k_info(ab, "QDSS: post-boot profile reload accepted; await FW MEM_REQ\n");
++		ret = count;
++		*ppos += count;
++	}
++out_unlock:
++	mutex_unlock(&qmi->qdss.lock);
++	return ret;
++}
++
++static const struct file_operations ath12k_qdss_reload_config_fops = {
++	.owner = THIS_MODULE,
++	.open = simple_open,
++	.write = ath12k_qdss_reload_config_write,
++	.llseek = noop_llseek,
++};
++
 +/* An explicit, root-only stopped-ETR clear distinguishes a stale
 + * reserved-DDR image from fresh firmware trace writes. Never clear
 + * while firmware has been asked to trace, or while the QMI ETR
@@ -1101,6 +1155,8 @@ new file mode 100644
 +			    &ath12k_qdss_stop_fops);
 +	debugfs_create_file("clear_etr", 0200, dir, ab,
 +			    &ath12k_qdss_clear_etr_fops);
++	debugfs_create_file("reload_config", 0200, dir, ab,
++			    &ath12k_qdss_reload_config_fops);
 +	debugfs_create_file("raw_etr", 0400, dir, ab,
 +			    &ath12k_qdss_raw_fops);
 +	debugfs_create_file("status", 0400, dir, ab,
