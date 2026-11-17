@@ -594,6 +594,57 @@ NAPI rollback image SHA256
 Run after eighth 900-second soak PASSES and retire its one-off collector;
 leave the permanent Q6 monitors untouched.
 
+### Tenth diagnostic hypothesis: post-ready configuration reload
+
+The ninth opt-in clear test proved firmware accepts QDSS 0x40/0x45
+but does **not** write any bytes to its dedicated 1MiB ETR while
+explicit TRACE_ON is active, even with 120/120 successful large
+MT7925 MLO packets in flight. Before clear, RAM contained a valid
+CoreSight/STPv2 stream, now classified as **retained contents**.
+All zero immediately after stopped-only clear, again after one second
+with trace off, and again after TRACE_ON/MODE_OFF; all 1MiB snapshots
+have identical all-zero SHA256
+`30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58`.
+The ordinary NoC fatal remains unresolved.
+
+Firmware/Qualcomm QSDK trace-source research finds a possible
+initialization-order mismatch: current ath12k downloads the
+ASCII profile during **early BDF setup** and gets a successful QMI
+0x44 response, but no WCSS QMI 0x3f memory request is ever delivered.
+Qualcomm's reference `athdbg_config_qdss` establishes a separate
+configuration path and waits for 0x3f before final 0x40/TRACE_ON.
+The stock WBE1.3 UserPD1 ELF contains firmware strings
+`plat_common_proc_qdss_trace_cfg_download_req` and a QDSS
+memory-info handler. Ghidra PC-relative analysis additionally
+identified a firmware parser path at `b0311374` referencing ASCII
+`noc_id` at `b043cdf4` (not proof the parser ran for the uploaded
+configuration). The external Qualcomm kernel CNSS2 reference uses a
+firmware-driven QDSS MEM_REQ callback and host reply:
+https://android.googlesource.com/kernel/msm.git/+/43f18d00cb162cdd79436a3518a7046f31927235/drivers/net/wireless/cnss2/qmi.c
+
+Patch723 adds a **separate root-only, stopped-only**
+`reload_config` debugfs command (write integer `1`).
+It transmits the **same pinned profile** over QMI 0x44 after
+the Wi-Fi firmware has reached full firstboot readiness, without
+automatically starting tracing, modifying ETR memory or rebooting.
+It must reject unconfigured, active or pending trace sessions.
+Observe `mem_req_seen` and early QDSS configuration logs before/after
+re-download. A new firmware 0x3f indication would validate the
+initialization-order hypothesis and allow existing normal QMI0x40
+handler to respond. A successful QMI 0x44 acknowledgment alone does
+NOT establish that the firmware parsed and activated the NoC sink;
+run the same post-clear zero-readback during an actual MT7925
+workload for an independent proof of fresh writes.
+
+This is a **new source-only experiment** after ninth trial; no
+tenth flash/result should be asserted until a separate native build,
+matched-module ABI check, original NAPI whitelist differential and
+independent Asus guarded image all pass. All source is under patch723;
+there is no production behavior change until explicit root debugfs
+request. Ghidra analysis stays in the existing
+`/home/jan/research/wave7-qdss-20261117/firmware-disasm/` folder,
+not in the firmware root.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
