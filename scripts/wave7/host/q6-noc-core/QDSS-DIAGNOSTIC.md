@@ -695,6 +695,52 @@ offline build validation. The full image/build whitelist report is
 All candidate pins are in `build-qdss-candidate.py`,
 `qdss-watch.sh`, `flash-qdss.sh` and `probe-qdss.sh`.
 
+### Eleventh diagnostic — subscribe to firmware QDSS indications
+
+**Discovered 2026-11-17 15:20 CET:** the WBE1.3 firmware does
+parse the stock profile and constructs QMI `0x003f` QDSS
+request-memory indications, but its outgoing QMI dispatcher checks
+each client's indication-registration flags before delivering one.
+The ath12k host already had QMI 0x3f request-memory and 0x41 SAVE
+handlers, yet its `WLFW_IND_REGISTER_REQ (0x0020)` wire schema
+stopped at TLV `0x1b` (cal_done) and never **subscribed** to
+either QDSS indication. Therefore the callback count staying zero
+was expected regardless of whether QMI 0x44 succeeded.
+
+Qualcomm CNSS reference `wlan_firmware_service_v01.c` confirms
+QDSS request-memory enable at **TLV 0x1c**, SAVE enable at
+**TLV 0x1d**, and FREE enable at **TLV 0x1e**. CNSS2's
+`qmi.c` sets all three subscription values to 1 on startup.
+Source snapshots are preserved under
+`/home/jan/research/wave7-qdss-20261117/qdss-ind-register/`
+with original Android Gitiles sources (not redistributed inside the
+OpenWrt source tree). Matching stock UserPD1 firmware's
+`FUN_b0323758` QMI indication dispatch gates QMI `0x3f` on
+registration flags; `FUN_b032425c` constructs one segment of
+type6, 0x400 KiB units = 1MiB, and transmits QMI `0x3f`
+after the completed mem_req sequence is parsed.
+
+Patch 723 now extends `qmi.h` registration request by two
+valid/value u8 pairs and extends `qmi.c` QMI element metadata
+with TLVs `0x1c` and `0x1d`. Request maximum increases from
+54 to 62 bytes (each optional TLV adds four wire bytes).
+**Only** the explicit IPQ5332 diagnostic DTB sets valid1/value1
+for both subscriptions in the ordinary early indication-register
+transaction, before host-capability and QDSS profile upload.
+Normal images continue to register their prior notification set;
+FREE notification `0x1e` is intentionally not subscribed until
+its handler is implemented. Existing QMI 0x3f/0x41 callbacks
+remain attached to the same WLFW QMI handle.
+
+This is the first source-level discriminator supported by both
+exact firmware and Qualcomm host source. Hardware trial should
+check for `mem_req_seen>0` and `mem_req_before_config` immediately
+after firmware configuration, the QMI 0x40 response, and actual
+fresh ETR writes after explicit `clear_etr` and a MLO workload.
+A successful 0x3f callback is not proof that the original
+UMACNOC address-decode fault has been captured or fixed.
+Do not run the old reboot corpus until tracing is actually live.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.

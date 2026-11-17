@@ -56,7 +56,50 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  #include "core.h"
  #include "debug.h"
  #include "hif.h"
-@@ -2430,6 +2431,14 @@
+@@ -828,6 +829,42 @@
+ 		.tlv_type	= 0x1B,
+ 		.offset		= offsetof(struct qmi_wlanfw_ind_register_req_msg_v01,
+ 					   cal_done_enable),
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x1C,
++		.offset		= offsetof(struct qmi_wlanfw_ind_register_req_msg_v01,
++					   qdss_trace_req_mem_enable_valid),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_1_BYTE,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x1C,
++		.offset		= offsetof(struct qmi_wlanfw_ind_register_req_msg_v01,
++					   qdss_trace_req_mem_enable),
++	},
++	{
++		.data_type	= QMI_OPT_FLAG,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x1D,
++		.offset		= offsetof(struct qmi_wlanfw_ind_register_req_msg_v01,
++					   qdss_trace_save_enable_valid),
++	},
++	{
++		.data_type	= QMI_UNSIGNED_1_BYTE,
++		.elem_len	= 1,
++		.elem_size	= sizeof(u8),
++		.array_type	= NO_ARRAY,
++		.tlv_type	= 0x1D,
++		.offset		= offsetof(struct qmi_wlanfw_ind_register_req_msg_v01,
++					   qdss_trace_save_enable),
+ 	},
+ 	{
+ 		.data_type	= QMI_EOTI,
+@@ -2430,6 +2467,14 @@
  	if (ab->hw_params->qmi_cnss_feature_bitmap) {
  		req.feature_list_valid = 1;
  		req.feature_list = ab->hw_params->qmi_cnss_feature_bitmap;
@@ -71,7 +114,26 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	}
  
  	/* BRINGUP: here we are piggybacking a lot of stuff using
-@@ -4329,6 +4338,14 @@
+@@ -2675,6 +2720,18 @@
+ 
+ 	req->pin_connect_result_enable_valid = 0;
+ 	req->pin_connect_result_enable = 0;
++
++	/* Without subscribing to QDSS memory requests, WCSS cannot notify
++	 * our 0x3f handler even after successfully parsing the trace profile.
++	 * Only the explicit IPQ5332 diagnostic DTB enables these events.
++	 */
++	if (ath12k_qdss_boot_config_enabled(ab)) {
++		req->qdss_trace_req_mem_enable_valid = 1;
++		req->qdss_trace_req_mem_enable = 1;
++		req->qdss_trace_save_enable_valid = 1;
++		req->qdss_trace_save_enable = 1;
++		ath12k_info(ab, "QDSS: registered FW memory and save indications\n");
++	}
+ 
+ 	ret = qmi_txn_init(handle, &txn,
+ 			   qmi_wlanfw_ind_register_resp_msg_v01_ei, resp);
+@@ -4329,6 +4386,14 @@
  		}
  	}
  
@@ -86,7 +148,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	return ret;
  }
  
-@@ -4425,6 +4442,67 @@
+@@ -4425,6 +4490,67 @@
  	ath12k_qmi_driver_event_post(qmi, ATH12K_QMI_EVENT_FW_READY, NULL);
  }
  
@@ -154,7 +216,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  static const struct qmi_msg_handler ath12k_qmi_msg_handlers[] = {
  	{
  		.type = QMI_INDICATION,
-@@ -4448,6 +4526,20 @@
+@@ -4448,6 +4574,20 @@
  		.fn = ath12k_qmi_msg_fw_ready_cb,
  	},
  
@@ -175,7 +237,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	/* end of list */
  	{},
  };
-@@ -4549,6 +4641,7 @@
+@@ -4549,6 +4689,7 @@
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_SERVER_EXIT:
@@ -183,7 +245,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_REQUEST_MEM:
-@@ -4599,12 +4692,27 @@
+@@ -4599,12 +4740,27 @@
  			if (ret < 0)
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
@@ -211,7 +273,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  		kfree(event);
  		spin_lock(&qmi->event_lock);
  	}
-@@ -4618,6 +4726,7 @@
+@@ -4618,6 +4774,7 @@
  	memset(&ab->qmi.target, 0, sizeof(struct target_info));
  	memset(&ab->qmi.target_mem, 0, sizeof(struct target_mem_chunk));
  	ab->qmi.ab = ab;
@@ -219,7 +281,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  
  	ab->qmi.target_mem_mode = ab->target_mem_mode;
  	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,
-@@ -4657,6 +4766,7 @@
+@@ -4657,6 +4814,7 @@
  	qmi_handle_release(&ab->qmi.handle);
  	cancel_work_sync(&ab->qmi.event_work);
  	destroy_workqueue(ab->qmi.event_wq);
@@ -227,7 +289,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  	ath12k_qmi_free_target_mem_chunk(ab);
-@@ -4669,3 +4779,46 @@
+@@ -4669,3 +4827,46 @@
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  }
@@ -314,6 +376,27 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
  };
  
  #define QMI_WLANFW_HOST_CAP_REQ_MSG_V01_MAX_LEN		261
+@@ -294,7 +317,7 @@
+ 	u8 single_chip_mlo_support;
+ };
+ 
+-#define QMI_WLANFW_IND_REGISTER_REQ_MSG_V01_MAX_LEN		54
++#define QMI_WLANFW_IND_REGISTER_REQ_MSG_V01_MAX_LEN		62
+ #define QMI_WLANFW_IND_REGISTER_REQ_V01				0x0020
+ #define QMI_WLANFW_IND_REGISTER_RESP_MSG_V01_MAX_LEN		18
+ #define QMI_WLANFW_IND_REGISTER_RESP_V01			0x0020
+@@ -325,6 +348,11 @@
+ 	u8 xo_cal_enable;
+ 	u8 cal_done_enable_valid;
+ 	u8 cal_done_enable;
++	/* Qualcomm WLFW QDSS indication subscriptions, TLVs 0x1c/0x1d. */
++	u8 qdss_trace_req_mem_enable_valid;
++	u8 qdss_trace_req_mem_enable;
++	u8 qdss_trace_save_enable_valid;
++	u8 qdss_trace_save_enable;
+ };
+ 
+ struct qmi_wlanfw_ind_register_resp_msg_v01 {
 diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/ath12k/qdss.c
 new file mode 100644
 --- /dev/null
