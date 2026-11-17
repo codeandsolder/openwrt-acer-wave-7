@@ -302,6 +302,31 @@ capture, and exact accepted NAPI rollback SHA256
 \`18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622\`.
 All runtime actions remain opt-in and separately guarded.
 
+### Sixth first attempt safely aborted before NAND write
+
+At 07:39:08 CET the new image and accepted rollback passed staging,
+router SHA and \`sysupgrade -T\`, but the new Asus raw QDSS collector
+exited \`QDSS_CAPTURE_LOCK_HELD\`: the fifth trial's successful collector
+was still inside its 2100s capture window. The sixth launcher aborted
+with \`PREFLIGHT_BLOCKED\` **before executing any sysupgrade**.
+Evidence is archived in
+\`runs/qdss-48b2476bd6-20261117-073903/\` (status
+\`ABORTED_PRE_FLASH_NO_NAND_WRITES\`). The predecessor's live
+\`qdss-watch.sh --check\` again confirmed its same healthy boot UUID,
+Q6 3/3, MLO2, ping and bootfail0. The unfinished sixth native/vendor
+observer units were stopped, and the fifth raw collector was stopped
+only after verifying its recorded \`CANDIDATE_SOAK_PASS\`.
+No router reboot or image change occurred.
+
+The Asus launcher now checks active QDSS raw collectors BEFORE arming
+any services. If a partial launch fails before invoking sysupgrade,
+an EXIT trap stops all its own one-off collector/native/vendor guards
+and records an explicit pre-flash abort. After the sysupgrade call
+begins, the trap deliberately leaves those independent observers
+running across the expected SSH disconnect. Bash syntax and
+ShellCheck were run on the modified script. This resolves the aborted
+trial's observer-leak without changing firmware.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
