@@ -741,6 +741,48 @@ A successful 0x3f callback is not proof that the original
 UMACNOC address-decode fault has been captured or fixed.
 Do not run the old reboot corpus until tracing is actually live.
 
+### Eleventh exact image and independent guarded trial
+
+The corrected QMI registration is committed as
+`952743842b025cab88f7cd73ecab5031cc558a57`.
+Native OpenWrt 6.18.60 mac80211 compiled successfully with existing
+`SCCACHE_SERVER_PORT=4228`, and full `ath12k_base` DWARF ABI of
+`ath12k.ko` and `ath12k_wifi7.ko` matches.
+
+Eleventh image revision `r0+38249-qdss-952743842b`,
+**SHA256 `598d7ed97e106cbdfe6b279aa4338dce5aa7d3b9136d1314ca35ab81ca84e095`**,
+size **15,677,772 bytes**. The offline builder proved accepted
+compressed kernel SHA
+`0c24a7ea0f78c4b9480e46d4a4cdb8078b2e5665c9c24a7e0568562a9dac1de3`,
+unchanged diagnostic ETR DTB SHA
+`5573844a088b5150cfaa163488ddd4962c0809d8655ec61018f29bf5087480e4`,
+and unchanged profile SHA
+`354b04763d2e95cdc25241f1543a9bd34d171e6d8d32d385242070edc5b4d6a4`.
+Only the approved eight rootfs paths differ from accepted NAPI,
+with zero unexpected changes; exact approved NAPI rollback SHA
+`18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622`.
+Packaged main ath12k SHA
+`497510bcf8275938c915225942e4c1b07642e6b70f6caa5d10a6d3039de35000`;
+companion SHA
+`1e07b931cf2d4991734f982341d305169b452224c25026537ac181ab4381fa41`.
+
+The eleventh Asus trial guard is pinned to exact predecessor
+`r0+38249-qdss-eeae36fccc` and preserves independent original
+NAPI rollback, 900-second Q6/MLO/wired/NoC health watcher,
+separate vendor fallback and passive raw QDSS collector.
+The key **pre-traffic** observation is
+`mem_req_seen>0` and any firmware `0x003f` memory request type/size
+followed by host QMI `0x0040` memory-info response. Preserve
+`mem_req_before_config` if nonzero. A firmware-initiated request
+is expected to differ from prior unsolicited host 0x40 tests.
+Only after boot acceptance and confirmation of independent guards
+run the bounded old paired idle/WLAN probe with cleared 1MiB
+ETR readbacks. The firmware-generated `0x003f` and fresh ETR
+bytes are separate success criteria.
+
+This whole-image validation is *offline*; actual hardware response
+is documented by the independent Asus trial observer, not assumed.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
