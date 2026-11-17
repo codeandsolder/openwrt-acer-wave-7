@@ -467,6 +467,57 @@ establish that the clusters represent the Wyse test pings.
 Correlate using an idle/controlled-traffic differential before
 assigning transaction semantics.
 
+### Eighth diagnostic — repeat-start and controlled STPv2 comparison
+
+The seventh hardware image passed 901 consecutive healthy seconds and
+produced the first exact 1MiB raw ETR snapshot. The source-only fix at
+commit `3a8d36d639` clears the QDSS `start_requested` latch only after
+MODE_OFF succeeds, allowing a second explicit start within the same
+accepted boot, while retaining the ETR snapshot mapping.
+
+Offline-validated eighth whole-image candidate:
+`r0+38249-qdss-3a8d36d639`, SHA256
+`df3cc778923af11eaf2e98f5520ef3eeac764c258ce50746ae143705b94d3e4e`,
+size 15,677,772 bytes. The builder verifies exactly eight authorized
+rootfs changes relative to the accepted NAPI baseline, the original
+compressed kernel, the already-audited diagnostic ETR DTB, the same
+Q6 firmware and QDSS profile, and both matched native modules with
+an identical `ath12k_base` DWARF ABI. Independent Asus observer,
+raw trace collector and SHA-pinned accepted NAPI rollback remain
+required before flashing.
+
+The eighth Asus `probe-qdss.sh` takes **two separate ETR captures** from
+the same candidate boot and only while three independent one-off guards
+are active, using `--run GUARDED_RUN_DIR idle` and then
+`--run GUARDED_RUN_DIR wlan-load`. The first phase starts TRACE_ON,
+idles approximately two seconds, stops, checks that `start_requested=0`,
+then archives an exact 1MiB raw snapshot. The second phase repeats
+on the still-provisioned ETR while the connected Wyse MT7925 transmits
+120 large ICMP packets through `wlp2s0`, overlapping MODE_OFF so fast
+ring-buffer wrap should not erase the live traffic window. Missing
+replies are preserved as observations; a failed trace handshake or
+incomplete raw snapshot is a failed phase. Each immutable phase has
+its own kernel logs, status, WLAN/wired traffic results, SHA256, and
+separate `evidence/stpv2-paired/{idle,wlan-load}/` path. The script
+attempts to disable active tracing upon controller failure; it does
+not disable or alter independent rollback guards.
+
+**Decoding correction:** The original fixed 16-byte CoreSight formatter
+frames are valid, but the extracted ATID0x39 payload is *MIPI STPv2*,
+not a sequence of Qualcomm-defined 16-byte NoC packets. The ASYNC
+signature has 21 F nibbles then 0, appearing 492 times in seventh
+capture. The pinned upstream Zephyr decoder is included under
+`stpv2/` (Apache-2.0, source revision
+`29d3d75b7ef638a5323815fa94f78af54c96d1a5`) with a standalone
+adapter and existing sccache build recipe. It independently decoded
+59,546 D64, 59,582 D32, 492 ASYNC, 491 VERSION, 82 MERROR
+and other real STPv2 opcodes. The dominant D64 data payload
+`0x102c341e1085182c` appears immediately before D32
+`0xd1c90260` with varying timestamps; it is **not** a proven
+NoC RouteId, MID, EXTID or address. Unsupported STPv2 events and
+timestamp discontinuities must not be silently assigned invented
+semantics. See `stpv2/README.md` and chronological Notion QDSS page.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.

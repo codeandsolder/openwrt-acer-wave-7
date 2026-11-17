@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Explicit one-shot QDSS ETR protocol probe from Asus after an independently guarded boot.
+# Two bounded QDSS ETR captures from one independently guarded boot.
 set -Eeuo pipefail
 umask 077
-[[ $# -ge 1 ]] || { echo 'usage: probe-qdss.sh --check|--run [TRIAL_DIR]' >&2; exit 2; }
+[[ $# -ge 1 ]] || { echo 'usage: probe-qdss.sh --check|--run [TRIAL_DIR] [idle|wlan-load]' >&2; exit 2; }
 action=$1
 [[ $action == --check || $action == --run ]] || exit 2
 root=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-revision=r0+38249-qdss-64ef394b1e
-image=$root/image-build/wave7-umacnoc-qdss-64ef394b1e-sysupgrade.bin
-image_sha=d4bdea9bcd8b34f8d1ed90d07c7bfb6558da94b56a121fd861105dfd830b835c
+revision=r0+38249-qdss-3a8d36d639
+image=$root/image-build/wave7-umacnoc-qdss-3a8d36d639-sysupgrade.bin
+image_sha=df3cc778923af11eaf2e98f5520ef3eeac764c258ce50746ae143705b94d3e4e
 key=/home/jan/.ssh/wave7-root-rsa
 host=root@192.168.76.1
 qdss=/sys/kernel/debug/ath12k/ahb-c000000.wifi/umacnoc_qdss
@@ -42,7 +42,7 @@ value() { printf '%s\n' "$state" | sed -n "s/^$1=//p" | head -1; }
    $(value q6) == 3 && $(value ping) == 1 && $(value noc) == 0 ]] ||
   abort "candidate not healthy: $state"
 status=$(remote "cat '$qdss/status'") || abort 'debugfs unavailable'
-[[ $status == *"configured=1 active=0"* && $status == *"start_requested=0"* && $status == *"etr_ready=0"* ]] ||
+[[ $status == *"configured=1 active=0"* && $status == *"start_requested=0"* ]] ||
   abort "QDSS already running or unexpected state: $status"
 for service in wave7-q6-devcoredump-capture.service wave7-q6-noc-events.service wave7-q6-noc-kmsg.service; do
   systemctl --user is-active --quiet "$service" || abort "missing passive $service"
@@ -53,9 +53,9 @@ if [[ $action == --check ]]; then
   printf 'QDSS_PROBE_PREFLIGHT_PASS\n%s\n%s\n' "$state" "$status"
   exit 0
 fi
-[[ $# == 2 ]] || abort 'provide exact guarded run directory'
+[[ $# == 3 ]] || abort 'provide exact guarded run directory'
 run_dir=$2
-[[ $run_dir == "$root"/runs/qdss-64ef394b1e-* && -d $run_dir ]] ||
+[[ $run_dir == "$root"/runs/qdss-3a8d36d639-* && -d $run_dir ]] ||
   abort 'invalid run directory'
 tag=$(basename "$run_dir")
 systemctl --user is-active --quiet "wave7-qdss-supervisor-$tag.service" || abort 'native guard inactive'
@@ -64,13 +64,25 @@ systemctl --user is-active --quiet "wave7-qdss-capture-$tag.service" || abort 'r
 [[ $(cat "$run_dir/status") == ARMED ]] || abort 'trial already finished'
 [[ $(value boot) == $(sed -n 's/^boot=//p' "$run_dir/last-trial-state.txt" | head -1) ]] ||
   abort 'wrong trial boot'
-out=$run_dir/evidence/proactive-etr-probe
-[[ ! -e $out ]] || abort 'probe already attempted'
+phase=$3
+[[ $phase == idle || $phase == wlan-load ]] || abort 'invalid phase'
+out=$run_dir/evidence/stpv2-paired/$phase
+[[ ! -e $out ]] || abort 'phase already attempted'
 mkdir -p "$out"
 printf '%s\n' "$state" > "$out/preflight.txt"
 printf '%s\n' "$status" > "$out/pre-start-status.txt"
 remote 'dmesg' > "$out/pre-start-dmesg.txt"
 date -Is > "$out/start-time.txt"
+trace_live=1
+restore_idle_on_error() {
+  local rc=$?
+  if (( rc != 0 && trace_live )); then
+    # If the controller exits during TRACE_ON, only disable trace mode;
+    # the external Q6, NoC and rollback supervisors remain independent.
+    remote "echo 1 > '$qdss/stop'" > "$out/recovery-stop.txt" 2>&1 || :
+  fi
+}
+trap restore_idle_on_error EXIT
 set +e
 timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/start'" > "$out/start-output.txt" 2>&1
 start_rc=$?
@@ -78,24 +90,48 @@ set -e
 echo "$start_rc" > "$out/start-rc.txt"
 remote "cat '$qdss/status'" > "$out/post-start-status.txt" || :
 remote 'dmesg' > "$out/post-start-dmesg.txt" || :
-printf 'QDSS_START_RC=%d\n' "$start_rc"
+printf 'QDSS_START_RC=%d phase=%s\n' "$start_rc" "$phase"
 cat "$out/post-start-status.txt"
-if (( start_rc == 0 )) && rg -q 'active=1' "$out/post-start-status.txt"; then
-  # Exercise the WLAN NoC, not just the copper path. The Wyse has a
-  # separate wired management route, so this cannot strand supervision.
+if (( start_rc != 0 )) || ! rg -q 'active=1' "$out/post-start-status.txt"; then
+  abort "$phase QDSS TRACE_ON refused"
+fi
+if (( start_rc == 0 )); then
+  # Maintain the MLO association while comparing a short idle sample
+  # with traffic overlapping the end of a separate sample.
   set +e
-  wyse 'ping -I wlp2s0 -c 12 -i 0.2 -W 2 192.168.76.1' > "$out/wlan-traffic.txt" 2>&1
-  wlan_ping_rc=$?
-  set -e
-  printf '%d\n' "$wlan_ping_rc" > "$out/wlan-traffic-rc.txt"
-  remote 'ping -I br-lan -c 6 -W 1 192.168.76.2' > "$out/wired-control.txt" 2>&1 || :
-  sleep 3
+  if [[ $phase == idle ]]; then
+    # Match approximate trace exposure without launching load.
+    sleep 2
+  else
+    # Keep Wi-Fi packets in flight while MODE_OFF executes so a fast
+    # circular ETR overwrite cannot lose the relevant traffic.
+    wyse 'sudo -n ping -I wlp2s0 -c 120 -i 0.02 -s 1200 -W 2 192.168.76.1' > "$out/wlan-traffic.txt" 2>&1 &
+    workload_pid=$!
+    sleep 1.2
+  fi
+  remote 'ping -I br-lan -c 1 -W 1 192.168.76.2' > "$out/wired-control.txt" 2>&1 || :
   set +e
   timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/stop'" > "$out/stop-output.txt" 2>&1
   stop_rc=$?
   set -e
   echo "$stop_rc" > "$out/stop-rc.txt"
-  printf 'QDSS_STOP_RC=%d\n' "$stop_rc"
+  printf 'QDSS_STOP_RC=%d phase=%s\n' "$stop_rc" "$phase"
+  if (( stop_rc == 0 )); then
+    trace_live=0
+  fi
+  stopped_status=$(remote "cat '$qdss/status'") || abort 'poststop QDSS status unavailable'
+  printf '%s\n' "$stopped_status" > "$out/post-stop-status.txt"
+  if (( stop_rc != 0 )) || [[ $stopped_status != *"active=0"* ||
+                                $stopped_status != *"start_requested=0"* ]]; then
+    abort "$phase MODE_OFF did not clear active/start latch: $stopped_status"
+  fi
+  if [[ $phase == wlan-load ]]; then
+    # Packet loss is evidence, not a reason to discard an otherwise
+    # valid ETR snapshot; archive the workload result as observed.
+    traffic_rc=0
+    wait "$workload_pid" || traffic_rc=$?
+    printf '%d\n' "$traffic_rc" > "$out/wlan-traffic-rc.txt"
+  fi
   if (( stop_rc == 0 )); then
     # Take one immutable stopped-ETR snapshot. The native driver refuses
     # active tracing and bounds the read to its 1MiB no-map reservation.
@@ -106,9 +142,10 @@ if (( start_rc == 0 )) && rg -q 'active=1' "$out/post-start-status.txt"; then
     printf '%d\n' "$raw_rc" > "$out/raw-etr-rc.txt"
     if (( raw_rc == 0 )) && [[ $(stat -c %s "$out/trace-etr.bin") == 1048576 ]]; then
       sha256sum "$out/trace-etr.bin" > "$out/trace-etr.sha256"
-      echo QDSS_RAW_ETR_SNAPSHOT_COMPLETE
+      sha256sum -c "$out/trace-etr.sha256" >/dev/null
+      echo "QDSS_RAW_ETR_SNAPSHOT_COMPLETE phase=$phase"
     else
-      echo QDSS_RAW_ETR_SNAPSHOT_FAILED
+      abort "$phase raw ETR read failed or incomplete"
     fi
   fi
   sleep 5
