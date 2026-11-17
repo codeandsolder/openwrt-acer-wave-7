@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 077
 mode=${1:---check}
-candidate_rev=r0+38249-qdss-etr1
+candidate_rev=r0+38249-qdss-e6220b40e2
 accepted_rev=r0+38249-napi-5e3df9b898
 accepted_sha=18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622
 accepted=/home/jan/firmware/wave7/trials/20261116-napi-irq-ab/image-build/wave7-napi-5e3df9b898-sysupgrade.bin
@@ -41,9 +41,9 @@ trial_healthy() {
      $(value "$state" bootfail) == 0 ]]
 }
 if [[ $mode == --selftest ]]; then
-  good=$'rev=r0+38249-qdss-etr1\nkernel=6.18.60\nq6=3\nap=2\nping=1\nnoc=0\nkeep=1\nbootfail=0'
+  good=$'rev=r0+38249-qdss-e6220b40e2\nkernel=6.18.60\nq6=3\nap=2\nping=1\nnoc=0\nkeep=1\nbootfail=0'
   trial_healthy "$good" || { echo 'good state failed' >&2; exit 1; }
-  for bad in "${good/ap=2/ap=1}" "${good/noc=0/noc=1}" "${good/keep=1/keep=0}" "${good/r0+38249-qdss-etr1/r0+38249-napi-5e3df9b898}"; do
+  for bad in "${good/ap=2/ap=1}" "${good/noc=0/noc=1}" "${good/keep=1/keep=0}" "${good/r0+38249-qdss-e6220b40e2/r0+38249-napi-5e3df9b898}"; do
     if trial_healthy "$bad"; then echo 'invalid state accepted' >&2; exit 1; fi
   done
   echo QDSS_OBSERVER_DECISION_TEST_PASS

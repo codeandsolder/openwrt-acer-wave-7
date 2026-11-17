@@ -3,8 +3,10 @@
 
 Rebuilds the FIT with the identical accepted compressed kernel and a DTB
 surgically extended for the dedicated ETR reservation; rebuilds the accepted
-SquashFS using the just-built, packaged native ath12k module, separate QDSS
-profile and trial identities. Rejects any unapproved filesystem or DT changes.
+SquashFS using *both* matched native ath12k modules from one package,
+a separate QDSS profile, and trial identities. Reject all unrelated changes.
+
+The two modules share ath12k_base and must never come from different builds.
 """
 from __future__ import annotations
 
@@ -29,7 +31,7 @@ BASELINE_DTB_SHA = "6d5689602412f6ee2b2cb1e2bffe69a10751fd68de82cfa6ca84fe1d78c6
 BASELINE_MODULE_SHA = "aebb8c344f049f6fbef8695f55cc5148f40018b5c50f90b149ddc5fcd31a27a7"
 WIFI7_SHA = "99ed3ca29fbd1d73ad58d5794932ed74dcd46d3ec082272f088fd595588faeb6"
 PROFILE_SHA = "354b04763d2e95cdc25241f1543a9bd34d171e6d8d32d385242070edc5b4d6a4"
-TRIAL_REV = "r0+38249-qdss-etr1"
+TRIAL_REV = "r0+38249-qdss-e6220b40e2"
 ROOT_MODULE = "lib/modules/6.18.60/ath12k.ko"
 ROOT_WIFI7 = "lib/modules/6.18.60/ath12k_wifi7.ko"
 ROOT_PROFILE = "lib/firmware/ath12k/IPQ5332/hw1.0/qdss_trace_umacnoc.bin"
@@ -315,11 +317,24 @@ def main() -> None:
         require(package_wifi7.is_file(), "Rebuilt kmod lacks companion wifi7 module")
         require(module_vermagic(package_wifi7) ==
                 "6.18.60 SMP mod_unload aarch64", "Invalid wifi7 vermagic")
-        discarded_package_wifi7_sha = digest(package_wifi7.read_bytes())
-        # Deliberately discard this package's Wi-Fi 7 companion module:
-        # it is not the accepted version and isn't a QDSS test variable.
-        # The later rootfs manifest assertion pins the installed *accepted*
-        # wifi7 module exactly.
+        package_wifi7_sha = digest(package_wifi7.read_bytes())
+        require(package_wifi7_sha != WIFI7_SHA,
+                "Unexpected companion identity: re-check source build")
+        # Both modules share struct ath12k_base; QDSS enlarges embedded
+        # ath12k_qmi by 64 bytes. Mixing a rebuilt main module with an
+        # accepted companion caused a real Oops at boot (2026-11-17).
+        # Assert the DWARF struct layout from both source-built modules.
+        build_dir = (repo /
+            "build_dir/target-aarch64_cortex-a53_musl/linux-qualcommbe_ipq53xx"
+            "/mac80211-regular/backports-7.2/drivers/net/wireless/ath/ath12k")
+        layouts = [
+            run("pahole", "--hex", "-C", "ath12k_base", build_dir / name)
+            for name in ("ath12k.ko", "wifi7/ath12k_wifi7.ko")
+        ]
+        require(layouts[0] == layouts[1],
+                "ath12k_base internal ABI differs between compiled module pair")
+        require("wmi_ab" in layouts[0] and "drv_priv[]" in layouts[0],
+                "Incomplete ath12k_base DWARF layout")
 
         special_nodes(tools["unsquashfs"], accepted_sq)
         excl = tmp / "exclude"
@@ -337,6 +352,7 @@ def main() -> None:
         require(not (oldroot / TRIAL_MARKER).exists(), "Unexpected prior QDSS marker")
 
         (oldroot / ROOT_MODULE).write_bytes(candidate_module.read_bytes())
+        (oldroot / ROOT_WIFI7).write_bytes(package_wifi7.read_bytes())
         diag = oldroot / ROOT_PROFILE
         diag.parent.mkdir(parents=True, exist_ok=True)
         diag.write_bytes(a.diagnostic_profile.read_bytes())
@@ -354,9 +370,10 @@ def main() -> None:
             f"base_dtb_sha256={BASELINE_DTB_SHA}\n"
             f"qdss_dtb_sha256={dt_report['diagnostic_dtb_sha256']}\n"
             f"ath12k_sha256={module_sha}\n"
+            f"ath12k_wifi7_sha256={package_wifi7_sha}\n"
             f"qdss_profile_sha256={PROFILE_SHA}\n"
             f"kernel=byte-identical-napi-accepted\n"
-            f"other-modules=byte-identical-napi-accepted\n"
+            f"non-ath12k-modules=byte-identical-napi-accepted\n"
             f"q6-firmware=byte-identical-napi-accepted\n"
             f"source_commit={run('git', '-C', repo, 'rev-parse', 'HEAD').strip()}\n"
         )
@@ -364,7 +381,7 @@ def main() -> None:
         after = manifest(oldroot)
         changed = sorted(x for x in before.keys() | after.keys()
                          if before.get(x) != after.get(x))
-        expected = sorted([ROOT_MODULE, ROOT_PROFILE, TRIAL_MARKER, *IDENTITIES])
+        expected = sorted([ROOT_MODULE, ROOT_WIFI7, ROOT_PROFILE, TRIAL_MARKER, *IDENTITIES])
         require(changed == expected, f"Unexpected rootfs changes: {changed}")
 
         new_sq = tmp / "candidate.squashfs"
@@ -425,8 +442,9 @@ def main() -> None:
             "device_tree": dt_report,
             "accepted_module_sha256": BASELINE_MODULE_SHA,
             "new_module_sha256": module_sha,
-            "unchanged_wifi7_sha256": WIFI7_SHA,
-            "discarded_rebuilt_wifi7_sha256": discarded_package_wifi7_sha,
+            "accepted_wifi7_sha256": WIFI7_SHA,
+            "new_wifi7_sha256": package_wifi7_sha,
+            "source_module_shared_abi": "DWARF ath12k_base layout identical",
             "qdss_profile_sha256": PROFILE_SHA,
             "rootfs_changed": changed,
             "unexpected_changes": [],

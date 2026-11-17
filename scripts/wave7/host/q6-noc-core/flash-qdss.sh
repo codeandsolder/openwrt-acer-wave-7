@@ -5,9 +5,9 @@ umask 077
 action=${1:---check}
 [[ $action == --check || $action == --run ]] || { echo 'usage: flash-qdss.sh --check|--run' >&2; exit 2; }
 dir=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-image="$dir/image-build/wave7-umacnoc-qdss-etr1-sysupgrade.bin"
+image="$dir/image-build/wave7-umacnoc-qdss-e6220b40e2-sysupgrade.bin"
 rollback=/home/jan/firmware/wave7/trials/20261116-napi-irq-ab/image-build/wave7-napi-5e3df9b898-sysupgrade.bin
-image_sha=f902c964b3d31c4353da225bee80a1232bef669f811a16bd5c1806ef80350e59
+image_sha=51c2bfbf9900a81cba1b97a69361763d344c6090da4f7c4c1d87201ab88ef1d0
 rollback_sha=18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622
 accepted_rev=r0+38249-napi-5e3df9b898
 host=root@192.168.76.1
@@ -46,12 +46,12 @@ test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wa
 echo "PREFLIGHT_PASS accepted_boot=$old_boot source_image_sha=$image_sha accepted_restore_sha=$rollback_sha"
 [[ $action == --run ]] || exit 0
 
-tag=qdss-etr1-$(date +%Y%m%d-%H%M%S)
+tag=qdss-e6220b40e2-$(date +%Y%m%d-%H%M%S)
 run_dir="$dir/runs/$tag"
 mkdir -p "$run_dir"
 printf '%s\n' "$baseline" > "$run_dir/preflight.txt"
 printf 'candidate_sha=%s\nrollback_sha=%s\n' "$image_sha" "$rollback_sha" >> "$run_dir/preflight.txt"
-trial_remote=/tmp/wave7-qdss-etr1-trial.bin
+trial_remote=/tmp/wave7-qdss-e6220b40e2-trial.bin
 rollback_remote=/tmp/wave7-qdss-accepted-preflight.bin
 for pair in "$image|$trial_remote|$image_sha" "$rollback|$rollback_remote|$rollback_sha"; do
   IFS='|' read -r source dest sha <<< "$pair"

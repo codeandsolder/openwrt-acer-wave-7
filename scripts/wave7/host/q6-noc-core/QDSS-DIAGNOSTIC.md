@@ -63,13 +63,18 @@ the *accepted* DTB in place with libfdt tooling (only one new ETR node,
 Wi-Fi spare size adjustment, and its memory-region/region-names append),
 regenerates the FIT CRC32/SHA1 hashes, and asserts the compressed kernel
 bytes are identical to the accepted kernel. It compares the ENTIRE
-canonical DTB and rejects any unapproved property change. The newly
-compiled companion ath12k_wifi7.ko is deliberately discarded; the
-accepted module remains untouched.
+canonical DTB and rejects any unapproved property change. The newly compiled companion ath12k_wifi7.ko is **always packaged
+together with** its matching ath12k.ko. These two modules share the
+C definition of ath12k_base and must have identical layout. During
+the first diagnostic hardware trial we preserved the old companion,
+causing a real null-pointer Oops at 43.5 seconds; that attempt
+automatically fell back to the Acer vendor firmware. The builder
+now compares complete DWARF layouts from both rebuilt modules and
+requires both files to be present and replaced in the rootfs.
 
-The SquashFS is rebuilt from the accepted root with only the native
-ath12k module, diagnostic QDSS firmware profile, four revision strings
-and one trial marker changed. The builder checks the entire rootfs
+The SquashFS is rebuilt from the accepted root with the two matched
+native ath12k modules, diagnostic QDSS firmware profile, four revision
+strings and one trial marker changed. The builder checks the entire rootfs
 manifest, module vermagic, special /dev/console node, rootfs reextract,
 FIT hash data, sysupgrade tar members, target and fwtool metadata.
 A generated .report.json records all changed files, artifact hashes,
