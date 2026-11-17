@@ -86,7 +86,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	return ret;
  }
  
-@@ -4425,6 +4442,56 @@
+@@ -4425,6 +4442,67 @@
  	ath12k_qmi_driver_event_post(qmi, ATH12K_QMI_EVENT_FW_READY, NULL);
  }
  
@@ -103,14 +103,25 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
 +	const struct qmi_wlanfw_request_mem_ind_msg_v01 *msg = decoded;
 +	struct qmi_wlanfw_request_mem_ind_msg_v01 *copy;
 +
-+	if (!READ_ONCE(qmi->qdss.configured))
++	/* HOST_CAP negotiation happens before the BDF profile upload.
++	 * Preserve evidence of an indication even if firmware sends it
++	 * during this gap rather than after qdss.configured is set.
++	 */
++	if (qmi->ab->hw_rev != ATH12K_HW_IPQ5332_HW10)
 +		return;
++	atomic_inc(&qmi->qdss.mem_req_seen);
 +	ath12k_info(qmi->ab,
-+		    "QDSS: FW ETR memory indication segments=%u first-type=%u first-size=%u\n",
-+		    msg->mem_seg_len,
++		    "QDSS: FW ETR memory indication configured=%u segments=%u first-type=%u first-size=%u\n",
++		    READ_ONCE(qmi->qdss.configured), msg->mem_seg_len,
 +		    msg->mem_seg_len ? msg->mem_seg[0].type : 0,
 +		    msg->mem_seg_len ? msg->mem_seg[0].size : 0);
++	if (!READ_ONCE(qmi->qdss.configured)) {
++		atomic_inc(&qmi->qdss.mem_req_before_config);
++		ath12k_warn(qmi->ab, "QDSS: FW ETR request arrived before profile configuration\n");
++		return;
++	}
 +	if (msg->mem_seg_len != 1 || msg->mem_seg[0].type != ATH12K_QDSS_MEM_TYPE) {
++		atomic_inc(&qmi->qdss.mem_req_invalid);
 +		ath12k_warn(qmi->ab, "QDSS: unexpected memory request\n");
 +		return;
 +	}
@@ -143,7 +154,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  static const struct qmi_msg_handler ath12k_qmi_msg_handlers[] = {
  	{
  		.type = QMI_INDICATION,
-@@ -4448,6 +4515,20 @@
+@@ -4448,6 +4526,20 @@
  		.fn = ath12k_qmi_msg_fw_ready_cb,
  	},
  
@@ -164,7 +175,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	/* end of list */
  	{},
  };
-@@ -4549,6 +4630,7 @@
+@@ -4549,6 +4641,7 @@
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_SERVER_EXIT:
@@ -172,7 +183,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_REQUEST_MEM:
-@@ -4599,12 +4681,25 @@
+@@ -4599,12 +4692,25 @@
  			if (ret < 0)
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
@@ -198,7 +209,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  		kfree(event);
  		spin_lock(&qmi->event_lock);
  	}
-@@ -4618,6 +4713,7 @@
+@@ -4618,6 +4724,7 @@
  	memset(&ab->qmi.target, 0, sizeof(struct target_info));
  	memset(&ab->qmi.target_mem, 0, sizeof(struct target_mem_chunk));
  	ab->qmi.ab = ab;
@@ -206,7 +217,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  
  	ab->qmi.target_mem_mode = ab->target_mem_mode;
  	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,
-@@ -4657,6 +4753,7 @@
+@@ -4657,6 +4764,7 @@
  	qmi_handle_release(&ab->qmi.handle);
  	cancel_work_sync(&ab->qmi.event_work);
  	destroy_workqueue(ab->qmi.event_wq);
@@ -214,7 +225,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  	ath12k_qmi_free_target_mem_chunk(ab);
-@@ -4669,3 +4766,46 @@
+@@ -4669,3 +4777,46 @@
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  }
@@ -273,7 +284,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
  	ATH12K_QMI_EVENT_MAX,
  };
  
-@@ -166,6 +168,20 @@
+@@ -166,6 +168,24 @@
  	struct m3_mem_region aux_uc_mem;
  	unsigned int service_ins_id;
  	struct dev_mem_info dev_mem[ATH12K_QMI_WLFW_MAX_DEV_MEM_NUM_V01];
@@ -290,6 +301,10 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
 +		bool configured;
 +		bool active;
 +		bool start_requested;
++		/* QMI indications may precede QDSS profile download. */
++		atomic_t mem_req_seen;
++		atomic_t mem_req_before_config;
++		atomic_t mem_req_invalid;
 +	} qdss;
  };
  
@@ -298,7 +313,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,591 @@
+@@ -0,0 +1,597 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -779,6 +794,9 @@ new file mode 100644
 +void ath12k_qdss_init(struct ath12k_base *ab)
 +{
 +	mutex_init(&ab->qmi.qdss.lock);
++	atomic_set(&ab->qmi.qdss.mem_req_seen, 0);
++	atomic_set(&ab->qmi.qdss.mem_req_before_config, 0);
++	atomic_set(&ab->qmi.qdss.mem_req_invalid, 0);
 +}
 +
 +void ath12k_qdss_cleanup(struct ath12k_base *ab)
@@ -849,15 +867,18 @@ new file mode 100644
 +{
 +	struct ath12k_base *ab = file->private_data;
 +	struct ath12k_qmi *qmi = &ab->qmi;
-+	char status[132];
++	char status[224];
 +	int len;
 +
 +	mutex_lock(&qmi->qdss.lock);
 +	len = scnprintf(status, sizeof(status),
-+			"configured=%u active=%u start_requested=%u etr_ready=%u etr_base=%pa etr_size=%u\n",
++			"configured=%u active=%u start_requested=%u etr_ready=%u etr_base=%pa etr_size=%u mem_req_seen=%d mem_req_before_config=%d mem_req_invalid=%d\n",
 +			qmi->qdss.configured, qmi->qdss.active,
 +			qmi->qdss.start_requested, !!qmi->qdss.etr,
-+			&qmi->qdss.base, qmi->qdss.size);
++			&qmi->qdss.base, qmi->qdss.size,
++			atomic_read(&qmi->qdss.mem_req_seen),
++			atomic_read(&qmi->qdss.mem_req_before_config),
++			atomic_read(&qmi->qdss.mem_req_invalid));
 +	mutex_unlock(&qmi->qdss.lock);
 +	return simple_read_from_buffer(user_buf, count, ppos, status, len);
 +}
