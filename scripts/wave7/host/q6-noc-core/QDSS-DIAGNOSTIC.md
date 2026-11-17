@@ -146,6 +146,55 @@ This early-negotiation code requires a separate build and complete
 revalidated image before hardware testing. Do not confuse the successful
 config message with a successful trace capture.
 
+## Fourth guarded hardware trial and early-MEM_REQ visibility (2026-11-17)
+
+The fourth whole-image diagnostic, `r0+38249-qdss-f086787166`
+(SHA256 `fb09dee95c351afd86c3598b24e739221e10fa43669d68a4d72bb29e3cffe203`),
+booted as `5c61face-e0a3-4d4e-80d9-20e3d03c34b9` and passed the
+independent Asus **900-second continuous-health soak** at 06:44:02 CET.
+During the soak: three Q6 remoteprocs running, MLO2, wired Redmi reachable,
+bootfail0 and firstboot keep marker. Asus observer evidence:
+`/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/runs/qdss-f086787166-20261117-062642/observer.log`.
+The three permanent passive NoC collectors remain active. The one-off vendor
+observer expired at its 1800-second runtime limit *after* the successful soak;
+the one-off raw QDSS collector remained active until its own runtime limit.
+No raw UMACNOC QDSS capture has been produced.
+
+The firmware accepted the exact 3774-byte profile at BDF load with
+`CNSS_QDSS_CFG_MISS` cleared, but last hardware observation showed
+`configured=1 active=0 start_requested=0 etr_ready=0`. The previous
+interpretation that QMI 0x003f *was never sent by firmware* was too strong:
+the native callback discarded this indication **without logging** whenever
+`configured` was false. On a BDF-init transaction the indication could
+race ahead of the host's local configuration state. No actual evidence of
+such a race exists yet; it is a newly identified observability gap.
+
+A subsequent **source-only, not flashed** patch now counts every decoded
+0x003f indication delivered to the IPQ5332 QMI handler, including those
+arriving before `configured` is set, and prints its segment metadata.
+`umacnoc_qdss/status` includes persistent per-boot
+`mem_req_seen`, `mem_req_before_config`, and `mem_req_invalid`
+counters. This does not change firmware negotiation timing, tracing enable,
+memory mappings, or production behavior.
+
+Diagnostic interpretation for any later **independently guarded** boot:
+- `mem_req_before_config>0`: the firmware requested trace memory before
+  host configuration was complete. Preserve the exact early indication
+  timestamp and compare to HOST_CAP and BDF configuration timestamps.
+- `mem_req_seen>0` but `etr_ready=0`: use event logs and segment type,
+  size and number to distinguish preconfiguration drops, validation and
+  MEM_INFO errors.
+- `mem_req_seen=0`: no *decoded* 0x003f reached this QMI callback. This
+  does not prove the firmware never emitted anything (wire/TLV decode or
+  another service instance could still account for missing visibility).
+
+SCCACHE_SERVER_PORT=4228 OpenWrt regular mac80211 package compilation
+passed. The patched seven-file series applies with `patch -p1 --fuzz=0`
+to all original native sources and reproduces their expected bytes exactly.
+Both freshly compiled native ath12k modules have byte-identical
+`pahole --hex -C ath12k_base` layouts. Do not flash or call the new
+counters hardware-validated on the basis of compilation alone.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
