@@ -56,13 +56,43 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  #include "core.h"
  #include "debug.h"
  #include "hif.h"
-@@ -4425,6 +4426,51 @@
+@@ -2430,6 +2431,14 @@
+ 	if (ab->hw_params->qmi_cnss_feature_bitmap) {
+ 		req.feature_list_valid = 1;
+ 		req.feature_list = ab->hw_params->qmi_cnss_feature_bitmap;
++		if (ath12k_qdss_boot_config_enabled(ab)) {
++			/* The host now supplies QDSS configuration during BDF
++			 * download, so do not advertise CFG_MISS to WCSS.
++			 * Only the diagnostic DTB carries the dedicated ETR node.
++			 */
++			req.feature_list &= ~BIT(CNSS_QDSS_CFG_MISS_V01);
++			ath12k_info(ab, "QDSS: diagnostic host capability advertised\n");
++		}
+ 	}
+ 
+ 	/* BRINGUP: here we are piggybacking a lot of stuff using
+@@ -4329,6 +4338,14 @@
+ 		}
+ 	}
+ 
++	if (ath12k_qdss_boot_config_enabled(ab)) {
++		ret = ath12k_qdss_prepare_boot(ab);
++		if (ret) {
++			ath12k_warn(ab, "QDSS: early BDF configuration failed: %d\n", ret);
++			return ret;
++		}
++	}
++
+ 	return ret;
+ }
+ 
+@@ -4425,6 +4442,56 @@
  	ath12k_qmi_driver_event_post(qmi, ATH12K_QMI_EVENT_FW_READY, NULL);
  }
  
 +/* QMI callbacks only retain validated-size messages and queue sleeping
-+ * operations on the existing ordered QMI event workqueue. These events are
-+ * entirely inactive until the diagnostic debugfs start is requested.
++ * operations on the ordered QMI event workqueue. A diagnostic DTB may
++ * provision ETR during boot; MODE_ON still requires explicit debugfs start.
 + */
 +static void ath12k_qmi_msg_qdss_req_mem_cb(struct qmi_handle *hdl,
 +					   struct sockaddr_qrtr *sq,
@@ -75,6 +105,11 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
 +
 +	if (!READ_ONCE(qmi->qdss.configured))
 +		return;
++	ath12k_info(qmi->ab,
++		    "QDSS: FW ETR memory indication segments=%u first-type=%u first-size=%u\n",
++		    msg->mem_seg_len,
++		    msg->mem_seg_len ? msg->mem_seg[0].type : 0,
++		    msg->mem_seg_len ? msg->mem_seg[0].size : 0);
 +	if (msg->mem_seg_len != 1 || msg->mem_seg[0].type != ATH12K_QDSS_MEM_TYPE) {
 +		ath12k_warn(qmi->ab, "QDSS: unexpected memory request\n");
 +		return;
@@ -108,7 +143,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  static const struct qmi_msg_handler ath12k_qmi_msg_handlers[] = {
  	{
  		.type = QMI_INDICATION,
-@@ -4448,6 +4494,20 @@
+@@ -4448,6 +4515,20 @@
  		.fn = ath12k_qmi_msg_fw_ready_cb,
  	},
  
@@ -129,7 +164,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	/* end of list */
  	{},
  };
-@@ -4549,6 +4609,7 @@
+@@ -4549,6 +4630,7 @@
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_SERVER_EXIT:
@@ -137,7 +172,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
  			break;
  		case ATH12K_QMI_EVENT_REQUEST_MEM:
-@@ -4599,12 +4660,25 @@
+@@ -4599,12 +4681,25 @@
  			if (ret < 0)
  				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
  			break;
@@ -163,7 +198,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  		kfree(event);
  		spin_lock(&qmi->event_lock);
  	}
-@@ -4618,6 +4692,7 @@
+@@ -4618,6 +4713,7 @@
  	memset(&ab->qmi.target, 0, sizeof(struct target_info));
  	memset(&ab->qmi.target_mem, 0, sizeof(struct target_mem_chunk));
  	ab->qmi.ab = ab;
@@ -171,7 +206,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  
  	ab->qmi.target_mem_mode = ab->target_mem_mode;
  	ret = qmi_handle_init(&ab->qmi.handle, ATH12K_QMI_RESP_LEN_MAX,
-@@ -4657,6 +4732,7 @@
+@@ -4657,6 +4753,7 @@
  	qmi_handle_release(&ab->qmi.handle);
  	cancel_work_sync(&ab->qmi.event_work);
  	destroy_workqueue(ab->qmi.event_wq);
@@ -179,7 +214,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  	ath12k_qmi_free_target_mem_chunk(ab);
-@@ -4669,3 +4745,46 @@
+@@ -4669,3 +4766,46 @@
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  }
@@ -238,7 +273,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
  	ATH12K_QMI_EVENT_MAX,
  };
  
-@@ -166,6 +168,19 @@
+@@ -166,6 +168,20 @@
  	struct m3_mem_region aux_uc_mem;
  	unsigned int service_ins_id;
  	struct dev_mem_info dev_mem[ATH12K_QMI_WLFW_MAX_DEV_MEM_NUM_V01];
@@ -254,6 +289,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/at
 +		void __iomem *etr;
 +		bool configured;
 +		bool active;
++		bool start_requested;
 +	} qdss;
  };
  
@@ -262,7 +298,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,528 @@
+@@ -0,0 +1,591 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -286,6 +322,21 @@ new file mode 100644
 +static bool ath12k_qdss_supported(const struct ath12k_base *ab)
 +{
 +	return ab->hw_rev == ATH12K_HW_IPQ5332_HW10;
++}
++
++/* Dedicated no-map ETR is installed only by the diagnostic board DTB.
++ * Normal IPQ5332 images retain CNSS_QDSS_CFG_MISS and unchanged FW boot.
++ */
++bool ath12k_qdss_boot_config_enabled(struct ath12k_base *ab)
++{
++	struct reserved_mem *rmem;
++
++	if (!ath12k_qdss_supported(ab))
++		return false;
++
++	rmem = ath12k_core_get_reserved_mem_by_name(ab, "q6-etr-dump");
++	return rmem && rmem->size == ATH12K_QDSS_ETR_MAX &&
++	       IS_ALIGNED(rmem->base, PAGE_SIZE);
 +}
 +
 +static int ath12k_qdss_send_qmi(struct ath12k_base *ab, u32 id,
@@ -397,60 +448,102 @@ new file mode 100644
 +
 +static void ath12k_qdss_reset_locked(struct ath12k_qmi *qmi);
 +
-+/* Only called by explicit debugfs start, never during ordinary radio bringup. */
-+static int ath12k_qdss_start(struct ath12k_base *ab)
++/* With CNSS_QDSS_CFG_MISS cleared the firmware may wait for its config
++ * during BDF bring-up, so download the profile there. The QDSS ETR memory
++ * reservation itself does NOT imply that tracing should start. An explicit
++ * debugfs request is still required before MODE_ON is sent.
++ */
++static int ath12k_qdss_configure(struct ath12k_base *ab, bool request_trace)
 +{
 +	struct ath12k_qmi *qmi = &ab->qmi;
 +	struct reserved_mem *rmem;
-+	int ret;
++	int ret = 0;
 +
-+	if (!ath12k_qdss_supported(ab))
++	if (!ath12k_qdss_boot_config_enabled(ab))
 +		return -EOPNOTSUPP;
 +
 +	mutex_lock(&qmi->qdss.lock);
 +	if (qmi->qdss.configured) {
-+		ret = -EBUSY;
++		if (!request_trace)
++			goto out_unlock;
++		if (qmi->qdss.start_requested || qmi->qdss.active) {
++			ret = -EBUSY;
++			goto out_unlock;
++		}
++		qmi->qdss.start_requested = true;
++		if (qmi->qdss.etr) {
++			/* Firmware already accepted our ETR mapping during boot. */
++			ret = ath12k_qdss_mode(ab, true);
++			if (!ret)
++				qmi->qdss.active = true;
++			else
++				qmi->qdss.start_requested = false;
++		}
 +		goto out_unlock;
 +	}
 +
 +	rmem = ath12k_core_get_reserved_mem_by_name(ab, "q6-etr-dump");
 +	if (!rmem || rmem->size != ATH12K_QDSS_ETR_MAX ||
 +	    !IS_ALIGNED(rmem->base, PAGE_SIZE)) {
-+		ath12k_warn(ab, "QDSS: missing or invalid 1 MiB reserved ETR region\n");
 +		ret = -EINVAL;
 +		goto out_unlock;
 +	}
-+
-+	/* Keep the memory reservation in the DT, do not remap or clear it
-+	 * until FW requests a QDSS region and verifies its size.
-+	 */
 +	qmi->qdss.base = rmem->base;
 +	qmi->qdss.size = rmem->size;
++	qmi->qdss.start_requested = request_trace;
 +	WRITE_ONCE(qmi->qdss.configured, true);
++
 +	ret = ath12k_qdss_send_config(ab);
 +	if (ret) {
-+		WRITE_ONCE(qmi->qdss.configured, false);
 +		ath12k_warn(ab, "QDSS: firmware configuration failed: %d\n", ret);
++		ath12k_qdss_reset_locked(qmi);
 +	}
 +out_unlock:
 +	mutex_unlock(&qmi->qdss.lock);
 +	return ret;
 +}
 +
++int ath12k_qdss_prepare_boot(struct ath12k_base *ab)
++{
++	int ret = ath12k_qdss_configure(ab, false);
++
++	if (!ret)
++		ath12k_info(ab, "QDSS: early ETR config uploaded, trace disabled\n");
++	return ret;
++}
++
++static int ath12k_qdss_start(struct ath12k_base *ab)
++{
++	return ath12k_qdss_configure(ab, true);
++}
++
 +static int ath12k_qdss_stop(struct ath12k_base *ab)
 +{
 +	struct ath12k_qmi *qmi = &ab->qmi;
-+	int ret;
++	int ret = 0;
 +
 +	mutex_lock(&qmi->qdss.lock);
-+	if (!qmi->qdss.active) {
++	if (!qmi->qdss.configured) {
 +		ret = -EALREADY;
++		goto out_unlock;
++	}
++
++	if (!qmi->qdss.active) {
++		/* Firmware may still be waiting for MEM_INFO. Cancel the
++		 * negotiated session first; do not silently forget a pending
++		 * request and potentially strand WCSS during initialization.
++		 */
++		ret = ath12k_qdss_mode(ab, false);
++		if (!ret) {
++			ath12k_qdss_reset_locked(qmi);
++			ath12k_info(ab, "QDSS: unstarted configuration canceled\n");
++		}
 +		goto out_unlock;
 +	}
 +
 +	ret = ath12k_qdss_mode(ab, false);
 +	if (!ret)
-+		qmi->qdss.active = false;
++		qmi->qdss.active = false; /* retain ETR until FW SAVE */
 +out_unlock:
 +	mutex_unlock(&qmi->qdss.lock);
 +	return ret;
@@ -492,13 +585,17 @@ new file mode 100644
 +	 * for WCSS to finish configuring its ETR sink.
 +	 */
 +	msleep(1000);
-+	ret = ath12k_qdss_mode(ab, true);
-+	if (ret)
-+		goto out_unmap;
-+
-+	qmi->qdss.active = true;
-+	ath12k_info(ab, "QDSS: WCSS UMACNOC tracing active, ETR %pa size %#x\n",
-+		    &qmi->qdss.base, size);
++	if (qmi->qdss.start_requested) {
++		ret = ath12k_qdss_mode(ab, true);
++		if (ret)
++			goto out_unmap;
++		qmi->qdss.active = true;
++		ath12k_info(ab, "QDSS: WCSS UMACNOC tracing active, ETR %pa size %#x\n",
++			    &qmi->qdss.base, size);
++	} else {
++		ath12k_info(ab, "QDSS: ETR memory provisioned at %pa size %#x, tracing idle\n",
++			    &qmi->qdss.base, size);
++	}
 +	goto out_unlock;
 +
 +out_unmap:
@@ -670,6 +767,7 @@ new file mode 100644
 +{
 +	WRITE_ONCE(qmi->qdss.configured, false);
 +	qmi->qdss.active = false;
++	qmi->qdss.start_requested = false;
 +	if (qmi->qdss.etr) {
 +		iounmap(qmi->qdss.etr);
 +		qmi->qdss.etr = NULL;
@@ -756,8 +854,9 @@ new file mode 100644
 +
 +	mutex_lock(&qmi->qdss.lock);
 +	len = scnprintf(status, sizeof(status),
-+			"configured=%u active=%u etr_base=%pa etr_size=%u\n",
++			"configured=%u active=%u start_requested=%u etr_ready=%u etr_base=%pa etr_size=%u\n",
 +			qmi->qdss.configured, qmi->qdss.active,
++			qmi->qdss.start_requested, !!qmi->qdss.etr,
 +			&qmi->qdss.base, qmi->qdss.size);
 +	mutex_unlock(&qmi->qdss.lock);
 +	return simple_read_from_buffer(user_buf, count, ppos, status, len);
@@ -795,7 +894,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.h b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,99 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/* IPQ5332 opt-in Qualcomm WCSS NoC trace capture using existing QMI service. */
 +#ifndef ATH12K_QDSS_H
@@ -881,6 +980,8 @@ new file mode 100644
 +
 +extern const struct qmi_elem_info ath12k_qdss_save_ind_ei[];
 +
++bool ath12k_qdss_boot_config_enabled(struct ath12k_base *ab);
++int ath12k_qdss_prepare_boot(struct ath12k_base *ab);
 +void ath12k_qdss_init(struct ath12k_base *ab);
 +void ath12k_qdss_cleanup(struct ath12k_base *ab);
 +void ath12k_qdss_debugfs_create(struct ath12k_base *ab);

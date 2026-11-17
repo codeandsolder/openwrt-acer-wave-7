@@ -53,8 +53,8 @@ physical PT_LOAD spans in the three OEM Q6 ELFs overlaps ETR.
 
 ## Exact accepted-kernel diagnostic image packaging
 
-The independent native NAPI 5e3df9b898 image is the **current accepted
-baseline**. The dedicated builder at build-qdss-candidate.py takes that
+The independent native NAPI 5e3df9b898 image is the **accepted
+rollback artifact**, not necessarily the currently running diagnostic boot. The dedicated builder at build-qdss-candidate.py takes that
 original SHA-pinned image (18e285b7...), the final compiled kmod-ath12k
 APK, and the generated trace-only profile.
 
@@ -95,7 +95,58 @@ and validates the ETR offsets/sizes or streaming message sequence
 without assuming a nonzero total_size means QMI. This correction
 is required before any real capture.
 
-## Bounded guarded hardware test procedure (not performed)
+## Early QDSS firmware negotiation (next diagnostic build)
+
+Hardware test of the corrected 2026-11-17 `fc4cdcce47` image proved
+`QDSS: uploaded qdss_trace_umacnoc.bin (3774 bytes, 1 segments)`
+on original Acer WBE1.3 Q6, but ETR remains `configured=1 active=0`.
+No firmware `QMI 0x003f` memory request or raw trace dump appeared.
+
+The original IPQ5332 hardware parameters include
+`CNSS_QDSS_CFG_MISS_V01` (bit 3) in QMI HOST_CAP. Qualcomm QSDK's
+QDSS implementation has the expected CONFIG→MEM_REQ→MEM_INFO→MODE
+sequence, but does not alter that feature bit. Independent ath12k
+WCN7860 code in Armbian patches 0040/0041 demonstrates the early
+initialization variant: when the missing-config flag is cleared, send
+the QDSS profile at BDF load rather than after radio ready. This is
+**related protocol evidence on different silicon**, not proof of
+IPQ5332's behavior.
+
+The next test source implements the equivalent IPQ5332-only handshake,
+with an extra explicit opt-in: the active DTB must provide a named
+exactly 1MiB `q6-etr-dump` reserved-memory region. Without that region
+the original HOST_CAP bit and ordinary startup remain unchanged. With
+it, the host clears only `CNSS_QDSS_CFG_MISS` in the QMI HOST_CAP
+request and downloads the separate profile at the end of
+`ath12k_qmi_event_load_bdf`. Any early configuration failure becomes
+a real bring-up failure covered by vendor rollback.
+
+The early memory-request worker provisions the exact ETR physical
+reservation and sends MEM_INFO but **does not enable TRACE_MODE** until
+an explicit debugfs `start`. If the ETR is ready when the command is
+issued, it sends MODE_ON immediately; otherwise it defers the enable
+until the validated FW MEM_REQ event. Debugfs status exposes
+`start_requested` and `etr_ready` to distinguish upload,
+memory allocation and actual tracing. An idle-session cancel sends
+MODE_OFF and clears the host state only after a positive firmware
+response.
+
+Source:
+- Qualcomm QSDK: `Telecominfraproject/wlan-ap` ath12k
+  `0527-001-QSDK-PLATFORM-wifi-ath12k-Add-QDSS-support.patch`,
+  commit `4ebbb3a53afbc142802851a3a0e405bd671b5289`
+- Armbian ath12k protocol ordering: `armbian/build`
+  `0040-wifi-ath12k-send-QDSS-config-when-CNSS_QDSS_CFG_MISS.patch`
+  and `0041-wifi-ath12k-disable-CNSS_QDSS_CFG_MISS_V01-for-the-W.patch`,
+  commit `90c251d5b9b15db625f51443216f173990c75f9f`
+- Exact guarded `fc4cdcce47` trial evidence:
+  `/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/runs/qdss-fc4cdcce47-20261117-060557/evidence`
+
+This early-negotiation code requires a separate build and complete
+revalidated image before hardware testing. Do not confuse the successful
+config message with a successful trace capture.
+
+## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
 It REQUIRES a separate sysupgrade built with the diagnostic kernel
@@ -117,7 +168,9 @@ must succeed before status shows active=1. Stop only requests a save;
 only an actual firmware SAVE indication produces the binary
 devcoredump. Persist the raw devcoredump on Asus together with
 boot UUID, kernel/FW version, trace settings, and Q6 log events.
-Normal production profile and accepted running router are unchanged.
+The normal production QDSS profile and unmodified accepted NAPI image
+remain unchanged. The currently running *diagnostic* image is separate;
+status and exact active boot should always be rechecked before a test.
 
 ## Remaining unknowns
 
