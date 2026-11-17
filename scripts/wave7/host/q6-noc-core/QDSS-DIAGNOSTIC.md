@@ -22,15 +22,17 @@ the actual route-to-hardware target remains unknown.
 - Patch 723 adds IPQ5332-only opt-in QDSS QMI to the existing native
   ath12k service. No automatic tracing at boot. The existing
   CNSS_QDSS_CFG_MISS feature negotiation is unchanged.
-- Explicit start sends QMI 0x44 segmented profile configuration.
-  The FW asks for ETR memory via 0x3f, host uses named, dedicated
-  no-map 1MiB ETR region to reply via 0x40, then QMI 0x45 enables
-  the trace after FW configuration. Stop sends 0x45 mode-off.
-  FW 0x41 save indication captures phys-memory or streamed QMI
-  0x42 segments, exporting the binary as a Linux devcoredump.
-- QMI callbacks enqueue the existing ordered worker; QDSS state and
-  ETR mapping are mutex protected. Status, start, and stop_and_capture
-  are available only through the IPQ5332 debugfs device.
+- At boot, QMI 0x44 uploads the profile but does not start tracing.
+  Explicit start uses a firmware-requested 0x3f/host 0x40 MEM_INFO
+  handshake when offered. Acer WBE1.3 instead proved successful with
+  host-initiated 0x40 MEM_INFO for the dedicated 1MiB reserved ETR
+  buffer, followed by QMI 0x45 MODE_ON after a one-second settle.
+  Stop sends QMI 0x45 MODE_OFF. Firmware 0x41 SAVE indications, when
+  received, still produce Linux devcoredumps from ETR/QMI data.
+- QMI callbacks use the existing ordered worker; QDSS state and ETR
+  mapping are mutex protected. Root-only IPQ5332 debugfs provides
+  status, start, stop and a stopped-only raw_etr binary snapshot.
+  The raw_etr snapshot is independent of optional firmware SAVE.
 - Separate profile qdss_trace_umacnoc.bin enables the original
   commented-out UMACNOC trace and disables MAC/PHY event streams.
   Original zero path masks are preserved: IPQ5332 path mask width
@@ -362,14 +364,16 @@ under /sys/kernel/debug/ath12k, typically ahb-c000000.wifi, then:
     cat /sys/kernel/debug/ath12k/<ipq5332>/umacnoc_qdss/status
     echo 1 > /sys/kernel/debug/ath12k/<ipq5332>/umacnoc_qdss/start
     cat /sys/kernel/debug/ath12k/<ipq5332>/umacnoc_qdss/status
-    # Generate brief, known traffic only. Do not immediately do 100 reboots.
-    echo 1 > /sys/kernel/debug/ath12k/<ipq5332>/umacnoc_qdss/stop_and_capture
+    # Generate brief known traffic only. Do not repeat the reboot corpus.
+    echo 1 > /sys/kernel/debug/ath12k/<ipq5332>/umacnoc_qdss/stop
+    cat /sys/kernel/debug/ath12k/<ipq5332>/umacnoc_qdss/raw_etr > trace-etr.bin
 
-Start uploads the separate profile; firmware memory and mode handshakes
-must succeed before status shows active=1. Stop only requests a save;
-only an actual firmware SAVE indication produces the binary
-devcoredump. Persist the raw devcoredump on Asus together with
-boot UUID, kernel/FW version, trace settings, and Q6 log events.
+Start provisions the fixed ETR mapping, then turns tracing on only
+after successful QMI MEM_INFO. Stop requests MODE_OFF, not necessarily
+a firmware SAVE; raw_etr is a bounded root-only 1MiB snapshot that
+rejects reads while tracing is active. Persist binary and metadata
+together on Asus. A separate QMI SAVE, if emitted, also produces
+the normal devcoredump via the independent collector.
 The normal production QDSS profile and unmodified accepted NAPI image
 remain unchanged. The currently running *diagnostic* image is separate;
 status and exact active boot should always be rechecked before a test.

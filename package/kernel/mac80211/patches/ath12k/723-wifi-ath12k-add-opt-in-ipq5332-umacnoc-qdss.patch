@@ -318,7 +318,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,724 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -332,6 +332,7 @@ new file mode 100644
 +#include <linux/of_reserved_mem.h>
 +#include <linux/slab.h>
 +#include <linux/uaccess.h>
++#include <linux/vmalloc.h>
 +
 +#include "core.h"
 +#include "debug.h"
@@ -476,7 +477,7 @@ new file mode 100644
 + * neither memory info nor trace mode.
 + *
 + * Caller holds qdss.lock. Retain an accepted mapping even if MODE_ON fails:
-+ * stop_and_capture can then send MODE_OFF and release the reservation.
++ * an explicit stop can then send MODE_OFF and release the reservation.
 + */
 +static int ath12k_qdss_provision_locked(struct ath12k_base *ab, u32 size,
 +				       bool proactive)
@@ -909,6 +910,86 @@ new file mode 100644
 +	.llseek = noop_llseek,
 +};
 +
++/* QDSS SAVE (0x41) is an asynchronous firmware indication, not an
++ * automatic response to MODE_OFF (0x45). Allow a stopped session to be
++ * inspected without modifying ETR memory or depending on a SAVE event.
++ *
++ * The snapshot is copied under the state mutex exactly once on open,
++ * ensuring that a later firmware SAVE / deinit cannot invalidate a
++ * userspace read halfway through. This intentionally exposes only the
++ * fixed 1MiB opt-in ETR reservation to root (debugfs 0400).
++ */
++struct ath12k_qdss_raw_snapshot {
++	u8 *data;
++	u32 size;
++};
++
++static int ath12k_qdss_raw_open(struct inode *inode, struct file *file)
++{
++	struct ath12k_base *ab = inode->i_private;
++	struct ath12k_qmi *qmi = &ab->qmi;
++	struct ath12k_qdss_raw_snapshot *snapshot;
++	int ret = 0;
++
++	snapshot = kzalloc_obj(*snapshot, GFP_KERNEL);
++	if (!snapshot)
++		return -ENOMEM;
++	snapshot->data = vmalloc(ATH12K_QDSS_ETR_MAX);
++	if (!snapshot->data) {
++		kfree(snapshot);
++		return -ENOMEM;
++	}
++
++	mutex_lock(&qmi->qdss.lock);
++	if (!qmi->qdss.configured || !qmi->qdss.etr ||
++	    !qmi->qdss.etr_alloc_size ||
++	    qmi->qdss.etr_alloc_size > ATH12K_QDSS_ETR_MAX) {
++		ret = -ENODATA;
++		goto out_unlock;
++	}
++	if (qmi->qdss.active) {
++		ret = -EBUSY;
++		goto out_unlock;
++	}
++	snapshot->size = qmi->qdss.etr_alloc_size;
++	memcpy_fromio(snapshot->data, qmi->qdss.etr, snapshot->size);
++out_unlock:
++	mutex_unlock(&qmi->qdss.lock);
++	if (ret) {
++		vfree(snapshot->data);
++		kfree(snapshot);
++		return ret;
++	}
++	file->private_data = snapshot;
++	return 0;
++}
++
++static ssize_t ath12k_qdss_raw_read(struct file *file, char __user *user_buf,
++				    size_t count, loff_t *ppos)
++{
++	const struct ath12k_qdss_raw_snapshot *snapshot = file->private_data;
++
++	return simple_read_from_buffer(user_buf, count, ppos,
++				       snapshot->data, snapshot->size);
++}
++
++static int ath12k_qdss_raw_release(struct inode *inode, struct file *file)
++{
++	struct ath12k_qdss_raw_snapshot *snapshot = file->private_data;
++
++	vfree(snapshot->data);
++	kfree(snapshot);
++	return 0;
++}
++
++static const struct file_operations ath12k_qdss_raw_fops = {
++	.owner = THIS_MODULE,
++	.open = ath12k_qdss_raw_open,
++	.read = ath12k_qdss_raw_read,
++	.release = ath12k_qdss_raw_release,
++	.llseek = default_llseek,
++};
++
 +static ssize_t ath12k_qdss_status_read(struct file *file,
 +				       char __user *user_buf, size_t count,
 +				       loff_t *ppos)
@@ -952,8 +1033,10 @@ new file mode 100644
 +
 +	debugfs_create_file("start", 0200, dir, ab,
 +			    &ath12k_qdss_start_fops);
-+	debugfs_create_file("stop_and_capture", 0200, dir, ab,
++	debugfs_create_file("stop", 0200, dir, ab,
 +			    &ath12k_qdss_stop_fops);
++	debugfs_create_file("raw_etr", 0400, dir, ab,
++			    &ath12k_qdss_raw_fops);
 +	debugfs_create_file("status", 0400, dir, ab,
 +			    &ath12k_qdss_status_fops);
 +}
