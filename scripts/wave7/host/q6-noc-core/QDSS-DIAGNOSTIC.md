@@ -388,6 +388,57 @@ tracing changes, separate diagnostic DTB with reserved ETR, native
 matched-module pair, guard, original accepted NAPI rollback, and
 one intentional low-volume trace experiment after boot health.
 
+### Seventh raw-capture result and CoreSight demultiplexing
+
+The seventh image `r0+38249-qdss-64ef394b1e` passed **901 consecutive
+seconds of independent health** at 08:18:49 CET on 2026-11-17,
+boot `eb4d1802-615a-4857-b4a3-039e198c1de7`. Successful direct
+ETR snapshot after 12/12 MT7925 MLO ICMP packets:
+`trace-etr.bin` = **1,048,576 bytes**, SHA256
+`3b06c6af946b811ac14c85ff79e57558edff2be5b1b2c76b36abfcbe426a7130`.
+Asus archived all source binary and status evidence in the seventh
+trial's `evidence/proactive-etr-probe/` directory.
+
+`decode-coresight-etr.py` decodes Arm's 16-byte CoreSight formatter
+(IHI 0029F section D4.2), including source ID markers, auxiliary
+bit reconstruction, delayed/immediate source transitions, null ID
+and frame sync. The 1MiB input has **65,536 frames**, **8,193 ID
+markers**, and exact byte accounting. Trace source **ATID 0x39**
+contains **974,768 bytes**, SHA256
+`1f9e43a7f364480d7961a07ab8507e874368d7f87e4304b7e8c3b23396168104`.
+One ID0 interval contains 79 bytes. Asus archives
+`coresight/trace-id39.bin`, `trace-id00.bin`, `manifest.json`.
+`test_coresight_trace.py` validates the reference multi-ID frame,
+sync packets, accounting/error conditions and structural inspector.
+
+The resulting source stream has **492** repeating source-level
+synchronization candidates starting with ten `ff` bytes and
+`0f0f301f93000fe1`, normally separated by 1976/1984/1992
+bytes. The candidate record byte anchor `1b20` occurs **59,203**
+times (all aligned to 8 bytes); **58,550** neighboring occurrences
+are exactly 16 bytes apart. `inspect-noc-stream.py` groups only
+these unambiguous spans and reports 57,543 records in empirical
+byte-2 family `0x3c` and another 1,007 in 12 smaller families.
+The raw structure and `coresight/structural-records.json` are
+preserved for future field decoding; source-level sync blocks
+must not be confused with CoreSight formatter sync packets.
+
+**Interpretation constraint:** None of those source header bytes are
+yet proven to encode Qualcomm UMACNOC RouteId, MID, EXTID or address.
+The original failing route `0x3b` is distinct from CoreSight ATID
+`0x39` and the observed record-family byte `0x3c`. Do not reuse
+the unrelated QSEE system-fabric route tables. Validate transaction
+field mapping from a matching NoC probe source or an independently
+controlled filter/traffic differential. No further reboot is
+needed for offline inspection of the first raw capture.
+
+Run with `uv` from this script directory, supplying the archived
+seventh-trial files:
+
+    uv run --no-project python -B decode-coresight-etr.py trace-etr.bin --out-dir coresight
+    uv run --no-project python -B inspect-noc-stream.py coresight/trace-id39.bin --output coresight/structural-records.json
+    uv run --no-project python -B test_coresight_trace.py -v
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
