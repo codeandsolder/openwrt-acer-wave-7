@@ -518,6 +518,49 @@ NoC RouteId, MID, EXTID or address. Unsupported STPv2 events and
 timestamp discontinuities must not be silently assigned invented
 semantics. See `stpv2/README.md` and chronological Notion QDSS page.
 
+### Ninth diagnostic source: stopped-only ETR invalidation gate
+
+The eighth same-boot experiment (idle and MT7925 WLAN load, 120/120
+large ICMP packets) produced two successful, SHA-verified **identical**
+1MiB ETR snapshots, SHA256
+`fa0fbbba2eab0ebb95116e09f1d108c360b00b8a12670f8199b253590d574c9b`.
+The seventh-boot capture differs in 690,106 byte positions, showing
+that retention/initialization changes across boot while two explicit
+TRACE_ON/MODE_OFF sessions on the *same boot* did not visibly refresh
+the buffer. A successful QMI request thus does **not** prove a live
+ETR writer; the apparent STPv2 trace may be stale.
+
+Patch 723 adds opt-in debugfs `clear_etr` (write-only, mode 0200).
+It accepts exactly integer `1` and only after firmware ETR memory
+provisioning has completed. It verifies that its mapped, reserved
+buffer and allocated QMI ETR size both equal exactly 1MiB, refuses
+calls while `active` or `start_requested`, then `memset_io()`-zeros
+the dedicated 0x4cd00000 ETR region under `qdss.lock`, with a memory
+barrier before returning. It cannot be called from normal boot and
+never modifies any unrelated RAM. Retain the independent immutable
+pre-clear snapshot, read `raw_etr` back to **verify all zeros**
+before trying a new TRACE_ON; distinguish trace-disabled writes
+by also checking whether the ETR stays zero before restart.
+
+The ninth discriminating measurement is:
+(1) first guarded boot and explicit start/stop to provision the ETR;
+(2) SHA-pin original data; (3) explicitly clear and prove zero; (4)
+read again while stopped to identify unsolicited writes;
+(5) enable a bounded idle / WLAN test, stop, and read back again.
+If post-trace remains zero, the firmware did not write the ETR
+while TRACE_ON was acknowledged. If nonzero, record the first
+nonzero offset, sha, and decode the new STPv2 stream; compare
+against the control. The running eighth firmware does not yet
+contain this new clear endpoint, so only the separate guarded ninth
+trial can perform it.
+
+Latest **source-only** clear implementation completed full native
+OpenWrt mac80211 build with existing `SCCACHE_SERVER_PORT=4228`,
+`patch -p1 --fuzz=0` recreation of all seven native patched files,
+and matched DWARF `ath12k_base` ABI between both 6.18.60 modules.
+Build log:
+`/home/jan/research/wave7-qdss-20261117/build-mac80211-clear-etr.log`.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
