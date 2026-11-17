@@ -358,21 +358,27 @@ did not cause a firmware 0x0041 SAVE indication, so the raw devcoredump
 collector had nothing to archive even though all QMI requests succeeded.
 
 A seventh matched-module native diagnostic implements a root-only
-\`raw_etr\` debugfs binary file. Reading the file after MODE_OFF takes
+`raw_etr` debugfs binary file. Reading the file after MODE_OFF takes
 a one-time private copy of at most the exact 1MiB dedicated no-map
-ETR reservation under \`qdss.lock\`, then streams the immutable snapshot
+ETR reservation under `qdss.lock`, then streams the immutable snapshot
 through ordinary read offsets. Reads are rejected while the writer
 is active, when ETR has not been mapped, or if the allocated length is
-invalid. It uses \`vmalloc\` and releases temporary memory on close;
+invalid. It uses `vmalloc` and releases temporary memory on close;
 it does not wait for asynchronous SAVE and does not modify the ETR.
 
-The controls are \`status\`, \`start\`, \`stop\` and \`raw_etr\` (no
-\`stop_and_capture\` compatibility alias). The new independent Asus
+The controls are `status`, `start`, `stop` and `raw_etr` (no
+`stop_and_capture` compatibility alias). The new independent Asus
 operator reads exactly one snapshot to
-\`evidence/proactive-etr-probe/trace-etr.bin\` after MODE_OFF succeeds,
+`evidence/proactive-etr-probe/trace-etr.bin` after MODE_OFF succeeds,
 requiring a complete 1048576-byte file, recording its SHA-256 and
-preserving the kmsg/QDSS lifecycle alongside it. The companion
-\`analyze-etr.py\` script reports nonzero/filler byte distributions,
+preserving the kmsg/QDSS lifecycle alongside it. The probe also
+requires the Wyse MT7925 station associated over Wi-Fi, and transmits
+12 low-rate packets explicitly via `wlp2s0` to the Wave 7 AP before
+the separate wired Redmi control ping. That actually exercises the
+WLAN UMACNOC path rather than only copper Ethernet. The station is
+managed over its independent wired management route, with no
+NetworkManager autoconnect change. The companion
+`analyze-etr.py` script reports nonzero/filler byte distributions,
 per-page occupancy, entropy and bounded hex samples without assuming
 that a CoreSight stream is already present or decoded.
 
