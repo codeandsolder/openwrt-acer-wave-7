@@ -645,6 +645,56 @@ request. Ghidra analysis stays in the existing
 `/home/jan/research/wave7-qdss-20261117/firmware-disasm/` folder,
 not in the firmware root.
 
+### Tenth offline image and post-ready reload probe
+
+The ninth **actual hardware** image
+`r0+38249-qdss-885fe8b8cf` completed `902` consecutive
+healthy seconds at **09:19:49 CET**, all Q6 3/3, MLO2,
+wired1, bootfail0, keep1, NoC0. Its 1MiB all-zero ETR evidence
+was SHA-verified for immediate clear, stopped +1 second, and
+post-TRACE_ON MLO workload; identical all-zero SHA256
+`30e14955ebf1352266dc2ff8067e68104607e750abb9d3b36582b8af909fcb58`.
+Its completed-trial vendor fallback and raw collector were retired
+only after final health and checksum verification. The permanent
+three NoC/Q6 collectors remain active.
+
+Tenth matched-module offline image `r0+38249-qdss-eeae36fccc`,
+**SHA256 `bc4806ad80e3e5d83fd21aeefae4a4549f0d1aee970c2d75d818671d1c80e5c5`**,
+size 15,677,772 bytes. Same accepted compressed kernel,
+same 1MiB ETR diagnostic DTB, original Q6 firmware, byte-identical
+profile SHA `354b04763d2e95cdc25241f1543a9bd34d171e6d8d32d385242070edc5b4d6a4`,
+and exactly eight approved rootfs changes. Rebuilt main module SHA
+`b1e2f1297c485d0b3190847eb14975a5f0719733382cc0fab967414ffb961950`
+and companion SHA
+`1e07b931cf2d4991734f982341d305169b452224c25026537ac181ab4381fa41`;
+the source modules' complete `ath12k_base` DWARF layouts match.
+Original accepted NAPI restore image remains pinned by SHA256
+`18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622`.
+
+The tenth candidate adds *only* root-only stopped `reload_config`
+control to patch723. Both eighth/ninth ETR tests identified that QMI
+0x40 and 0x45 are acknowledged but don't start an ETR writer.
+The new post-ready discriminator resends the **same 3774-byte QDSS
+profile** via QMI 0x44 after full firstboot acceptance, waits three
+seconds, then records `mem_req_seen` and `mem_req_before_config`
+before/after, plus kernel dmesg. The paired bounded
+`probe-qdss.sh` repeats this on each idle/controlled-MLO phase:
+the WLAN-load phase first clears the stopped ETR and verifies 1MiB
+all-zero both immediately and after one second, then reloads the
+profile, records an additional stopped-only ETR readback to
+distinguish writes *before* TRACE_ON from newly enabled trace writes,
+runs 120 MT7925 Wi-Fi ICMP packets while TRACE_ON, sends MODE_OFF,
+and takes one last exact SHA-verified 1MiB buffer. Phase paths
+are `evidence/clear-etr/{idle,wlan-load}`. Both legacy QMI 0x3f
+counter and truly fresh ETR writes must be interpreted separately.
+
+The ninth final 900-second PASS is a prerequisite for the tenth
+guarded flash; **no hardware result for tenth** is implied by this
+offline build validation. The full image/build whitelist report is
+`/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/image-build/wave7-umacnoc-qdss-eeae36fccc-sysupgrade.report.json`.
+All candidate pins are in `build-qdss-candidate.py`,
+`qdss-watch.sh`, `flash-qdss.sh` and `probe-qdss.sh`.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.

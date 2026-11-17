@@ -6,9 +6,9 @@ umask 077
 action=$1
 [[ $action == --check || $action == --run ]] || exit 2
 root=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-revision=r0+38249-qdss-885fe8b8cf
-image=$root/image-build/wave7-umacnoc-qdss-885fe8b8cf-sysupgrade.bin
-image_sha=d63f1174828567bcceebf5880abd1fb8998f1b30e7d0c39ebf5ecff72caaa21a
+revision=r0+38249-qdss-eeae36fccc
+image=$root/image-build/wave7-umacnoc-qdss-eeae36fccc-sysupgrade.bin
+image_sha=bc4806ad80e3e5d83fd21aeefae4a4549f0d1aee970c2d75d818671d1c80e5c5
 key=/home/jan/.ssh/wave7-root-rsa
 host=root@192.168.76.1
 qdss=/sys/kernel/debug/ath12k/ahb-c000000.wifi/umacnoc_qdss
@@ -44,6 +44,8 @@ value() { printf '%s\n' "$state" | sed -n "s/^$1=//p" | head -1; }
 status=$(remote "cat '$qdss/status'") || abort 'debugfs unavailable'
 [[ $status == *"configured=1 active=0"* && $status == *"start_requested=0"* ]] ||
   abort "QDSS already running or unexpected state: $status"
+remote "test -e '$qdss/reload_config'" ||
+  abort 'post-ready QDSS reload debugfs control unavailable'
 for service in wave7-q6-devcoredump-capture.service wave7-q6-noc-events.service wave7-q6-noc-kmsg.service; do
   systemctl --user is-active --quiet "$service" || abort "missing passive $service"
 done
@@ -55,7 +57,7 @@ if [[ $action == --check ]]; then
 fi
 [[ $# == 3 ]] || abort 'provide exact guarded run directory'
 run_dir=$2
-[[ $run_dir == "$root"/runs/qdss-885fe8b8cf-* && -d $run_dir ]] ||
+[[ $run_dir == "$root"/runs/qdss-eeae36fccc-* && -d $run_dir ]] ||
   abort 'invalid run directory'
 tag=$(basename "$run_dir")
 systemctl --user is-active --quiet "wave7-qdss-supervisor-$tag.service" || abort 'native guard inactive'
@@ -95,6 +97,31 @@ if [[ $phase == wlan-load ]]; then
   done
   echo QDSS_STOPPED_ETR_CLEAR_VERIFIED
 fi
+# Independently re-download the *same* pinned QDSS configuration
+# after firmware readiness. Watch the missing 0x3f MEM_REQ counter:
+# a successful 0x44 ACK alone is not proof the sink became active.
+remote "cat '$qdss/status'" > "$out/pre-reload-status.txt"
+date -Is > "$out/reload-time.txt"
+timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/reload_config'" > "$out/reload-config-output.txt" 2>&1 ||
+  abort "$phase post-ready QDSS profile download failed"
+sleep 3
+remote "cat '$qdss/status'" > "$out/post-reload-status.txt" ||
+  abort 'cannot read post-reload QDSS status'
+remote 'dmesg' > "$out/post-reload-dmesg.txt" || :
+if [[ $phase == wlan-load ]]; then
+  # A newly-written buffer while tracing is OFF would be a separate
+  # effect of reloading config, not proof that TRACE_ON works.
+  timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "cat '$qdss/raw_etr'" > "$out/post-reload-before-trace.bin" 2> "$out/post-reload-stderr.txt" ||
+    abort 'post-reload stopped ETR read failed'
+  [[ $(stat -c %s "$out/post-reload-before-trace.bin") == 1048576 ]] ||
+    abort 'post-reload stopped ETR unexpected size'
+  sha256sum "$out/post-reload-before-trace.bin" > "$out/post-reload-before-trace.sha256"
+  uv run --no-project python -B -c 'import sys; b=open(sys.argv[1],"rb").read(); print("QDSS_POST_RELOAD_STOPPED_NONZERO",sum(x!=0 for x in b))' "$out/post-reload-before-trace.bin" > "$out/post-reload-count.txt"
+fi
+post_reload=$(cat "$out/post-reload-status.txt")
+[[ $post_reload == *"configured=1 active=0"* &&
+   $post_reload == *"start_requested=0"* ]] ||
+  abort "unexpected QDSS activation during reload: $post_reload"
 date -Is > "$out/start-time.txt"
 trace_live=1
 restore_idle_on_error() {
