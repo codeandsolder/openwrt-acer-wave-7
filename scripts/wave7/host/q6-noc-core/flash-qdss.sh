@@ -9,7 +9,7 @@ image="$dir/image-build/wave7-umacnoc-qdss-f086787166-sysupgrade.bin"
 rollback=/home/jan/firmware/wave7/trials/20261116-napi-irq-ab/image-build/wave7-napi-5e3df9b898-sysupgrade.bin
 image_sha=fb09dee95c351afd86c3598b24e739221e10fa43669d68a4d72bb29e3cffe203
 rollback_sha=18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622
-baseline_rev=r0+38249-qdss-e6220b40e2
+baseline_rev=r0+38249-qdss-fc4cdcce47
 host=root@192.168.76.1
 key=/home/jan/.ssh/wave7-root-rsa
 ssh_opts=(-n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
