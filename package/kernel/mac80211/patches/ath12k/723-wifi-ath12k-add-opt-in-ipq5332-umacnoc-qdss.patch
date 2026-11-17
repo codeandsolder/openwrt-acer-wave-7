@@ -318,7 +318,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,724 @@
+@@ -0,0 +1,733 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -629,8 +629,13 @@ new file mode 100644
 +	}
 +
 +	ret = ath12k_qdss_mode(ab, false);
-+	if (!ret)
-+		qmi->qdss.active = false; /* retain ETR until FW SAVE */
++	if (!ret) {
++		qmi->qdss.active = false;
++		qmi->qdss.start_requested = false;
++		/* Retain the ETR for raw_etr and a later explicit restart.
++		 * Firmware SAVE (if it arrives) is handled separately.
++		 */
++	}
 +out_unlock:
 +	mutex_unlock(&qmi->qdss.lock);
 +	return ret;
@@ -808,9 +813,13 @@ new file mode 100644
 +
 +	ath12k_info(ab, "QDSS: captured %u raw UMACNOC bytes (source %u)\n",
 +		    total, req->source);
-+	/* dev_coredumpv owns and vfree()s the vmalloc-backed buffer. */
++	/* dev_coredumpv owns and vfree()s the vmalloc-backed buffer.
++	 * A late SAVE indication from a previous stopped session must not
++	 * tear down an ETR mapping now used by a later active session.
++	 */
 +	dev_coredumpv(ab->dev, data, total, GFP_KERNEL);
-+	ath12k_qdss_reset_locked(qmi);
++	if (!qmi->qdss.active)
++		ath12k_qdss_reset_locked(qmi);
 +	goto out_unlock;
 +
 +out_free:
