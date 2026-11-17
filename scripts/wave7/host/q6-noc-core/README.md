@@ -539,3 +539,57 @@ saved on Acer:
 Offline unit coverage also includes a synthetic 5-instance ELF with
 an alternative register-table prefix offset, preserving explicit
 MMIO/ERRCLR validation without guessing instance counts.
+
+### Ghidra 12.2 reconstruction of the actual UserPD1 NoC error path
+
+The Acer stock 067 UserPD1 q6_fw1.b02 image is a complete ELF32
+Hexagon ELF, directly importable by Ghidra 12.2 (no split-MDT loader
+needed). On Acer, the one-time import/analysis project lives under:
+
+    /home/jan/research/qnoc-route-20261117/ghidra/q6-noc-067.gpr
+
+A full automatic analysis hit the per-file 480-second limit on
+2026-11-17 (mostly Decompiler Switch Analysis), but produced
+a usable Ghidra database. Subsequent queries use -noanalysis and
+-readOnly, so they take seconds instead of another whole-firmware scan.
+
+The source file DecompileNoCHandler.java explicitly defines the
+Ghidra function body at 0xb032a670..0xb032a99c; automatic analysis
+failed to recognize this function, even though Rizin disassembly
+confirmed the boundaries. It then decompiles only that function:
+
+    ROOT=/home/jan/research/qnoc-route-20261117
+    GH=/home/jan/tools/ghidra_12.2_PUBLIC/support/analyzeHeadless
+    "$GH" "$ROOT/ghidra" q6-noc-067 \
+      -process q6_fw1.b02 -readOnly -noanalysis -max-cpu 2 \
+      -scriptPath /home/jan/projects/acer-wave7-openwrt-current/scripts/wave7/host/q6-noc-core \
+      -postScript DecompileNoCHandler.java \
+        "$ROOT/ghidra-logs/noc-handler-decompile.c"
+
+The saved decompiler output is approximately 7 KiB and confirms:
+- Iterate the *puRamb0497fdc NoC instances, stride 0x60.
+- Read ERRVALID and ERRLOG0..3 through the instance's offset table
+  and base, then copy the saved values to descriptor fields.
+- Write 1 to ERRCLR, perform optional sub-block clearing.
+- If enabled, invoke pcRamb0497fe8 with the saved error words;
+  then pass NoC instance, route, address offset to the fatal logger
+  FUN_b000af00 at 0xb000af00.
+- There is NO routeID-to-initiator/target lookup in this handler,
+  its decompiled initialization function 0xb032a9a0, or its
+  control-register programming helper 0xb032ab30. It reports the
+  raw hardware route field without resolving it.
+
+The optional pre-fatal callback pointer at VA 0xb0497fe8 is
+**0x00000000 in BOTH independent 33 MiB root-Q6 crash dumps**,
+verified by mapping its ELF virtual address to core physical memory.
+Thus neither incident had an installed software callback to map or
+filter path 0x3b prior to raising the fatal. The init code uses
+FUN_b032a5e0 to fetch the descriptor array and registers its
+interrupt, without route-specific address translation.
+
+This proves the behavior of the inspected UserPD1 error-reporting
+module, NOT absence of a route map from all secure boot stages or
+hardware integration constants. The fabric route mapping may be
+specified elsewhere and is not recoverable merely by decompiling
+this NoC error handler. Qualcomm's published TF-A generic NoC
+handler likewise exposes raw ERRLOG fields but no IPQ5332 mapping.
