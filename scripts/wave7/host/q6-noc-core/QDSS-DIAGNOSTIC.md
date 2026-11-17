@@ -275,6 +275,33 @@ discriminator is a single bounded explicit start/stop test after the
 router passes firstboot health, followed by archive and decoding of
 the raw trace if firmware actually emits it.
 
+### Sixth fixed-ETR diagnostic candidate (2026-11-17)
+
+Experimental \`r0+38249-qdss-48b2476bd6\` built and independently
+whitelist-verified: SHA256
+\`42b2dde4c2253a6168b6a423deff370122287ea69db34b7d5a7d55e82683db78\`,
+15,677,772 bytes. Builder report on Acer at
+\`/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/image-build/wave7-umacnoc-qdss-48b2476bd6-sysupgrade.report.json\`.
+Accepted native NAPI compressed kernel and previously audited 1MiB
+ETR DTB are byte-identical to the fifth diagnostic; unchanged Q6
+firmware and stock QDSS profile. Exactly eight permitted rootfs paths
+differ from original NAPI, no unrelated changes. Packaged native
+\`ath12k.ko\` SHA256
+\`6714a34ddf9d054717b0291a43ea2842b3121c2252fbafc89579a62415375a50\`,
+paired Wi-Fi7 module SHA256
+\`1e07b931cf2d4991734f982341d305169b452224c25026537ac181ab4381fa41\`.
+The source unstripped modules have byte-identical \`ath12k_base\` DWARF
+layouts and the native 6.18.60 mac80211 package built successfully
+with the existing sccache. Patch 723 applies with zero fuzz to all
+seven native files.
+
+The new Asus guard requires predecessor
+\`r0+38249-qdss-2f69a883f6\`, verified healthy boot, independent
+NoC/Q6 passive collectors, vendor fallback, separate raw devcore
+capture, and exact accepted NAPI rollback SHA256
+\`18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622\`.
+All runtime actions remain opt-in and separately guarded.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.
