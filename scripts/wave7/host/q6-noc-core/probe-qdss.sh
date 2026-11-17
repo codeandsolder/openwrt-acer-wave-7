@@ -6,9 +6,9 @@ umask 077
 action=$1
 [[ $action == --check || $action == --run ]] || exit 2
 root=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-revision=r0+38249-qdss-48b2476bd6
-image=$root/image-build/wave7-umacnoc-qdss-48b2476bd6-sysupgrade.bin
-image_sha=42b2dde4c2253a6168b6a423deff370122287ea69db34b7d5a7d55e82683db78
+revision=r0+38249-qdss-64ef394b1e
+image=$root/image-build/wave7-umacnoc-qdss-64ef394b1e-sysupgrade.bin
+image_sha=d4bdea9bcd8b34f8d1ed90d07c7bfb6558da94b56a121fd861105dfd830b835c
 key=/home/jan/.ssh/wave7-root-rsa
 host=root@192.168.76.1
 qdss=/sys/kernel/debug/ath12k/ahb-c000000.wifi/umacnoc_qdss
@@ -47,7 +47,7 @@ if [[ $action == --check ]]; then
 fi
 [[ $# == 2 ]] || abort 'provide exact guarded run directory'
 run_dir=$2
-[[ $run_dir == "$root"/runs/qdss-48b2476bd6-* && -d $run_dir ]] ||
+[[ $run_dir == "$root"/runs/qdss-64ef394b1e-* && -d $run_dir ]] ||
   abort 'invalid run directory'
 tag=$(basename "$run_dir")
 systemctl --user is-active --quiet "wave7-qdss-supervisor-$tag.service" || abort 'native guard inactive'
@@ -76,11 +76,26 @@ if (( start_rc == 0 )) && rg -q 'active=1' "$out/post-start-status.txt"; then
   remote 'ping -I br-lan -c 6 -W 1 192.168.76.2' > "$out/traffic.txt" 2>&1 || :
   sleep 3
   set +e
-  timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/stop_and_capture'" > "$out/stop-output.txt" 2>&1
+  timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/stop'" > "$out/stop-output.txt" 2>&1
   stop_rc=$?
   set -e
   echo "$stop_rc" > "$out/stop-rc.txt"
   printf 'QDSS_STOP_RC=%d\n' "$stop_rc"
+  if (( stop_rc == 0 )); then
+    # Take one immutable stopped-ETR snapshot. The native driver refuses
+    # active tracing and bounds the read to its 1MiB no-map reservation.
+    set +e
+    timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "cat '$qdss/raw_etr'" > "$out/trace-etr.bin" 2> "$out/raw-etr-stderr.txt"
+    raw_rc=$?
+    set -e
+    printf '%d\n' "$raw_rc" > "$out/raw-etr-rc.txt"
+    if (( raw_rc == 0 )) && [[ $(stat -c %s "$out/trace-etr.bin") == 1048576 ]]; then
+      sha256sum "$out/trace-etr.bin" > "$out/trace-etr.sha256"
+      echo QDSS_RAW_ETR_SNAPSHOT_COMPLETE
+    else
+      echo QDSS_RAW_ETR_SNAPSHOT_FAILED
+    fi
+  fi
   sleep 5
 fi
 remote "cat '$qdss/status'" > "$out/final-status.txt" || :

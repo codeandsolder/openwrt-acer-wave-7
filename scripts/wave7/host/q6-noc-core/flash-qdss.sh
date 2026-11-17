@@ -5,11 +5,11 @@ umask 077
 action=${1:---check}
 [[ $action == --check || $action == --run ]] || { echo 'usage: flash-qdss.sh --check|--run' >&2; exit 2; }
 dir=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-image="$dir/image-build/wave7-umacnoc-qdss-48b2476bd6-sysupgrade.bin"
+image="$dir/image-build/wave7-umacnoc-qdss-64ef394b1e-sysupgrade.bin"
 rollback=/home/jan/firmware/wave7/trials/20261116-napi-irq-ab/image-build/wave7-napi-5e3df9b898-sysupgrade.bin
-image_sha=42b2dde4c2253a6168b6a423deff370122287ea69db34b7d5a7d55e82683db78
+image_sha=d4bdea9bcd8b34f8d1ed90d07c7bfb6558da94b56a121fd861105dfd830b835c
 rollback_sha=18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622
-baseline_rev=r0+38249-qdss-2f69a883f6
+baseline_rev=r0+38249-qdss-48b2476bd6
 host=root@192.168.76.1
 key=/home/jan/.ssh/wave7-root-rsa
 ssh_opts=(-n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
@@ -49,12 +49,12 @@ test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wa
 echo "PREFLIGHT_PASS predecessor_boot=$old_boot source_image_sha=$image_sha accepted_restore_sha=$rollback_sha"
 [[ $action == --run ]] || exit 0
 
-tag=qdss-48b2476bd6-$(date +%Y%m%d-%H%M%S)
+tag=qdss-64ef394b1e-$(date +%Y%m%d-%H%M%S)
 run_dir="$dir/runs/$tag"
 mkdir -p "$run_dir"
 printf '%s\n' "$baseline" > "$run_dir/preflight.txt"
 printf 'candidate_sha=%s\nrollback_sha=%s\n' "$image_sha" "$rollback_sha" >> "$run_dir/preflight.txt"
-trial_remote=/tmp/wave7-qdss-48b2476bd6-trial.bin
+trial_remote=/tmp/wave7-qdss-64ef394b1e-trial.bin
 rollback_remote=/tmp/wave7-qdss-accepted-preflight.bin
 for pair in "$image|$trial_remote|$image_sha" "$rollback|$rollback_remote|$rollback_sha"; do
   IFS='|' read -r source dest sha <<< "$pair"
