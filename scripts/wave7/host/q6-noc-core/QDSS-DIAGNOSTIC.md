@@ -51,6 +51,45 @@ Memory checker verifies all direct-child DTS reservations are disjoint
 and their coverage is unchanged vs accepted base, and none of the
 physical PT_LOAD spans in the three OEM Q6 ELFs overlaps ETR.
 
+## Exact accepted-kernel diagnostic image packaging
+
+The independent native NAPI 5e3df9b898 image is the **current accepted
+baseline**. The dedicated builder at build-qdss-candidate.py takes that
+original SHA-pinned image (18e285b7...), the final compiled kmod-ath12k
+APK, and the generated trace-only profile.
+
+It extracts the exact accepted compressed kernel from its FIT, patches
+the *accepted* DTB in place with libfdt tooling (only one new ETR node,
+Wi-Fi spare size adjustment, and its memory-region/region-names append),
+regenerates the FIT CRC32/SHA1 hashes, and asserts the compressed kernel
+bytes are identical to the accepted kernel. It compares the ENTIRE
+canonical DTB and rejects any unapproved property change. The newly
+compiled companion ath12k_wifi7.ko is deliberately discarded; the
+accepted module remains untouched.
+
+The SquashFS is rebuilt from the accepted root with only the native
+ath12k module, diagnostic QDSS firmware profile, four revision strings
+and one trial marker changed. The builder checks the entire rootfs
+manifest, module vermagic, special /dev/console node, rootfs reextract,
+FIT hash data, sysupgrade tar members, target and fwtool metadata.
+A generated .report.json records all changed files, artifact hashes,
+and confirms hardware is untouched.
+
+The corresponding Asus guard is flash-qdss.sh and qdss-watch.sh;
+the independent raw QDSS devcoredump collector is
+watch-qdss-devcore.sh. The already-running Q6 devcore collector
+recognizes only ELF Q6 core dumps and must **not** be used to classify
+the binary QDSS trace stream. Raw QDSS dumps are SHA-pinned on Asus,
+with their router boot UUID, revision and device origin.
+
+**Transport correction discovered during source review:** Qualcomm's
+QMI TRACE_SAVE source field, *not the presence of total_size*,
+distinguishes source=0 (ETR physical segment layout) from source=1
+(segmented QMI TRACE_DATA). The experimental driver implements both
+and validates the ETR offsets/sizes or streaming message sequence
+without assuming a nonzero total_size means QMI. This correction
+is required before any real capture.
+
 ## Bounded guarded hardware test procedure (not performed)
 
 This experimental variant changes the DTB, not only the kernel module.
