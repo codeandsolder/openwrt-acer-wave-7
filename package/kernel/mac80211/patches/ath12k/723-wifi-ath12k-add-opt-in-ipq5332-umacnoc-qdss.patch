@@ -262,7 +262,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qdss.c b/drivers/net/wireless/ath/a
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/ath/ath12k/qdss.c
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,524 @@
 +// SPDX-License-Identifier: BSD-3-Clause-Clear
 +/*
 + * Opt-in Qualcomm WCSS UMACNOC trace through the existing WLFW QMI service.
@@ -578,42 +578,54 @@ new file mode 100644
 +		goto out_unlock;
 +	}
 +
-+	if (req->total_size) {
++	/* WLFW QDSS SAVE source selects the transport, not total_size:
++	 * 0 = ETR physical-memory segment(s), 1 = QMI DATA requests.
++	 * A memory-backed trace can (and generally does) report total_size.
++	 */
++	switch (req->source) {
++	case 1:
 +		total = req->total_size;
-+	} else if (req->mem_seg_valid &&
-+		   req->mem_seg_len > 0 &&
-+		   req->mem_seg_len <= ATH12K_QMI_WLANFW_MAX_NUM_MEM_SEG_V01) {
++		if (!total || total > qmi->qdss.size) {
++			ret = -EFBIG;
++			goto out_unlock;
++		}
++		break;
++	case 0:
++		if (!req->mem_seg_valid || !req->mem_seg_len ||
++		    req->mem_seg_len > ATH12K_QMI_WLANFW_MAX_NUM_MEM_SEG_V01) {
++			ret = -EINVAL;
++			goto out_unlock;
++		}
 +		for (i = 0; i < req->mem_seg_len; i++) {
-+			const struct qmi_wlanfw_mem_seg_resp_s_v01 *s =
++			const struct qmi_wlanfw_mem_seg_resp_s_v01 *seg =
 +				&req->mem_seg[i];
++			u64 offset;
 +
-+			if (!s->size || s->addr < qmi->qdss.base ||
-+			    s->addr - qmi->qdss.base > qmi->qdss.size ||
-+			    s->size > qmi->qdss.size -
-+				    (s->addr - qmi->qdss.base) ||
-+			    s->size > qmi->qdss.size - total) {
-+				ret = -EINVAL;
++			if (seg->addr < qmi->qdss.base) {
++				ret = -ERANGE;
 +				goto out_unlock;
 +			}
-+			total += s->size;
++			offset = seg->addr - qmi->qdss.base;
++			if (offset >= qmi->qdss.size ||
++			    !seg->size || seg->size > qmi->qdss.size - offset ||
++			    seg->size > qmi->qdss.size - total) {
++				ret = -ERANGE;
++				goto out_unlock;
++			}
++			total += seg->size;
 +		}
-+	} else {
-+		ret = -EINVAL;
++		break;
++	default:
++		ret = -EOPNOTSUPP;
 +		goto out_unlock;
 +	}
-+
-+	if (!total || total > qmi->qdss.size) {
-+		ret = -EFBIG;
-+		goto out_unlock;
-+	}
-+
 +	data = vzalloc(total);
 +	if (!data) {
 +		ret = -ENOMEM;
 +		goto out_unlock;
 +	}
 +
-+	if (req->total_size) {
++	if (req->source == 1) {
 +		ret = ath12k_qdss_fetch_qmi(ab, data, total);
 +		if (ret)
 +			goto out_free;
@@ -631,7 +643,8 @@ new file mode 100644
 +		}
 +	}
 +
-+	ath12k_info(ab, "QDSS: captured %u bytes of raw UMACNOC trace\n", total);
++	ath12k_info(ab, "QDSS: captured %u raw UMACNOC bytes (source %u)\n",
++		    total, req->source);
 +	/* dev_coredumpv owns and vfree()s the vmalloc-backed buffer. */
 +	dev_coredumpv(ab->dev, data, total, GFP_KERNEL);
 +	ath12k_qdss_reset_locked(qmi);
