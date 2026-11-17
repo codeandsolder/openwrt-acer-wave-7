@@ -561,6 +561,39 @@ and matched DWARF `ath12k_base` ABI between both 6.18.60 modules.
 Build log:
 `/home/jan/research/wave7-qdss-20261117/build-mac80211-clear-etr.log`.
 
+The ninth offline-whitelisted diagnostic image is
+`r0+38249-qdss-885fe8b8cf`, SHA256
+`d63f1174828567bcceebf5880abd1fb8998f1b30e7d0c39ebf5ecff72caaa21a`,
+size 15,677,772 bytes. Its accepted NAPI compressed kernel, diagnostic
+ETR DTB, Q6 firmware, stock trace profile and rollback image are
+unchanged, with exactly eight authorized rootfs changes. The builder
+report is under the usual
+`/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss/image-build/`.
+The paired ath12k native modules have identical shared `ath12k_base`
+DWARF ABI.
+
+The ninth Asus `probe-qdss.sh` retains the two guarded phases, now
+under `evidence/clear-etr/{idle,wlan-load}`. The idle phase provisions
+ETR and preserves its original stopped snapshot. The Wi-Fi phase
+requires saved idle evidence and an accepted idle trace state, issues
+exactly one `clear_etr`, captures a 1MiB snapshot to prove all bytes
+zero, waits one second, proves all bytes remain zero while tracing
+is disabled, then starts TRACE_ON. While transmitting 120 packets
+through the Wyse dual-link MLO station, it stops tracing and copies
+the post-run ETR to another SHA-pinned snapshot. Both phases record
+nonzero-byte counts. A post-run all-zero result indicates no
+observable ETR writer during that explicit TRACE_ON interval;
+reappearance while tracing was disabled indicates another source
+writing into the supposedly stopped buffer.
+
+Exact ninth revision and hashes are pinned in `build-qdss-candidate.py`,
+`flash-qdss.sh`, `qdss-watch.sh`, and `probe-qdss.sh`. The trial guard
+requires the accepted eighth image and preserves the original accepted
+NAPI rollback image SHA256
+`18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622`.
+Run after eighth 900-second soak PASSES and retire its one-off collector;
+leave the permanent Q6 monitors untouched.
+
 ## Bounded guarded hardware test procedure (hardware tested)
 
 This experimental variant changes the DTB, not only the kernel module.

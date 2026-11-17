@@ -6,9 +6,9 @@ umask 077
 action=$1
 [[ $action == --check || $action == --run ]] || exit 2
 root=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-revision=r0+38249-qdss-3a8d36d639
-image=$root/image-build/wave7-umacnoc-qdss-3a8d36d639-sysupgrade.bin
-image_sha=df3cc778923af11eaf2e98f5520ef3eeac764c258ce50746ae143705b94d3e4e
+revision=r0+38249-qdss-885fe8b8cf
+image=$root/image-build/wave7-umacnoc-qdss-885fe8b8cf-sysupgrade.bin
+image_sha=d63f1174828567bcceebf5880abd1fb8998f1b30e7d0c39ebf5ecff72caaa21a
 key=/home/jan/.ssh/wave7-root-rsa
 host=root@192.168.76.1
 qdss=/sys/kernel/debug/ath12k/ahb-c000000.wifi/umacnoc_qdss
@@ -55,7 +55,7 @@ if [[ $action == --check ]]; then
 fi
 [[ $# == 3 ]] || abort 'provide exact guarded run directory'
 run_dir=$2
-[[ $run_dir == "$root"/runs/qdss-3a8d36d639-* && -d $run_dir ]] ||
+[[ $run_dir == "$root"/runs/qdss-885fe8b8cf-* && -d $run_dir ]] ||
   abort 'invalid run directory'
 tag=$(basename "$run_dir")
 systemctl --user is-active --quiet "wave7-qdss-supervisor-$tag.service" || abort 'native guard inactive'
@@ -66,12 +66,35 @@ systemctl --user is-active --quiet "wave7-qdss-capture-$tag.service" || abort 'r
   abort 'wrong trial boot'
 phase=$3
 [[ $phase == idle || $phase == wlan-load ]] || abort 'invalid phase'
-out=$run_dir/evidence/stpv2-paired/$phase
+out=$run_dir/evidence/clear-etr/$phase
 [[ ! -e $out ]] || abort 'phase already attempted'
 mkdir -p "$out"
 printf '%s\n' "$state" > "$out/preflight.txt"
 printf '%s\n' "$status" > "$out/pre-start-status.txt"
 remote 'dmesg' > "$out/pre-start-dmesg.txt"
+# The first idle capture provisions the ETR and preserves an unmodified
+# baseline. Only the second phase clears the stopped 1MiB reservation,
+# confirms zero twice before TRACE_ON and tests for actual new writes.
+if [[ $phase == wlan-load ]]; then
+  idle=$run_dir/evidence/clear-etr/idle
+  [[ -f $idle/end-time.txt && -f $idle/trace-etr.sha256 ]] ||
+    abort 'idle baseline not captured on this boot'
+  sha256sum -c "$idle/trace-etr.sha256" >/dev/null ||
+    abort 'idle baseline digest mismatch'
+  [[ $status == *"etr_ready=1"* && $status == *"etr_alloc_size=1048576"* ]] ||
+    abort 'ETR must be provisioned before clearing'
+  timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "echo 1 > '$qdss/clear_etr'" > "$out/clear-etr-output.txt" 2>&1 ||
+    abort 'stopped-only clear_etr rejected'
+  for sample in immediately-after-clear after-one-second-stopped; do
+    if [[ $sample == after-one-second-stopped ]]; then sleep 1; fi
+    timeout 25 ssh -n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "$host" "cat '$qdss/raw_etr'" > "$out/$sample.bin" 2> "$out/$sample.stderr" ||
+      abort "raw_etr read failed during $sample"
+    uv run --no-project python -B -c 'import sys; b=open(sys.argv[1],"rb").read(); assert len(b)==1048576 and not any(b), "ETR is not zero"' "$out/$sample.bin" ||
+      abort "ETR unexpected data while stopped in $sample"
+    sha256sum "$out/$sample.bin" > "$out/$sample.sha256"
+  done
+  echo QDSS_STOPPED_ETR_CLEAR_VERIFIED
+fi
 date -Is > "$out/start-time.txt"
 trace_live=1
 restore_idle_on_error() {
@@ -152,6 +175,10 @@ if (( start_rc == 0 )); then
 fi
 remote "cat '$qdss/status'" > "$out/final-status.txt" || :
 remote 'dmesg' > "$out/final-dmesg.txt" || :
+if [[ -s $out/trace-etr.bin ]]; then
+  uv run --no-project python -B -c 'import sys,json,hashlib; b=open(sys.argv[1],"rb").read(); assert len(b)==1048576; n=sum(x!=0 for x in b); print(json.dumps({"bytes":len(b),"sha256":hashlib.sha256(b).hexdigest(),"nonzero_bytes":n,"all_zero":n==0}))' "$out/trace-etr.bin" > "$out/trace-etr-analysis.json"
+  printf 'QDSS_ETR_FRESHNESS phase=%s result=%s\n' "$phase" "$(cat "$out/trace-etr-analysis.json")"
+fi
 find /home/jan/firmware/wave7/captures/qdss-umacnoc -maxdepth 1 -type f ! -name '.*' -printf '%f %s bytes\n' > "$out/raw-captures.txt"
 date -Is > "$out/end-time.txt"
 printf 'QDSS_PROBE_EVIDENCE=%s\n' "$out"
