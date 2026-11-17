@@ -593,3 +593,84 @@ hardware integration constants. The fabric route mapping may be
 specified elsewhere and is not recoverable merely by decompiling
 this NoC error handler. Qualcomm's published TF-A generic NoC
 handler likewise exposes raw ERRLOG fields but no IPQ5332 mapping.
+
+### Acer boot-stage NoC route tables, 2026-11-17: QSEE decodes other fabrics
+
+All images below were read **only** from the original router MTD read-only
+devices, archived on Asus and SHA256-transferred to an Acer research directory
+(outside the git worktree):
+
+    /home/jan/research/qnoc-route-20261117/bootstage/
+    qsee.mtd.bin    SHA256 2d67ed3873ad692b6f0c51aefbc5bca2cca6c4bed0bd34b4e8351874e14968f8
+    devcfg.mtd.bin  SHA256 d48f33de01e7a987c6362bd747de46cbed8cc3f101d8b7d68483ee11346754da
+    sbl1.mtd.bin    SHA256 2240262f1219e26be24d89fd58ec3b83c550e16426cc2ea91bc9b438907f04dd
+    appsbl.mtd.bin  SHA256 dd53893371e7641296a2dc4868ac32074687d4be614835f08691b8be076cc937
+    tme.mtd.bin     SHA256 f4cfbf232988d8f13656f02c667b875b106fab16fefbb18278a823773c2a9a71
+    cdt.mtd.bin     SHA256 b29ab6ee59b7c286e2610aca5d25e0dc0011df147b6d804feaa0a9a222a45ae9
+
+The QSEE and DEVCFG MTD redundant A/B copies were byte-identical
+within each pair. QSEE is an ELF64 AArch64 and contains
+/dev/NOCError / NOCError_Propdata, including the real format string:
+
+    %s ERROR Decode : Initiator = 0x%x - %s, Target = 0x%x - %s
+
+DEVCFG is a separate ELF64 AArch64 with /dev/NOCErrorOEM,
+NOCError_Propdata_oem and matching system-NoC policy arrays.
+
+Ghidra 12.2 imported QSEE in 34 seconds using 2 CPU threads
+and found the *actual* route decoder at **VA 0x4a65c5e4**. See
+TraceQseeNoCRoutes.java in this directory and its bounded reproduction:
+
+    GH=/home/jan/tools/ghidra_12.2_PUBLIC/support/analyzeHeadless
+    D=/home/jan/research/qnoc-route-20261117
+    "$GH" "$D/ghidra" ipq5332-qsee \
+      -process qsee.mtd.bin -readOnly -noanalysis -max-cpu 2 \
+      -scriptPath /home/jan/projects/acer-wave7-openwrt-current/scripts/wave7/host/q6-noc-core \
+      -postScript TraceQseeNoCRoutes.java "$D/ghidra-logs/qsee-noc-route-xrefs.c"
+
+The decompiled QSEE routine compares a fabric-name string and then
+indexes a different initiator and target string array for each fabric:
+
+| Secure QSEE NoC | Logger physical base | Initiator bits | Target bits |
+| --- | --- | --- | --- |
+| PCNOC  | 0x00500000 | 3 (route >> 4) | 4 (route & 15) |
+| SNOC   | 0x00580000 | 4 (route >> 5) | 5 (route & 31) |
+| MEMNOC | 0x00400000 | 3 (route >> 3) | 3 (route & 7) |
+| NSSNOC | 0x01d90000 | 3 (route >> 3) | 3 (route & 7) |
+
+These sources do NOT name or configure the failing UserPD1 UMACNOC
+at physical 0xe5140000. The QSEE NoC instances have *different*
+MMIO bases, and the bit allocations themselves differ among fabrics.
+
+decode-qsee-routes.py is deliberately locked to the exact SHA256 of
+the captured QSEE image and takes an arbitrary numeric --route-id,
+so it cannot silently label other SoCs or UMACNOC packets. To
+demonstrate the incompatibility, decode raw route 0x3b:
+
+    uv run --no-project --no-managed-python python \
+      scripts/wave7/host/q6-noc-core/decode-qsee-routes.py \
+      --qsee-elf "$D/bootstage/qsee.mtd.bin" --route-id 0x3b
+
+- PCNOC: snoc -> snoc
+- SNOC: qdss_bam -> RESERVED
+- MEMNOC: RESERVED -> memnoc_xpu_cfg
+- NSSNOC: RESERVED -> ppe_cfg
+
+These are *counterfactual QSEE system-fabric interpretations*,
+**not** competing answers to the captured UserPD1 UMACNOC fatal.
+They demonstrate exactly why blindly borrowing an initiator/target
+bit split from a different NoC is incorrect.
+
+SBL1 contains a generic "NOC Error" string and signed boot imagery;
+APPSBL is an ARM32 ELF; TME is RISC-V; CDT a binary platform config.
+None of these six boot-stage images contains the UMACNOC logger base
+0xe5140000 (as an aligned little-endian 32-bit word) or a literal
+UMACNOC name. This does not disprove compressed or runtime-generated
+NoC fabric config, but there is no immediate cross-reference to a
+readable UMACNOC route table in the saved boot chain.
+
+The full UserPD1 Ghidra decompilation, including the captured NULL
+prefatal callback, remains the authoritative evidence that WLAN
+firmware reports *raw* error logs and does not decode route 0x3b.
+The next actual blocker is the specific IPQ5332 WCSS UMACNOC
+RouteId -> target addressing aperture hardware configuration.
