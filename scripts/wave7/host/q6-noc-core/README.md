@@ -439,3 +439,43 @@ addressed target; power/clock fault may still cause that indirectly.
 
 Synthetic tests verify both 32-bit halves of the address offset,
 path reporting, exact Acer fatal values, and unknown path mappings.
+
+### Acer stock 067 firmware proves route/offset fatal arguments
+
+The extracted UserPD1 WBE1.3-03279 ELF provides an independent
+instruction-level check of the logger interpretation:
+
+- At 0xb032a6a4, the NoC instance loop initializes R17=0,
+  R18=1 and R16=0.
+- At 0xb032a72c..0xb032a740, the handler loads the register offset
+  table entry +0x0e (ERRLOG1_LOW), reads that MMIO word and copies
+  it into descriptor +0x30 and R18 (0xb032a73c).
+- At 0xb032a758..0xb032a76c, it loads table entry +0x12
+  (ERRLOG2_LOW), reads the word and copies it into descriptor +0x38
+  and R16 (0xb032a768).
+- At 0xb032a988..0xb032a998, the fatal logger call uses R1=R17
+  and R3:2=combine(R16,R18). For the two captured fatal events,
+  this is precisely the kernel's
+  NOC_error.c:423 param0:zero, param1:59, param2:8192.
+
+Consequently this is *not a numerical coincidence*: parameter1
+is the exact ERRLOG1_LOW (0x3b, route/path) and parameter2 is the
+exact ERRLOG2_LOW (0x2000, relative address). Parameter0 is the
+zero-based NoC logger instance (UMACNOC=0, WCSS_CFGBUS=1).
+The register read/copy route is verified by static Hexagon
+disassembly, and both actual captured root-Q6 core snapshots
+independently show these values. The firmware can omit optional
+ERRLOG words if its instance offset table marks an offset 0xffff;
+no general claim of complete addresses from truncated fatal
+arguments should be made. The full ERRLOG2_HIGH is separately
+preserved and combined by the offline core decoder.
+
+Read-only reproduction on Acer:
+
+    FW=/home/jan/firmware/wave7/trials/20261115-q6-noc/q6_fw1-067-analysis.elf
+    rizin -2 -q -e scr.color=false -e asm.bytes=false       -c 'pd 180 @ 0xb032a5e0; q' "$FW"
+
+This direct QDSP6 firmware flow is stronger evidence for argument
+provenance than simply interpreting an unrelated newer NoC logger.
+The IPQ5332 UMACNOC path 0x3b routing table and base map still
+must be obtained before assigning an absolute target address.
