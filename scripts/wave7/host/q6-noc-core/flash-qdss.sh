@@ -5,11 +5,11 @@ umask 077
 action=${1:---check}
 [[ $action == --check || $action == --run ]] || { echo 'usage: flash-qdss.sh --check|--run' >&2; exit 2; }
 dir=/home/jan/firmware/wave7/trials/20261117-umacnoc-qdss
-image="$dir/image-build/wave7-umacnoc-qdss-e6220b40e2-sysupgrade.bin"
+image="$dir/image-build/wave7-umacnoc-qdss-fc4cdcce47-sysupgrade.bin"
 rollback=/home/jan/firmware/wave7/trials/20261116-napi-irq-ab/image-build/wave7-napi-5e3df9b898-sysupgrade.bin
-image_sha=51c2bfbf9900a81cba1b97a69361763d344c6090da4f7c4c1d87201ab88ef1d0
+image_sha=32971a9ca19db8478cdf0ee1e2fa64eb9aa432945ef72b8de137023d4e5eca1f
 rollback_sha=18e285b7dbfac4075a4f675b23c9b97cbf51c50aced6c16a82d1aab439dc0622
-accepted_rev=r0+38249-napi-5e3df9b898
+baseline_rev=r0+38249-qdss-e6220b40e2
 host=root@192.168.76.1
 key=/home/jan/.ssh/wave7-root-rsa
 ssh_opts=(-n -T -i "$key" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 -o ConnectionAttempts=1 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
@@ -27,8 +27,8 @@ command -v timeout >/dev/null
 /home/jan/scripts/wave7/qdss-trial/qdss-watch.sh --selftest
 baseline=$(/home/jan/scripts/wave7/qdss-trial/qdss-watch.sh --check)
 old_boot=$(printf '%s\n' "$baseline" | sed -n 's/^boot=//p')
-[[ $old_boot =~ ^[a-f0-9-]{36}$ ]] || abort 'invalid accepted boot ID'
-[[ $(printf '%s\n' "$baseline" | sed -n 's/^rev=//p') == "$accepted_rev" ]] || abort 'accepted revision mismatch'
+[[ $old_boot =~ ^[a-f0-9-]{36}$ ]] || abort 'invalid predecessor boot ID'
+[[ $(printf '%s\n' "$baseline" | sed -n 's/^rev=//p') == "$baseline_rev" ]] || abort 'predecessor revision mismatch'
 [[ $(printf '%s\n' "$baseline" | sed -n 's/^kernel=//p') == 6.18.60 ]] || abort 'kernel mismatch'
 [[ $(printf '%s\n' "$baseline" | sed -n 's/^ping=//p') == 1 ]] || abort 'Redmi peer not responding'
 [[ $(printf '%s\n' "$baseline" | sed -n 's/^q6=//p') == 3 ]] || abort 'Q6 not healthy'
@@ -43,15 +43,15 @@ export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 [[ $(systemctl --user is-active wave7-q6-noc-kmsg.service) == active ]] || abort 'read-only kmsg capture service not running'
 [[ $(systemctl --user is-active wave7-q6-noc-events.service) == active ]] || abort 'NoC IRQ/dmesg history capture service not running'
 test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*')" || abort 'another trial guard is active'
-echo "PREFLIGHT_PASS accepted_boot=$old_boot source_image_sha=$image_sha accepted_restore_sha=$rollback_sha"
+echo "PREFLIGHT_PASS predecessor_boot=$old_boot source_image_sha=$image_sha accepted_restore_sha=$rollback_sha"
 [[ $action == --run ]] || exit 0
 
-tag=qdss-e6220b40e2-$(date +%Y%m%d-%H%M%S)
+tag=qdss-fc4cdcce47-$(date +%Y%m%d-%H%M%S)
 run_dir="$dir/runs/$tag"
 mkdir -p "$run_dir"
 printf '%s\n' "$baseline" > "$run_dir/preflight.txt"
 printf 'candidate_sha=%s\nrollback_sha=%s\n' "$image_sha" "$rollback_sha" >> "$run_dir/preflight.txt"
-trial_remote=/tmp/wave7-qdss-e6220b40e2-trial.bin
+trial_remote=/tmp/wave7-qdss-fc4cdcce47-trial.bin
 rollback_remote=/tmp/wave7-qdss-accepted-preflight.bin
 for pair in "$image|$trial_remote|$image_sha" "$rollback|$rollback_remote|$rollback_sha"; do
   IFS='|' read -r source dest sha <<< "$pair"
