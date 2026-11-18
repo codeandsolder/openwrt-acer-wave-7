@@ -75,7 +75,7 @@ run_one() {
   shift 3
   echo "$(date -Is) START $name" >> "$out/progress.log"
   ready || die "router unhealthy before $name"
-  remote "LD_LIBRARY_PATH=$router_runtime $router_runtime/iperf3 -4 -c $addr -B 192.168.76.1 -p 52225 -J -t 12 -O 2 $*" > "$out/$name.json"
+  remote "LD_LIBRARY_PATH=$router_runtime $router_runtime/iperf3 -4 -c $addr -B 192.168.76.1 -p 52225 --connect-timeout 5000 -J -t 12 -O 2 $*" > "$out/$name.json"
   jq -e '(.error == null) and (.end != null)' "$out/$name.json" >/dev/null || die "bad iperf3 result for $name"
   jq -r --arg name "$name" --arg rate "$rate" '[
     $name, $rate, ((.end.sum_sent.bits_per_second // 0)/1000000),
