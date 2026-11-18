@@ -20,12 +20,9 @@ The standalone A/B restored all IRQ affinities afterward.
 Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 
 ---
-diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qualcomm/ppe/edma.c
 --- a/drivers/net/ethernet/qualcomm/ppe/edma.c
 +++ b/drivers/net/ethernet/qualcomm/ppe/edma.c
-@@ -5,10 +5,12 @@
-  /* Qualcomm Ethernet DMA driver setup, HW configuration, clocks and
-   * interrupt initializations.
+@@ -7,6 +7,8 @@
    */
  
  #include <linux/clk.h>
@@ -34,11 +31,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  #include <linux/delay.h>
  #include <linux/kernel.h>
  #include <linux/module.h>
- #include <linux/netdevice.h>
- #include <linux/of_irq.h>
-@@ -406,11 +408,11 @@
- 	struct edma_ring_info *txcmpl = hw_info->txcmpl;
- 	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
+@@ -369,7 +371,7 @@ static int edma_irq_register(void)
  	struct edma_ring_info *rx = hw_info->rx;
  	struct device *dev = ppe_dev->dev;
  	int ret;
@@ -47,11 +40,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  
  	/* Request IRQ for TXCMPL rings. */
  	edma_txcmpl_irq_name = kzalloc((sizeof(char *) * txcmpl->num_rings), GFP_KERNEL);
- 	if (!edma_txcmpl_irq_name)
- 		return -ENOMEM;
-@@ -455,11 +457,11 @@
- 	for (i = 0; i < rx->num_rings; i++) {
- 		edma_rxdesc_irq_name[i] = kzalloc((sizeof(char *) * EDMA_IRQ_NAME_SIZE),
+@@ -418,7 +420,7 @@ static int edma_irq_register(void)
  						  GFP_KERNEL);
  		if (!edma_rxdesc_irq_name[i]) {
  			ret = -ENOMEM;
@@ -60,11 +49,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  		}
  
  		snprintf(edma_rxdesc_irq_name[i], 20, "rxdesc_%d",
- 			 rx->ring_start + i);
- 
-@@ -477,10 +479,21 @@
- 
- 		pr_debug("RXDESC ring: %d IRQ:%d request success: %s\n",
+@@ -440,6 +442,17 @@ static int edma_irq_register(void)
  			 rx->ring_start + i,
  			 edma_ctx->intr_info.intr_rx[i],
  			 edma_rxdesc_irq_name[i]);
@@ -82,11 +67,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  	}
  
  	/* Request Misc IRQ */
- 	ret = request_irq(edma_ctx->intr_info.intr_misc, edma_misc_handle_irq,
- 			  IRQF_SHARED, "misc",
-@@ -492,20 +505,22 @@
- 	}
- 
+@@ -455,16 +468,18 @@ static int edma_irq_register(void)
  	return 0;
  
  misc_intr_req_fail:
@@ -109,11 +90,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  	kfree(edma_rxdesc_irq_name);
  rxdesc_irq_name_alloc_fail:
  	for (i = 0; i < txcmpl->num_rings; i++) {
- 		synchronize_irq(edma_ctx->intr_info.intr_txcmpl[i]);
- 		free_irq(edma_ctx->intr_info.intr_txcmpl[i],
-@@ -835,10 +850,11 @@
- 	}
- 	kfree(edma_txcmpl_irq_name);
+@@ -798,6 +813,7 @@ void edma_destroy(struct ppe_device *ppe
  
  	/* Free IRQ for Rx DESC rings */
  	for (i = 0; i < rx->num_rings; i++) {
@@ -121,15 +98,9 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  		synchronize_irq(edma_ctx->intr_info.intr_rx[i]);
  		free_irq(edma_ctx->intr_info.intr_rx[i],
  			 (void *)&edma_ctx->rx_rings[i]);
- 		kfree(edma_rxdesc_irq_name[i]);
- 	}
-
-diff --git a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
 --- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
 +++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
-@@ -1001,11 +1001,11 @@
-  *
-  * Initialize and configure RPS hash map for queues
+@@ -992,7 +992,7 @@ void edma_cfg_rx_napi_add(void)
   */
  int edma_cfg_rx_rps_hash_map(void)
  {
@@ -138,5 +109,3 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c b/drivers/net/ether
  	int map_len = 0, idx = 0, ret = 0;
  	u32 q_off = EDMA_RX_QUEUE_START;
  	u32 q_map[EDMA_MAX_CORE] = {0};
- 	u32 hash, cpu;
- 
