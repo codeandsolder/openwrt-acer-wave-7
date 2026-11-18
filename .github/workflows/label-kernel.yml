@@ -6,6 +6,11 @@ on:
     types:
       - labeled
 
+# Cancel repeated PR runs without cancelling distinct kernel/target labels.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-kernels-label:
     name: Build all affected Kernels from defined label
