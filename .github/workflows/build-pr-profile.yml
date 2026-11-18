@@ -7,6 +7,11 @@ on:
 permissions:
   pull-requests: write
 
+# Cancel repeated PR runs without cancelling distinct kernel/target labels.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build-pr-profile:
     uses: openwrt/actions-shared-workflows/.github/workflows/build-pr-profile.yml@main
