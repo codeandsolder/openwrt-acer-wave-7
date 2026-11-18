@@ -30,9 +30,16 @@ The QDSS diagnostic configuration is maintained as a tiny, non-vendor
 source artifact in scripts/wave7/diagnostic-firmware/. Never commit the
 assembled binary overlay or the private vendor blobs.
 
-The sysupgrade bundle is not proof that NAND installation is safe. Until
-partition handling and recovery are validated, use the initramfs FIT
-artifact for subsequent controlled boot tests.
+The image recipe builds and checks **two distinct DTBs** from one hardware
+description: normal persistent NAND-root boot (root=/dev/ubiblock0_2)
+and a RAM-only initramfs variant (root=/dev/ram0, rdinit=/init,
+ubi.no_autoattach=1). A build fails if either DTB's bootargs-append
+differs from its pinned mode. Never use a NAND-root DTB in a RAM boot FIT.
+
+The sysupgrade bundle is not proof that NAND installation is safe.
+The dedicated RAM-root FIT is for supervised UART/U-Boot RAM boot only;
+see host/ram-boot.md for the independent recovery requirements. Neither
+output is authorization for an unattended flash.
 
 ## Optional private two-link MLO lab configuration
 
