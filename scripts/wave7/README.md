@@ -19,11 +19,16 @@ make -j5 target/install
 ~~~
 
 Optionally set WAVE7_FIRMWARE_SOURCE to a different private source tree.
-The stage command checks **every** file against firmware.sha256, then
-copies the verified complete tree into the standard, Git-ignored OpenWrt
-files/lib/firmware/ath12k overlay. Image recipes verify the installed
-rootfs against the same manifest and refuse to produce an incomplete image.
-Never commit the binary overlay.
+The stage command verifies the **45 private vendor files** against
+firmware.sha256 and the separately versioned QDSS trace configuration
+against diagnostic-firmware.sha256. It assembles the complete 46-file
+tree into the Git-ignored OpenWrt files/lib/firmware/ath12k overlay.
+Image recipes verify the installed rootfs against **both** manifests and
+refuse incomplete, altered, or unexpected firmware files.
+
+The QDSS diagnostic configuration is maintained as a tiny, non-vendor
+source artifact in scripts/wave7/diagnostic-firmware/. Never commit the
+assembled binary overlay or the private vendor blobs.
 
 The sysupgrade bundle is not proof that NAND installation is safe. Until
 partition handling and recovery are validated, use the initramfs FIT
