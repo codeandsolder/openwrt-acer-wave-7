@@ -12,12 +12,9 @@ clock, link or datapath configuration.
 
 Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
-diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq9574.c
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -4,18 +4,20 @@
-  */
- 
+@@ -6,6 +6,7 @@
  #include <linux/clk.h>
  #include <linux/clk-provider.h>
  #include <linux/device.h>
@@ -25,8 +22,7 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  #include <linux/of.h>
  #include <linux/of_platform.h>
  #include <linux/pcs/pcs-qcom-ipq9574.h>
- #include <linux/phy.h>
- #include <linux/phylink.h>
+@@ -14,6 +15,7 @@
  #include <linux/platform_device.h>
  #include <linux/regmap.h>
  #include <linux/reset.h>
@@ -34,11 +30,7 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  
  #include <dt-bindings/net/qcom,ipq9574-pcs.h>
  
- /* Maximum number of MIIs per PCS instance. There are 5 MIIs for PSGMII. */
- #define PCS_MAX_MII_NRS			5
-@@ -1227,10 +1229,81 @@
- 	.reg_read = ipq_pcs_regmap_read,
- 	.reg_write = ipq_pcs_regmap_write,
+@@ -1229,6 +1231,77 @@ static const struct regmap_config ipq_pc
  	.fast_io = true,
  };
  
@@ -116,11 +108,7 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  static int ipq9574_pcs_probe(struct platform_device *pdev)
  {
  	struct device *dev = &pdev->dev;
- 	struct ipq_pcs *qpcs;
- 	struct clk *clk;
-@@ -1285,10 +1358,11 @@
- 	ret = ipq_pcs_create_miis(qpcs);
- 	if (ret)
+@@ -1287,6 +1360,7 @@ static int ipq9574_pcs_probe(struct plat
  		return ret;
  
  	platform_set_drvdata(pdev, qpcs);
@@ -128,5 +116,3 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  
  	return 0;
  }
- 
- static const struct of_device_id ipq9574_pcs_of_mtable[] = {

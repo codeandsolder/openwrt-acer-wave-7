@@ -21,7 +21,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/phy/qcom/qca808x.c
 +++ b/drivers/net/phy/qcom/qca808x.c
-@@ -185,6 +185,12 @@
+@@ -185,6 +185,12 @@ struct qca808x_priv {
  	u8 diag_serdes_sample;
  	bool diag_serdes_link;
  	u8 diag_phy_counter_updates;
@@ -34,7 +34,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	struct qcom_phy_hw_stats hw_stats;
  };
  
-@@ -781,6 +787,21 @@
+@@ -781,6 +787,21 @@ static void qca808x_link_change_notify(s
  					 QCA8081_PHY_SERDES_MMD1_FIFO_CTRL,
  					 QCA8081_PHY_FIFO_RSTN,
  					 phydev->link ? QCA8081_PHY_FIFO_RSTN : 0);
@@ -56,13 +56,10 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	if (phydev_id_compare(phydev, QCA8081_PHY_ID) &&
  	    priv->initial_link_events < 3) {
  		priv->initial_link_events++;
-@@ -1032,6 +1053,38 @@
- 				    (unsigned long long)priv->hw_stats.rx_pkts,
- 				    (unsigned long long)priv->hw_stats.rx_err_pkts,
- 				    (unsigned long long)priv->hw_stats.tx_pkts,
-+				    (unsigned long long)priv->hw_stats.tx_err_pkts);
-+	}
-+
+@@ -1035,6 +1056,38 @@ static int qca808x_update_stats(struct p
+ 				    (unsigned long long)priv->hw_stats.tx_err_pkts);
+ 	}
+ 
 +	/*
 +	 * The state machine already reads clear-on-read MMD7 counters through
 +	 * qcom_phy_update_stats(). Sample its cached 64-bit totals on every
@@ -92,6 +89,9 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 +				    (unsigned long long)tx,
 +				    (unsigned long long)tx_delta,
 +				    (unsigned long long)priv->hw_stats.rx_err_pkts,
- 				    (unsigned long long)priv->hw_stats.tx_err_pkts);
- 	}
++				    (unsigned long long)priv->hw_stats.tx_err_pkts);
++	}
++
+ 	return 0;
+ }
  

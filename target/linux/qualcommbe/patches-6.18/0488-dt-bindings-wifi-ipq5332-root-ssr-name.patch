@@ -10,21 +10,17 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/Documentation/devicetree/bindings/net/wireless/qcom,ipq5332-wifi.yaml
 +++ b/Documentation/devicetree/bindings/net/wireless/qcom,ipq5332-wifi.yaml
-@@ -159,10 +159,17 @@
-     $ref: /schemas/types.yaml#/definitions/phandle
-     description:
-       Phandle to the Qualcomm Hexagon DSP(q6 remote processor), which is utilized
+@@ -162,6 +162,13 @@ properties:
        for offloading WiFi processing tasks, this q6 remote processor operates in
        conjunction with WiFi.
-+
+ 
 +  qcom,root-ssr-name:
 +    $ref: /schemas/types.yaml#/definitions/string
 +    description:
 +      Name of the shared root-WCSS remoteproc restart notification source.
 +      WiFi UserPDs on the same Q6 register for this source to recover after
 +      a root crash without waiting for the previous firmware instance.
- 
++
    qcom,smem-states:
      $ref: /schemas/types.yaml#/definitions/phandle-array
      description: States used by the AP to signal the remote processor
-     items:

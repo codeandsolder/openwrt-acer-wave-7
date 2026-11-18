@@ -22,7 +22,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  /* LOS-from-SFP select; 0x7 on SFP ports, 0 otherwise */
  #define PCS_LINK_DETECT			0x570
-@@ -154,6 +156,7 @@
+@@ -154,6 +156,7 @@ struct ipq_pcs_mii {
  /* PCS private data */
  struct ipq_pcs {
  	struct device *dev;
@@ -30,7 +30,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	void __iomem *base;
  	struct regmap *regmap;
  	phy_interface_t interface;
-@@ -305,13 +308,40 @@
+@@ -305,13 +308,40 @@ static void ipq_pcs_get_state_10gbaser(s
  	state->pause |= MLO_PAUSE_TXRX_MASK;
  }
  
@@ -73,7 +73,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  		return 0;
  
  	ret = clk_prepare_enable(qpcs->qpcs_mii[0]->rx_clk);
-@@ -329,11 +359,8 @@
+@@ -329,11 +359,8 @@ static int ipq_pcs_config_mode(struct ip
  	bool xpcs_mode = false;
  	int ret;
  
@@ -87,7 +87,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  	/* Assert XPCS reset */
  	reset_control_assert(qpcs->xpcs_rstc);
-@@ -418,8 +445,26 @@
+@@ -418,8 +445,26 @@ static int ipq_pcs_config_mode(struct ip
  		msleep(100);
  	}
  
@@ -116,7 +116,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  		/* Program the whole register: the analog enables must not
  		 * be left at their power-on state.
  		 */
-@@ -1147,6 +1192,7 @@
+@@ -1147,6 +1192,7 @@ static int ipq9574_pcs_probe(struct plat
  		return -ENOMEM;
  
  	qpcs->dev = dev;

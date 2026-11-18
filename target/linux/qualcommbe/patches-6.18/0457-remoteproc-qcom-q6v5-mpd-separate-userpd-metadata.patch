@@ -1,5 +1,3 @@
-diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
-index 9dca72c..6e518d6 100644
 --- a/drivers/remoteproc/qcom_q6v5_mpd.c
 +++ b/drivers/remoteproc/qcom_q6v5_mpd.c
 @@ -80,6 +80,9 @@ struct q6_wcss {
@@ -12,7 +10,7 @@ index 9dca72c..6e518d6 100644
  	struct userpd *upd[MAX_UPD];
  };
  
-@@ -252,33 +255,104 @@ static void *q6_wcss_da_to_va(struct rproc *rproc, u64 da, size_t len,
+@@ -252,33 +255,104 @@ static void *q6_wcss_da_to_va(struct rpr
  	return wcss->mem_region + offset;
  }
  
@@ -135,7 +133,7 @@ index 9dca72c..6e518d6 100644
  
  	ret = qcom_smem_alloc(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID,
  			      UPD_BOOT_INFO_SMEM_SIZE);
-@@ -289,60 +363,76 @@ static int share_upd_bootinfo_to_q6(struct rproc *rproc)
+@@ -289,60 +363,76 @@ static int share_upd_bootinfo_to_q6(stru
  	}
  
  	ptr = qcom_smem_get(REMOTE_PID, UPD_BOOT_INFO_SMEM_ID, &size);
@@ -173,6 +171,19 @@ index 9dca72c..6e518d6 100644
 -
 -		/* TYPE */
 -		upd_bootinfo.header.type = UPD_BOOT_INFO_HEADER_TYPE;
+-
+-		/* LENGTH */
+-		upd_bootinfo.header.length =
+-			sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
+-
+-		/* Process ID */
+-		upd_bootinfo.pid = upd->pd_asid + 1;
+-
+-		ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
+-		if (ret < 0) {
+-			dev_err(upd->dev, "request_firmware failed: %d\n",	ret);
+-			return ret;
+-		}
 +	bootarg_count = of_property_count_u32_elems(np, "boot-args");
 +	if (bootarg_count < 0 && bootarg_count != -EINVAL)
 +		return dev_err_probe(wcss->dev, bootarg_count,
@@ -195,7 +206,9 @@ index 9dca72c..6e518d6 100644
 +	cnt = payload_size;
 +	memcpy_toio(ptr, &cnt, sizeof(cnt));
 +	ptr += sizeof(cnt);
-+
+ 
+-		/* Load address */
+-		upd_bootinfo.bootaddr = rproc_get_boot_addr(upd->q6.rproc, fw);
 +	for (i = 0; i < bootarg_count; i++) {
 +		ret = of_property_read_u32_index(np, "boot-args", i, &bootarg);
 +		if (ret)
@@ -210,17 +223,14 @@ index 9dca72c..6e518d6 100644
 +		ptr++;
 +	}
  
--		/* LENGTH */
--		upd_bootinfo.header.length =
--			sizeof(upd_bootinfo) - sizeof(upd_bootinfo.header);
+-		/* Firmware mem size */
+-		upd_bootinfo.data_size = qcom_mdt_get_size(fw);
  
--		/* Process ID */
--		upd_bootinfo.pid = upd->pd_asid + 1;
+-		release_firmware(fw);
  
--		ret = request_firmware(&fw, upd->q6.rproc->firmware, upd->dev);
--		if (ret < 0) {
--			dev_err(upd->dev, "request_firmware failed: %d\n",	ret);
--			return ret;
+-		/* copy into smem */
+-		memcpy_toio(ptr, &upd_bootinfo, sizeof(upd_bootinfo));
+-		ptr += sizeof(upd_bootinfo);
 +	if (wcss->userpd_count) {
 +		for (i = 0; i < wcss->userpd_count; i++) {
 +			ret = q6_write_userpd_bootinfo(rproc, &ptr,
@@ -239,25 +249,13 @@ index 9dca72c..6e518d6 100644
 +						upd->q6.rproc->firmware);
 +			if (ret)
 +				return ret;
- 		}
--
--		/* Load address */
--		upd_bootinfo.bootaddr = rproc_get_boot_addr(upd->q6.rproc, fw);
--
--		/* Firmware mem size */
--		upd_bootinfo.data_size = qcom_mdt_get_size(fw);
--
--		release_firmware(fw);
--
--		/* copy into smem */
--		memcpy_toio(ptr, &upd_bootinfo, sizeof(upd_bootinfo));
--		ptr += sizeof(upd_bootinfo);
++		}
  	}
 +
  	return 0;
  }
  
-@@ -710,6 +801,10 @@ static int q6_wcss_probe(struct platform_device *pdev)
+@@ -710,6 +800,10 @@ static int q6_wcss_probe(struct platform
  	wcss->desc = of_device_get_match_data(&pdev->dev);
  	wcss->firmware = firmware;
  

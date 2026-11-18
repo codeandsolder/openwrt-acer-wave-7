@@ -13,10 +13,9 @@ Diagnostic build only; no permanent fix or production default.
 
 Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
-diff --git a/drivers/net/phy/qcom/qca808x.c b/drivers/net/phy/qcom/qca808x.c
 --- a/drivers/net/phy/qcom/qca808x.c
 +++ b/drivers/net/phy/qcom/qca808x.c
-@@ -174,6 +174,9 @@
+@@ -174,6 +174,9 @@ enum {
  struct qca808x_priv {
  	int led_polarity_mode;
  	int channel_id;
@@ -26,7 +25,7 @@ diff --git a/drivers/net/phy/qcom/qca808x.c b/drivers/net/phy/qcom/qca808x.c
  	struct qcom_phy_hw_stats hw_stats;
  };
  
-@@ -443,6 +446,7 @@
+@@ -443,6 +446,7 @@ static int qca808x_config_init(struct ph
  static int qca808x_read_status(struct phy_device *phydev)
  {
  	struct at803x_ss_mask ss_mask = { 0 };
@@ -34,7 +33,7 @@ diff --git a/drivers/net/phy/qcom/qca808x.c b/drivers/net/phy/qcom/qca808x.c
  	int ret;
  
  	ret = phy_read_mmd(phydev, MDIO_MMD_AN, MDIO_AN_10GBT_STAT);
-@@ -505,6 +509,21 @@
+@@ -505,6 +509,21 @@ static int qca808x_read_status(struct ph
  		}
  	}
  
@@ -56,7 +55,7 @@ diff --git a/drivers/net/phy/qcom/qca808x.c b/drivers/net/phy/qcom/qca808x.c
  	return 0;
  }
  
-@@ -627,13 +646,25 @@
+@@ -627,13 +646,25 @@ static int qca808x_config_aneg(struct ph
  
  static void qca808x_link_change_notify(struct phy_device *phydev)
  {

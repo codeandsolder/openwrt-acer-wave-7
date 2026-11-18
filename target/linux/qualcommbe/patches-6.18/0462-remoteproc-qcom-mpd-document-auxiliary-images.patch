@@ -6,10 +6,9 @@ into WCSS memory before the processor starts. Allow all three
 entries in the binding.
 
 ---
-diff --git a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
 --- a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
 +++ b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
-@@ -26,7 +26,11 @@
+@@ -26,7 +26,11 @@ properties:
      maxItems: 1
  
    firmware-name:

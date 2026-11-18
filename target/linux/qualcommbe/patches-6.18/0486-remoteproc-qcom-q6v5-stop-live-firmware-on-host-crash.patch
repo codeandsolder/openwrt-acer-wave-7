@@ -12,9 +12,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/remoteproc/qcom_q6v5.c
 +++ b/drivers/remoteproc/qcom_q6v5.c
-@@ -210,16 +210,17 @@
-  *
-  * Return: 0 on success, negative errno on failure
+@@ -212,12 +212,13 @@ EXPORT_SYMBOL_GPL(q6v5_stop_interrupt);
   */
  int qcom_q6v5_request_stop(struct qcom_q6v5 *q6v5, struct qcom_sysmon *sysmon)
  {
@@ -30,5 +28,3 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  		return 0;
  
  	qcom_smem_state_update_bits(q6v5->state,
- 				    BIT(q6v5->stop_bit), BIT(q6v5->stop_bit));
- 

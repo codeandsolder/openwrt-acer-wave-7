@@ -9,13 +9,10 @@ Link: https://lkml.iu.edu/hypermail/linux/kernel/2603.0/11071.html
 ---
 --- a/arch/arm64/boot/dts/qcom/ipq5332.dtsi
 +++ b/arch/arm64/boot/dts/qcom/ipq5332.dtsi
-@@ -431,6 +431,31 @@
- 				 <&gcc GCC_SDCC1_APPS_CLK>,
- 				 <&xo_board>;
- 			clock-names = "iface", "core", "xo";
-+			status = "disabled";
-+		};
-+
+@@ -434,6 +434,31 @@
+ 			status = "disabled";
+ 		};
+ 
 +		qpic_bam: dma-controller@7984000 {
 +			compatible = "qcom,bam-v1.7.4", "qcom,bam-v1.7.0";
 +			reg = <0x07984000 0x1c000>;
@@ -38,6 +35,9 @@ Link: https://lkml.iu.edu/hypermail/linux/kernel/2603.0/11071.html
 +			clock-names = "core", "aon", "iom";
 +			dmas = <&qpic_bam 0>, <&qpic_bam 1>, <&qpic_bam 2>;
 +			dma-names = "tx", "rx", "cmd";
- 			status = "disabled";
- 		};
- 
++			status = "disabled";
++		};
++
+ 		blsp_dma: dma-controller@7884000 {
+ 			compatible = "qcom,bam-v1.7.0";
+ 			reg = <0x07884000 0x1d000>;
