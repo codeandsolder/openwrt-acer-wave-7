@@ -1,3 +1,4 @@
+From: codeandsolder <codeandsolder@gmail.com>
 Subject: [PATCH] net: ethernet: qualcomm: spread EDMA RX IRQs and honor RPS mask
 
 PPE RSS sends distinct flow hash buckets to four RX descriptor rings,
@@ -16,6 +17,8 @@ Measured live IPQ5332, 2.5GbE Asus-to-router TCP receive:
 4 streams: 1573.30 -> 2347.87 Mbps (+49.2%).
 The standalone A/B restored all IRQ affinities afterward.
 
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+
 ---
 diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qualcomm/ppe/edma.c
 --- a/drivers/net/ethernet/qualcomm/ppe/edma.c
@@ -33,6 +36,19 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  #include <linux/module.h>
  #include <linux/netdevice.h>
  #include <linux/of_irq.h>
+@@ -406,11 +408,11 @@
+ 	struct edma_ring_info *txcmpl = hw_info->txcmpl;
+ 	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
+ 	struct edma_ring_info *rx = hw_info->rx;
+ 	struct device *dev = ppe_dev->dev;
+ 	int ret;
+-	u32 i;
++	u32 i, cpu;
+ 
+ 	/* Request IRQ for TXCMPL rings. */
+ 	edma_txcmpl_irq_name = kzalloc((sizeof(char *) * txcmpl->num_rings), GFP_KERNEL);
+ 	if (!edma_txcmpl_irq_name)
+ 		return -ENOMEM;
 @@ -455,11 +457,11 @@
  	for (i = 0; i < rx->num_rings; i++) {
  		edma_rxdesc_irq_name[i] = kzalloc((sizeof(char *) * EDMA_IRQ_NAME_SIZE),
@@ -46,7 +62,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  		snprintf(edma_rxdesc_irq_name[i], 20, "rxdesc_%d",
  			 rx->ring_start + i);
  
-@@ -477,10 +479,20 @@
+@@ -477,10 +479,21 @@
  
  		pr_debug("RXDESC ring: %d IRQ:%d request success: %s\n",
  			 rx->ring_start + i,
@@ -57,8 +73,9 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
 +		 * Hardware RSS maps each queue group to a different RX ring.
 +		 * Keep the ring's interrupt/NAPI work on a distinct online CPU.
 +		 */
++		cpu = cpumask_local_spread(i, dev_to_node(dev));
 +		ret = irq_set_affinity_and_hint(edma_ctx->intr_info.intr_rx[i],
-+				cpumask_of(cpumask_local_spread(i, dev_to_node(dev))));
++						cpumask_of(cpu));
 +		if (ret)
 +			dev_warn(dev, "RXDESC ring %u IRQ %d affinity unavailable: %d\n",
 +				 rx->ring_start + i, edma_ctx->intr_info.intr_rx[i], ret);
@@ -67,7 +84,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  	/* Request Misc IRQ */
  	ret = request_irq(edma_ctx->intr_info.intr_misc, edma_misc_handle_irq,
  			  IRQF_SHARED, "misc",
-@@ -492,20 +504,22 @@
+@@ -492,20 +505,22 @@
  	}
  
  	return 0;
@@ -94,7 +111,7 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/edma.c b/drivers/net/ethernet/qua
  	for (i = 0; i < txcmpl->num_rings; i++) {
  		synchronize_irq(edma_ctx->intr_info.intr_txcmpl[i]);
  		free_irq(edma_ctx->intr_info.intr_txcmpl[i],
-@@ -835,10 +849,11 @@
+@@ -835,10 +850,11 @@
  	}
  	kfree(edma_txcmpl_irq_name);
  
