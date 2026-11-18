@@ -30,8 +30,6 @@ Signed-off-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
  drivers/net/dsa/realtek/rtl8365mb_main.c | 68 +++++++++++++++++++++++-
  1 file changed, 66 insertions(+), 2 deletions(-)
 
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index 622529c..67593be 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
 @@ -319,6 +319,12 @@
@@ -68,7 +66,7 @@ index 622529c..67593be 100644
  /**
   * enum rtl8365mb_vlan_egress_mode - port VLAN egress mode
   * @RTL8365MB_VLAN_EGRESS_MODE_ORIGINAL: follow untag mask in VLAN4k table entry
-@@ -1195,6 +1215,33 @@ static int rtl8365mb_ext_config_rgmii(struct realtek_priv *priv, int port,
+@@ -1195,6 +1215,33 @@ static int rtl8365mb_ext_config_rgmii(st
  	if (ret)
  		return ret;
  
@@ -102,7 +100,7 @@ index 622529c..67593be 100644
  	return 0;
  }
  
-@@ -1698,6 +1745,8 @@ static void rtl8365mb_phylink_get_caps(struct dsa_switch *ds, int port,
+@@ -1698,6 +1745,8 @@ static void rtl8365mb_phylink_get_caps(s
  		rtl8365mb_get_port_extint(ds->priv, port);
  	struct realtek_priv *priv = ds->priv;
  	struct rtl8365mb *mb = priv->chip_data;
@@ -111,7 +109,7 @@ index 622529c..67593be 100644
  
  	config->mac_capabilities = MAC_SYM_PAUSE | MAC_ASYM_PAUSE |
  				   MAC_10 | MAC_100 | MAC_1000FD;
-@@ -1719,8 +1768,23 @@ static void rtl8365mb_phylink_get_caps(struct dsa_switch *ds, int port,
+@@ -1719,8 +1768,23 @@ static void rtl8365mb_phylink_get_caps(s
  	 * which remain unimplemented.
  	 */
  

@@ -8,11 +8,9 @@ Acer Wave 7 retail hardware reports chip ID 0x6642, version 0x0020. Its stock GP
  drivers/net/dsa/realtek/rtl8365mb_main.c | 13 +++++++++++++
  1 file changed, 13 insertions(+)
 
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index 3dc2e40..575a127 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
-@@ -894,6 +894,19 @@ static const struct rtl8365mb_chip_info rtl8365mb_chip_infos[] = {
+@@ -894,6 +894,19 @@ static const struct rtl8365mb_chip_info
  		.jam_table = rtl8365mb_init_jam_8365mb_vc,
  		.jam_size = ARRAY_SIZE(rtl8365mb_init_jam_8365mb_vc),
  	},
