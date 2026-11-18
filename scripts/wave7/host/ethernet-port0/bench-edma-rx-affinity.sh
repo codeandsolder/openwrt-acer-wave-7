@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 umask 077
 trial=/home/jan/firmware/wave7/trials/20261118-asus-dualport
-out="$trial/edma-rx-affinity"
+out="$trial/edma-rx-affinity/runs/$(date +%Y%m%d-%H%M%S)"
 runtime=/home/jan/firmware/wave7/trials/20261115-deferred-regression/iperf-runtime
 router_runtime=/tmp/wave7-port0-iperf
 key=/home/jan/.ssh/wave7-root-rsa
@@ -108,7 +108,9 @@ snapshot baseline-before
 run_case baseline-one 1
 run_case baseline-four 4
 snapshot baseline-after
-# Apply one specific target CPU per active EDMA RX ring, with a guaranteed trap.
+# Leave CPU0's already-correct routing untouched. A freshly saturated
+# router may delay SSH, so give CPU0 time to drain before an IRQ migration.
+sleep 2
 modified=1
 while IFS=$'\t' read -r irq name allowed effective; do
   [[ $irq =~ ^[0-9]+$ ]] || continue
@@ -119,7 +121,18 @@ while IFS=$'\t' read -r irq name allowed effective; do
     rxdesc_15) cpu=3 ;;
     *) die "unexpected IRQ $name" ;;
   esac
-  remote "printf '%s\n' '$cpu' > /proc/irq/$irq/smp_affinity_list" || die "IRQ $irq affinity write failed"
+  if [[ $cpu != 0 ]]; then
+    applied=0
+    for retry in 1 2 3; do
+      if failure=$(remote "printf '%s\n' '$cpu' > /proc/irq/$irq/smp_affinity_list" 2>&1); then
+        applied=1
+        break
+      fi
+      echo "AFFINITY_RETRY irq=$irq attempt=$retry error=$failure" >> "$out/progress.log"
+      sleep 2
+    done
+    [[ $applied == 1 ]] || die "IRQ $irq affinity change failed: $failure"
+  fi
   now=$(remote "cat /proc/irq/$irq/effective_affinity_list")
   [[ $now == "$cpu" ]] || die "IRQ $irq didn't move to CPU$cpu, effective=$now"
   echo "$irq $name new_effective=$now" >> "$out/affinities-spread.txt"
