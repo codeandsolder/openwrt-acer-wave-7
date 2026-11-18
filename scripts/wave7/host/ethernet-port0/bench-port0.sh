@@ -58,8 +58,18 @@ cleanup() {
   remote "rm -f $router_runtime/iperf3 $router_runtime/libiperf.so.0 $router_runtime/libatomic.so.1" >/dev/null 2>&1 || :
 }
 trap cleanup EXIT
-iperf3 -s -D -I "$serverpid" -p 52225
-[[ -s $serverpid ]] && kill -0 "$(cat "$serverpid")" || die 'iperf server did not start'
+if [[ ! -s $serverpid ]] || ! kill -0 "$(cat "$serverpid")" 2>/dev/null; then
+  iperf3 -s -D -I "$serverpid" -p 52225
+fi
+ready_server=0
+for ((attempt=0;attempt<40;attempt++)); do
+  if [[ -s $serverpid ]] && kill -0 "$(cat "$serverpid")" 2>/dev/null &&
+     ss -ltn 'sport = :52225' | grep -q LISTEN; then
+    ready_server=1; break
+  fi
+  sleep 0.1
+done
+[[ $ready_server == 1 ]] || die 'iperf server did not start'
 run_one() {
   local name=$1 addr=$2 rate=$3
   shift 3
