@@ -11,9 +11,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/fs/pstore/ram.c
 +++ b/fs/pstore/ram.c
-@@ -805,11 +805,18 @@
- 	cxt->max_ftrace_cnt = (cxt->flags & RAMOOPS_FLAG_FTRACE_PER_CPU)
- 				? nr_cpu_ids
+@@ -807,7 +807,14 @@ static int ramoops_probe(struct platform
  				: 1;
  	err = ramoops_init_przs("ftrace", dev, cxt, &cxt->fprzs, &paddr,
  				cxt->ftrace_size, -1,
@@ -29,5 +27,3 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  				(cxt->flags & RAMOOPS_FLAG_FTRACE_PER_CPU)
  					? PRZ_FLAG_NO_LOCK : 0);
  	if (err)
- 		goto fail_init;
- 

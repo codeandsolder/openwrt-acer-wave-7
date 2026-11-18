@@ -11,12 +11,9 @@ No hardware configuration or reset sequencing is changed.
 
 Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
-diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c b/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c
 --- a/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c
 +++ b/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c
-@@ -817,10 +817,39 @@
- 
- 	return count;
+@@ -819,6 +819,35 @@ static ssize_t ppe_packet_counter_write(
  }
  DEFINE_SHOW_STORE_ATTRIBUTE(ppe_packet_counter);
  
@@ -52,19 +49,13 @@ diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_debugfs.c b/drivers/net/ether
  void ppe_debugfs_setup(struct ppe_device *ppe_dev)
  {
  	struct ppe_debugfs_entry *entry;
- 	int ret;
- 	int i;
-@@ -841,10 +870,13 @@
- 
- 		debugfs_create_file(debugfs_files[i].name, 0444,
- 				    ppe_dev->debugfs_root, entry,
+@@ -844,6 +873,9 @@ void ppe_debugfs_setup(struct ppe_device
  				    &ppe_packet_counter_fops);
  	}
-+
+ 
 +	debugfs_create_file("port2_mac_regs", 0400, ppe_dev->debugfs_root,
 +			    ppe_dev, &ppe_port2_mac_regs_fops);
- 
++
  	/* TODO: Do we have to be so agressive and remove __all__ debugfs entries? */
  	ret = edma_debugfs_setup(ppe_dev);
  	if (ret) {
- 		dev_err(ppe_dev->dev, "Error in EDMA debugfs setup API. ret: %d\n", ret);

@@ -15,7 +15,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/phy/qcom/qca808x.c
 +++ b/drivers/net/phy/qcom/qca808x.c
-@@ -184,6 +184,7 @@
+@@ -184,6 +184,7 @@ struct qca808x_priv {
  	u8 diag_serdes_events;
  	u8 diag_serdes_sample;
  	bool diag_serdes_link;
@@ -23,7 +23,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	struct qcom_phy_hw_stats hw_stats;
  };
  
-@@ -951,11 +952,38 @@
+@@ -951,11 +952,38 @@ static int qca808x_led_polarity_set(stru
  			      active_low ? 0 : QCA808X_LED_ACTIVE_HIGH);
  }
  

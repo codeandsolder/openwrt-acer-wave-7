@@ -14,9 +14,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/remoteproc/qcom_q6v5_mpd.c
 +++ b/drivers/remoteproc/qcom_q6v5_mpd.c
-@@ -83,14 +83,16 @@
- 	const char **firmware;
- 	const char *userpd_firmware[MAX_UPD];
+@@ -85,10 +85,12 @@ struct q6_wcss {
  	u8 userpd_asid[MAX_UPD];
  	u8 userpd_count;
  	struct userpd *upd[MAX_UPD];
@@ -29,11 +27,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	struct device *dev;
  	struct qcom_rproc_ssr ssr_subdev;
  	struct qcom_q6v5 q6;
- };
- 
-@@ -139,10 +141,12 @@
- 			dev_err(wcss->dev, "root WCSS shutdown after failed start: %d\n",
- 				shutdown_ret);
+@@ -141,6 +143,8 @@ static int q6_wcss_start(struct rproc *r
  		goto err_unprepare;
  	}
  
@@ -42,11 +36,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	return 0;
  
  err_unprepare:
- 	wcss->q6.running = false;
- 	qcom_q6v5_unprepare(&wcss->q6);
-@@ -171,10 +175,12 @@
- }
- 
+@@ -173,6 +177,8 @@ static int q6_wcss_spawn_pd(struct rproc
  static int wcss_pd_start(struct rproc *rproc)
  {
  	struct userpd *upd = rproc->priv;
@@ -55,26 +45,18 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
  	int ret;
  
- 	ret = qcom_scm_pas_auth_and_reset(pasid);
- 	if (ret) {
-@@ -185,10 +191,14 @@
- 	if (upd->q6.spawn_bit) {
- 		ret = q6_wcss_spawn_pd(rproc);
- 		if (ret)
+@@ -188,6 +194,10 @@ static int wcss_pd_start(struct rproc *r
  			return ret;
  	}
-+
+ 
 +	if (!ret)
 +		WRITE_ONCE(upd->parent_generation,
 +			   atomic_read(&wcss->generation));
- 
++
  	return ret;
  }
  
- static int q6_wcss_stop(struct rproc *rproc)
-@@ -235,18 +245,21 @@
-  */
- static int wcss_pd_stop(struct rproc *rproc)
+@@ -237,6 +247,7 @@ static int wcss_pd_stop(struct rproc *rp
  {
  	struct userpd *upd = rproc->priv;
  	struct rproc *rpd_rproc = dev_get_drvdata(upd->dev->parent);
@@ -82,8 +64,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	u32 pasid = (upd->pd_asid << 8) | UPD_SWID;
  	int ret, parent_ret;
  
- 	/*
- 	 * After root failure, child rproc can still report RUNNING even
+@@ -245,6 +256,8 @@ static int wcss_pd_stop(struct rproc *rp
  	 * though the firmware that would acknowledge the stop is gone.
  	 */
  	if (READ_ONCE(rpd_rproc->state) == RPROC_RUNNING &&
@@ -92,11 +73,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	    upd->q6.stop_bit) {
  		ret = qcom_q6v5_request_stop(&upd->q6, NULL);
  		if (ret)
- 			dev_warn(upd->dev, "UserPD stop handshake failed: %d\n", ret);
- 	}
-@@ -946,10 +959,11 @@
- 
- 	wcss = rproc->priv;
+@@ -948,6 +961,7 @@ static int q6_wcss_probe(struct platform
  	wcss->dev = &pdev->dev;
  	wcss->desc = of_device_get_match_data(&pdev->dev);
  	wcss->firmware = firmware;
@@ -104,5 +81,3 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  
  	ret = q6_parse_userpd_metadata(wcss);
  	if (ret)
- 		goto free_rproc;
- 

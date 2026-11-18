@@ -11,7 +11,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -1338,6 +1338,14 @@
+@@ -1312,6 +1312,14 @@ static int ipq_pcs_snapshot_show(struct
  	for (i = 0; i < PCS_MAX_MII_NRS; i++) {
  		if (!qpcs->qpcs_mii[i])
  			continue;

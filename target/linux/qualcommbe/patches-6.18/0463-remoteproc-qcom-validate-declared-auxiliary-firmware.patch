@@ -7,10 +7,9 @@ incompletely initialized processor. Log each successfully loaded
 auxiliary image to make early WCSS initialization observable.
 
 ---
-diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
 --- a/drivers/remoteproc/qcom_q6v5_mpd.c
 +++ b/drivers/remoteproc/qcom_q6v5_mpd.c
-@@ -520,8 +520,11 @@
+@@ -520,8 +520,11 @@ static int q6_wcss_load(struct rproc *rp
  
  		ret = request_firmware(&fw_hdl, wcss->firmware[loop],
  				       wcss->dev);
@@ -24,7 +23,7 @@ diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_m
  
  		ret = qcom_mdt_load_no_init(wcss->dev, fw_hdl,
  					    wcss->firmware[loop],
-@@ -537,6 +540,9 @@
+@@ -537,6 +540,9 @@ static int q6_wcss_load(struct rproc *rp
  				"can't load %s ret:%d\n", wcss->firmware[loop], ret);
  			return ret;
  		}
