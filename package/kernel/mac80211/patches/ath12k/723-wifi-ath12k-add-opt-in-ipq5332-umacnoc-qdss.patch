@@ -289,7 +289,7 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  	ath12k_qmi_free_target_mem_chunk(ab);
-@@ -4669,3 +4827,46 @@
+@@ -4669,3 +4827,50 @@
  	ath12k_qmi_aux_uc_free(ab);
  	ath12k_qmi_m3_free(ab);
  }
@@ -301,40 +301,44 @@ diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/at
 +int ath12k_qdss_qmi_send_mem_info(struct ath12k_base *ab,
 +				 phys_addr_t addr, u32 size)
 +{
-+	struct qmi_wlanfw_respond_mem_req_msg_v01 req = {};
++	struct qmi_wlanfw_respond_mem_req_msg_v01 *req;
 +	struct qmi_wlanfw_respond_mem_resp_msg_v01 resp = {};
 +	struct qmi_txn txn;
 +	int ret;
 +
-+	req.mem_seg_len = 1;
-+	req.mem_seg[0].addr = addr;
-+	req.mem_seg[0].size = size;
-+	req.mem_seg[0].type = ATH12K_QDSS_MEM_TYPE;
++	req = kzalloc(sizeof(*req), GFP_KERNEL);
++	if (!req)
++		return -ENOMEM;
++	req->mem_seg_len = 1;
++	req->mem_seg[0].addr = addr;
++	req->mem_seg[0].size = size;
++	req->mem_seg[0].type = ATH12K_QDSS_MEM_TYPE;
 +
 +	ret = qmi_txn_init(&ab->qmi.handle, &txn,
 +			   qmi_wlanfw_respond_mem_resp_msg_v01_ei, &resp);
 +	if (ret < 0)
-+		return ret;
++		goto out;
 +
 +	ret = qmi_send_request(&ab->qmi.handle, NULL, &txn,
 +			       ATH12K_QDSS_QMI_MEM_INFO,
 +			       QMI_WLANFW_RESPOND_MEM_REQ_MSG_V01_MAX_LEN,
-+			       qmi_wlanfw_respond_mem_req_msg_v01_ei, &req);
++			       qmi_wlanfw_respond_mem_req_msg_v01_ei, req);
 +	if (ret < 0) {
 +		qmi_txn_cancel(&txn);
-+		return ret;
++		goto out;
 +	}
 +	ret = qmi_txn_wait(&txn,
 +			   msecs_to_jiffies(ATH12K_QMI_WLANFW_TIMEOUT_MS));
 +	if (ret < 0)
-+		return ret;
++		goto out;
 +	if (resp.resp.result != QMI_RESULT_SUCCESS_V01) {
 +		ath12k_warn(ab, "QDSS: mem info failed result %u error %u\n",
 +			    resp.resp.result, resp.resp.error);
-+		return -EREMOTEIO;
++		ret = -EREMOTEIO;
 +	}
-+
-+	return 0;
++out:
++	kfree(req);
++	return ret;
 +}
 diff --git a/drivers/net/wireless/ath/ath12k/qmi.h b/drivers/net/wireless/ath/ath12k/qmi.h
 --- a/drivers/net/wireless/ath/ath12k/qmi.h
