@@ -5,7 +5,7 @@ umask 077
 trial=/home/jan/firmware/wave7/trials/20261118-asus-dualport
 runtime=/home/jan/firmware/wave7/trials/20261115-deferred-regression/iperf-runtime
 router_runtime=/tmp/wave7-port0-iperf
-out="$trial/throughput"
+out="$trial/throughput-bound"
 key=/home/jan/.ssh/wave7-root-rsa
 known="$trial/known_hosts"
 host=root@192.168.76.1
@@ -50,32 +50,44 @@ iperf3 --version > "$out/asus-iperf-version.txt"
 { date -Is; ip -4 addr; ip route; ip -s link show enp4s0f4u2u4; ip -s link show enp4s0f4u2u2u4; } > "$out/asus-before.txt"
 remote 'cat /proc/stat; cat /proc/softirqs; ethtool -S lan1; ethtool -S lan; cat /proc/uptime' > "$out/router-before.txt"
 printf 'case\tpeer_mbps\tsender_mbps\treceiver_mbps\ttcp_retransmits\trouter_cpu_pct\tasus_cpu_pct\n' > "$out/results.tsv"
-serverpid="$out/asus-iperf.pid"
+server_pids=("$out/asus-iperf-1g.pid" "$out/asus-iperf-2p5g.pid")
 cleanup() {
-  if [[ -s $serverpid ]]; then
-    kill "$(cat "$serverpid")" 2>/dev/null || :
-  fi
+  local pidfile
+  for pidfile in "${server_pids[@]}"; do
+    if [[ -s $pidfile ]]; then
+      kill "$(cat "$pidfile")" 2>/dev/null || :
+    fi
+  done
   remote "rm -f $router_runtime/iperf3 $router_runtime/libiperf.so.0 $router_runtime/libatomic.so.1" >/dev/null 2>&1 || :
 }
 trap cleanup EXIT
-if [[ ! -s $serverpid ]] || ! kill -0 "$(cat "$serverpid")" 2>/dev/null; then
-  iperf3 -s -D -I "$serverpid" -p 52225
-fi
-ready_server=0
-for ((attempt=0;attempt<40;attempt++)); do
-  if [[ -s $serverpid ]] && kill -0 "$(cat "$serverpid")" 2>/dev/null &&
-     ss -ltn 'sport = :52225' | grep -q LISTEN; then
-    ready_server=1; break
-  fi
-  sleep 0.1
-done
-[[ $ready_server == 1 ]] || die 'iperf server did not start'
+start_bound_server() {
+  local ip=$1 nic=$2 port=$3 pidfile=$4 ready_server=0
+  # Bind both the address and device; two NICs share the same IPv4 subnet.
+  iperf3 -s -D -I "$pidfile" -B "$ip" --bind-dev "$nic" -p "$port"
+  for ((attempt=0; attempt<40; attempt++)); do
+    if [[ -s $pidfile ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null &&
+       ss -ltn "sport = :$port" | grep -q LISTEN; then
+      ready_server=1; break
+    fi
+    sleep 0.1
+  done
+  [[ $ready_server == 1 ]] || die "server did not start on $nic ($ip:$port)"
+}
+start_bound_server 192.168.76.190 enp4s0f4u2u2u4 52225 "${server_pids[0]}"
+start_bound_server 192.168.76.181 enp4s0f4u2u4 52226 "${server_pids[1]}"
+ss -ltn 'sport = :52225 or sport = :52226' > "$out/server-listeners.txt"
 run_one() {
-  local name=$1 addr=$2 rate=$3
+  local name=$1 addr=$2 rate=$3 port
   shift 3
+  case $addr in
+    192.168.76.190) port=52225 ;;
+    192.168.76.181) port=52226 ;;
+    *) die "unsupported client address $addr" ;;
+  esac
   echo "$(date -Is) START $name" >> "$out/progress.log"
   ready || die "router unhealthy before $name"
-  remote "LD_LIBRARY_PATH=$router_runtime $router_runtime/iperf3 -4 -c $addr -B 192.168.76.1 -p 52225 --connect-timeout 5000 -J -t 12 -O 2 $*" > "$out/$name.json"
+  remote "LD_LIBRARY_PATH=$router_runtime $router_runtime/iperf3 -4 -c $addr -B 192.168.76.1 -p $port --connect-timeout 5000 -J -t 12 -O 2 $*" > "$out/$name.json"
   jq -e '(.error == null) and (.end != null)' "$out/$name.json" >/dev/null || die "bad iperf3 result for $name"
   jq -r --arg name "$name" --arg rate "$rate" '[
     $name, $rate, ((.end.sum_sent.bits_per_second // 0)/1000000),
