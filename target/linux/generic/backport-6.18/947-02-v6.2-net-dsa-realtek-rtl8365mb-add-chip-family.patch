@@ -23,9 +23,6 @@ Reviewed-by: Linus Walleij <linusw@kernel.org>
  2 files changed, 28 insertions(+)
  create mode 100644 drivers/net/dsa/realtek/rtl8365mb.h
 
-diff --git a/drivers/net/dsa/realtek/rtl8365mb.h b/drivers/net/dsa/realtek/rtl8365mb.h
-new file mode 100644
-index 0000000..315de4c
 --- /dev/null
 +++ b/drivers/net/dsa/realtek/rtl8365mb.h
 @@ -0,0 +1,14 @@
@@ -43,8 +40,6 @@ index 0000000..315de4c
 +enum rtl8365mb_family rtl8365mb_get_family(struct realtek_priv *priv);
 +
 +#endif /* _RTL8365MB_H */
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index e8bb35f..642cc74 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
 @@ -109,6 +109,7 @@
@@ -71,7 +66,7 @@ index e8bb35f..642cc74 100644
  	const struct rtl8365mb_extint extints[RTL8365MB_MAX_NUM_EXTINTS];
  	const struct rtl8365mb_jam_tbl_entry *jam_table;
  	size_t jam_size;
-@@ -718,6 +721,7 @@ static const struct rtl8365mb_chip_info rtl8365mb_chip_infos[] = {
+@@ -718,6 +721,7 @@ static const struct rtl8365mb_chip_info
  		.name = "RTL8365MB-VC",
  		.chip_id = 0x6367,
  		.chip_ver = 0x0040,
@@ -79,7 +74,7 @@ index e8bb35f..642cc74 100644
  		.extints = {
  			{ 6, 1, PHY_INTF(MII) | PHY_INTF(TMII) |
  				PHY_INTF(RMII) | PHY_INTF(RGMII) },
-@@ -729,6 +733,7 @@ static const struct rtl8365mb_chip_info rtl8365mb_chip_infos[] = {
+@@ -729,6 +733,7 @@ static const struct rtl8365mb_chip_info
  		.name = "RTL8367S",
  		.chip_id = 0x6367,
  		.chip_ver = 0x00A0,
@@ -87,7 +82,7 @@ index e8bb35f..642cc74 100644
  		.extints = {
  			{ 6, 1, PHY_INTF(SGMII) | PHY_INTF(HSGMII) },
  			{ 7, 2, PHY_INTF(MII) | PHY_INTF(TMII) |
-@@ -741,6 +746,7 @@ static const struct rtl8365mb_chip_info rtl8365mb_chip_infos[] = {
+@@ -741,6 +746,7 @@ static const struct rtl8365mb_chip_info
  		.name = "RTL8367SB",
  		.chip_id = 0x6367,
  		.chip_ver = 0x0010,
@@ -95,7 +90,7 @@ index e8bb35f..642cc74 100644
  		.extints = {
  			{ 6, 1, PHY_INTF(MII) | PHY_INTF(TMII) |
  				PHY_INTF(RMII) | PHY_INTF(RGMII) |
-@@ -755,6 +761,7 @@ static const struct rtl8365mb_chip_info rtl8365mb_chip_infos[] = {
+@@ -755,6 +761,7 @@ static const struct rtl8365mb_chip_info
  		.name = "RTL8367RB-VB",
  		.chip_id = 0x6367,
  		.chip_ver = 0x0020,

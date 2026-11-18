@@ -16,7 +16,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/phy/qcom/qca808x.c
 +++ b/drivers/net/phy/qcom/qca808x.c
-@@ -405,6 +405,58 @@
+@@ -405,6 +405,58 @@ static void qca808x_diag_serdes_work(str
  		    event, link, sample, mii_ctrl, mii_status,
  		    pma_ctrl, pma_status, fifo, errors);
  

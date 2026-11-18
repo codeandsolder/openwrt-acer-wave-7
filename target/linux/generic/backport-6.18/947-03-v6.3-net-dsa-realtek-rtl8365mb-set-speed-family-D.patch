@@ -26,8 +26,6 @@ Signed-off-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
  drivers/net/dsa/realtek/rtl8365mb_main.c | 82 ++++++++++++++++++++----
  1 file changed, 69 insertions(+), 13 deletions(-)
 
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index 642cc74..622529c 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
 @@ -331,6 +331,7 @@
@@ -67,7 +65,7 @@ index 642cc74..622529c 100644
  
  /* CPU port mask register - controls which ports are treated as CPU ports */
  #define RTL8365MB_CPU_PORT_MASK_REG	0x1219
-@@ -1571,23 +1594,32 @@ static int rtl8365mb_ext_config_forcemode(struct realtek_priv *priv, int port,
+@@ -1571,23 +1594,32 @@ static int rtl8365mb_ext_config_forcemod
  	u32 r_duplex;
  	u32 r_speed;
  	u32 r_link;
@@ -105,7 +103,7 @@ index 642cc74..622529c 100644
  			r_speed = RTL8365MB_PORT_SPEED_1000M;
  		} else if (speed == SPEED_100) {
  			r_speed = RTL8365MB_PORT_SPEED_100M;
-@@ -1617,20 +1649,44 @@ static int rtl8365mb_ext_config_forcemode(struct realtek_priv *priv, int port,
+@@ -1617,20 +1649,44 @@ static int rtl8365mb_ext_config_forcemod
  		r_duplex = 0;
  	}
  

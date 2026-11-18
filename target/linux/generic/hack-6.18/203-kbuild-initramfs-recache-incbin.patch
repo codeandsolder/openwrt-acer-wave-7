@@ -1,6 +1,6 @@
 --- a/usr/Makefile
 +++ b/usr/Makefile
-@@ -17,6 +17,14 @@ obj-$(CONFIG_BLK_DEV_INITRD) := initramf
+@@ -16,6 +16,14 @@ obj-$(CONFIG_BLK_DEV_INITRD) := initramf
  
  $(obj)/initramfs_data.o: $(obj)/initramfs_inc_data
  

@@ -16,11 +16,9 @@ state after initialization and matches the secure WCSS crash-reason model.
 
 Signed-off-by: Jan Równicki <jan@codeandsolder.com>
 ---
-diff --git a/drivers/remoteproc/qcom_q6v5.c b/drivers/remoteproc/qcom_q6v5.c
-index 46ad4fd..ba9ba76 100644
 --- a/drivers/remoteproc/qcom_q6v5.c
 +++ b/drivers/remoteproc/qcom_q6v5.c
-@@ -100,7 +100,8 @@ static irqreturn_t q6v5_wdog_interrupt(int irq, void *data)
+@@ -100,7 +100,8 @@ static irqreturn_t q6v5_wdog_interrupt(i
  		return IRQ_HANDLED;
  	}
  
@@ -30,7 +28,7 @@ index 46ad4fd..ba9ba76 100644
  	if (!IS_ERR(msg) && len > 0 && msg[0])
  		dev_err(q6v5->dev, "watchdog received: %s\n", msg);
  	else
-@@ -121,7 +122,8 @@ irqreturn_t q6v5_fatal_interrupt(int irq, void *data)
+@@ -121,7 +122,8 @@ irqreturn_t q6v5_fatal_interrupt(int irq
  	if (!q6v5->running)
  		return IRQ_HANDLED;
  
@@ -65,8 +63,6 @@ index 46ad4fd..ba9ba76 100644
  	q6v5->crash_reason = crash_reason;
  	q6v5->handover = handover;
  
-diff --git a/drivers/remoteproc/qcom_q6v5.h b/drivers/remoteproc/qcom_q6v5.h
-index 4e1bb1a..3c49cb7 100644
 --- a/drivers/remoteproc/qcom_q6v5.h
 +++ b/drivers/remoteproc/qcom_q6v5.h
 @@ -40,6 +40,7 @@ struct qcom_q6v5 {
@@ -87,11 +83,9 @@ index 4e1bb1a..3c49cb7 100644
  		   void (*handover)(struct qcom_q6v5 *q6v5));
  void qcom_q6v5_deinit(struct qcom_q6v5 *q6v5);
  
-diff --git a/drivers/remoteproc/qcom_q6v5_adsp.c b/drivers/remoteproc/qcom_q6v5_adsp.c
-index 004dab4..0801c05 100644
 --- a/drivers/remoteproc/qcom_q6v5_adsp.c
 +++ b/drivers/remoteproc/qcom_q6v5_adsp.c
-@@ -717,7 +717,8 @@ static int adsp_probe(struct platform_device *pdev)
+@@ -717,7 +717,8 @@ static int adsp_probe(struct platform_de
  	if (ret)
  		goto disable_pm;
  
@@ -101,11 +95,9 @@ index 004dab4..0801c05 100644
  			     desc->load_state, qcom_adsp_pil_handover);
  	if (ret)
  		goto disable_pm;
-diff --git a/drivers/remoteproc/qcom_q6v5_mpd.c b/drivers/remoteproc/qcom_q6v5_mpd.c
-index 6e518d6..595525b 100644
 --- a/drivers/remoteproc/qcom_q6v5_mpd.c
 +++ b/drivers/remoteproc/qcom_q6v5_mpd.c
-@@ -810,6 +810,7 @@ static int q6_wcss_probe(struct platform_device *pdev)
+@@ -809,6 +809,7 @@ static int q6_wcss_probe(struct platform
  		goto free_rproc;
  
  	ret = qcom_q6v5_init(&wcss->q6, pdev, rproc,
@@ -113,8 +105,6 @@ index 6e518d6..595525b 100644
  			     WCSS_CRASH_REASON, NULL, NULL);
  	if (ret)
  		goto free_rproc;
-diff --git a/drivers/remoteproc/qcom_q6v5_mss.c b/drivers/remoteproc/qcom_q6v5_mss.c
-index 3087d89..908b7db 100644
 --- a/drivers/remoteproc/qcom_q6v5_mss.c
 +++ b/drivers/remoteproc/qcom_q6v5_mss.c
 @@ -26,6 +26,7 @@
@@ -125,7 +115,7 @@ index 3087d89..908b7db 100644
  #include <linux/iopoll.h>
  #include <linux/slab.h>
  
-@@ -2164,7 +2165,8 @@ static int q6v5_probe(struct platform_device *pdev)
+@@ -2164,7 +2165,8 @@ static int q6v5_probe(struct platform_de
  	qproc->need_mem_protection = desc->need_mem_protection;
  	qproc->has_mba_logs = desc->has_mba_logs;
  
@@ -135,11 +125,9 @@ index 3087d89..908b7db 100644
  			     qcom_msa_handover);
  	if (ret)
  		goto detach_proxy_pds;
-diff --git a/drivers/remoteproc/qcom_q6v5_pas.c b/drivers/remoteproc/qcom_q6v5_pas.c
-index 8c59eac..8dff294 100644
 --- a/drivers/remoteproc/qcom_q6v5_pas.c
 +++ b/drivers/remoteproc/qcom_q6v5_pas.c
-@@ -763,7 +763,8 @@ static int qcom_pas_probe(struct platform_device *pdev)
+@@ -763,7 +763,8 @@ static int qcom_pas_probe(struct platfor
  		goto unassign_mem;
  	pas->proxy_pd_count = ret;
  
@@ -149,8 +137,6 @@ index 8c59eac..8dff294 100644
  			     desc->load_state, qcom_pas_handover);
  	if (ret)
  		goto detach_proxy_pds;
-diff --git a/drivers/remoteproc/qcom_q6v5_wcss.c b/drivers/remoteproc/qcom_q6v5_wcss.c
-index 23ec878..309cdd9 100644
 --- a/drivers/remoteproc/qcom_q6v5_wcss.c
 +++ b/drivers/remoteproc/qcom_q6v5_wcss.c
 @@ -18,6 +18,7 @@
@@ -161,7 +147,7 @@ index 23ec878..309cdd9 100644
  #include "qcom_common.h"
  #include "qcom_pil_info.h"
  #include "qcom_q6v5.h"
-@@ -1015,7 +1016,8 @@ static int q6v5_wcss_probe(struct platform_device *pdev)
+@@ -1015,7 +1016,8 @@ static int q6v5_wcss_probe(struct platfo
  	if (ret)
  		return ret;
  
@@ -171,8 +157,6 @@ index 23ec878..309cdd9 100644
  	if (ret)
  		return ret;
  
-diff --git a/drivers/remoteproc/qcom_q6v5_wcss_sec.c b/drivers/remoteproc/qcom_q6v5_wcss_sec.c
-index 27e60cd..373e206 100644
 --- a/drivers/remoteproc/qcom_q6v5_wcss_sec.c
 +++ b/drivers/remoteproc/qcom_q6v5_wcss_sec.c
 @@ -19,6 +19,7 @@
@@ -183,7 +167,7 @@ index 27e60cd..373e206 100644
  
  #define WCSS_PAS_ID			0x6
  #define MPD_WCSS_PAS_ID			0xd
-@@ -355,7 +356,9 @@ static int wcss_sec_probe(struct platform_device *pdev)
+@@ -355,7 +356,9 @@ static int wcss_sec_probe(struct platfor
  		return dev_err_probe(&pdev->dev, PTR_ERR(int_clk),
  				     "Failed to get interconnect clock\n");
  

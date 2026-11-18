@@ -100,8 +100,6 @@ Signed-off-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
  drivers/net/dsa/realtek/rtl8365mb_main.c | 378 ++++++++++++++++++++++-
  1 file changed, 363 insertions(+), 15 deletions(-)
 
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index a0bd78e..678b277 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
 @@ -97,6 +97,9 @@
@@ -185,7 +183,7 @@ index a0bd78e..678b277 100644
  };
  
  #define pcs_to_rtl8365mb(_pcs) container_of((_pcs), struct rtl8365mb, pcs)
-@@ -1282,43 +1328,53 @@ static int rtl8365mb_ext_config_rgmii(struct realtek_priv *priv, int port,
+@@ -1282,43 +1328,53 @@ static int rtl8365mb_ext_config_rgmii(st
  static int rtl8365mb_sds_write(struct realtek_priv *priv, u8 index,
  			       u16 addr, u16 data)
  {
@@ -248,7 +246,7 @@ index a0bd78e..678b277 100644
  
  	/* Wait for the indirect read to complete: the engine clears the BUSY
  	 * bit once the data register holds the result.
-@@ -1328,15 +1384,19 @@ static int rtl8365mb_sds_read(struct realtek_priv *priv, u8 index,
+@@ -1328,15 +1384,19 @@ static int rtl8365mb_sds_read(struct rea
  				       !(val & RTL8365MB_SDS_INDACS_CMD_BUSY_MASK),
  				       10, 1000);
  	if (ret)
@@ -271,7 +269,7 @@ index a0bd78e..678b277 100644
  }
  
  /* The vendor driver selects between two sets of SerDes tuning parameters based
-@@ -1437,6 +1497,37 @@ static int rtl8365mb_sds_raise_rate_limits(struct realtek_priv *priv)
+@@ -1437,6 +1497,37 @@ static int rtl8365mb_sds_raise_rate_limi
  				  RTL8365MB_PORT6_EGRESSBW_CTRL1_MASK);
  }
  
@@ -309,7 +307,7 @@ index a0bd78e..678b277 100644
  static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
  				phy_interface_t interface,
  				const unsigned long *advertising,
-@@ -1458,6 +1549,17 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+@@ -1458,6 +1549,17 @@ static int rtl8365mb_pcs_config(struct p
  
  	is_d = rtl8365mb_get_family(priv) == RTL8365MB_FAMILY_D;
  
@@ -327,7 +325,7 @@ index a0bd78e..678b277 100644
  	/* Select the appropriate tuning table and SDS mode */
  	if (interface == PHY_INTERFACE_MODE_2500BASEX) {
  		if (is_d) {
-@@ -1547,7 +1649,9 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+@@ -1547,7 +1649,9 @@ static int rtl8365mb_pcs_config(struct p
  	if (ret)
  		return ret;
  
@@ -338,7 +336,7 @@ index a0bd78e..678b277 100644
  		val = sds_mode << RTL8365MB_DIGITAL_INTERFACE_SELECT_MODE_OFFSET(id);
  		ret = regmap_update_bits(priv->map,
  					 RTL8365MB_DIGITAL_INTERFACE_SELECT_REG(id),
-@@ -1595,8 +1699,184 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+@@ -1595,8 +1699,184 @@ static int rtl8365mb_pcs_config(struct p
  	val &= ~RTL8365MB_SDS_NWAY_EN_MASK;
  	val |= RTL8365MB_SDS_NWAY_RESTART_MASK;
  
@@ -525,7 +523,7 @@ index a0bd78e..678b277 100644
  }
  
  static bool rtl8365mb_interface_is_serdes(phy_interface_t interface)
-@@ -1750,11 +2030,25 @@ static void rtl8365mb_pcs_link_up(struct phylink_pcs *pcs,
+@@ -1750,11 +2030,25 @@ static void rtl8365mb_pcs_link_up(struct
  	}
  }
  
@@ -566,7 +564,7 @@ index a0bd78e..678b277 100644
  
  	rtl8365mb_stats_teardown(priv);
  	rtl8365mb_irq_teardown(priv);
-@@ -3508,6 +3810,23 @@ static int rtl8365mb_get_chip_id_and_ver(struct regmap *map, u32 *id, u32 *ver)
+@@ -3508,6 +3810,23 @@ static int rtl8365mb_get_chip_id_and_ver
  	return 0;
  }
  
@@ -590,7 +588,7 @@ index a0bd78e..678b277 100644
  static int rtl8365mb_detect(struct realtek_priv *priv)
  {
  	struct rtl8365mb *mb = priv->chip_data;
-@@ -3543,6 +3862,34 @@ static int rtl8365mb_detect(struct realtek_priv *priv)
+@@ -3543,6 +3862,34 @@ static int rtl8365mb_detect(struct realt
  
  	priv->num_ports = RTL8365MB_MAX_NUM_PORTS;
  	mb->priv = priv;
@@ -625,7 +623,7 @@ index a0bd78e..678b277 100644
  	mb->cpu.trap_port = RTL8365MB_MAX_NUM_PORTS;
  	mb->cpu.insert = RTL8365MB_CPU_INSERT_TO_ALL;
  	mb->cpu.position = RTL8365MB_CPU_POS_AFTER_SA;
-@@ -3579,6 +3926,7 @@ static const struct dsa_switch_ops rtl8365mb_switch_ops = {
+@@ -3579,6 +3926,7 @@ static const struct dsa_switch_ops rtl83
  	.port_vlan_add = rtl8365mb_port_vlan_add,
  	.port_vlan_del = rtl8365mb_port_vlan_del,
  	.port_vlan_filtering = rtl8365mb_port_vlan_filtering,
