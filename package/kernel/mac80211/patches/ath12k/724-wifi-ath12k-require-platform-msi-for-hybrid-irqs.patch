@@ -1,0 +1,46 @@
+Subject: [PATCH] wifi: ath12k: guard hybrid platform MSI on unsupported architectures
+
+The QCN6432 hybrid path uses platform-device MSI allocation and free
+APIs which are only declared with CONFIG_GENERIC_MSI_IRQ. The ath12k
+backport builds across non-Qualcomm targets as well; on targets without
+that infrastructure, compilation fails even though the hybrid hardware
+is not present. Compile the full implementation only when supported and
+return EOPNOTSUPP with a diagnostic otherwise. Keep IRQ cleanup correct.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/pcic.c
++++ b/drivers/net/wireless/ath/ath12k/pcic.c
+@@ -228,10 +228,10 @@
+ 
+ void ath12k_pcic_free_hybrid_irq(struct ath12k_base *ab)
+ {
+-	struct platform_device *pdev = ab->pdev;
+-
+ 	ath12k_pcic_free_irq(ab);
+-	platform_device_msi_free_irqs_all(&pdev->dev);
++#ifdef CONFIG_GENERIC_MSI_IRQ
++	platform_device_msi_free_irqs_all(&ab->pdev->dev);
++#endif
+ }
+ 
+ static void ath12k_pcic_ce_irq_enable(struct ath12k_base *ab, u16 ce_id)
+@@ -821,6 +821,7 @@
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_GENERIC_MSI_IRQ
+ static void ath12k_msi_msg_handler(struct msi_desc *desc, struct msi_msg *msg)
+ {
+ 	desc->msg.address_lo = msg->address_lo;
+@@ -945,3 +946,11 @@
+ 	platform_device_msi_free_irqs_all(&pdev->dev);
+ 	return ret;
+ }
++
++#else
++int ath12k_pcic_config_hybrid_irq(struct ath12k_base *ab)
++{
++	ath12k_err(ab, "hybrid IRQ requires platform MSI support\n");
++	return -EOPNOTSUPP;
++}
++#endif
