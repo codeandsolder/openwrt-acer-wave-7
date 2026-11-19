@@ -31,7 +31,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  #include <linux/delay.h>
  #include <linux/kernel.h>
  #include <linux/module.h>
-@@ -369,7 +371,7 @@ static int edma_irq_register(void)
+@@ -408,7 +410,7 @@ static int edma_irq_register(void)
  	struct edma_ring_info *rx = hw_info->rx;
  	struct device *dev = ppe_dev->dev;
  	int ret;
@@ -40,7 +40,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  	/* Request IRQ for TXCMPL rings. */
  	edma_txcmpl_irq_name = kzalloc((sizeof(char *) * txcmpl->num_rings), GFP_KERNEL);
-@@ -418,7 +420,7 @@ static int edma_irq_register(void)
+@@ -457,7 +459,7 @@ static int edma_irq_register(void)
  						  GFP_KERNEL);
  		if (!edma_rxdesc_irq_name[i]) {
  			ret = -ENOMEM;
@@ -49,7 +49,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  		}
  
  		snprintf(edma_rxdesc_irq_name[i], 20, "rxdesc_%d",
-@@ -440,6 +442,17 @@ static int edma_irq_register(void)
+@@ -479,6 +481,17 @@ static int edma_irq_register(void)
  			 rx->ring_start + i,
  			 edma_ctx->intr_info.intr_rx[i],
  			 edma_rxdesc_irq_name[i]);
@@ -67,7 +67,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	}
  
  	/* Request Misc IRQ */
-@@ -455,16 +468,18 @@ static int edma_irq_register(void)
+@@ -494,16 +507,18 @@ static int edma_irq_register(void)
  	return 0;
  
  misc_intr_req_fail:
@@ -90,7 +90,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	kfree(edma_rxdesc_irq_name);
  rxdesc_irq_name_alloc_fail:
  	for (i = 0; i < txcmpl->num_rings; i++) {
-@@ -798,6 +813,7 @@ void edma_destroy(struct ppe_device *ppe
+@@ -837,6 +852,7 @@ void edma_destroy(struct ppe_device *ppe
  
  	/* Free IRQ for Rx DESC rings */
  	for (i = 0; i < rx->num_rings; i++) {
@@ -100,7 +100,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  			 (void *)&edma_ctx->rx_rings[i]);
 --- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
 +++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
-@@ -992,7 +992,7 @@ void edma_cfg_rx_napi_add(void)
+@@ -1003,7 +1003,7 @@ void edma_cfg_rx_napi_add(void)
   */
  int edma_cfg_rx_rps_hash_map(void)
  {
