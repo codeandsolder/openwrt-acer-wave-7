@@ -145,6 +145,22 @@ autonomous_healthy() {
 XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+# Wait for the actual locked observer acknowledgement, not a guessed
+# process-starting delay. Both systemd units must remain live throughout.
+await_observers() {
+  local guard=$1 fallback=$2 out=$3 i status
+  for ((i=0; i<30; i++)); do
+    systemctl --user is-active --quiet "$guard.service" || fatal 'observer failed to arm'
+    systemctl --user is-active --quiet "$fallback.service" || fatal 'fallback collector failed to arm'
+    if [[ -r $out/status ]]; then
+      status=$(cat "$out/status")
+      [[ $status == ARMED ]] || fatal "unexpected observer status: $status"
+      return 0
+    fi
+    sleep 1
+  done
+  fatal 'observer acknowledgement timed out'
+}
 if [[ $mode == --selftest ]]; then
   s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard8\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1\nbuilder_commit=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b'
   s=$(sed -e "s/^rev=.*/rev=$candidate_rev/" -e "s/^mode=.*/mode=$profile/" -e "s/^proto=.*/proto=$profile/" <<< "$s")
@@ -277,14 +293,20 @@ if [[ $mode == --arm-reboot ]]; then
   printf '%s\n' "$s" > "$out/preflight.txt"
   guard="wave7-autonomous-observer-$tag"
   fallback="wave7-fallback-watch-$tag"
+  armed=0
+  cleanup_arm() {
+    if (( !armed )); then
+      systemctl --user stop "$guard.service" "$fallback.service" >/dev/null 2>&1 || :
+      echo ABORTED_PRE_REBOOT > "$out/status"
+    fi
+  }
+  trap cleanup_arm EXIT
   systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=950 -- \
     /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh static --observe-reboot "$boot" "$out"
   systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1000 -- \
     /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
-  sleep 2
-  systemctl --user is-active --quiet "$guard.service" || fatal 'reboot observer failed to arm'
-  systemctl --user is-active --quiet "$fallback.service" || fatal 'fallback observer failed to arm'
-  [[ $(cat "$out/status") == ARMED ]] || fatal 'observer acknowledgment absent'
+  await_observers "$guard" "$fallback" "$out"
+  armed=1
   echo "REBOOT_OBSERVERS_ARMED predecessor=$boot RUN_DIR=$out"
   exit 0
 fi
@@ -452,7 +474,7 @@ fi
 for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
   systemctl --user is-active --quiet "$name.service" || fatal "$name inactive"
 done
-test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*')" || fatal 'another supervisor active'
+test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*')" || fatal 'another supervisor active'
 echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
 [[ $mode == --run ]] || exit 0
 tag=secondary-ap-$(date +%Y%m%d-%H%M%S)
@@ -480,10 +502,7 @@ systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$profile" --watch "$boot" "$out"
 systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
-sleep 2
-systemctl --user is-active --quiet "$guard.service" || fatal 'supervisor failed to arm'
-systemctl --user is-active --quiet "$fallback.service" || fatal 'fallback collector failed to arm'
-[[ $(cat "$out/status") == ARMED ]] || fatal 'supervisor acknowledgement absent'
+await_observers "$guard" "$fallback" "$out"
 echo "GUARDS_ARMED $tag"
 flash_started=1
 set +e
