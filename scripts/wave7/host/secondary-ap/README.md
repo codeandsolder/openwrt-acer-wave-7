@@ -14,9 +14,9 @@ and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
 - Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard4
-  SHA256: see SHA256SUMS in the generated guard4 directory
+  SHA256 66274669875d8ae3f648e06bca44a5c0c540117096ec33ec0c49be13ecbe0155
 - Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard4
-  SHA256: see SHA256SUMS in the generated guard4 directory
+  SHA256 a0767a8fbf013848bfac929f1c0fde614c32635a5ab60a97cee5a3255d809619
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
@@ -46,6 +46,13 @@ all resulting live files match the role image's /rom originals and sets
 the ephemeral /tmp/wave7-ap-overlay-ready marker only after success.
 If anything fails, it BLOCKS service startup while the already-armed
 hard firstboot watchdog enters recovery; never expose old DHCP/RA/SSH.
+This profile is intentionally image-authoritative for its role-owned
+network, Wi-Fi, service and SSH configuration on every boot. Persistent
+UBIFS edits to those settings are discarded; change the source role
+configuration and rebuild the image instead. Independent calibration,
+boot environment state, UBI telemetry and SSH host identities survive.
+The preinit policy is sourced strictly from /rom, never from inherited
+upperdir files. The checks run before config generation and services.
 
 The role's preinit acceptance function requires that overlay-ready
 marker AND a volatile token of the current
