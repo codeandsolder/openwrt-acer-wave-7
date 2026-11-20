@@ -138,15 +138,36 @@ def capture(out,boot,profile,speed,expected):
     (out/"SHA256SUMS").write_text("".join(f"{hashlib.sha256((out/n).read_bytes()).hexdigest()}  {n}\n" for n in ("samples.jsonl","parsed.json")))
     print("PHY_STATE_CAPTURE_PASS",expected,speed,boot)
 
+def load_capture(p):
+    manifest={}
+    for line in (p/"SHA256SUMS").read_text().splitlines():
+        digest,name=line.split("  ")
+        assert name not in manifest
+        manifest[name]=digest
+    assert set(manifest)=={"samples.jsonl","parsed.json"}
+    for name,digest in manifest.items():
+        assert hashlib.sha256((p/name).read_bytes()).hexdigest()==digest
+    parsed=json.loads((p/"parsed.json").read_text())
+    raw=[json.loads(line) for line in (p/"samples.jsonl").read_text().splitlines()]
+    assert len(parsed)==len(raw)==3
+    core=parsed[0]["core"]
+    boot,rev,speed=core["boot"],core["revision"],core["start_speed"]
+    states=set()
+    for row,expected in zip(raw,parsed):
+        assert all(row[k][n]["valid"] for k in ("routes_before","routes_after") for n in trunk.PATHS)
+        assert row["remote"]["rc"]==0 and row["host"]["direct"]["speed"]==speed
+        assert parse(row["remote"]["stdout"],boot,rev,speed)==expected
+        probes=row["probes"]
+        assert probes["switch"]["sent"]==probes["switch"]["received"]==4
+        assert probes["direct"]["sent"]==4 and probes["direct"]["received"] in (0,4)
+        states.add("healthy" if probes["direct"]["received"]==4 else "fault")
+    assert len(states)==1,"mixed traffic state"
+    return parsed,states.pop()
+
 def compare(a,b):
-    def load(p):
-        for line in (p/"SHA256SUMS").read_text().splitlines():
-            digest,name=line.split("  ")
-            assert hashlib.sha256((p/name).read_bytes()).hexdigest()==digest
-        return json.loads((p/"parsed.json").read_text())
-    x,y=load(a),load(b)
+    x,xstate=load_capture(a)
+    y,ystate=load_capture(b)
     allrows=x+y
-    assert len(x)==len(y)==3
     assert len({(r["core"]["boot"],r["core"]["revision"],r["core"]["start_speed"]) for r in allrows})==1
     out={}
     for category in ("pcs","mac","phy","clocks"):
@@ -154,13 +175,13 @@ def compare(a,b):
             av={json.dumps(r[category][k]) for r in x}
             bv={json.dumps(r[category][k]) for r in y}
             if av!=bv:
-                out[category+"."+k]={"healthy":[json.loads(v) for v in sorted(av)],"fault":[json.loads(v) for v in sorted(bv)],"stable_difference":len(av)==len(bv)==1}
-    print(json.dumps({"differences":out,"fields_compared":sum(len(x[0][n]) for n in ("pcs","mac","phy","clocks"))},indent=2))
+                out[category+"."+k]={"first":[json.loads(v) for v in sorted(av)],"second":[json.loads(v) for v in sorted(bv)],"stable_difference":len(av)==len(bv)==1}
+    print(json.dumps({"first":{"path":str(a),"state":xstate},"second":{"path":str(b),"state":ystate},"matched_healthy_fault":xstate!=ystate,"differences":out,"fields_compared":sum(len(x[0][n]) for n in ("pcs","mac","phy","clocks"))},indent=2))
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     sub=p.add_subparsers(dest="cmd",required=True)
     c=sub.add_parser("capture");c.add_argument("out",type=Path);c.add_argument("boot");c.add_argument("--profile",choices=probe.PROFILES,required=True);c.add_argument("--speed",choices=("1000","2500"),required=True);c.add_argument("--expected",choices=("healthy","fault"),required=True)
-    c=sub.add_parser("compare");c.add_argument("healthy",type=Path);c.add_argument("fault",type=Path)
+    c=sub.add_parser("compare");c.add_argument("first",type=Path);c.add_argument("second",type=Path)
     a=p.parse_args()
     if a.cmd=="capture":capture(a.out,a.boot,a.profile,a.speed,a.expected)
-    else:compare(a.healthy,a.fault)
+    else:compare(a.first,a.second)
