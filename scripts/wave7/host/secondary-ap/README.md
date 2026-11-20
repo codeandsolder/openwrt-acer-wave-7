@@ -158,3 +158,20 @@ Dated worklog: https://app.notion.com/p/41ef74be902081b0837ccec7c3218452
 
 Intermittent Q6 UMACNOC and direct 1G QCA8081 SGMII RX blackhole
 remain separate production reliability risks.
+
+## RTL8367D candidate reboot evidence
+
+On an isolated lab with a currently healthy approved trunk image, use
+trial-ap.sh trunk --arm-reboot then separately issue the ordinary reboot
+through the direct peer. Wait for SOAK_PASS, archive the exact boot with
+archive-trunk-run.sh RUN_DIR, and verify the evidence.sha256 manifest.
+report-trunk-run.py distinguishes sampled corruption from an actual
+driver re-latch warning. CLEAN_BOOT_NO_CORRUPTION_OBSERVED means that
+this boot was clean; it is NOT evidence of correction of a reproduced
+corrupt-only episode. Review the sample gaps and counter reset flags.
+
+Optional bench-trunk.sh RUN_DIR performs the four bounded TCP sweeps
+during an accepted boot and requires unchanged switch CPU-port errors.
+This uses the known hashed temporary ARM64 iperf runtime. No persistent
+package install; per-boot router files are deleted on exit. Raw
+throughput JSON and evidence SHA stay in the run directory.
