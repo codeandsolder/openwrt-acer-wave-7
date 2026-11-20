@@ -206,3 +206,15 @@ active units, foreign fragments, other failure causes and uncollected
 units. Run test-lab-upstream-lifecycle.sh for the mocked lifecycle
 regression. Inspect expired-service diagnostics in the system journal.
 The service is not a persistent network configuration.
+
+Observer schema 2 records each route lookup before and after probes,
+including failures, instead of terminating when a route disappears.
+Invalid paths are skipped; no traffic is sent using an unexpected
+route. Loss of direct routing, switch routing, carrier and MIB
+confirmation are separately classified. A clean interval requires
+advancing valid CPU-port ingress, both paths fully responsive and no
+error increments. Baselines after lost samples are re-established, not
+bridged across outages. Capture duration remains bounded, and the
+loop is paced even if both paths are unavailable. Historical raw
+samples with the old schema can still be analyzed without modifying
+their sealed evidence.

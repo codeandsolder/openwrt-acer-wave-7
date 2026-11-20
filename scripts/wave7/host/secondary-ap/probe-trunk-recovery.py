@@ -9,6 +9,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -54,15 +55,41 @@ def run(args, timeout):
         return {"rc": 124, "stdout": decode(exc.stdout), "stderr": decode(exc.stderr)}
 
 def route(name):
+    """Record and validate the route, not just the successful case."""
     ip, dev, table = PATHS[name]
     result = run(["ip", "-j", "-4", "route", "get", ROUTER, "from", ip], 3)
+    result["valid"] = False
     if result["rc"]:
-        raise RuntimeError(f"{name} route lookup failed: {result}")
-    records = json.loads(result["stdout"])
-    if len(records) != 1 or any(str(records[0].get(k)) != v for k,v in
-                               (("dev", dev), ("table", table), ("from", ip))):
-        raise RuntimeError(f"{name} unexpected route: {records}")
-    return records[0]
+        return result
+    try:
+        records = json.loads(result["stdout"])
+        if not isinstance(records, list) or len(records) != 1 or not isinstance(records[0], dict):
+            raise ValueError("expected one route object")
+        record = records[0]
+        result["route"] = record
+        result["valid"] = all(str(record.get(k)) == v for k, v in
+                              (("dev", dev), ("table", table), ("from", ip)))
+    except (ValueError, TypeError) as exc:
+        result["parse_error"] = str(exc)
+    return result
+
+
+def routes():
+    return {name:route(name) for name in PATHS}
+
+
+def probe(name, count, route_state):
+    # Do not send traffic if the route no longer selects the dedicated NIC.
+    if not route_state["valid"]:
+        return {"rc":None,"sent":None,"received":None,"skipped":"route unavailable"}
+    return ping(name, count)
+
+
+def observed_snapshot(revision, route_state):
+    if not route_state["direct"]["valid"]:
+        return {"rc":None,"skipped":"direct route unavailable","wall_epoch":time.time()}
+    return snapshot(revision)
+
 
 def ping(name, count):
     ip, _, _ = PATHS[name]
@@ -73,8 +100,13 @@ def ping(name, count):
     return result
 
 def parse_snapshot(output, expected_revision):
-    fields = dict(line.split("=", 1) for line in output.splitlines() if
-                  re.match(r"^\w+=", line))
+    fields = {}
+    for line in output.splitlines():
+        if re.match(r"^\w+=", line):
+            key, value = line.split("=", 1)
+            if key in fields:
+                raise ValueError(f"duplicate field {key}")
+            fields[key] = value
     boot = fields.get("boot", "")
     if not BOOT.fullmatch(boot) or fields.get("end_boot") != boot:
         raise ValueError("missing/mixed boot ID")
@@ -90,7 +122,12 @@ def parse_snapshot(output, expected_revision):
             values[key] = int(m[2])
     if set(values) != set(COUNTERS.values()):
         raise ValueError("missing CPU-port counters")
-    return {"boot": boot, "uptime": float(fields["uptime"]),
+    uptime = float(fields["uptime"])
+    if not math.isfinite(uptime) or uptime < 0:
+        raise ValueError("invalid uptime")
+    if any(fields[k] not in ("0","1","absent") for k in ("lan1_carrier","direct_carrier")):
+        raise ValueError("invalid carrier")
+    return {"boot": boot, "uptime": uptime,
             "revision": fields["revision"], "lan1_carrier": fields["lan1_carrier"],
             "direct_carrier": fields["direct_carrier"], "counters": values,
             "events": [{"uptime":float(m[1]),"line":line} for line in output.splitlines()
@@ -112,7 +149,15 @@ def snapshot(revision):
             result["parse_error"] = str(exc)
     return result
 
-def classify(previous, current, probes):
+def classify(previous, current, probes, routes_before=None, routes_after=None):
+    # Missing or changed routing is an explicit result, not a reason to
+    # terminate a capture. Old raw evidence predates route journaling.
+    for state in (routes_before, routes_after):
+        if state is not None:
+            if not state["direct"]["valid"]:
+                return {"kind":"DIRECT_ROUTE_UNAVAILABLE"}
+            if not state["switch"]["valid"]:
+                return {"kind":"SWITCH_ROUTE_UNAVAILABLE"}
     if previous is None or current is None:
         return {"kind":"UNOBSERVED"}
     if previous["boot"] != current["boot"]:
@@ -129,8 +174,12 @@ def classify(previous, current, probes):
         kind = "PROBE_UNOBSERVED"
     elif d["received"] != d["sent"]:
         kind = "DIRECT_CONTROL_LOSS"
-    elif current["lan1_carrier"] != "1":
+    elif current.get("direct_carrier", "1") != "1":
+        kind = "DIRECT_CARRIER_UNAVAILABLE"
+    elif current["lan1_carrier"] == "0":
         kind = "SWITCH_COPPER_DOWN"
+    elif current["lan1_carrier"] != "1":
+        kind = "SWITCH_CARRIER_UNAVAILABLE"
     elif not s["received"] and (delta["fcs"]+delta["fragments"]) and not sum(delta[k] for k in GOOD):
         kind = "CORRUPT_ONLY_WITH_DIRECTIONAL_LOSS"
     elif s["received"] != s["sent"]:
@@ -138,7 +187,9 @@ def classify(previous, current, probes):
     elif any(delta[k] for k in ERRORS):
         kind = "ERRORS_WITH_VALID_TRAFFIC"
     elif s["received"] == s["sent"]:
-        kind = "CLEAN_FORWARDING"
+        # Successful echo replies alone do not prove CPU-trunk use.
+        # At least one valid ingress frame must be visible in the MIB.
+        kind = "CLEAN_FORWARDING" if sum(delta[k] for k in GOOD) else "MIB_FORWARDING_UNCONFIRMED"
     else:
         kind = "REVIEW"
     return {"kind":kind,"delta":delta}
@@ -156,17 +207,20 @@ def report(rows):
             for event in current["events"]:
                 events[(boot,event["line"])] = {"boot":boot,**event}
         if "probes" in row:
-            result = classify(previous,current,row["probes"])
+            result = classify(previous,current,row["probes"],row.get("routes_before"),row.get("routes_after"))
             kind = result["kind"]
             counts[kind] = counts.get(kind,0)+1
             intervals.append({"kind":kind,"boot":current and current["boot"],
                               "start_uptime":previous and previous["uptime"],
                               "end_uptime":current and current["uptime"],
+                              "direct_sent":row["probes"]["direct"]["sent"],
                               "direct_received":row["probes"]["direct"]["received"],
+                              "switch_sent":row["probes"]["switch"]["sent"],
                               "switch_received":row["probes"]["switch"]["received"],
                               **({"delta":result["delta"]} if "delta" in result else {})})
         # Never bridge a missed sample or compare counters across a reboot.
-        previous = current
+        routes_after = row.get("routes_after")
+        previous = current if routes_after is None or all(r["valid"] for r in routes_after.values()) else None
     return {"interval_counts":counts,"boots":boots,"driver_events":list(events.values()),
             "intervals":intervals}
 
@@ -177,26 +231,30 @@ def capture(out, revision, duration, count):
         raise ValueError("duration 15–600 seconds, count 4–20")
     if out.parent.resolve() != (BASE/"native-recovery-dhcp-guard8"/"observations").resolve():
         raise ValueError("output must be under native-recovery observations")
-    routes = {k:route(k) for k in PATHS}
+    initial_routes = routes()
     out.mkdir(mode=0o700)
     (out/"metadata.json").write_text(json.dumps({"revision":revision,"duration":duration,
-                                              "count":count,"routes":routes},indent=2)+"\n")
+                                              "count":count,"schema":2,"routes":initial_routes},indent=2)+"\n")
     rows = []
     with (out/"samples.jsonl").open("x") as stream, ThreadPoolExecutor(2) as pool:
         def append(row):
             rows.append(row)
             stream.write(json.dumps(row)+"\n")
             stream.flush()
-        append({"snapshot":snapshot(revision)})
+        append({"snapshot":observed_snapshot(revision,initial_routes),"routes_after":initial_routes})
         deadline = time.monotonic()+duration
         while time.monotonic()<deadline:
-            for key in PATHS:
-                route(key)
+            before = routes()
             started = time.time()
-            futures = {k:pool.submit(ping,k,count) for k in PATHS}
+            futures = {k:pool.submit(probe,k,count,before[k]) for k in PATHS}
             probes = {k:f.result() for k,f in futures.items()}
-            append({"start_wall_epoch":started,"end_probe_epoch":time.time(),
-                    "probes":probes,"snapshot":snapshot(revision)})
+            end_probe = time.time()
+            after = routes()
+            append({"start_wall_epoch":started,"end_probe_epoch":end_probe,
+                    "routes_before":before,"routes_after":after,
+                    "probes":probes,"snapshot":observed_snapshot(revision,after)})
+            # Both paths down can otherwise reduce the interval to a tight loop.
+            time.sleep(max(0, count * .25 - (time.time()-started)))
     summary = report(rows)
     (out/"report.json").write_text(json.dumps(summary,indent=2)+"\n")
     names = ("metadata.json","samples.jsonl","report.json")
@@ -218,6 +276,16 @@ def selftest():
     assert classify(a,{**c,"lan1_carrier":"0"},p)["kind"] == "SWITCH_COPPER_DOWN"
     assert classify(None,c,p)["kind"] == "UNOBSERVED"
     assert classify(a,c,{**p,"switch":{"sent":None,"received":None}})["kind"] == "PROBE_UNOBSERVED"
+    assert classify(c,{**c,"uptime":5},q)["kind"] == "MIB_FORWARDING_UNCONFIRMED"
+    assert classify(a,{**c,"lan1_carrier":"absent"},p)["kind"] == "SWITCH_CARRIER_UNAVAILABLE"
+    assert classify(a,{**c,"direct_carrier":"0"},p)["kind"] == "DIRECT_CARRIER_UNAVAILABLE"
+    good_routes = {name:{"valid":True} for name in PATHS}
+    for name in PATHS:
+        bad_routes = {**good_routes,name:{"valid":False}}
+        for before, after in ((bad_routes,good_routes),(good_routes,bad_routes)):
+            assert classify(a,c,p,before,after)["kind"] == name.upper()+"_ROUTE_UNAVAILABLE"
+        assert probe(name,8,bad_routes[name])["skipped"]
+    assert observed_snapshot("wrong",{"direct":{"valid":False}})["skipped"]
     rows=[{"snapshot":{"state":a}},{"snapshot":{"state":c},"probes":p},
           {"snapshot":{},"probes":q},{"snapshot":{"state":d},"probes":q}]
     assert report(rows)["interval_counts"] == {"CORRUPT_ONLY_WITH_DIRECTIONAL_LOSS":1,"UNOBSERVED":2}
