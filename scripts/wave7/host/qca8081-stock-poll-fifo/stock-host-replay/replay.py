@@ -33,7 +33,7 @@ RANGES += [(0x6b2c, 0x6b8c), (0x6d954, 0x6d9dc),
            (0x6f3b4, 0x6f3f8), (0x6f5bc, 0x6f684), (0x6f6e4, 0x6f750),
            (0x6f7c8, 0x6f818), (0x6f8a8, 0x6f900), (0x6faf8, 0x6fb50),
            (0x6fe7c, 0x700e8), (0x918e8, 0x91950), (0x788d8, 0x7890c), (0x6104, 0x6210), (0x63ec, 0x64ec),
-           (0x7c7dc, 0x7c808)]
+           (0x7c7dc, 0x7c808), (0x69cc4, 0x69ddc)]
 LOCAL_MOCKS = {0x6ddc: "tx_pause", 0x6f38: "rx_pause"}
 FIT_SHA = "a9e7d543e61bdbd91521798875a097733b54393f72d78278eaeac0059241f833"
 KERNEL_SHA = "666960caa4e2f52af4d42f150233aabc4ff8621076c6616c46a15a8e91fd1f9f"
@@ -140,6 +140,8 @@ def execute(module, out, dest, metadata):
     for name, off in data_offsets.items():
         sec = stock.by_name[name]
         image[off:off+sec[5]] = bytes(sec[5]) if name == ".bss" else stock.bytes(sec)
+    # Reproduce the initialized notification state, not its setup path.
+    put(image, data_offsets[".bss"] + 0x7abc, 1)
     (out / "stock.bin").write_bytes(image)
     (out / "stock.S").write_text('.section .stock,"ax",%progbits\n.balign 4\n.incbin "stock.bin"\n')
     (out / "layout.ld").write_text("ENTRY(_start)\nSECTIONS { . = 0x10000; .text : { *(.text*) *(.rodata*) } . = ALIGN(0x10000); .data : { *(.data*) } .bss : { *(.bss*) *(COMMON) } . = 0x01000000; .stock : { *(.stock) } /DISCARD/ : { *(.ARM.exidx*) *(.ARM.extab*) *(.comment) } }\n")
@@ -228,7 +230,7 @@ def check(events):
         return [e["event"] for e in cases[i]]
     def values(i, name):
         return [(e["a"],e["b"],e["c"]) for e in cases[i] if e["event"] == name]
-    assert set(cases) == set(range(19)) | set(range(100,2404))
+    assert set(cases) == set(range(22)) | set(range(100,2404))
     for i in range(9):
         assert ops(i)[0] == "POLL" and ops(i)[-1] == "END"
     for i in (0, 1, 7):
@@ -286,9 +288,17 @@ def check(events):
     assert values(17,"REG_WRITE") == [(1,0x480,0xa5a5804c),(1,0x480,0xa5a5884c)]
     assert ops(17).index("MMD_WRITE") < ops(17).index("MODE_APPLY") < ops(17).index("REG_WRITE")
     assert ops(18) == ["POLL","TX","MODE_STATUS","MODE_RECORD","MODE_APPLY","TX","RX","BRIDGE","NOTIFY","END"]
+    # Original phylib read_status, separate from the host worker.
+    for i, link, speed, duplex, level in (
+        (19,1,1000,1,0x8844), (20,0,10,0,0x8044), (21,0,10,0,0x8044)
+    ):
+        assert values(i,"MMD_WRITE") == [(25,0x19072,level)]
+        assert values(i,"END") == [(link,speed,duplex)]
+        assert not any(e in ops(i) for e in ("GATE","REG_WRITE","WORK_QUEUE","NOTIFY","BRIDGE"))
+        assert values(i,"BUS_LOCK").count((1,0,0)) == values(i,"BUS_LOCK").count((0,0,0))
     def decode(n):
         return n>>16,(n&0xffff)>>4,(n>>2)&1,(n>>1)&1,n&1
-    summary = dict(named_cases=19,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
+    summary = dict(named_cases=22,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
                    unchanged_up_edge=0,changed_up_edge=0,mode_applies=0,
                    rate_changes=0,adapter_pulses=0)
     tuples = set()

@@ -6,7 +6,7 @@ Run on the development host, without accessing the router:
 r=/home/jan/projects/acer-wave7-firmware
 PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python /usr/bin/python3 python replay.py \
   "$r/Acer_Predator_T7c/rootfs-067/lib/modules/5.4.213/qca-ssdk.ko" \
-  /home/jan/build/wave7/qca8081-stock-host-replay/verified-v2 \
+  /home/jan/build/wave7/qca8081-stock-host-replay/verified-new \
   --stock-fit "$r/Acer_Predator_T7c/work/openwrt-roundtrip-stock/kernel.itb" \
   --stock-dts "$r/device-backup-2026-10-28/live.dts"
 ```
@@ -26,7 +26,11 @@ Original executable paths, not a translated pseudocode model:
   ops+0x200 host link-sync callback 0xadec, unlocks, queues on CPU 4
   with delay 100 jiffies (1 second after completion). Registration
   is at 0xbd70. Linux PHY read_status at 0x69cc4 also calls the same
-  get_status at 0x67640. Do not infer an exact combined poll frequency.
+  get_status at 0x67640. Replay executes both call paths, including
+  unchanged-up, down and unreadable status in phylib. The fixture starts
+  with notification initialization complete (.bss+0x7abc=1), and mocks
+  partner-ability and pause-resolution helpers. Do not infer an exact
+  combined poll frequency.
 * The SSDK worker dispatches via 0x6d73c, ops+0xf0, registered
   at 0x68f34 (literal at 0x69568), to original QCA808x get_status.
   QCA8081 copper ID is 004dd101. Raw C22.17 bit10 is link;
@@ -75,7 +79,7 @@ MAC speed/duplex/pause internals, kernel scheduling and actual clock
 hardware are boundaries; neither electrical behavior nor recovery is
 proved by this experiment.
 
-19 named cases (9 full worker/PHY cases, 10 host cases), plus 2,304
+22 named cases (9 full worker/PHY cases, 10 host cases, 3 phylib cases), plus 2,304
 synthetic status combinations (24 negotiated tuples squared times
 four old/new carrier combinations) pass. Half duplex included only
 for 10/100; pause inputs independently varied to exercise decisions.
@@ -92,3 +96,5 @@ stock extra worker and host reset policy are not yet reproduced by
 suppress resets on interface changes. The next gated hardware test
 remains the existing approved 0491 matched 1G reconnect; isolate any
 host-side follow-up so it does not confound that result.
+
+See [Linux relink design](linux-relink-plan.md) for a scoped prospective experiment.
