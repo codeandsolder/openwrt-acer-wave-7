@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Execute the stock DW8051 lane recovery routine against a mocked register bus.
+"""Execute stock DW8051 recovery and copper-force routines against a mocked register bus.
 
-Only opcodes reachable from the specific stock routine are implemented.
+Only opcodes reachable from the two specific stock routines are implemented.
 The ASIC access and delay subroutines are intercepted at their entry points;
 no hardware access, cycle timing or analog behavior is simulated.
 """
@@ -12,7 +12,7 @@ from pathlib import Path
 
 FIRMWARE_SHA = "ec5332a6bcc1a67a2202ffbf7b44a87c8fad412a907c9f65edf7602bab0bffd9"
 
-def trace(code, lane, mode, statuses, seed_a=0x9521, seed_b=0xa512):
+def execute(code, entry, bus, lane=0, statuses=(), seed_a=0x9521, seed_b=0xa512):
     if hashlib.sha256(code).hexdigest() != FIRMWARE_SHA:
         raise ValueError("unknown firmware")
     if lane not in (0,1):
@@ -22,10 +22,9 @@ def trace(code, lane, mode, statuses, seed_a=0x9521, seed_b=0xa512):
     ram = bytearray(256)
     xram = bytearray(65536)
     stack = []
-    pc, a, carry, dptr = 0xe, 0, 0, 0
+    pc, a, carry, dptr = entry, 0, 0, 0
     index = 13+2*lane
-    mode_reg = (0x1d11,0x1d78)[lane]
-    bus = {mode_reg:mode, 0x13a1+lane:0x00fe}
+    bus = dict(bus)
     sds = {0x3f:seed_a,0x400:seed_b}
     status_iter = iter(statuses)
     log = []
@@ -107,13 +106,19 @@ def trace(code, lane, mode, statuses, seed_a=0x9521, seed_b=0xa512):
         elif op==0x34: add(fetch(),carry)
         elif 0x28<=op<=0x2f: add(regs[op-0x28])
         elif 0x38<=op<=0x3f: add(regs[op-0x38],carry)
+        elif op==0xd3: carry=1
+        elif op==0x94:
+            difference=a-fetch()-carry
+            a=difference&255
+            carry=int(difference<0)
+        elif op==0x40: branch(bool(carry))
         elif op==0x60: branch(a==0)
         elif op==0x70: branch(a!=0)
         elif op==0x80: branch(True)
-        elif op==0x20:
+        elif op in (0x20,0x30):
             bit=fetch()
             if not 0xe0<=bit<=0xe7: raise ValueError("unsupported bit")
-            branch(bool(a & (1<<(bit-0xe0))))
+            branch(bool(a & (1<<(bit-0xe0))) == (op==0x20))
         elif 0x78<=op<=0x7f: regs[op-0x78]=fetch()
         elif 0xe8<=op<=0xef: a=regs[op-0xe8]
         elif 0xf8<=op<=0xff: regs[op-0xf8]=a
@@ -127,6 +132,57 @@ def trace(code, lane, mode, statuses, seed_a=0x9521, seed_b=0xa512):
             addr=fetch(); old=direct_get(addr); direct_set(addr,a); a=old
         else: raise ValueError(f"unhandled opcode {op:02x} at {start:04x}")
     raise RuntimeError("instruction budget exhausted")
+
+def trace(code, lane, mode, statuses, seed_a=0x9521, seed_b=0xa512):
+    if lane not in (0,1):
+        raise ValueError("unknown lane")
+    return execute(code, 0xe, {(0x1d11,0x1d78)[lane]:mode, 0x13a1+lane:0x00fe},
+                   lane, statuses, seed_a, seed_b)
+
+
+def trace_copper(code, statuses, force_enable):
+    if len(statuses)!=5 or len(force_enable)!=5:
+        raise ValueError("expected five copper ports")
+    bus = {0x12d0+i:v for i,v in enumerate(statuses)}
+    bus.update({0x12c8+i:v for i,v in enumerate(force_enable)})
+    return execute(code,0x02ad,bus)
+
+
+def check_copper(code):
+    # Exhaustively exercise both observed status bits and both force-enable
+    # branches on each physical copper lane with other bits nonzero.
+    import itertools
+    patterns=(0x80a3,0x80a7,0x80e3,0x80e7)
+    checked=0
+    for statuses in itertools.product(patterns,repeat=5):
+        for enables in ((0,)*5,(0x0060,)*5):
+            expected=[]
+            for i,(status,enable) in enumerate(zip(statuses,enables)):
+                expected.append(["asic-read",0x12d0+i,status])
+                bits=status&0x0044
+                if bits==0:
+                    expected += [["asic-write",0x12c0+i,0x60],["asic-write",0x12c8+i,0x60]]
+                elif bits==0x0044:
+                    expected.append(["asic-read",0x12c8+i,enable])
+                    if enable:
+                        expected += [["asic-write",0x12c0+i,0],["asic-write",0x12c8+i,0]]
+            actual=trace_copper(code,statuses,enables)
+            assert actual==expected,(actual,expected)
+            checked+=1
+    # Mixed forced/unforced ports and non-0x60 override values.
+    mixed=(0x0044,0,0x4,0x0040,0x0044)
+    enabled=(0x1234,0xabcd,0xffff,1,0)
+    actual=trace_copper(code,mixed,enabled)
+    assert actual==[
+        ["asic-read",0x12d0,0x0044],["asic-read",0x12c8,0x1234],
+        ["asic-write",0x12c0,0],["asic-write",0x12c8,0],
+        ["asic-read",0x12d1,0],["asic-write",0x12c1,0x60],["asic-write",0x12c9,0x60],
+        ["asic-read",0x12d2,4],["asic-read",0x12d3,0x0040],
+        ["asic-read",0x12d4,0x0044],["asic-read",0x12cc,0],
+    ],actual
+    return {"exhaustive_cases":checked,"mixed_case_status":mixed,
+            "mixed_case_enable":enabled,"mixed_case_trace":actual}
+
 
 def checks(code):
     expected = [
@@ -155,5 +211,6 @@ def checks(code):
 if __name__=="__main__":
     if len(sys.argv)!=2:
         raise SystemExit("usage: trace-stock-recovery.py DW8051_BIN")
-    print(json.dumps(checks(Path(sys.argv[1]).read_bytes()),indent=2))
+    code=Path(sys.argv[1]).read_bytes()
+    print(json.dumps({"serdes_recovery":checks(code),"copper_force":check_copper(code)},indent=2))
     print("STOCK_RECOVERY_TRACE_PASS",file=sys.stderr)
