@@ -2,8 +2,13 @@
 # One-shot on-boot management attestation, launched by the *independent* Asus
 # trial supervisor. It does not commit bootfail or request a flash/reboot.
 set -euo pipefail
+if (( $# == 0 )); then
+  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE KNOWN_HOSTS" >&2
+  exit 2
+fi
 mode=$1
-if [[ $mode != --selftest && ( $mode != --run || $# != 5 ) ]]; then
+if [[ ( $mode == --selftest && $# != 1 ) ||
+      ( $mode != --selftest && ( $mode != --run || $# != 5 ) ) ]]; then
   echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE KNOWN_HOSTS" >&2
   exit 2
 fi
@@ -18,7 +23,7 @@ valid() {
   [[ $boot =~ ^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$ ]] || return 1
   [[ $bootfail =~ ^[1-5]$ && $keep == 0 ]] || return 1
   wanted=dhcp
-  [[ $expected == *-ap-static-auth ]] && wanted=static
+  [[ $expected == *-ap-static-guard2 ]] && wanted=static
   netmode=$(value "$s" netproto)
   [[ $(value "$s" role) == secondary-ap ]] || return 1
   [[ $(value "$s" profile_mode) == "$wanted" ]] || return 1
@@ -40,9 +45,9 @@ valid() {
   fi
 }
 if [[ $mode == --selftest ]]; then
-  rev=r0+38346-0fbc2cc77b-ap-static-auth
+  rev=r0+38346-0fbc2cc77b-ap-static-guard2
   boot=11111111-2222-3333-4444-555555555555
-  good=$'rev=r0+38346-0fbc2cc77b-ap-static-auth\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
+  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard2\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
   valid "$good" "$rev"
   for change in 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' \
     'pass=on' 'rootpass=on' 'rootlogin=off' 'dnsmasq=0' \
@@ -55,7 +60,7 @@ if [[ $mode == --selftest ]]; then
       exit 1
     fi
   done
-  dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-auth
+  dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard2
   dynamic=$(sed -e "s@$rev@$dynamic_rev@" \
     -e 's@netproto=static@netproto=dhcp@' \
     -e 's@profile_mode=static@profile_mode=dhcp@' \
@@ -83,7 +88,7 @@ router=$2
 expected=$3
 iface=$4
 known=$5
-[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-auth$ ]] || {
+[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard2$ ]] || {
   echo 'unexpected AP revision' >&2; exit 2
 }
 [[ $router =~ ^[a-zA-Z0-9.:_-]+$ && $iface =~ ^[a-zA-Z0-9_.:-]+$ ]] || {

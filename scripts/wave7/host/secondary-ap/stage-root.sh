@@ -41,7 +41,8 @@ for f in "$root/etc/config/network" "$root/etc/config/dhcp" \
          "$root/etc/dropbear/authorized_keys" "$root/etc/openwrt_release" \
          "$root/etc/banner" "$root/usr/lib/os-release" \
          "$root/etc/config/wireless" \
-         "$root/lib/preinit/05_wave7_firstboot_watchdog"; do
+         "$root/lib/preinit/05_wave7_firstboot_watchdog" \
+         "$root/etc/init.d/wave7-firstboot-failsafe"; do
   [ -f "$f" ] && [ ! -L "$f" ] || {
     echo "missing or symlinked expected file: $f" >&2; exit 2
   }
@@ -73,7 +74,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode-auth"
+newrev="$oldrev-ap-$mode-guard2"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'
@@ -169,6 +170,36 @@ chmod --reference="$watch" "$watch.new"
 mv -f "$watch.new" "$watch"
 sh -n "$watch"
 rg -q 'wave7_secondary_ap_link_ready' "$watch"
+# Also close the *independent* late-init failsafe path. If the preinit
+# watchdog failed to arm, that init service was previously allowed to touch
+# the keep-boot marker after a fixed lab IP/peer ping, bypassing our SSH
+# attestation. For a secondary-AP role it must only trigger hard recovery:
+# never create an alternative route to accepting an unverified boot.
+fallback="$root/etc/init.d/wave7-firstboot-failsafe"
+test "$(rg -Fxc 'wave7_firstboot_link_ready() {' "$fallback")" = 1
+rg -Fq "192.168.76.2" "$fallback" ||
+  { echo "unexpected late-init fallback source" >&2; exit 2; }
+awk '
+  $0 == "wave7_firstboot_link_ready() {" {
+    print
+    print "\t# AP role: only the preinit token-gated path can accept a boot."
+    print "\treturn 1"
+    print "}"
+    skipping=1
+    found++
+    next
+  }
+  skipping && $0 == "}" {skipping=0; next}
+  skipping {next}
+  {print}
+  END {if(found!=1 || skipping) exit 7}
+' "$fallback" > "$fallback.new"
+chmod --reference="$fallback" "$fallback.new"
+mv -f "$fallback.new" "$fallback"
+sh -n "$fallback"
+rg -Fq 'AP role: only the preinit token-gated path' "$fallback"
+! rg -q '192[.]168[.]76[.][12]' "$fallback" ||
+  { echo "late-init fallback still contains lab acceptance" >&2; exit 2; }
 # Explicitly distinct revision so trial monitors cannot mistake this
 # role for the accepted lab image.
 for f in "$root/etc/openwrt_version" "$root/etc/openwrt_release" \

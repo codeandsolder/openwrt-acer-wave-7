@@ -43,7 +43,7 @@ source_rev=$(jq -er 'select(.version.target=="qualcommbe/ipq53xx" and .version.b
 [[ $source_rev == r0+* && $source_rev != *-ap-* ]] || {
   echo 'invalid source revision' >&2; exit 3
 }
-new_rev="$source_rev-ap-$mode-auth"
+new_rev="$source_rev-ap-$mode-guard2"
 echo 'dev/console' > "$work/excluded-console"
 "$tools/unsquashfs4" -ll "$work/root.squashfs" > "$work/baseline-list.txt"
 test "$(rg -c '^crw.* squashfs-root/dev/console$' "$work/baseline-list.txt")" = 1
@@ -64,7 +64,7 @@ cmp "$work/original-root/etc/dropbear/authorized_keys" "$work/root/etc/dropbear/
 # Dry-run + checksum prevents false negatives due timestamps.
 rsync -aincO --delete --out-format='%n' \
   "$work/original-root/" "$work/root/" > "$work/differences.txt"
-expected=$'deleting etc/wave7-role-profile\ndeleting lib/wave7/role-firstboot.sh\ndeleting lib/wave7/\netc/banner\netc/config/dhcp\netc/config/dropbear\netc/config/network\netc/openwrt_release\netc/openwrt_version\netc/shadow\nlib/preinit/05_wave7_firstboot_watchdog\nusr/lib/os-release'
+expected=$'deleting etc/wave7-role-profile\ndeleting lib/wave7/role-firstboot.sh\ndeleting lib/wave7/\netc/banner\netc/config/dhcp\netc/config/dropbear\netc/config/network\netc/openwrt_release\netc/openwrt_version\netc/shadow\netc/init.d/wave7-firstboot-failsafe\nlib/preinit/05_wave7_firstboot_watchdog\nusr/lib/os-release'
 # Accepted images may already ship the authorized key with mode 0600;
 # a permission-only change is allowed but not required.
 actual=$(LC_ALL=C sort "$work/differences.txt" | sed '/^etc\/dropbear\/authorized_keys$/d')
@@ -95,7 +95,7 @@ test ! -s "$work/roundtrip-diff.txt"
  sha256sum -c --status "$buildrepo/scripts/wave7/diagnostic-firmware.sha256")
 test "$(cat "$work/verified-root/etc/openwrt_version")" = "$new_rev"
 rg -q '^root:!:.*' "$work/verified-root/etc/shadow"
-name="wave7-secondary-ap-$mode-auth-sysupgrade.bin"
+name="wave7-secondary-ap-$mode-guard2-sysupgrade.bin"
 export TOPDIR="$buildrepo"
 SOURCE_DATE_EPOCH=$(git -C "$buildrepo" show -s --format=%ct HEAD)
 export SOURCE_DATE_EPOCH
@@ -124,7 +124,7 @@ test "$(stat -c %s "$work/publish/$name")" -lt 30000000
   echo "kernel_sha256=$(sha256sum "$work/kernel.itb" | cut -d' ' -f1)"
   echo "profile_squashfs_sha256=$(sha256sum "$root_sq" | cut -d' ' -f1)"
   echo "radio_firmware_files=46_sha256_verified"
-  echo "changed_root_files=9_plus_role_marker_and_auth_helper"
+  echo "changed_root_files=10_plus_role_marker_and_auth_helper"
   echo "repacked_rootfs_roundtrip=identical"
   echo "image_sha256=$(sha256sum "$work/publish/$name" | cut -d' ' -f1)"
   echo "root_password=locked"

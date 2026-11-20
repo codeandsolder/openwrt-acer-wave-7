@@ -17,7 +17,7 @@ wave7_secondary_ap_contract_ok() {
   printf '%s\n' "$profile" | grep -Fxq 'role=secondary-ap' || return 1
   mode=$(printf '%s\n' "$profile" | sed -n 's/^mode=//p')
   case "$mode:$revision" in
-    static:r0+*-ap-static-auth|dhcp:r0+*-ap-dhcp-auth) ;;
+    static:r0+*-ap-static-guard2|dhcp:r0+*-ap-dhcp-guard2) ;;
     *) return 1 ;;
   esac
   [ "$carrier" = 1 ] || return 1

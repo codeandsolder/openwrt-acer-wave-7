@@ -5,7 +5,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 make_fixture() {
   local d=$1
-  mkdir -p "$d/etc/config" "$d/etc/dropbear" "$d/usr/lib" "$d/lib/preinit"
+  mkdir -p "$d/etc/config" "$d/etc/dropbear" "$d/usr/lib" "$d/lib/preinit" "$d/etc/init.d"
   cat > "$d/etc/config/network" <<'CFG'
 config interface 'lan'
  option device 'br-lan'
@@ -30,6 +30,19 @@ CFG
   echo 'BUILD_ID="r0+1234-c0ffee1234"' > "$d/usr/lib/os-release"
   echo 'OpenWrt r0+1234-c0ffee1234' > "$d/etc/banner"
   printf 'wave7_firstboot_link_ready() {\n  true\n}\n' > "$d/lib/preinit/05_wave7_firstboot_watchdog"
+  cat > "$d/etc/init.d/wave7-firstboot-failsafe" <<'FAILSAFE'
+#!/bin/sh /etc/rc.common
+wave7_firstboot_link_ready() {
+  [ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 1
+  ip -4 -o addr show dev br-lan | grep -Fq '192.168.76.1/24' || return 1
+  ping -I br-lan -c 1 -W 1 192.168.76.2
+}
+start() {
+  if wave7_firstboot_link_ready; then
+    touch /tmp/wave7-keep-boot
+  fi
+}
+FAILSAFE
 }
 make_fixture "$work/dhcp"
 make_fixture "$work/static"
@@ -53,6 +66,18 @@ for d in "$work/dhcp" "$work/static"; do
   rg -q 'wave7_secondary_ap_link_ready' "$d/lib/preinit/05_wave7_firstboot_watchdog"
   sh -n "$d/lib/preinit/05_wave7_firstboot_watchdog"
   test -s "$d/lib/wave7/role-firstboot.sh"
+  sh -n "$d/etc/init.d/wave7-firstboot-failsafe"
+  rg -q 'return 1' "$d/etc/init.d/wave7-firstboot-failsafe"
+  if rg -q '192[.]168[.]76[.][12]' "$d/etc/init.d/wave7-firstboot-failsafe"; then
+    echo 'LATE_INIT_AUTH_BYPASS_STILL_PRESENT' >&2
+    exit 1
+  fi
+  # Source the late-init function only, not the test's simulated start().
+  extracted=$(sed -n '/^wave7_firstboot_link_ready() {/,/^}/p' "$d/etc/init.d/wave7-firstboot-failsafe")
+  if (eval "$extracted"; wave7_firstboot_link_ready); then
+    echo 'LATE_INIT_FALLBACK_ACCEPTED_UNATTESTED_AP' >&2
+    exit 1
+  fi
   rg -q 'ssh-ed25519 placeholder' "$d/etc/dropbear/authorized_keys"
   [ "$(stat -c %a "$d/etc/config/dropbear")" = 600 ]
   [ "$(stat -c %a "$d/etc/dropbear/authorized_keys")" = 600 ]
@@ -77,8 +102,8 @@ fi
 # Pure firstboot gate test; no kernel/router calls.
 . "$(dirname -- "$stage")/role-firstboot.sh"
 boot=11111111-2222-3333-4444-555555555555
-rev_static=r0+38346-0fbc2cc77b-ap-static-auth
-rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-auth
+rev_static=r0+38346-0fbc2cc77b-ap-static-guard2
+rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard2
 profile_static=$'role=secondary-ap\nmode=static\nmanagement_ipv4=192.168.76.1/24'
 profile_dhcp=$'role=secondary-ap\nmode=dhcp'
 ipstatic='3: br-lan    inet 192.168.76.1/24 brd 192.168.76.255 scope global br-lan'
