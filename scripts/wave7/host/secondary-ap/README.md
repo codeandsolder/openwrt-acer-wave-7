@@ -184,3 +184,13 @@ baseline gate pins that module's SHA, O taint, manifest, and builder.
 The per-boot report also records the native pulse attempt, completion
 and failure/pending-release warnings separately. Clean-boot results
 must never be interpreted as a demonstrated recovery.
+
+Trial sequencing: initialize the shared Jan-owned mode-0600 file
+`$guard8/.lab-control.lock` once. The trial arming and disruptive wire
+policy commands take this lock; the wire test also refuses any active
+or activating trial/fallback observer. Do wire policy only after
+SOAK_PASS, archive that run, and stop its completed fallback watcher.
+The lab server is part of the guard's DHCP-health predicate: stopping
+it during a live flash soak requests rollback even while the router
+lease and Ethernet are healthy. Lab service/lease failures now have
+distinct rollback reasons and preserve the triggering state.

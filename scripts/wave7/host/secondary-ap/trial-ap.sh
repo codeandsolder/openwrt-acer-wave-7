@@ -371,6 +371,17 @@ test -x "$attestor" ||
 "$attestor" --selftest ||
   fatal 'management attestor selftest failed'
 
+# Serialize observer arming/setup against active upstream wire tests.
+# The persistent systemd observers guard the interval after this caller
+# exits; the wire test also checks their active/activating state.
+if [[ $mode == --run || $mode == --arm-reboot ]]; then
+  lock="$guard8/.lab-control.lock"
+  [[ -f $lock && ! -L $lock && -O $lock ]] ||
+    fatal 'missing or invalid lab-control lock (initialize once as Jan)'
+  exec 8<>"$lock"
+  flock -n 8 || fatal 'lab control held by another trial/setup or wire test'
+fi
+
 # Read-only SSH observation of a new approved boot; intentionally no
 # attestor, upload, sysupgrade or manual bootfail/keep modification.
 if [[ $mode == --observe-reboot ]]; then
@@ -617,7 +628,19 @@ if [[ $mode == --watch ]]; then
           if [[ $(value "$s" noc) =~ ^[1-9][0-9]*$ ]]; then
             restore NOC_FATAL "$s" || :
           elif (( now-first_seen > 165 )) && [[ $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]; then
-            restore UNHEALTHY_PORT_OR_RADIO "$s" || :
+            # Preserve the exact observed reason, including host-side
+            # lab policy; do not report induced upstream loss as a port
+            # failure. The strict rollback criterion is unchanged.
+            printf '%s\n' "$s" > "$out/unhealthy-state.txt"
+            if [[ $profile == dhcp ]] &&
+               ! systemctl is-active --quiet "$upstream_unit.service"; then
+              restore LAB_UPSTREAM_UNAVAILABLE "$s" || :
+            elif [[ $profile == dhcp ]] &&
+                 ! lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$now"; then
+              restore LAB_MANAGEMENT_LEASE_INVALID "$s" || :
+            else
+              restore UNHEALTHY_PORT_OR_RADIO "$s" || :
+            fi
           elif (( i % 5 == 0 )); then
             log "WAIT q6=$(value "$s" q6) ap=$(value "$s" ap) lan1=$(value "$s" lan1) bridge=$(value "$s" bridge)"
           fi

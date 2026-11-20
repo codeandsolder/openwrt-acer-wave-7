@@ -15,6 +15,17 @@ out=$(realpath -m "$1")
 [[ ! -e $out ]] || exit 2
 [[ $out == "$base"/trunk-health-dhcp-guard8/wire-policy-* ||
    $out == "$base"/native-recovery-dhcp-guard8/wire-policy-* ]] || exit 2
+# Stopping the test DHCP/RA server invalidates a running guard's
+# upstream-health requirement, even while its management lease is valid.
+# Fail closed before the service is touched. The shared lock prevents
+# racing a trial that has not yet started its observer.
+lock="$base/.lab-control.lock"
+[[ -f $lock && ! -L $lock && $(stat -c %U "$lock") == jan ]] ||
+  { echo 'missing Jan-owned lab-control lock' >&2; exit 2; }
+exec 8<>"$lock"
+flock -n 8 || { echo 'lab control already held' >&2; exit 2; }
+active=$(systemctl --user --machine=jan@.host --no-pager --no-legend list-units   --state=active,activating 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*'   'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*'   'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*'   'wave7-autonomous-observer-*')
+[[ -z $active ]] || { echo 'wire policy requires all trial observers stopped' >&2; exit 3; }
 [[ $(sha256sum "$pcap" | cut -d' ' -f1) == "$digest" ]] || exit 2
 [[ $(cat /sys/class/net/$direct/address) == 00:e0:4c:68:00:6d ]]
 [[ $(cat /sys/class/net/$switch/address) == 00:e0:4c:68:01:45 ]]
