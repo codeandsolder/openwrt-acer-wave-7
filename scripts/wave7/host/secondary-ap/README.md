@@ -13,15 +13,15 @@ Both derive from accepted source sysupgrade SHA256:
 and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
-- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard3
-  SHA256 09184ab15ab17b4b9453b2d38a52a0cbe225f152342f82d060bc6eea9c33b19f
-- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard3
-  SHA256 a1bfc4bf40b057e2d5aea8c18f8d6b5ff407d30bf9e81f03959aedbbceffb9cf
+- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard4
+  SHA256: see SHA256SUMS in the generated guard4 directory
+- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard4
+  SHA256: see SHA256SUMS in the generated guard4 directory
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
 Staged copies on Asus:
-  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard3/
+  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard4/
 
 Both bridge four physical DSA ports, retain EHT MLO and all 46
 SHA-pinned radio/diagnostic files, disable DNS, DHCPv4, DHCPv6, RA
@@ -40,7 +40,8 @@ The AP role's early preinit_mount_root hook therefore clears just the
 inherited /etc/config/{network,dhcp,dropbear,wireless,firewall,system},
 /etc/shadow and /etc/dropbear/authorized_keys upper entries after the
 UBIFS pivot, before UCI config generation and service startup. It keeps
-fw_env.config, ubootenv, ubihealthd and SSH host keys. It checks that
+fw_env.config, ubootenv, ubihealthd and SSH host keys. It rejects symlinked/opaque overlay parents,
+uses only lowerdir helpers, and checks that
 all resulting live files match the role image's /rom originals and sets
 the ephemeral /tmp/wave7-ap-overlay-ready marker only after success.
 If anything fails, it BLOCKS service startup while the already-armed
@@ -87,7 +88,7 @@ any --run flash attempt.
 All scripts ShellCheck clean. Image packager verifies allowed root
 changes, special /dev/console inode, roundtrip extraction, 46 firmware
 files, unchanged kernel and fwtool/board metadata. It never contacts
-the router and refuses output overwrites. Previous -ap-*-auth, -ap-*-guard2 and
+the router and refuses output overwrites. Previous -ap-*-auth, -ap-*-guard2, -ap-*-guard3 and
 unattested -ap-* variants are obsolete, not deployment candidates.
 
 ## Hardware acceptance

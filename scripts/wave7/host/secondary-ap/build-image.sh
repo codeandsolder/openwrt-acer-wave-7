@@ -22,6 +22,13 @@ out_parent=$(dirname -- "$out")
 [[ -d "$out_parent" ]] || { echo 'missing output parent' >&2; exit 2; }
 out=$(realpath -m "$out")
 repo=$(cd -- "$(dirname -- "$0")/../../../.." && pwd)
+# A release image must identify the exact tested policy-generator commit,
+# not merely the accepted kernel source it repackages.
+[[ -z $(git -C "$repo" status --porcelain) ]] || {
+  echo 'role source checkout dirty; commit and test before building' >&2
+  exit 2
+}
+role_builder_commit=$(git -C "$repo" rev-parse HEAD)
 buildrepo=$repo
 if [[ -v WAVE7_OPENWRT_BUILD_ROOT && -n $WAVE7_OPENWRT_BUILD_ROOT ]]; then buildrepo=$WAVE7_OPENWRT_BUILD_ROOT; fi
 tools="$buildrepo/staging_dir/host/bin"
@@ -43,7 +50,7 @@ source_rev=$(jq -er 'select(.version.target=="qualcommbe/ipq53xx" and .version.b
 [[ $source_rev == r0+* && $source_rev != *-ap-* ]] || {
   echo 'invalid source revision' >&2; exit 3
 }
-new_rev="$source_rev-ap-$mode-guard3"
+new_rev="$source_rev-ap-$mode-guard4"
 echo 'dev/console' > "$work/excluded-console"
 "$tools/unsquashfs4" -ll "$work/root.squashfs" > "$work/baseline-list.txt"
 test "$(rg -c '^crw.* squashfs-root/dev/console$' "$work/baseline-list.txt")" = 1
@@ -95,7 +102,7 @@ test ! -s "$work/roundtrip-diff.txt"
  sha256sum -c --status "$buildrepo/scripts/wave7/diagnostic-firmware.sha256")
 test "$(cat "$work/verified-root/etc/openwrt_version")" = "$new_rev"
 rg -q '^root:!:.*' "$work/verified-root/etc/shadow"
-name="wave7-secondary-ap-$mode-guard3-sysupgrade.bin"
+name="wave7-secondary-ap-$mode-guard4-sysupgrade.bin"
 export TOPDIR="$buildrepo"
 SOURCE_DATE_EPOCH=$(git -C "$buildrepo" show -s --format=%ct HEAD)
 export SOURCE_DATE_EPOCH
@@ -116,6 +123,7 @@ test "$(stat -c %s "$work/publish/$name")" -lt 30000000
 {
   echo "status=SECONDARY_AP_IMAGE_OFFLINE_VERIFIED"
   echo "build_source_commit=$(git -C "$buildrepo" rev-parse HEAD)"
+  echo "role_builder_commit=$role_builder_commit"
   echo "base_image_sha256=$source_sha"
   echo "base_revision=$source_rev"
   echo "profile_revision=$new_rev"

@@ -74,7 +74,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode-guard3"
+newrev="$oldrev-ap-$mode-guard4"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'
@@ -155,8 +155,8 @@ chmod 0644 "$root/lib/wave7/role-firstboot.sh"
 awk '
   $0 == "wave7_firstboot_link_ready() {" {
     print
-    print "\tif [ -e /etc/wave7-role-profile ]; then"
-    print "\t\t. /lib/wave7/role-firstboot.sh || return 1"
+    print "\tif [ -e /rom/etc/wave7-role-profile ]; then"
+    print "\t\t. /rom/lib/wave7/role-firstboot.sh || return 1"
     print "\t\twave7_secondary_ap_link_ready"
     print "\t\treturn $?"
     print "\tfi"
