@@ -1,0 +1,102 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca808x: experiment with stock QCA8081 FIFO polling
+
+Exact Acer 067 SSDK qca808x_phy_get_status() calls 0x66960 for
+QCA8081 link-up and link-down after reading copper state. The helper
+uses adjacent PHY MMD1 0x9072 bit11 as a level (released on link-up).
+Its RMW helper writes even when unchanged, unlike the Linux
+modify_changed transition callback. The stock notify callback is
+indeed empty but that does not mean the FIFO is untouched.
+
+Isolate ordering plus repeated level writes from the previous
+negative no-notify and extra-reset experiments. Do not assert a
+pulse, touch QCA8084, or change other bits. Distinguish MDIO failures
+from valid PHY status. Source-only hardware experiment, not a fix.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -573,6 +573,36 @@
+ 				     QCA808X_ADC_THRESHOLD_100MV);
+ }
+ 
++/*
++ * Stock Acer SSDK applies FIFO_RSTN as a level, inside get_status()
++ * after reading copper status, including when the level is unchanged.
++ * This experimental policy is deliberately different from both the
++ * change-only notify callback and the no-FIFO-notify A/B.
++ */
++static int qca8081_stock_fifo_level(struct phy_device *phydev)
++{
++	struct mii_bus *bus = phydev->mdio.bus;
++	int addr = phydev->mdio.addr + 1;
++	int value;
++
++	/* Stock RMW always writes, preserving all other register bits. */
++	guard(mutex)(&bus->mdio_lock);
++	value = __mdiobus_c45_read(bus, addr, MDIO_MMD_PMAPMD,
++				   QCA8081_PHY_SERDES_MMD1_FIFO_CTRL);
++	if (value < 0)
++		return value;
++	if (value == 0xffff)
++		return -EIO;
++
++	value &= ~QCA8081_PHY_FIFO_RSTN;
++	if (phydev->link)
++		value |= QCA8081_PHY_FIFO_RSTN;
++
++	return __mdiobus_c45_write(bus, addr, MDIO_MMD_PMAPMD,
++				    QCA8081_PHY_SERDES_MMD1_FIFO_CTRL,
++				    value);
++}
++
+ static int qca808x_read_status(struct phy_device *phydev)
+ {
+ 	struct at803x_ss_mask ss_mask = { 0 };
+@@ -596,6 +626,12 @@
+ 	ret = at803x_read_specific_status(phydev, ss_mask);
+ 	if (ret < 0)
+ 		return ret;
++
++	if (phydev->phy_id == QCA8081_PHY_ID) {
++		ret = qca8081_stock_fifo_level(phydev);
++		if (ret < 0)
++			return ret;
++	}
+ 
+ 	if (phydev->link) {
+ 		/* There are two PCSes available for QCA8084, which support
+@@ -778,11 +814,9 @@
+ {
+ 	struct qca808x_priv *priv = phydev->priv;
+ 
+-	/* Experiment: leave the QCA8081 PHY+1 SGMII FIFO unchanged across
+-	 * copper carrier transitions. Acer stock qca-ssdk's QCA8081 notify
+-	 * callback is a no-op, whereas upstream Linux toggles FIFO_RSTN.
+-	 * Keep the same diagnostics to distinguish a new state-machine
+-	 * outcome from the already disproven additional FIFO resets.
++	/* The experimental QCA8081 FIFO level is set before notification
++	 * in read_status(), matching the stock status-poll ordering.
++	 * Keep this callback diagnostic-only.
+ 	 */
+ 	if (phydev_id_compare(phydev, QCA8081_PHY_ID)) {
+ 		priv->diag_phy_path_edges++;
+@@ -791,7 +825,7 @@
+ 		priv->diag_phy_path_prev_rx = priv->hw_stats.rx_pkts;
+ 		priv->diag_phy_path_prev_tx = priv->hw_stats.tx_pkts;
+ 		phydev_info(phydev,
+-			    "wave7-diag: phy-path edge=%u link=%u fifo_action=preserved rx=%llu tx=%llu rx_err=%llu tx_err=%llu\n",
++			    "wave7-diag: phy-path edge=%u link=%u fifo_action=stock_status_poll rx=%llu tx=%llu rx_err=%llu tx_err=%llu\n",
+ 			    priv->diag_phy_path_edges, phydev->link,
+ 			    (unsigned long long)priv->hw_stats.rx_pkts,
+ 			    (unsigned long long)priv->hw_stats.tx_pkts,
+@@ -803,7 +837,7 @@
+ 	    priv->initial_link_events < 3) {
+ 		priv->initial_link_events++;
+ 		phydev_info(phydev,
+-			    "wave7-diag: fifo[%u] state=%d link=%u fifo_action=preserved\n",
++			    "wave7-diag: fifo[%u] state=%d link=%u fifo_action=stock_status_poll\n",
+ 			    priv->initial_link_events, phydev->state,
+ 			    phydev->link);
+ 
