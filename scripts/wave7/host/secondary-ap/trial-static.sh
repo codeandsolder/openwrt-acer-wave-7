@@ -4,17 +4,17 @@ set -Eeuo pipefail
 umask 077
 mode=--check
 if (( $# )); then mode=$1; fi
-base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard6/guard6-static-lab
-candidate="$base/wave7-secondary-ap-static-guard6-sysupgrade.bin"
+base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/guard7-static-lab
+candidate="$base/wave7-secondary-ap-static-guard7-sysupgrade.bin"
 accepted=/home/jan/firmware/wave7/trials/20261119-prod-integrated-0fbc2cc77b/openwrt-qualcommbe-ipq53xx-acer_wave7-squashfs-sysupgrade.bin
 # SHA manifest arrives only after final image QA and verified transport from
 # Acer; no fallback SHA or force mode exists.
-candidate_sha=$(awk '$2 == "wave7-secondary-ap-static-guard6-sysupgrade.bin" {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
+candidate_sha=$(awk '$2 == "wave7-secondary-ap-static-guard7-sysupgrade.bin" {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
 accepted_sha=8ac5e0ee1319e88c7e4f81d22dd0ba70128111edcc4e7d4b153203e067c837fd
-candidate_rev=r0+38346-0fbc2cc77b-ap-static-guard6
+candidate_rev=r0+38346-0fbc2cc77b-ap-static-guard7
 accepted_rev=r0+38346-0fbc2cc77b
 key=/home/jan/.ssh/wave7-root-rsa
-known=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard6/known_hosts
+known=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/known_hosts
 host=root@192.168.76.1
 management_ip=192.168.76.250
 management_iface=enp4s0f4u2u2u4
@@ -102,7 +102,7 @@ XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 if [[ $mode == --selftest ]]; then
-  s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard6\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1'
+  s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard7\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1'
   healthy "$s" || fatal 'good state rejected'
   for change in management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=dhcp proto=dhcp dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")

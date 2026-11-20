@@ -13,15 +13,15 @@ Both derive from accepted source sysupgrade SHA256:
 and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
-- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard6
-  SHA256: see generated guard6 manifest
-- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard6
-  SHA256: see generated guard6 manifest
+- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard7
+  SHA256: see generated guard7 manifest
+- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard7
+  SHA256: see generated guard7 manifest
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
 Staged copies on Asus:
-  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard6/
+  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/
 
 Both bridge four physical DSA ports, retain EHT MLO and all 46
 SHA-pinned radio/diagnostic files, disable DNS, DHCPv4, DHCPv6, RA

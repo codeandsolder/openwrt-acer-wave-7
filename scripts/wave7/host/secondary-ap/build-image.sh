@@ -50,12 +50,14 @@ source_rev=$(jq -er 'select(.version.target=="qualcommbe/ipq53xx" and .version.b
 [[ $source_rev == r0+* && $source_rev != *-ap-* ]] || {
   echo 'invalid source revision' >&2; exit 3
 }
-new_rev="$source_rev-ap-$mode-guard6"
+new_rev="$source_rev-ap-$mode-guard7"
 echo 'dev/console' > "$work/excluded-console"
 "$tools/unsquashfs4" -ll "$work/root.squashfs" > "$work/baseline-list.txt"
 test "$(rg -c '^crw.* squashfs-root/dev/console$' "$work/baseline-list.txt")" = 1
 test "$(rg -c '^[cbps]' "$work/baseline-list.txt")" = 1
-"$tools/unsquashfs4" -no-progress -d "$work/root" -exclude-file "$work/excluded-console" "$work/root.squashfs" > "$work/extract.log"
+# unsquashfs run as a non-root builder masks regular files with umask.
+# The work directory is already private (0700); preserve every inode mode.
+(umask 000; "$tools/unsquashfs4" -no-progress -d "$work/root" -exclude-file "$work/excluded-console" "$work/root.squashfs") > "$work/extract.log"
 rg -q '^created 0 devices$' "$work/extract.log"
 test "$(cat "$work/root/etc/openwrt_version")" = "$source_rev"
 cp -a "$work/root" "$work/original-root"
@@ -95,8 +97,33 @@ root_size=$(stat -c %s "$root_sq")
 test "$root_size" -le 29204480
 "$tools/unsquashfs4" -ll "$root_sq" > "$work/profile-list.txt"
 test "$(rg -c '^crw.* squashfs-root/dev/console$' "$work/profile-list.txt")" = 1
-"$tools/unsquashfs4" -no-progress -d "$work/verified-root" \
-  -exclude-file "$work/excluded-console" "$root_sq" > "$work/reextract.log"
+# Compare permissions and owners in the ORIGINAL and FINAL archives.
+# Only explicitly tightened key/config modes and new role-owned inodes
+# may differ; this checks even unrelated unprivileged service binaries.
+archive_modes() {
+  awk 'match($0,/ squashfs-root(\/|$)/) {
+    path=substr($0,RSTART+1)
+    sub(/ -> .*/, "", path)
+    print path "|" $1 "|" $2
+  }' "$1" | LC_ALL=C sort
+}
+archive_modes "$work/baseline-list.txt" > "$work/baseline-modes.txt"
+archive_modes "$work/profile-list.txt" > "$work/profile-modes.txt"
+# The existing device console's mode is explicitly specified by repacking.
+sed -E 's@^(squashfs-root/etc/(config/(network|dhcp|dropbear)|shadow|dropbear/authorized_keys))\|[^|]+\|@\1|-rw-------|@' \
+    "$work/baseline-modes.txt" > "$work/expected-modes.txt"
+cat >> "$work/expected-modes.txt" <<'MODES'
+squashfs-root/etc/wave7-role-profile|-rw-r--r--|root/root
+squashfs-root/lib/preinit/76_wave7_ap_overlay_reset|-rwxr-xr-x|root/root
+squashfs-root/lib/wave7|drwxr-xr-x|root/root
+squashfs-root/lib/wave7/overlay-reset.sh|-rw-r--r--|root/root
+squashfs-root/lib/wave7/role-firstboot.sh|-rw-r--r--|root/root
+MODES
+LC_ALL=C sort -o "$work/expected-modes.txt" "$work/expected-modes.txt"
+diff -u "$work/expected-modes.txt" "$work/profile-modes.txt"
+
+(umask 000; "$tools/unsquashfs4" -no-progress -d "$work/verified-root" \
+  -exclude-file "$work/excluded-console" "$root_sq") > "$work/reextract.log"
 rg -q '^created 0 devices$' "$work/reextract.log"
 rsync -aincO --delete --out-format='%n' \
   "$work/root/" "$work/verified-root/" > "$work/roundtrip-diff.txt"
@@ -106,7 +133,7 @@ test ! -s "$work/roundtrip-diff.txt"
  sha256sum -c --status "$buildrepo/scripts/wave7/diagnostic-firmware.sha256")
 test "$(cat "$work/verified-root/etc/openwrt_version")" = "$new_rev"
 rg -q '^root:!:.*' "$work/verified-root/etc/shadow"
-name="wave7-secondary-ap-$mode-guard6-sysupgrade.bin"
+name="wave7-secondary-ap-$mode-guard7-sysupgrade.bin"
 export TOPDIR="$buildrepo"
 SOURCE_DATE_EPOCH=$(git -C "$buildrepo" show -s --format=%ct HEAD)
 export SOURCE_DATE_EPOCH
@@ -138,6 +165,7 @@ test "$(stat -c %s "$work/publish/$name")" -lt 30000000
   echo "radio_firmware_files=46_sha256_verified"
   echo "changed_root_files=10_plus_role_marker_and_three_helpers"
   echo "repacked_rootfs_roundtrip=identical"
+  echo "original_to_final_inode_modes_and_owners=verified"
   echo "image_sha256=$(sha256sum "$work/publish/$name" | cut -d' ' -f1)"
   echo "root_password=locked"
   echo "ssh_password_login=disabled"

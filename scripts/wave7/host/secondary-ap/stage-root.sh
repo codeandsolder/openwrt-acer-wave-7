@@ -74,7 +74,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode-guard6"
+newrev="$oldrev-ap-$mode-guard7"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'
@@ -148,6 +148,7 @@ chmod 0600 "$net" "$root/etc/config/dhcp" "$root/etc/config/dropbear" \
 watch="$root/lib/preinit/05_wave7_firstboot_watchdog"
 test "$(rg -Fxc 'wave7_firstboot_link_ready() {' "$watch")" = 1
 mkdir -p "$root/lib/wave7"
+chmod 0755 "$root/lib/wave7"
 helper=$(cd -- "$(dirname -- "$0")" && pwd)/role-firstboot.sh
 test -s "$helper"
 cp "$helper" "$root/lib/wave7/role-firstboot.sh"
