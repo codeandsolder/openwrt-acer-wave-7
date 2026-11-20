@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # Independent Asus guarded native trial of the static authenticated Wave7 AP.
-# Historical Guard7 trial only; do not use for Guard8 deployment.
+# Guard8 trial with exact accepted static Guard7 rollback.
 set -Eeuo pipefail
 umask 077
 mode=--check
 if (( $# )); then mode=$1; fi
-base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/guard7-static-lab
-candidate="$base/wave7-secondary-ap-static-guard7-sysupgrade.bin"
-accepted=/home/jan/firmware/wave7/trials/20261119-prod-integrated-0fbc2cc77b/openwrt-qualcommbe-ipq53xx-acer_wave7-squashfs-sysupgrade.bin
+base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/guard8-static-lab
+candidate="$base/wave7-secondary-ap-static-guard8-sysupgrade.bin"
+accepted=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/guard7-static-lab/wave7-secondary-ap-static-guard7-sysupgrade.bin
 # SHA manifest arrives only after final image QA and verified transport from
 # Acer; no fallback SHA or force mode exists.
-candidate_sha=$(awk '$2 == "wave7-secondary-ap-static-guard7-sysupgrade.bin" {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
-accepted_sha=8ac5e0ee1319e88c7e4f81d22dd0ba70128111edcc4e7d4b153203e067c837fd
-candidate_rev=r0+38346-0fbc2cc77b-ap-static-guard7
-accepted_rev=r0+38346-0fbc2cc77b
+candidate_sha=$(awk '$2 == "wave7-secondary-ap-static-guard8-sysupgrade.bin" {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
+expected_candidate_sha=b3c5c96ed47fb8ea4c9ea6fd726b499fe52b1391b6591b7016a349f296c35ec8
+accepted_sha=54c3f108efb740339a1f3241ef86d74453745b4918655575ec62789d3d109055
+candidate_rev=r0+38346-0fbc2cc77b-ap-static-guard8
+candidate_builder=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b
+accepted_rev=r0+38346-0fbc2cc77b-ap-static-guard7
 key=/home/jan/.ssh/wave7-root-rsa
-known=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/known_hosts
+known=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/known_hosts
 host=root@192.168.76.1
+attestor=/home/jan/scripts/wave7/secondary-ap-guard8/attest-management.sh
 management_ip=192.168.76.250
 management_iface=enp4s0f4u2u2u4
 remote() {
@@ -61,6 +64,7 @@ read_state() {
     echo "root_password=$(awk -F: '\''$1=="root" {print $2}'\'' /etc/shadow)";
     echo "password_auth=$(uci -q get dropbear.main.PasswordAuth)";
     echo "root_password_auth=$(uci -q get dropbear.main.RootPasswordAuth)";
+    echo "builder_commit=$(sed -n "s/^builder_commit=//p" /etc/wave7-role-profile 2>/dev/null | head -1)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)"'
 }
 # A permanently configured local address is required, not a DHCP lease
@@ -78,11 +82,7 @@ has_permanent_address() {
 # One definition of the healthy accepted baseline, used before the trial
 # and when checking that the rollback has actually booted successfully.
 baseline_healthy() {
-  local s=$1
-  for expect in "rev=$accepted_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
-    q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000; do
-    grep -Fxq "$expect" <<< "$s" || return 1
-  done
+  static_role_healthy "$1" "$accepted_rev"
 }
 rollback_eligible() {
   local s=$1
@@ -90,8 +90,11 @@ rollback_eligible() {
      $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
 }
 healthy() {
-  local s=$1
-  for expect in "rev=$candidate_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
+  static_role_healthy "$1" "$candidate_rev" && grep -Fxq "builder_commit=$candidate_builder" <<< "$1"
+}
+static_role_healthy() {
+  local s=$1 expected_revision=$2
+  for expect in "rev=$expected_revision" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
     q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000 \
     role=secondary-ap mode=static proto=static dnsmasq_disabled=1 \
     dhcpv4=disabled dhcpv6=disabled ra=disabled root_password='!' \
@@ -103,9 +106,9 @@ XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 if [[ $mode == --selftest ]]; then
-  s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard7\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1'
+  s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard8\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1\nbuilder_commit=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b'
   healthy "$s" || fatal 'good state rejected'
-  for change in management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=dhcp proto=dhcp dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
+  for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=dhcp proto=dhcp dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")
     bad=$(sed "s/^$field=.*/$change/" <<< "$s")
     if healthy "$bad"; then fatal "bad state accepted: $change"; fi
@@ -128,13 +131,13 @@ if [[ $mode == --selftest ]]; then
     bad=$(sed "s/^$field=.*/$change/" <<< "$baseline")
     if baseline_healthy "$bad"; then fatal "unhealthy restore accepted: $change"; fi
   done
-  echo STATIC_AP_GUARD_SELFTEST_PASS
+  echo STATIC_AP_GUARD8_SELFTEST_PASS
   exit 0
 fi
 [[ $(id -un) == jan && -r $known && -r $key ]] || fatal 'Asus jan SSH identity absent'
-test -x /home/jan/scripts/wave7/secondary-ap/attest-management.sh ||
+test -x "$attestor" ||
   fatal 'independent key-only management attestor not installed'
-/home/jan/scripts/wave7/secondary-ap/attest-management.sh --selftest ||
+"$attestor" --selftest ||
   fatal 'management attestor selftest failed'
 
 if [[ $mode == --watch ]]; then
@@ -156,6 +159,9 @@ if [[ $mode == --watch ]]; then
   rollback=0
   rollback_cause=''
   last_restore_attempt=0
+  restored_boot=""
+  restore_attested=0
+  last_restore_attest=0
   restore() {
     local cause=$1 state=$2 check
     (( rollback == 0 )) || return 0
@@ -192,6 +198,16 @@ if [[ $mode == --watch ]]; then
       elif [[ $boot == "$old_boot" ]]; then
         (( i % 10 )) || log STILL_ORIGINAL_BOOT
       elif [[ $rev == "$accepted_rev" ]]; then
+        if [[ $restored_boot != "$boot" ]]; then
+          restored_boot=$boot; restore_attested=0; last_restore_attest=0
+          log "ROLLBACK_BOOT boot=$boot"
+        fi
+        if (( !restore_attested && now-last_restore_attest >= 4 )) && [[ $(value "$s" keep) == 0 ]]; then
+          last_restore_attest=$now
+          if "$attestor" --run 192.168.76.1 "$accepted_rev" "$management_iface" "$management_ip" "$known" > "$out/restore-attestation.log" 2>&1; then
+            restore_attested=1; log "ROLLBACK_MANAGEMENT_ATTESTED boot=$boot"
+          fi
+        fi
         if baseline_healthy "$s"; then
           log "ACCEPTED_IMAGE_BOOT_HEALTHY boot=$boot"
           echo RESTORED > "$out/status"
@@ -211,7 +227,7 @@ if [[ $mode == --watch ]]; then
         if (( !attested && now-first_seen < 98 && now-last_attest >= 4 )) &&
            [[ $(value "$s" keep) == 0 ]]; then
           last_attest=$now
-          if /home/jan/scripts/wave7/secondary-ap/attest-management.sh --run \
+          if "$attestor" --run \
             192.168.76.1 "$candidate_rev" "$management_iface" "$management_ip" "$known" \
             > "$out/attestation-latest.log" 2>&1; then
             attested=1
@@ -264,7 +280,7 @@ fi
 [[ $(sha256sum "$accepted" | cut -d' ' -f1) == "$accepted_sha" ]] || fatal 'accepted SHA mismatch'
 [[ $(tar xOf "$accepted" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fatal 'wrong accepted board'
 if [[ $mode != --check-baseline ]]; then
-  [[ $candidate_sha =~ ^[a-f0-9]{64}$ ]] || fatal 'candidate digest not pinned by final QA'
+  [[ $candidate_sha == "$expected_candidate_sha" ]] || fatal 'candidate digest not pinned by final QA'
   [[ -r $candidate ]] || fatal 'candidate image missing'
   [[ $(sha256sum "$candidate" | cut -d' ' -f1) == "$candidate_sha" ]] || fatal 'candidate SHA mismatch'
   [[ $(tar xOf "$candidate" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fatal 'wrong candidate board'
@@ -306,7 +322,7 @@ cleanup() {
 }
 trap cleanup EXIT
 systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=1500 -- \
-  /home/jan/scripts/wave7/secondary-ap/trial-static.sh --watch "$boot" "$out"
+  /home/jan/scripts/wave7/secondary-ap-guard8/trial-static.sh --watch "$boot" "$out"
 systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
 sleep 2

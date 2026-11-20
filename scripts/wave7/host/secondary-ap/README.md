@@ -43,8 +43,7 @@ matching overlay policy, all five bridge members, all three Q6 domains,
 both MLO links and no recorded NoC fatal, but do not require a cable or
 an upstream DHCP lease. Static mode still requires its configured address.
 Unapproved candidates remain fail-closed; no automatic promotion after
-firstboot. The tested Guard7 trial-static.sh is historical and is not the
-Guard8 trial harness.
+firstboot. The Guard8 trial-static.sh uses accepted Guard7 static rollback.
 
 ## Boot gate
 
@@ -130,7 +129,8 @@ unattested -ap-* variants are obsolete, not deployment candidates.
 
 1. Guard7 static passed native preflight, guarded trial, soak and wire/client tests.
 2. Guard7 DHCP passed offline QA and on-router native preflight.
-3. Guard8 source requires offline build QA and a new guarded trial.
+3. Both Guard8 images passed offline QA and target native preflight;
+   run the new guarded static trial, explicit approval and reboot tests.
 4. Prepare a separate, upstream-DHCP-connected lab before deploying
    the DHCP-managed AP role.
    the DHCP-managed AP role.
