@@ -19,15 +19,27 @@ make -j5 target/install
 ~~~
 
 Optionally set WAVE7_FIRMWARE_SOURCE to a different private source tree.
-The stage command checks **every** file against firmware.sha256, then
-copies the verified complete tree into the standard, Git-ignored OpenWrt
-files/lib/firmware/ath12k overlay. Image recipes verify the installed
-rootfs against the same manifest and refuse to produce an incomplete image.
-Never commit the binary overlay.
+The stage command verifies the **45 private vendor files** against
+firmware.sha256 and the separately versioned QDSS trace configuration
+against diagnostic-firmware.sha256. It assembles the complete 46-file
+tree into the Git-ignored OpenWrt files/lib/firmware/ath12k overlay.
+Image recipes verify the installed rootfs against **both** manifests and
+refuse incomplete, altered, or unexpected firmware files.
 
-The sysupgrade bundle is not proof that NAND installation is safe. Until
-partition handling and recovery are validated, use the initramfs FIT
-artifact for subsequent controlled boot tests.
+The QDSS diagnostic configuration is maintained as a tiny, non-vendor
+source artifact in scripts/wave7/diagnostic-firmware/. Never commit the
+assembled binary overlay or the private vendor blobs.
+
+The image recipe builds and checks **two distinct DTBs** from one hardware
+description: normal persistent NAND-root boot (root=/dev/ubiblock0_2)
+and a RAM-only initramfs variant (root=/dev/ram0, rdinit=/init,
+ubi.no_autoattach=1). A build fails if either DTB's bootargs-append
+differs from its pinned mode. Never use a NAND-root DTB in a RAM boot FIT.
+
+The sysupgrade bundle is not proof that NAND installation is safe.
+The dedicated RAM-root FIT is for supervised UART/U-Boot RAM boot only;
+see host/ram-boot.md for the independent recovery requirements. Neither
+output is authorization for an unattended flash.
 
 ## Optional private two-link MLO lab configuration
 

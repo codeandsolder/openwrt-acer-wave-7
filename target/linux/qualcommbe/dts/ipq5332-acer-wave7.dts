@@ -530,6 +530,10 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 
+			switchphy0: ethernet-phy@0 {
+				reg = <0>;
+			};
+
 			switchphy1: ethernet-phy@1 {
 				reg = <1>;
 			};
@@ -542,6 +546,12 @@
 		ports {
 			#address-cells = <1>;
 			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+				label = "lan1";
+				phy-handle = <&switchphy0>;
+			};
 
 			port@1 {
 				reg = <1>;
