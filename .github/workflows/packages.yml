@@ -17,8 +17,7 @@ on:
       - 'package/**'
       - 'target/linux/generic/**'
       - 'toolchain/**'
-    branches-ignore:
-      - master
+    branches: [main]
   workflow_dispatch:
 
 permissions:
