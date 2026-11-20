@@ -3,13 +3,13 @@
 # trial supervisor. It does not commit bootfail or request a flash/reboot.
 set -euo pipefail
 if (( $# == 0 )); then
-  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS" >&2
+  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS | --approve ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS VERIFIED_BOOT_UUID" >&2
   exit 2
 fi
 mode=$1
 if [[ ( $mode == --selftest && $# != 1 ) ||
-      ( $mode != --selftest && ( $mode != --run || $# != 6 ) ) ]]; then
-  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS" >&2
+      ( $mode == --run && $# != 6 ) || ( $mode == --approve && $# != 7 ) || ( $mode != --selftest && $mode != --run && $mode != --approve ) ]]; then
+  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS | --approve ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS VERIFIED_BOOT_UUID" >&2
   exit 2
 fi
 value() { sed -n "s/^$2=//p" <<< "$1" | head -1; }
@@ -24,7 +24,7 @@ valid() {
   [[ $boot =~ ^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$ ]] || return 1
   [[ $bootfail =~ ^[1-5]$ && $keep == 0 ]] || return 1
   wanted=dhcp
-  [[ $expected == *-ap-static-guard7 ]] && wanted=static
+  [[ $expected == *-ap-static-guard[78] ]] && wanted=static
   netmode=$(value "$s" netproto)
   [[ $(value "$s" role) == secondary-ap ]] || return 1
   [[ $(value "$s" profile_mode) == "$wanted" ]] || return 1
@@ -82,6 +82,8 @@ if [[ $mode == --selftest ]]; then
       exit 1
     fi
   done
+  valid "$(sed "s/guard7/guard8/g" <<< "$good")" "${rev%7}8" 192.168.76.250
+  valid "$(sed "s/guard7/guard8/g" <<< "$dynamic")" "${dynamic_rev%7}8" 192.168.76.250
   echo SECONDARY_AP_ATTESTATION_SELFTEST_PASS
   exit 0
 fi
@@ -90,7 +92,7 @@ expected=$3
 iface=$4
 source_ip=$5
 known=$6
-[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard7$ ]] || {
+[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard[78]$ ]] || {
   echo 'unexpected AP revision' >&2; exit 2
 }
 [[ $source_ip =~ ^[0-9]+(\.[0-9]+){3}$ ]] || { echo "invalid source IPv4" >&2; exit 2; }
@@ -107,6 +109,12 @@ remote() {
     -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
     "root@$router" "$@"
 }
+if [[ $mode == --approve ]]; then
+  boot=$7
+  [[ $expected == *-guard8 && $boot =~ ^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$ ]] || exit 2
+  remote ". /rom/lib/wave7/role-firstboot.sh; wave7_secondary_ap_approve '$boot' '$expected'"
+  exit
+fi
 state=$(remote '
   set -- $SSH_CONNECTION
   echo "management_peer=$1"

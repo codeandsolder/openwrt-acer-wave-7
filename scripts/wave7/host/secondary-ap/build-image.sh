@@ -50,7 +50,7 @@ source_rev=$(jq -er 'select(.version.target=="qualcommbe/ipq53xx" and .version.b
 [[ $source_rev == r0+* && $source_rev != *-ap-* ]] || {
   echo 'invalid source revision' >&2; exit 3
 }
-new_rev="$source_rev-ap-$mode-guard7"
+new_rev="$source_rev-ap-$mode-guard8"
 echo 'dev/console' > "$work/excluded-console"
 "$tools/unsquashfs4" -ll "$work/root.squashfs" > "$work/baseline-list.txt"
 test "$(rg -c '^crw.* squashfs-root/dev/console$' "$work/baseline-list.txt")" = 1
@@ -61,6 +61,7 @@ test "$(rg -c '^[cbps]' "$work/baseline-list.txt")" = 1
 rg -q '^created 0 devices$' "$work/extract.log"
 test "$(cat "$work/root/etc/openwrt_version")" = "$source_rev"
 cp -a "$work/root" "$work/original-root"
+export WAVE7_ROLE_BUILDER_COMMIT="$role_builder_commit" WAVE7_ROLE_BASE_SHA256="$source_sha"
 "$repo/scripts/wave7/host/secondary-ap/stage-root.sh" "$work/root" "$mode" "$address" > "$work/stage.log"
 test "$(cat "$work/root/etc/openwrt_version")" = "$new_rev"
 # The real image must meet the same complete policy-file contract as preinit.
@@ -133,7 +134,7 @@ test ! -s "$work/roundtrip-diff.txt"
  sha256sum -c --status "$buildrepo/scripts/wave7/diagnostic-firmware.sha256")
 test "$(cat "$work/verified-root/etc/openwrt_version")" = "$new_rev"
 rg -q '^root:!:.*' "$work/verified-root/etc/shadow"
-name="wave7-secondary-ap-$mode-guard7-sysupgrade.bin"
+name="wave7-secondary-ap-$mode-guard8-sysupgrade.bin"
 export TOPDIR="$buildrepo"
 SOURCE_DATE_EPOCH=$(git -C "$buildrepo" show -s --format=%ct HEAD)
 export SOURCE_DATE_EPOCH

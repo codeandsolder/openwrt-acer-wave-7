@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Independent Asus guarded native trial of the static authenticated Wave7 AP.
+# Historical Guard7 trial only; do not use for Guard8 deployment.
 set -Eeuo pipefail
 umask 077
 mode=--check

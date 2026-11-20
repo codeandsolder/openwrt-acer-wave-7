@@ -1,11 +1,9 @@
 # Acer Wave 7 — secondary-AP firmware role
 
-Current status (2026-11-20): guard4 failed after UBIFS mounting and
-recovered to stock through the existing watchdog. Guard5 changes the
-migration to prepare the dedicated UBIFS before OverlayFS mounts it.
-The accepted integrated image is separately recoverable through the
-proven vendor OTA wrapper. Guard5 requires live acceptance.
-
+Guard7 static hardware acceptance and client/wire validation passed.
+Guard8 is the next role generation, adding explicit persistent approval
+for autonomous subsequent boots. Do not flash until its separate guarded
+trial and rollback harness are ready.
 ## Verified current images
 
 Both derive from accepted source sysupgrade SHA256:
@@ -29,6 +27,24 @@ and NDP proxy services, lock the root password, and allow only
 existing key-based SSH access. Static mode uses 192.168.76.1/24
 solely for isolated hardware testing; DHCP mode relies on an existing
 upstream DHCP server and upstream IPv6 RA.
+
+## Guard8 autonomous acceptance
+
+A new image still requires the current-boot external SSH token. After
+independent soak and client/wire acceptance, the operator explicitly runs
+attest-management.sh --approve with router, revision, interface, source
+IPv4, pinned known_hosts and verified boot UUID. The router requires
+bootfail=0, keep marker, the original current-boot token and fresh local
+health before atomically creating /overlay/wave7-ap-approved, root:root
+0600. Its content binds the immutable manifest digest and revision,
+including base image SHA and role builder commit. Different builds or
+profiles cannot reuse approval. Subsequent approved boots still require
+matching overlay policy, all five bridge members, all three Q6 domains,
+both MLO links and no recorded NoC fatal, but do not require a cable or
+an upstream DHCP lease. Static mode still requires its configured address.
+Unapproved candidates remain fail-closed; no automatic promotion after
+firstboot. The tested Guard7 trial-static.sh is historical and is not the
+Guard8 trial harness.
 
 ## Boot gate
 
@@ -56,7 +72,7 @@ boot environment state, UBI telemetry and SSH host identities survive.
 The preinit policy is sourced strictly from /rom, never from inherited
 upperdir files. The checks run before config generation and services.
 
-The role's preinit acceptance function requires that overlay-ready
+The unapproved role's preinit acceptance function requires that overlay-ready
 marker AND a volatile token of the current
 boot UUID and exact role revision. The external Asus
 attest-management.sh connects with publickey-only SSH and verifies
@@ -112,12 +128,11 @@ unattested -ap-* variants are obsolete, not deployment candidates.
 
 ## Hardware acceptance
 
-1. Exact target-side read-only sysupgrade -T -n for candidate and
-   rollback remains unverified; remote execution guard blocked it.
-2. Confirm unattended fail-to-accept fallback handling.
-3. Test static AP under supervisor, key-only SSH and MLO client
-   traffic, with independent packet capture showing no DHCP/RA.
+1. Guard7 static passed native preflight, guarded trial, soak and wire/client tests.
+2. Guard7 DHCP passed offline QA and on-router native preflight.
+3. Guard8 source requires offline build QA and a new guarded trial.
 4. Prepare a separate, upstream-DHCP-connected lab before deploying
+   the DHCP-managed AP role.
    the DHCP-managed AP role.
 
 Current state: https://app.notion.com/p/41df74be90208166a3acf2b79a58e36e

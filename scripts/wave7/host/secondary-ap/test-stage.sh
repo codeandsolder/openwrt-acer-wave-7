@@ -1,5 +1,7 @@
 #!/bin/bash
 set -euo pipefail
+export WAVE7_ROLE_BUILDER_COMMIT=0123456789012345678901234567890123456789
+export WAVE7_ROLE_BASE_SHA256=0123456789012345678901234567890123456789012345678901234567890123
 stage=$(cd -- "$(dirname -- "$0")" && pwd)/stage-root.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -164,8 +166,8 @@ fi
 # Pure firstboot gate test; no kernel/router calls.
 . "$(dirname -- "$stage")/role-firstboot.sh"
 boot=11111111-2222-3333-4444-555555555555
-rev_static=r0+38346-0fbc2cc77b-ap-static-guard7
-rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard7
+rev_static=r0+38346-0fbc2cc77b-ap-static-guard8
+rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard8
 profile_static=$'role=secondary-ap\nmode=static\nmanagement_ipv4=192.168.76.1/24'
 profile_dhcp=$'role=secondary-ap\nmode=dhcp'
 ipstatic='3: br-lan    inet 192.168.76.1/24 brd 192.168.76.255 scope global br-lan'
@@ -189,3 +191,44 @@ reject wrong_role "role=lab" "$rev_static" "$boot" "$boot $rev_static" 1 "$ipsta
 reject mismatched_ip "$profile_static" "$rev_static" "$boot" "$boot $rev_static" 1 "$ipdhcp"
 reject mismatched_mode "$profile_static" "$rev_dhcp" "$boot" "$boot $rev_dhcp" 1 "$ipstatic"
 echo SECONDARY_AP_STAGE_AND_BOOT_GUARD_TEST_PASS
+wave7_secondary_ap_gate_ok "$profile_dhcp" "$rev_dhcp" 1 "" "" "" 0
+wave7_secondary_ap_gate_ok "$profile_static" "$rev_static" 1 "$ipstatic" "" "" 0
+wave7_secondary_ap_gate_ok "$profile_dhcp" "$rev_dhcp" 0 "$ipdhcp" "$boot" "$boot $rev_dhcp" 1
+for rejected in 'dhcp-unapproved-offline' 'static-wrong-address' 'unapproved-stale-token'; do
+  case "$rejected" in
+    dhcp-unapproved-offline) args=("$profile_dhcp" "$rev_dhcp" 0 "" "" "" 0) ;;
+    static-wrong-address) args=("$profile_static" "$rev_static" 1 "$ipdhcp" "" "" 0) ;;
+    unapproved-stale-token) args=("$profile_dhcp" "$rev_dhcp" 0 "$ipdhcp" "$boot" "old $rev_dhcp" 1) ;;
+  esac
+  if wave7_secondary_ap_gate_ok "${args[@]}"; then
+    echo "INVALID_AUTONOMOUS_BOOT_ACCEPTED $rejected" >&2
+    exit 1
+  fi
+done
+manifest="$work/static/etc/wave7-role-profile"
+revision=$(cat "$work/static/etc/openwrt_version")
+identity=$(wave7_secondary_ap_identity "$manifest" "$revision")
+printf '%s\n' "$identity" > "$work/approval"
+chmod 0600 "$work/approval"
+[ "$identity" != "$(wave7_secondary_ap_identity "$work/dhcp/etc/wave7-role-profile" "$(cat "$work/dhcp/etc/openwrt_version")")" ]
+cp "$manifest" "$work/changed-manifest"
+sed -i 's/^builder_commit=./builder_commit=f/' "$work/changed-manifest"
+[ "$identity" != "$(wave7_secondary_ap_identity "$work/changed-manifest" "$revision")" ]
+if wave7_secondary_ap_identity "$manifest" "$rev_dhcp"; then exit 1; fi
+if wave7_secondary_ap_approval_matches "$manifest" "$revision" "$work/approval"; then
+  [ "$(id -u)" = 0 ]
+elif [ "$(id -u)" = 0 ]; then exit 1
+fi
+ln -s "$work/approval" "$work/symlink-approval"
+if wave7_secondary_ap_approval_matches "$manifest" "$revision" "$work/symlink-approval"; then exit 1; fi
+if [ "$(id -u)" = 0 ]; then
+  chown 0:0 "$work/approval"
+  wave7_secondary_ap_approval_matches "$manifest" "$revision" "$work/approval"
+  if wave7_secondary_ap_approval_matches "$work/changed-manifest" "$revision" "$work/approval"; then exit 1; fi
+  chmod 0644 "$work/approval"
+  if wave7_secondary_ap_approval_matches "$manifest" "$revision" "$work/approval"; then exit 1; fi
+  chmod 0600 "$work/approval"
+  printf '\n' >> "$work/approval"
+  if wave7_secondary_ap_approval_matches "$manifest" "$revision" "$work/approval"; then exit 1; fi
+fi
+echo AUTONOMOUS_AP_BOOT_GATE_TEST_PASS

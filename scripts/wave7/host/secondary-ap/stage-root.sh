@@ -6,6 +6,8 @@ set -eu
   echo "Usage: stage-root.sh EXTRACTED_ROOT dhcp|static [IPv4/CIDR]" >&2
   exit 2
 }
+printf "%s\n" "${WAVE7_ROLE_BUILDER_COMMIT:-}" | rg -qx "[0-9a-f]{40}" || { echo missing-builder-commit >&2; exit 2; }
+printf "%s\n" "${WAVE7_ROLE_BASE_SHA256:-}" | rg -qx "[0-9a-f]{64}" || { echo missing-base-sha256 >&2; exit 2; }
 root=$(realpath -e "$1")
 mode=$2
 cidr=""
@@ -74,7 +76,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode-guard7"
+newrev="$oldrev-ap-$mode-guard8"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'
@@ -236,6 +238,7 @@ done
 {
   printf 'role=secondary-ap\nmode=%s\nsource_revision=%s\nrevision=%s\n' \
     "$mode" "$oldrev" "$newrev"
+  printf 'builder_commit=%s\nbase_image_sha256=%s\n' "$WAVE7_ROLE_BUILDER_COMMIT" "$WAVE7_ROLE_BASE_SHA256"
   if [ "$mode" = static ]; then printf 'management_ipv4=%s\n' "$cidr"; fi
   printf 'dhcpv4_server=off\ndhcpv6_server=off\nrouter_advertisements=off\n'
   printf 'dns_service=off\nroot_password_authentication=off\nroot_public_key_authentication=on\n'
