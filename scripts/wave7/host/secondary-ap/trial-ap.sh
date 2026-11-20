@@ -2,12 +2,16 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
-profile=$1; mode=$2; shift 2
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
+trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
 candidate_builder=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b
 candidate_rev="r0+38346-0fbc2cc77b-ap-$profile-guard8"
+accepted_mode=static
+accepted_builder=''
+candidate_module_sha=''
+accepted_module_sha=''
 case "$profile" in
   static)
     base="$guard8/guard8-static-lab"
@@ -22,11 +26,27 @@ case "$profile" in
     accepted="$guard8/guard8-static-lab/wave7-secondary-ap-static-guard8-sysupgrade.bin"
     accepted_sha=b3c5c96ed47fb8ea4c9ea6fd726b499fe52b1391b6591b7016a349f296c35ec8
     accepted_rev=r0+38346-0fbc2cc77b-ap-static-guard8
+    accepted_builder=$candidate_builder
+    ;;
+  trunk)
+    profile=dhcp
+    base="$guard8/trunk-health-dhcp-guard8"
+    candidate_rev=r0+38346-895ed9016d-ap-dhcp-guard8
+    candidate_builder=72a0c4fc9e797ceeb2776b09233aa824120935fb
+    expected_candidate_sha=31e62fa9e107acbc8e70adaf9dd8fa55c24d4e5ed083948f15579761af987305
+    candidate_module_sha=b854937955dc136b626b95c06f1e96ca457725bcb30c9747a5d3a4b581362b85
+    accepted="$guard8/guard8-dhcp-managed/wave7-secondary-ap-dhcp-guard8-sysupgrade.bin"
+    accepted_sha=3a84923c5c18b1f1354985de975a775e3fbea464fc69dbf8e086267f0b917172
+    accepted_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard8
+    accepted_mode=dhcp
+    accepted_builder=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b
+    accepted_module_sha=ef2fd6186279e997be4368e358f6bda9c2f4222150c9704ad6c24c69a1f99ed7
     ;;
   *) echo 'unknown candidate profile' >&2; exit 2 ;;
 esac
 candidate="$base/wave7-secondary-ap-$profile-guard8-sysupgrade.bin"
-candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
+[[ $trial_kind != trunk ]] || candidate="$base/wave7-trunk-health-dhcp-guard8-sysupgrade.bin"
+candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name || $2 == "./"name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
 leasefile="$guard8/upstream/dnsmasq.leases"
 upstream_unit=wave7-lab-upstream-guard8
 key=/home/jan/.ssh/wave7-root-rsa
@@ -35,6 +55,13 @@ host=root@192.168.76.1
 attestor=/home/jan/scripts/wave7/secondary-ap-guard8/attest-management.sh
 management_ip=192.168.76.250
 management_iface=enp4s0f4u2u2u4
+switch_iface=$management_iface
+switch_ip=$management_ip
+if [[ $trial_kind == trunk ]]; then
+  # RTL8367D is the device under test, not a reliable recovery path.
+  management_ip=192.168.76.2
+  management_iface=enp4s0f4u2u4
+fi
 remote() {
   ssh -n -T -i "$key" -o "BindInterface=$management_iface" -o "BindAddress=$management_ip" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
     -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" "$@"
@@ -49,7 +76,7 @@ upload() {
 }
 fatal() { printf 'PREFLIGHT_BLOCKED: %s\n' "$*" >&2; exit 3; }
 value() { sed -n "s/^$2=//p" <<< "$1" | head -1; }
-read_state() {
+read_state_core() {
   remote 'echo "boot=$(cat /proc/sys/kernel/random/boot_id)";
     echo "rev=$(cat /etc/openwrt_version)";
     set -- $SSH_CONNECTION;
@@ -84,6 +111,55 @@ read_state() {
     echo "local_ready=$(if [ -r /rom/lib/wave7/role-firstboot.sh ]; then . /rom/lib/wave7/role-firstboot.sh; if command -v wave7_secondary_ap_local_ready >/dev/null 2>&1 && wave7_secondary_ap_local_ready; then echo 1; else echo 0; fi; else echo 0; fi)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)"'
 }
+# Read the suspect switch counters through the independent direct path.
+# The second key-authenticated session must traverse the actual switch NIC.
+read_state() {
+  local s extra peer boot
+  s=$(read_state_core) || return 1
+  printf '%s\n' "$s"
+  [[ $trial_kind == trunk && $(value "$s" kernel) == 6.18.60 ]] || return 0
+  boot=$(value "$s" boot)
+  extra=$(remote '
+    echo "sample_boot=$(cat /proc/sys/kernel/random/boot_id)"
+    p=lib/modules/6.18.60/rtl8365mb.ko
+    echo "module_sha=$(sha256sum /$p 2>/dev/null | cut -d" " -f1)"
+    echo "module_rom_sha=$(sha256sum /rom/$p 2>/dev/null | cut -d" " -f1)"
+    echo "module_live=$(test "$(cat /sys/module/rtl8365mb/initstate 2>/dev/null)" = live && echo 1 || echo 0)"
+    echo "module_taint=$(cat /sys/module/rtl8365mb/taint 2>/dev/null)"
+    echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
+    echo "manifest_module_sha=$(sed -n "s/^trial_module_sha256=//p" /rom/etc/wave7-role-profile)"
+    ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
+      $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
+      $1=="s00_p06_ifInUcastPkts:"{print "cpu_ucast=" $2}
+      $1=="s00_p06_ifInMulticastPkts:"{print "cpu_mcast=" $2}
+      $1=="s00_p06_ifInBroadcastPkts:"{print "cpu_bcast=" $2}
+      $1=="s00_p06_etherStatsDropEvents:"{print "cpu_drops=" $2}'\''
+  ') || return 1
+  [[ $(value "$extra" sample_boot) == "$boot" ]] || return 1
+  printf '%s\n' "$extra"
+  peer=$(ssh -n -T -i "$key" -o "BindInterface=$switch_iface" -o "BindAddress=$switch_ip" \
+    -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 -o ConnectionAttempts=1 \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" \
+    'printf "%s %s\n" "$(cat /proc/sys/kernel/random/boot_id)" "${SSH_CONNECTION%% *}"' 2>/dev/null) || peer=''
+  if [[ $peer == "$boot $switch_ip" ]]; then echo switch_verified=1; else echo switch_verified=0; fi
+}
+module_matches() {
+  local s=$1 hash=$2 taint=$3
+  for exp in "module_sha=$hash" "module_rom_sha=$hash" "module_taint=$taint" module_live=1 module_upper_clear=1; do
+    grep -Fxq "$exp" <<< "$s" || return 1
+  done
+}
+trunk_counters_valid() {
+  local s=$1 field
+  for field in cpu_fcs cpu_fragments cpu_ucast cpu_mcast cpu_bcast cpu_drops; do
+    [[ $(value "$s" "$field") =~ ^[0-9]+$ ]] || return 1
+  done
+}
+trunk_path_healthy() {
+  grep -Fxq switch_verified=1 <<< "$1" &&
+    grep -Fxq local_ready=1 <<< "$1" &&
+    trunk_counters_valid "$1"
+}
 # A permanently configured local address is required, not a DHCP lease
 # that may expire when the AP disables its own DHCP server.
 has_permanent_address() {
@@ -99,9 +175,12 @@ has_permanent_address() {
 # One definition of the healthy accepted baseline, used before the trial
 # and when checking that the rollback has actually booted successfully.
 baseline_healthy() {
-  role_healthy "$1" "$accepted_rev" static || return 1
-  if [[ $profile == dhcp ]]; then
-    grep -Fxq "builder_commit=$candidate_builder" <<< "$1"
+  role_healthy "$1" "$accepted_rev" "$accepted_mode" || return 1
+  if [[ -n $accepted_builder ]]; then
+    grep -Fxq "builder_commit=$accepted_builder" <<< "$1" || return 1
+  fi
+  if [[ $trial_kind == trunk ]]; then
+    module_matches "$1" "$accepted_module_sha" "" && trunk_path_healthy "$1"
   fi
 }
 rollback_eligible() {
@@ -110,7 +189,13 @@ rollback_eligible() {
      $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
 }
 healthy() {
-  role_healthy "$1" "$candidate_rev" "$profile" && grep -Fxq "builder_commit=$candidate_builder" <<< "$1"
+  role_healthy "$1" "$candidate_rev" "$profile" &&
+    grep -Fxq "builder_commit=$candidate_builder" <<< "$1" || return 1
+  if [[ $trial_kind == trunk ]]; then
+    module_matches "$1" "$candidate_module_sha" O &&
+      grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$1" &&
+      trunk_path_healthy "$1"
+  fi
 }
 role_healthy() {
   local s=$1 expected_revision=$2 expected_mode=$3
@@ -163,16 +248,20 @@ await_observers() {
 }
 if [[ $mode == --selftest ]]; then
   s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard8\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1\nbuilder_commit=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b'
-  s=$(sed -e "s/^rev=.*/rev=$candidate_rev/" -e "s/^mode=.*/mode=$profile/" -e "s/^proto=.*/proto=$profile/" <<< "$s")
+  s=$(sed -e "s/^rev=.*/rev=$candidate_rev/" -e "s/^mode=.*/mode=$profile/" -e "s/^proto=.*/proto=$profile/" \
+    -e "s/^builder_commit=.*/builder_commit=$candidate_builder/" -e "s/^management_peer=.*/management_peer=$management_ip/" <<< "$s")
   s+=$'\nbridge_ip=192.168.76.1/24'
+  if [[ $trial_kind == trunk ]]; then
+    s+=$(printf '\nmodule_sha=%s\nmodule_rom_sha=%s\nmanifest_module_sha=%s\nmodule_taint=O\nmodule_live=1\nmodule_upper_clear=1\nswitch_verified=1\nlocal_ready=1\ncpu_fcs=0\ncpu_fragments=0\ncpu_ucast=1\ncpu_mcast=1\ncpu_bcast=1\ncpu_drops=0' "$candidate_module_sha" "$candidate_module_sha" "$candidate_module_sha")
+  fi
   healthy "$s" || fatal 'good state rejected'
   for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=wrong proto=wrong bridge_ip=192.168.76.99/24 dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")
     bad=$(sed "s|^$field=.*|$change|" <<< "$s")
     if healthy "$bad"; then fatal "bad state accepted: $change"; fi
   done
-  permanent='87: eth0 inet 192.168.76.250/24 scope global valid_lft forever preferred_lft forever'
-  leased='87: eth0 inet 192.168.76.250/24 scope global dynamic valid_lft 300sec preferred_lft 300sec'
+  permanent="87: eth0 inet $management_ip/24 scope global valid_lft forever preferred_lft forever"
+  leased="87: eth0 inet $management_ip/24 scope global dynamic valid_lft 300sec preferred_lft 300sec"
   has_permanent_address "$permanent" "$management_ip/24" || fatal 'static address rejected'
   if has_permanent_address "$leased" "$management_ip/24"; then fatal 'DHCP lease accepted'; fi
   if has_permanent_address "$permanent" '192.168.76.190/24'; then fatal 'wrong address accepted'; fi
@@ -182,7 +271,16 @@ if [[ $mode == --selftest ]]; then
     bad=$(sed "s|^$field=.*|$change|" <<< "$s")
     if rollback_eligible "$bad"; then fatal "unsafe rollback accepted: $change"; fi
   done
-  baseline=$(sed -e "s/^rev=.*/rev=$accepted_rev/" -e "s/^mode=.*/mode=static/" -e "s/^proto=.*/proto=static/" <<< "$s")
+  baseline=$(sed -e "s/^rev=.*/rev=$accepted_rev/" -e "s/^mode=.*/mode=$accepted_mode/" -e "s/^proto=.*/proto=$accepted_mode/" \
+    -e "s/^builder_commit=.*/builder_commit=$accepted_builder/" <<< "$s")
+  if [[ $trial_kind == trunk ]]; then
+    baseline=$(sed -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" -e 's/^module_taint=.*/module_taint=/' <<< "$baseline")
+    for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_live=0 module_upper_clear=0 module_taint= switch_verified=0 local_ready=0 cpu_fcs=missing; do
+      field=${change%%=*}
+      bad=$(sed "s|^$field=.*|$change|" <<< "$s")
+      if healthy "$bad"; then fatal "bad trunk state accepted $change"; fi
+    done
+  fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   for change in bootfail=1 keep=0 q6=2 ap=1 noc=1 lan1=0 ping=0; do
     field=$(cut -d= -f1 <<< "$change")
@@ -204,7 +302,7 @@ if [[ $mode == --selftest ]]; then
       if autonomous_healthy "$bad"; then fatal "autonomous false positive: $change"; fi
     done
   fi
-  echo "AP_GUARD8_SELFTEST_PASS profile=$profile"
+  echo "AP_GUARD8_SELFTEST_PASS profile=$trial_kind"
   exit 0
 fi
 [[ $(id -un) == jan && -r $known && -r $key ]] || fatal 'Asus jan SSH identity absent'
@@ -332,6 +430,10 @@ if [[ $mode == --watch ]]; then
   restored_boot=""
   restore_attested=0
   last_restore_attest=0
+  last_errors=''
+  if [[ $trial_kind == trunk ]]; then
+    printf 'wall_epoch\tboot\tuptime\tfcs\tfragments\tucast\tmcast\tbcast\tdrops\tswitch\tkeep\n' > "$out/trunk-counters.tsv"
+  fi
   restore() {
     local cause=$1 state=$2 check
     (( rollback == 0 )) || return 0
@@ -386,16 +488,39 @@ if [[ $mode == --watch ]]; then
         (( i % 5 )) || log "WAIT_RESTORED_BASELINE_READY boot=$boot"
       elif [[ $rev == "$candidate_rev" ]]; then
         if [[ $trial_boot != "$boot" ]]; then
+          if [[ $trial_kind == trunk && -n $trial_boot ]]; then
+            log "UNEXPECTED_REBOOT predecessor=$trial_boot new=$boot"
+            rollback_cause=UNEXPECTED_REBOOT
+          fi
           trial_boot=$boot; first_seen=$now; healthy_since=0
-          last_attest=0; attested=0
+          last_attest=0; attested=0; last_errors=''
           log "TRIAL_BOOT boot=$boot"
         fi
         printf '%s\n' "$s" > "$out/latest-state.txt"
+        if [[ $trial_kind == trunk ]] && trunk_counters_valid "$s"; then
+          printf '%s\t%s' "$now" "$boot" >> "$out/trunk-counters.tsv"
+          for field in uptime cpu_fcs cpu_fragments cpu_ucast cpu_mcast cpu_bcast cpu_drops switch_verified keep; do
+            printf '\t%s' "$(value "$s" "$field")" >> "$out/trunk-counters.tsv"
+          done
+          printf '\n' >> "$out/trunk-counters.tsv"
+          errors="$(value "$s" cpu_fcs):$(value "$s" cpu_fragments)"
+          if [[ -n $last_errors && $errors != "$last_errors" ]]; then
+            log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
+            healthy_since=0
+          fi
+          last_errors=$errors
+        fi
         # Authenticated AP preinit cannot commit bootfail=0 without this
         # independent key-only SSH check. Retry during the early boot; do
         # not bypass the 120-second hard deadline if no valid token arrives.
         if (( !attested && now-first_seen < 98 && now-last_attest >= 4 )) &&
            [[ $(value "$s" keep) == 0 ]]; then
+          if [[ $trial_kind == trunk ]] &&
+             { [[ -n $rollback_cause ]] || ! module_matches "$s" "$candidate_module_sha" O || ! grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$s"; }; then
+            log TRUNK_ATTESTATION_BLOCKED_MODULE_OR_REBOOT
+            sleep 3
+            continue
+          fi
           last_attest=$now
           if "$attestor" --run \
             192.168.76.1 "$candidate_rev" "$management_iface" "$management_ip" "$known" \
@@ -465,9 +590,13 @@ boot=$(value "$s" boot)
 [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid boot ID'
 baseline_healthy "$s" || fatal "unhealthy source: $s"
 if [[ $profile == dhcp ]]; then
-  grep -Fxq approval=1 <<< "$s" || fatal 'static rollback not persistently approved'
+  grep -Fxq approval=1 <<< "$s" || fatal 'rollback not persistently approved'
   upstream_ready || fatal 'isolated upstream service not ready'
-  if lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"; then
+  if [[ $trial_kind == trunk ]]; then
+    lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)" || fatal 'approved DHCP rollback lease absent'
+    has_permanent_address "$(ip -4 -o addr show dev "$switch_iface")" "$switch_ip/24" || fatal 'independent switch peer address absent'
+    [[ $(cat "/sys/class/net/$switch_iface/carrier") == 1 ]] || fatal 'switch peer carrier down'
+  elif lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"; then
     fatal 'stale router DHCP lease already present'
   fi
 fi
@@ -499,7 +628,7 @@ cleanup() {
 }
 trap cleanup EXIT
 systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=1500 -- \
-  /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$profile" --watch "$boot" "$out"
+  /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$trial_kind" --watch "$boot" "$out"
 systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
 await_observers "$guard" "$fallback" "$out"
