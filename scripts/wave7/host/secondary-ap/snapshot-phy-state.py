@@ -93,7 +93,9 @@ def parse(raw,boot,rev,speed):
     assert 0<=float(core["end_uptime"])-float(core["start_uptime"])<=5
     pcs=fields(sections["PCS"]);mac=fields(sections["MAC"]);phy=fields(sections["PHY"])
     assert set(pcs)==PCS_KEYS and set(mac)==MAC_KEYS and set(phy)==PHY_KEYS
-    assert all(re.fullmatch(r"0x[0-9a-fA-F]{4}",v) and v.lower()!="0xffff" for v in phy.values())
+    # phytool prints zero as 0000, and nonzero values with 0x.
+    assert all(re.fullmatch(r"(?:0x[0-9a-fA-F]{4}|0000)",v) and v.lower()!="0xffff" for v in phy.values())
+    phy={k:f"0x{int(v,16):04x}" for k,v in phy.items()}
     clocks={}
     for line in sections["CLOCK"]:
         n,*values=line.split()
