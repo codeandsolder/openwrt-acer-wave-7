@@ -121,3 +121,42 @@ Deployment gate: a revision-aware external Asus observer must perform
 attestation early enough before the 120-second watchdog, with exact
 SHA-pinned image validation, firstboot, real DHCP/RA wire capture,
 recovery check and MLO client traffic. No automatic promotion.
+
+## Guarded isolated-static AP trial controller
+
+Source-only trial-static.sh adapts the hardware-proven Nov19 native sysupgrade
+controller. This script is not a generic production-AP flasher. It pins both
+the static-auth candidate SHA manifest and the *currently accepted*
+r0+38346-0fbc2cc77b lab image SHA 8ac5e0ee..., and keeps Asus management
+SSH/SCP on its independent 1GbE NIC. It requires stable baseline QCA8081 2.5G,
+RTL8367D lan1 1G, MLO2, Q6 3/3, no current NoC, bootfail0 and the accepted
+firstboot marker before allowing a trial.
+
+The --watch mode continuously observes the new boot ID. During an unaccepted
+static-auth candidate boot it periodically invokes attest-management.sh to
+obtain key-only SSH access and verify the actual new image's UCI, shadow,
+network and Q6/MLO state. On success the attestor writes a volatile token
+bound to the new UUID/revision; the original preinit watchdog handles
+bootfail acceptance. After acceptance the external observer requires 300
+continuous seconds of health, and attempts native same-slot sysupgrade
+rollback to the pinned original lab image if NoC/peer/radio/wired health fails.
+
+If the role cannot get firstboot acceptance before the hard 120s deadline,
+the existing kernel SysRq fallback may boot the vendor root, which the
+separate passive vendor watcher records. This case is **vendor fallback,
+not yet a demonstrated automatic reinstall of the accepted OpenWrt image**.
+Do not treat the existing vendor observer as a restore service.
+
+Commands after installing the tracked scripts to the Asus location
+/home/jan/scripts/wave7/secondary-ap/:
+
+  trial-static.sh --selftest
+  attest-management.sh --selftest
+  trial-static.sh --check-baseline   (read-only actual lab hardware)
+  trial-static.sh --check            (read-only hash and baseline checks)
+  trial-static.sh --run              (NAND writes; separately gated)
+
+Do not use --run until actual router-side sysupgrade -T -n confirms
+candidate and rollback, and a fail-to-accept vendor fallback recovery
+procedure is ready. A static/lab peer is still required; DHCP-managed
+role needs a separate upstream-DHCP-based supervisor.
