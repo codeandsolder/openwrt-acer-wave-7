@@ -225,7 +225,7 @@ def report(rows):
                         flush()
                         down=downs[0]["uptime"]
                         if episode is None or episode["up"] is not None:
-                            prior=last_good if last_good and last_good["uptime"]<=down else None
+                            prior=last_good if last_good and 0<=down-last_good["uptime"]<=8 else None
                             episode={"down":down,"up":None,"prior_speed":prior and prior["speed"],"windows":[]}
                             episodes.append(episode)
                         episode.update(down=down,up=newest["uptime"],post_speed=s["speed"],edge_source="kernel_log")
@@ -250,7 +250,10 @@ def report(rows):
                              for k in ("routes_before","routes_after") for n in trunk.PATHS)
                      and all(probe_count(row,n) is not None and probe_count(row,n)[0]==probe_count(row,n)[1]
                              for n in trunk.PATHS))
-            last_good = s if ready else None
+            if ready:
+                last_good=s
+            elif last_good and (s["speed"]!=last_good["speed"] or s["uptime"]-last_good["uptime"]>8):
+                last_good=None
         else:
             last_good=s
         if episode is None:
@@ -372,7 +375,7 @@ def selftest():
     assert report(rows)["classification"]=="INCONCLUSIVE"
     # A carrier flap between snapshots is still observed when the
     # driver records its complete fresh adjacent edge pair.
-    rows=[row(1)]+[row(t) for t in range(12,58,2)]
+    rows=[row(3)]+[row(t) for t in range(12,58,2)]
     for i,r in enumerate(rows):
         st=r["snapshot"]["state"]
         st.update(revision=RELINK_REV,phy_edges=[{"edge":1,"link":1,"uptime":0.5}],relink_events=[])
@@ -383,6 +386,15 @@ def selftest():
     result=report(rows)
     assert result["classification"]=="ONE_GIG_RECONNECT_PASS",result
     assert result["episodes"][0]["edge_source"]=="kernel_log"
+    # A burst can straddle the start of an autoneg transition while
+    # the router still reports the previous speed. Retain a recent
+    # verified baseline, rather than mistaking that burst for a new one.
+    import copy
+    prior=copy.deepcopy(rows[0]); prior["snapshot"]["state"]["uptime"]=5
+    partial=copy.deepcopy(prior); partial["snapshot"]["state"]["uptime"]=8
+    partial["host_counters"]["direct"]["speed"]="-1"
+    partial["probes"]["direct"]["received"]=2
+    assert report([prior,partial]+rows[1:])["classification"]=="ONE_GIG_RECONNECT_PASS"
     assert report(rows[1:])["classification"]=="NO_CARRIER_EDGE_OBSERVED"
     print("PHY_RECONNECT_SELFTEST_PASS")
 
