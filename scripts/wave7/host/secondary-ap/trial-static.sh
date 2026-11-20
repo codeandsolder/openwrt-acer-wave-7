@@ -74,6 +74,20 @@ has_permanent_address() {
     END {exit !found}
   ' <<< "$addresses"
 }
+# One definition of the healthy accepted baseline, used before the trial
+# and when checking that the rollback has actually booted successfully.
+baseline_healthy() {
+  local s=$1
+  for expect in "rev=$accepted_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
+    q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000; do
+    grep -Fxq "$expect" <<< "$s" || return 1
+  done
+}
+rollback_eligible() {
+  local s=$1
+  [[ $(value "$s" rev) == "$candidate_rev" &&
+     $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
+}
 healthy() {
   local s=$1
   for expect in "rev=$candidate_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
@@ -100,6 +114,19 @@ if [[ $mode == --selftest ]]; then
   has_permanent_address "$permanent" "$management_ip/24" || fatal 'static address rejected'
   if has_permanent_address "$leased" "$management_ip/24"; then fatal 'DHCP lease accepted'; fi
   if has_permanent_address "$permanent" '192.168.76.190/24'; then fatal 'wrong address accepted'; fi
+  rollback_eligible "$s" || fatal 'accepted trial ineligible for rollback'
+  for change in bootfail=1 keep=0 "rev=$accepted_rev"; do
+    field=$(cut -d= -f1 <<< "$change")
+    bad=$(sed "s/^$field=.*/$change/" <<< "$s")
+    if rollback_eligible "$bad"; then fatal "unsafe rollback accepted: $change"; fi
+  done
+  baseline=$(sed "s/^rev=.*/rev=$accepted_rev/" <<< "$s")
+  baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
+  for change in bootfail=1 keep=0 q6=2 ap=1 noc=1 lan1=0 ping=0; do
+    field=$(cut -d= -f1 <<< "$change")
+    bad=$(sed "s/^$field=.*/$change/" <<< "$baseline")
+    if baseline_healthy "$bad"; then fatal "unhealthy restore accepted: $change"; fi
+  done
   echo STATIC_AP_GUARD_SELFTEST_PASS
   exit 0
 fi
@@ -126,20 +153,31 @@ if [[ $mode == --watch ]]; then
   last_attest=0
   attested=0
   rollback=0
+  rollback_cause=''
+  last_restore_attempt=0
   restore() {
     local cause=$1 state=$2 check
     (( rollback == 0 )) || return 0
-    rollback=1
+    # Remember the observed fault even if this boot has not been accepted.
+    # Do not latch a restore as issued merely because it was requested.
+    rollback_cause=$cause
+    if ! rollback_eligible "$state"; then
+      log ROLLBACK_DEFERRED_UNACCEPTED_BOOT
+      return 1
+    fi
+    (( now-last_restore_attempt >= 15 )) || return 1
+    last_restore_attempt=$now
     log "ROLLBACK_REQUESTED cause=$cause"
     echo ROLLBACK_REQUESTED > "$out/status"
     remote 'echo ====BOOT====; cat /proc/sys/kernel/random/boot_id; echo ====DMESG====; dmesg; echo ====ETHERNET====; ethtool lan1' > "$out/pre-rollback.txt" 2>&1 || :
-    [[ $(value "$state" rev) == "$candidate_rev" && $(value "$state" keep) == 1 &&
-       $(value "$state" bootfail) == 0 ]] || { log ROLLBACK_DEFERRED_UNACCEPTED_BOOT; return 1; }
     upload "$accepted" /tmp/wave7-secondary-ap-restore.bin || { log RESTORE_COPY_FAILED; return 1; }
     check=$(remote 'sha256sum /tmp/wave7-secondary-ap-restore.bin; /sbin/sysupgrade -T -n /tmp/wave7-secondary-ap-restore.bin') || { log RESTORE_PREFLIGHT_FAILED; return 1; }
     [[ $check == "$accepted_sha  /tmp/wave7-secondary-ap-restore.bin"* ]] || { log RESTORE_SHA_FAILED; return 1; }
     log RESTORE_NATIVE_SYSUPGRADE
     remote_timed '/sbin/sysupgrade -n /tmp/wave7-secondary-ap-restore.bin' > "$out/restore.log" 2>&1 || :
+    # Once the remote operation may have started, never issue a blind
+    # duplicate NAND write. Await the next verified healthy boot.
+    rollback=1
     echo RESTORE_ISSUED > "$out/status"
   }
   for ((i=0;i<410;i++)); do
@@ -153,7 +191,12 @@ if [[ $mode == --watch ]]; then
       elif [[ $boot == "$old_boot" ]]; then
         (( i % 10 )) || log STILL_ORIGINAL_BOOT
       elif [[ $rev == "$accepted_rev" ]]; then
-        log "ACCEPTED_IMAGE_BOOT boot=$boot"; echo RESTORED > "$out/status"; exit 0
+        if baseline_healthy "$s"; then
+          log "ACCEPTED_IMAGE_BOOT_HEALTHY boot=$boot"
+          echo RESTORED > "$out/status"
+          exit 0
+        fi
+        (( i % 5 )) || log "WAIT_RESTORED_BASELINE_READY boot=$boot"
       elif [[ $rev == "$candidate_rev" ]]; then
         if [[ $trial_boot != "$boot" ]]; then
           trial_boot=$boot; first_seen=$now; healthy_since=0
@@ -179,6 +222,8 @@ if [[ $mode == --watch ]]; then
         fi
         if (( rollback )); then
           (( i % 10 )) || log AWAITING_RESTORE
+        elif [[ -n $rollback_cause ]]; then
+          restore "$rollback_cause" "$s" || :
         elif healthy "$s"; then
           if (( healthy_since == 0 )); then
             healthy_since=$now; log FIRST_HEALTHY; echo SOAKING > "$out/status"
@@ -231,9 +276,7 @@ has_permanent_address "$(ip -4 -o addr show dev "$management_iface")" "$manageme
 s=$(read_state) || fatal 'router inaccessible'
 boot=$(value "$s" boot)
 [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid boot ID'
-for expect in "rev=$accepted_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000; do
-  grep -Fxq "$expect" <<< "$s" || fatal "unhealthy source: $expect; $s"
-done
+baseline_healthy "$s" || fatal "unhealthy source: $s"
 for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
   systemctl --user is-active --quiet "$name.service" || fatal "$name inactive"
 done
