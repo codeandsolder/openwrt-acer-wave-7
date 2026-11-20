@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -14,6 +14,9 @@ candidate_module_sha=''
 accepted_module_sha=''
 accepted_module_taint=''
 trunk_trial=0
+phy_trial=0
+candidate_fit_sha=''
+candidate_phy_patch=''
 candidate_artifact=''
 case "$profile" in
   static)
@@ -64,7 +67,27 @@ case "$profile" in
     accepted_module_sha=b854937955dc136b626b95c06f1e96ca457725bcb30c9747a5d3a4b581362b85
     accepted_module_taint=O
     ;;
-  *) echo 'unknown candidate profile'  >&2; exit 2 ;;
+  phy)
+    trunk_trial=1
+    phy_trial=1
+    candidate_artifact=wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin
+    profile=dhcp
+    base="$guard8/stock-poll-fifo-dhcp-guard8"
+    candidate_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
+    candidate_builder=749c36c682119f223341d30e7a6d9992160966c0
+    expected_candidate_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
+    candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+    candidate_fit_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
+    candidate_phy_patch=0418bb7af25d13406bb896696eb78541ccd2aa00
+    accepted="$guard8/native-recovery-dhcp-guard8/wave7-native-recovery-dhcp-guard8-sysupgrade.bin"
+    accepted_sha=1da743efe01ab63043b314a6d44de52e99d65456259f0dae0c1d53a013918f2c
+    accepted_rev=r0+38346-0e69b8931c-ap-dhcp-guard8
+    accepted_mode=dhcp
+    accepted_builder=3d057f1f70b76a1bc3d032d3f16357b6a7f4dc0f
+    accepted_module_sha=$candidate_module_sha
+    accepted_module_taint=O
+    ;;
+  *) echo 'unknown candidate profile'   >&2; exit 2 ;;
 esac
 candidate="$base/${candidate_artifact:-wave7-secondary-ap-$profile-guard8-sysupgrade.bin}"
 candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name || $2 == "./"name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
@@ -78,10 +101,18 @@ management_ip=192.168.76.250
 management_iface=enp4s0f4u2u2u4
 switch_iface=$management_iface
 switch_ip=$management_ip
-if [[ $trunk_trial == 1 ]]; then
-  # RTL8367D is the device under test, not a reliable recovery path.
-  management_ip=192.168.76.2
-  management_iface=enp4s0f4u2u4
+direct_iface=enp4s0f4u2u4
+direct_ip=192.168.76.2
+peer_iface=$switch_iface
+peer_ip=$switch_ip
+if [[ $phy_trial == 1 ]]; then
+  # QCA8081 is the DUT. Keep authenticated management on RTL8367D.
+  peer_iface=$direct_iface
+  peer_ip=$direct_ip
+elif [[ $trunk_trial == 1 ]]; then
+  # RTL8367D is the DUT; keep authenticated control on QCA8081.
+  management_ip=$direct_ip
+  management_iface=$direct_iface
 fi
 remote() {
   ssh -n -T -i "$key" -o "BindInterface=$management_iface" -o "BindAddress=$management_ip" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
@@ -132,8 +163,8 @@ read_state_core() {
     echo "local_ready=$(if [ -r /rom/lib/wave7/role-firstboot.sh ]; then . /rom/lib/wave7/role-firstboot.sh; if command -v wave7_secondary_ap_local_ready >/dev/null 2>&1 && wave7_secondary_ap_local_ready; then echo 1; else echo 0; fi; else echo 0; fi)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)"'
 }
-# Read the suspect switch counters through the independent direct path.
-# The second key-authenticated session must traverse the actual switch NIC.
+# Sample switch counters over the independent management path.
+# The second key-authenticated session must traverse the other NIC.
 read_state() {
   local s extra peer boot
   s=$(read_state_core) || return 1
@@ -149,6 +180,9 @@ read_state() {
     echo "module_taint=$(cat /sys/module/rtl8365mb/taint 2>/dev/null)"
     echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
     echo "manifest_module_sha=$(sed -n "s/^trial_module_sha256=//p" /rom/etc/wave7-role-profile)"
+    echo "manifest_phy_patch=$(sed -n "s/^trial_phy_kernel_patch_commit=//p" /rom/etc/wave7-role-profile)"
+    echo "manifest_fit_sha=$(sed -n "s/^trial_fit_sha256=//p" /rom/etc/wave7-role-profile)"
+    echo "phy_poll_marker=$(dmesg | grep -q "fifo_action=stock_status_poll" && echo 1 || echo 0)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
       $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
       $1=="s00_p06_ifInUcastPkts:"{print "cpu_ucast=" $2}
@@ -158,11 +192,17 @@ read_state() {
   ') || return 1
   [[ $(value "$extra" sample_boot) == "$boot" ]] || return 1
   printf '%s\n' "$extra"
-  peer=$(ssh -n -T -i "$key" -o "BindInterface=$switch_iface" -o "BindAddress=$switch_ip" \
+  peer=$(ssh -n -T -i "$key" -o "BindInterface=$peer_iface" -o "BindAddress=$peer_ip" \
     -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 -o ConnectionAttempts=1 \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" \
     'printf "%s %s\n" "$(cat /proc/sys/kernel/random/boot_id)" "${SSH_CONNECTION%% *}"' 2>/dev/null) || peer=''
-  if [[ $peer == "$boot $switch_ip" ]]; then echo switch_verified=1; else echo switch_verified=0; fi
+  if [[ $phy_trial == 1 ]]; then
+    if [[ $(value "$s" management_peer) == "$switch_ip" ]]; then echo switch_verified=1; else echo switch_verified=0; fi
+    if [[ $peer == "$boot $direct_ip" ]]; then echo direct_verified=1; else echo direct_verified=0; fi
+  else
+    if [[ $peer == "$boot $switch_ip" ]]; then echo switch_verified=1; else echo switch_verified=0; fi
+    if [[ $(value "$s" management_peer) == "$direct_ip" ]]; then echo direct_verified=1; else echo direct_verified=0; fi
+  fi
 }
 module_matches() {
   local s=$1 hash=$2 taint=$3
@@ -195,6 +235,7 @@ trunk_error_key() {
 }
 trunk_path_healthy() {
   grep -Fxq switch_verified=1 <<< "$1" &&
+    grep -Fxq direct_verified=1 <<< "$1" &&
     grep -Fxq local_ready=1 <<< "$1" &&
     trunk_counters_valid "$1"
 }
@@ -223,6 +264,11 @@ baseline_healthy() {
       grep -Fxq "manifest_module_sha=$accepted_module_sha" <<< "$1" || return 1
     fi
   fi
+  if [[ $phy_trial == 1 ]]; then
+    grep -Fxq manifest_phy_patch= <<< "$1" &&
+      grep -Fxq manifest_fit_sha= <<< "$1" &&
+      grep -Fxq phy_poll_marker=0 <<< "$1"
+  fi
 }
 rollback_eligible() {
   local s=$1
@@ -235,7 +281,12 @@ healthy() {
   if [[ $trunk_trial == 1 ]]; then
     module_matches "$1" "$candidate_module_sha" O &&
       grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$1" &&
-      trunk_path_healthy "$1"
+      trunk_path_healthy "$1" || return 1
+  fi
+  if [[ $phy_trial == 1 ]]; then
+    grep -Fxq "manifest_phy_patch=$candidate_phy_patch" <<< "$1" &&
+      grep -Fxq "manifest_fit_sha=$candidate_fit_sha" <<< "$1" &&
+      grep -Fxq phy_poll_marker=1 <<< "$1"
   fi
 }
 role_healthy() {
@@ -295,9 +346,18 @@ if [[ $mode == --selftest ]]; then
     -e "s/^builder_commit=.*/builder_commit=$candidate_builder/" -e "s/^management_peer=.*/management_peer=$management_ip/" <<< "$s")
   s+=$'\nbridge_ip=192.168.76.1/24'
   if [[ $trunk_trial == 1 ]]; then
-    s+=$(printf '\nmodule_sha=%s\nmodule_rom_sha=%s\nmanifest_module_sha=%s\nmodule_taint=O\nmodule_live=1\nmodule_upper_clear=1\nswitch_verified=1\nlocal_ready=1\ncpu_fcs=0\ncpu_fragments=0\ncpu_ucast=1\ncpu_mcast=1\ncpu_bcast=1\ncpu_drops=0' "$candidate_module_sha" "$candidate_module_sha" "$candidate_module_sha")
+    s+=$(printf '\nmodule_sha=%s\nmodule_rom_sha=%s\nmanifest_module_sha=%s\nmodule_taint=O\nmodule_live=1\nmodule_upper_clear=1\nswitch_verified=1\ndirect_verified=1\nlocal_ready=1\ncpu_fcs=0\ncpu_fragments=0\ncpu_ucast=1\ncpu_mcast=1\ncpu_bcast=1\ncpu_drops=0' "$candidate_module_sha" "$candidate_module_sha" "$candidate_module_sha")
+  fi
+  if [[ $phy_trial == 1 ]]; then
+    s+=$(printf '\nmanifest_phy_patch=%s\nmanifest_fit_sha=%s\nphy_poll_marker=1' "$candidate_phy_patch" "$candidate_fit_sha")
   fi
   healthy "$s" || fatal 'good state rejected'
+  if [[ $phy_trial == 1 ]]; then
+    for change in manifest_phy_patch=wrong manifest_fit_sha=wrong phy_poll_marker=0 direct_verified=0; do
+      bad=$(sed "s|^${change%%=*}=.*|$change|" <<< "$s")
+      if healthy "$bad"; then fatal "bad PHY state accepted: $change"; fi
+    done
+  fi
   for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=wrong proto=wrong bridge_ip=192.168.76.99/24 dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")
     bad=$(sed "s|^$field=.*|$change|" <<< "$s")
@@ -318,11 +378,14 @@ if [[ $mode == --selftest ]]; then
     -e "s/^builder_commit=.*/builder_commit=$accepted_builder/" <<< "$s")
   if [[ $trunk_trial == 1 ]]; then
     baseline=$(sed -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" -e "s/^module_taint=.*/module_taint=$accepted_module_taint/" -e "s/^manifest_module_sha=.*/manifest_module_sha=$accepted_module_sha/" <<< "$baseline")
-    for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_live=0 module_upper_clear=0 module_taint= switch_verified=0 local_ready=0 cpu_fcs=missing; do
+    for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_live=0 module_upper_clear=0 module_taint= switch_verified=0 direct_verified=0 local_ready=0 cpu_fcs=missing; do
       field=${change%%=*}
       bad=$(sed "s|^$field=.*|$change|" <<< "$s")
       if healthy "$bad"; then fatal "bad trunk state accepted $change"; fi
     done
+  fi
+  if [[ $phy_trial == 1 ]]; then
+    baseline=$(sed -e 's/^manifest_phy_patch=.*/manifest_phy_patch=/' -e 's/^manifest_fit_sha=.*/manifest_fit_sha=/' -e 's/^phy_poll_marker=.*/phy_poll_marker=0/' <<< "$baseline")
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   if [[ -n $accepted_module_taint ]]; then

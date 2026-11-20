@@ -218,3 +218,16 @@ bridged across outages. Capture duration remains bounded, and the
 loop is paced even if both paths are unavailable. Historical raw
 samples with the old schema can still be analyzed without modifying
 their sealed evidence.
+
+The pinned `phy` profile is the QCA8081 0491 stock-status-poll FIFO
+experiment, built from the approved native-recovery parent. Its
+management/attestation path is the switch NIC (.250), with a separate
+authenticated direct NIC (.2) session. Both paths must pass the initial
+2.5G/1G acceptance and the native switch module remains pinned. The
+candidate additionally requires the exact PHY patch/FIT manifest and
+a runtime stock_status_poll marker; the approved rollback must have
+neither. Direct carrier loss is not a permitted initial soak state.
+A later matched 1G direct-port test requires a separate accepted-boot
+diagnostic harness, not running a cable flap during the acceptance soak.
+DHCP remains on the isolated direct port, with a five-minute lease;
+verify adequate remaining lease before that later diagnostic.
