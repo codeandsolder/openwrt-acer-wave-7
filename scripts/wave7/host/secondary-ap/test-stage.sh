@@ -5,7 +5,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 make_fixture() {
   local d=$1
-  mkdir -p "$d/etc/config" "$d/etc/dropbear" "$d/usr/lib"
+  mkdir -p "$d/etc/config" "$d/etc/dropbear" "$d/usr/lib" "$d/lib/preinit"
   cat > "$d/etc/config/network" <<'CFG'
 config interface 'lan'
  option device 'br-lan'
@@ -29,6 +29,7 @@ CFG
   echo "DISTRIB_REVISION='r0+1234-c0ffee1234'" > "$d/etc/openwrt_release"
   echo 'BUILD_ID="r0+1234-c0ffee1234"' > "$d/usr/lib/os-release"
   echo 'OpenWrt r0+1234-c0ffee1234' > "$d/etc/banner"
+  printf 'wave7_firstboot_link_ready() {\n  true\n}\n' > "$d/lib/preinit/05_wave7_firstboot_watchdog"
 }
 make_fixture "$work/dhcp"
 make_fixture "$work/static"
@@ -49,6 +50,9 @@ for d in "$work/dhcp" "$work/static"; do
   rg -q '^root:!:0:0:99999:7:::$' "$d/etc/shadow"
   rg -q '^daemon:\*:0:0:99999:7:::$' "$d/etc/shadow"
   rg -q 'dummy-test-secret' "$d/etc/config/wireless"
+  rg -q 'wave7_secondary_ap_link_ready' "$d/lib/preinit/05_wave7_firstboot_watchdog"
+  sh -n "$d/lib/preinit/05_wave7_firstboot_watchdog"
+  test -s "$d/lib/wave7/role-firstboot.sh"
   rg -q 'ssh-ed25519 placeholder' "$d/etc/dropbear/authorized_keys"
   [ "$(stat -c %a "$d/etc/config/dropbear")" = 600 ]
   [ "$(stat -c %a "$d/etc/dropbear/authorized_keys")" = 600 ]
@@ -70,4 +74,31 @@ if "$stage" "$work/no-key" dhcp >/dev/null 2>&1; then
   echo 'MISSING_SSH_KEY_ACCEPTED' >&2
   exit 1
 fi
-echo SECONDARY_AP_STAGE_TEST_PASS
+# Pure firstboot gate test; no kernel/router calls.
+. "$(dirname -- "$stage")/role-firstboot.sh"
+boot=11111111-2222-3333-4444-555555555555
+rev_static=r0+38346-0fbc2cc77b-ap-static-auth
+rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-auth
+profile_static=$'role=secondary-ap\nmode=static\nmanagement_ipv4=192.168.76.1/24'
+profile_dhcp=$'role=secondary-ap\nmode=dhcp'
+ipstatic='3: br-lan    inet 192.168.76.1/24 brd 192.168.76.255 scope global br-lan'
+ipdhcp='3: br-lan    inet 10.2.0.99/24 brd 10.2.0.255 scope global br-lan'
+wave7_secondary_ap_contract_ok "$profile_static" "$rev_static" "$boot" "$boot $rev_static" 1 "$ipstatic"
+wave7_secondary_ap_contract_ok "$profile_dhcp" "$rev_dhcp" "$boot" "$boot $rev_dhcp" 1 "$ipdhcp"
+reject() {
+  label=$1
+  shift
+  if wave7_secondary_ap_contract_ok "$@"; then
+    echo "INVALID_FIRSTBOOT_ACCEPTED $label" >&2
+    exit 1
+  fi
+}
+reject stale "$profile_static" "$rev_static" "$boot" "aaaaaaaa-2222-3333-4444-555555555555 $rev_static" 1 "$ipstatic"
+reject missing "$profile_static" "$rev_static" "$boot" "" 1 "$ipstatic"
+reject wrongrev "$profile_static" "$rev_static" "$boot" "$boot $rev_dhcp" 1 "$ipstatic"
+reject no_carrier "$profile_static" "$rev_static" "$boot" "$boot $rev_static" 0 "$ipstatic"
+reject no_addr "$profile_dhcp" "$rev_dhcp" "$boot" "$boot $rev_dhcp" 1 ""
+reject wrong_role "role=lab" "$rev_static" "$boot" "$boot $rev_static" 1 "$ipstatic"
+reject mismatched_ip "$profile_static" "$rev_static" "$boot" "$boot $rev_static" 1 "$ipdhcp"
+reject mismatched_mode "$profile_static" "$rev_dhcp" "$boot" "$boot $rev_dhcp" 1 "$ipstatic"
+echo SECONDARY_AP_STAGE_AND_BOOT_GUARD_TEST_PASS

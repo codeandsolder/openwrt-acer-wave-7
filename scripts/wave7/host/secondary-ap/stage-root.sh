@@ -40,7 +40,8 @@ for f in "$root/etc/config/network" "$root/etc/config/dhcp" \
          "$root/etc/config/dropbear" "$root/etc/shadow" \
          "$root/etc/dropbear/authorized_keys" "$root/etc/openwrt_release" \
          "$root/etc/banner" "$root/usr/lib/os-release" \
-         "$root/etc/config/wireless"; do
+         "$root/etc/config/wireless" \
+         "$root/lib/preinit/05_wave7_firstboot_watchdog"; do
   [ -f "$f" ] && [ ! -L "$f" ] || {
     echo "missing or symlinked expected file: $f" >&2; exit 2
   }
@@ -72,7 +73,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode"
+newrev="$oldrev-ap-$mode-auth"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'
@@ -139,6 +140,35 @@ mv -f "$root/etc/config/dropbear.new" "$root/etc/config/dropbear"
 mv -f "$root/etc/shadow.new" "$root/etc/shadow"
 chmod 0600 "$net" "$root/etc/config/dhcp" "$root/etc/config/dropbear" \
   "$root/etc/shadow" "$root/etc/dropbear/authorized_keys"
+# Adapt the existing firstboot watchdog, rather than installing a second,
+# competing hard deadline. A successful firstboot requires an external
+# controller to have authenticated over key-only SSH on THIS boot UUID
+# before accepting the AP role and committing bootfail=0.
+watch="$root/lib/preinit/05_wave7_firstboot_watchdog"
+test "$(rg -Fxc 'wave7_firstboot_link_ready() {' "$watch")" = 1
+mkdir -p "$root/lib/wave7"
+helper=$(cd -- "$(dirname -- "$0")" && pwd)/role-firstboot.sh
+test -s "$helper"
+cp "$helper" "$root/lib/wave7/role-firstboot.sh"
+chmod 0644 "$root/lib/wave7/role-firstboot.sh"
+awk '
+  $0 == "wave7_firstboot_link_ready() {" {
+    print
+    print "\tif [ -e /etc/wave7-role-profile ]; then"
+    print "\t\t. /lib/wave7/role-firstboot.sh || return 1"
+    print "\t\twave7_secondary_ap_link_ready"
+    print "\t\treturn $?"
+    print "\tfi"
+    found++
+    next
+  }
+  {print}
+  END {if(found!=1) exit 7}
+' "$watch" > "$watch.new"
+chmod --reference="$watch" "$watch.new"
+mv -f "$watch.new" "$watch"
+sh -n "$watch"
+rg -q 'wave7_secondary_ap_link_ready' "$watch"
 # Explicitly distinct revision so trial monitors cannot mistake this
 # role for the accepted lab image.
 for f in "$root/etc/openwrt_version" "$root/etc/openwrt_release" \
