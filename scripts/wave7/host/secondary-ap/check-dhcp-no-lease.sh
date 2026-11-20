@@ -61,7 +61,9 @@ boot_epoch=$((now-uptime))
 (( uptime >= 150 && boot_epoch >= start-3 && boot_epoch <= start+80 )) || fail "unexpected boot epoch=$boot_epoch start=$start uptime=$uptime"
 (( client_start-boot_epoch >= 120 )) || fail 'static client check preceded boot watchdog deadline'
 accepted_uptime=$(sed -n 's/^\[[[:space:]]*\([0-9]*\)[.][0-9]*\].*NAND root, radio and LAN accepted.*/\1/p' <<< "$state" | tail -1)
-[[ $accepted_uptime =~ ^[0-9]+$ ]] && (( boot_epoch+accepted_uptime < restored )) || fail 'no pre-restoration watchdog acceptance event'
+if [[ ! $accepted_uptime =~ ^[0-9]+$ ]] || (( boot_epoch+accepted_uptime >= restored )); then
+  fail 'no pre-restoration watchdog acceptance event'
+fi
 for expected in "rev=$rev" bootfail=0 keep=1 token=0 approval=1 local_ready=1 link_ready=1 bridge_ip=192.168.76.1/24; do
   grep -Fxq "$expected" <<< "$state" || fail "missing state $expected"
 done
