@@ -44,8 +44,21 @@ for i in 0 1; do
 done
 # Source binding matters on this dual-homed host; interface binding alone
 # could select another interface's source before DHCP has completed.
-ping -I "$v4" -c 20 -i 0.25 -W 1 -w 15 192.168.76.2
+# With both -c and -w, iputils may send extra probes until it receives -c
+# replies. Use a fixed send count, then check the actual summary instead.
+check_ping() {
+  local result rc=0
+  result=$(LC_ALL=C ping -c 20 -i 0.25 -W 1 "$@") || rc=$?
+  printf '%s\n' "$result"
+  [[ $rc == 0 ]] && grep -Eq '^20 packets transmitted, 20 received, (\+0 duplicates, )?0% packet loss,' <<< "$result"
+}
+failed=0
+check_ping -I "$v4" 192.168.76.2 || failed=1
 if [[ $mode == dhcp ]]; then
-  ping -6 -I "$v6" -c 20 -i 0.25 -W 1 -w 15 fd76:7::2
+  check_ping -6 -I "$v6" fd76:7::2 || failed=1
+fi
+if (( failed )); then
+  echo "WAVE7_CLIENT_LOSS mode=$mode" >&2
+  exit 1
 fi
 echo "WAVE7_CLIENT_PASS mode=$mode"
