@@ -25,15 +25,42 @@ preflight() {
   dnsmasq --test --conf-file="$config"
 }
 need_root() { [[ $(id -u) == 0 ]] || { echo 'run as root' >&2; exit 1; }; }
+prepare_upstream_unit() {
+  local service="$unit.service" state
+  state=$(systemctl show "$service" -p LoadState --value)
+  if [[ $state == not-found ]]; then
+    return 0
+  fi
+  if [[ $state != loaded ||
+        $(systemctl show "$service" -p ActiveState --value) != failed ||
+        $(systemctl show "$service" -p Transient --value) != yes ||
+        $(systemctl show "$service" -p Result --value) != timeout ||
+        $(systemctl show "$service" -p MainPID --value) != 0 ||
+        $(systemctl show "$service" -p FragmentPath --value) != "/run/systemd/transient/$service" ]]; then
+    echo "refusing existing unit $service (not a retired lab timeout)" >&2
+    return 1
+  fi
+  systemctl reset-failed "$service"
+  # Unit GC is asynchronous; do not blindly launch on a stale name.
+  for _ in {1..20}; do
+    [[ $(systemctl show "$service" -p LoadState --value) != not-found ]] || return 0
+    sleep 0.1
+  done
+  echo "expired lab unit was not collected: $service" >&2
+  return 1
+}
 case "${1:---check}" in
   --check) preflight; echo LAB_UPSTREAM_PREFLIGHT_PASS ;;
   --start)
     need_root
     preflight
-    if systemctl is-active --quiet "$unit.service"; then
-      echo 'already running; refusing duplicate upstream' >&2; exit 1
-    fi
-    systemd-run --quiet --unit="$unit" --property=RuntimeMaxSec=3600 \
+    # A RuntimeMaxSec expiry is an expected end of this isolated lab
+    # service. Older deployments retained the failed transient unit,
+    # causing a fresh systemd-run to collide with its loaded fragment.
+    # Collect future units on failure and retire only this exact legacy
+    # timeout, without hiding any other service failure.
+    prepare_upstream_unit
+    systemd-run --quiet --collect --unit="$unit" --property=RuntimeMaxSec=3600 \
       --property=KillMode=mixed "$(realpath "$0")" --serve
     ;;
   --serve)

@@ -198,3 +198,11 @@ distinct rollback reasons and preserve the triggering state.
 ### Read-only trunk recovery observation
 
 On Asus, as Jan, run the installed `probe-trunk-recovery.py capture OUT EXPECTED_REVISION --duration 60` via `uv run --no-project --offline --python /usr/bin/python3 python`. OUT must be a new directory under the Guard8 `native-recovery-dhcp-guard8/observations/` directory. This observer generates concurrent low-rate source-bound ICMP on both independent paths; checks both policy routes every interval; takes boot-consistent CPU-port MIB/carrier/driver-event snapshots over the direct path. It makes no configuration changes and can span an operator-initiated reboot. The report distinguishes complete directional corrupt-only loss, other switch loss, copper-down, direct-path loss, counter discontinuity and unobserved intervals. It deliberately never claims causal recovery on a pulse log alone. SHA256SUMS covers metadata, raw JSONL and report. `selftest` runs synthetic known-fault and missing-sample cases. This is additional evidence, not a replacement for the guarded acceptance soak.
+
+The independent lab DHCP/RA service retains its one-hour hard runtime
+bound. Start collects the new transient unit even after normal expiry,
+and retires the exact old failed timeout unit if needed; it rejects
+active units, foreign fragments, other failure causes and uncollected
+units. Run test-lab-upstream-lifecycle.sh for the mocked lifecycle
+regression. Inspect expired-service diagnostics in the system journal.
+The service is not a persistent network configuration.
