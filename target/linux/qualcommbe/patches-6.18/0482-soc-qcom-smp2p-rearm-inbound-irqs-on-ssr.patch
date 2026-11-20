@@ -10,9 +10,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/soc/qcom/smp2p.c
 +++ b/drivers/soc/qcom/smp2p.c
-@@ -178,18 +178,32 @@
- }
- 
+@@ -180,14 +180,28 @@ static void qcom_smp2p_kick(struct qcom_
  static bool qcom_smp2p_check_ssr(struct qcom_smp2p *smp2p)
  {
  	struct smp2p_smem_item *in = smp2p->in;
@@ -23,8 +21,6 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  		return false;
  
 -	restart = in->flags & BIT(SMP2P_FLAGS_RESTART_DONE_BIT);
--
--	return restart != smp2p->ssr_ack;
 +	restart = !!(in->flags & BIT(SMP2P_FLAGS_RESTART_DONE_BIT));
 +	if (restart == smp2p->ssr_ack)
 +		return false;
@@ -39,10 +35,9 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 +		if (entry->value)
 +			entry->last_value = 0;
 +	}
-+
+ 
+-	return restart != smp2p->ssr_ack;
 +	return true;
  }
  
  static void qcom_smp2p_do_ssr_ack(struct qcom_smp2p *smp2p)
- {
- 	struct smp2p_smem_item *out = smp2p->out;

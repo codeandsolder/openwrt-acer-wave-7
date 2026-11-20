@@ -9,10 +9,9 @@ reset and its return code. Diagnostic-only.
 
 Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
-diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq9574.c
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -153,6 +153,10 @@
+@@ -153,6 +153,10 @@ struct ipq_pcs_mii {
  	struct clk *rx_clk;
  	/* TX clock from NSSCC to PCS MII */
  	struct clk *tx_clk;
@@ -23,7 +22,7 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  };
  
  /* PCS private data */
-@@ -162,6 +166,7 @@
+@@ -162,6 +166,7 @@ struct ipq_pcs {
  	void __iomem *base;
  	struct regmap *regmap;
  	phy_interface_t interface;
@@ -31,13 +30,13 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  
  	/* RX clock supplied to NSSCC */
  	struct clk_hw rx_hw;
-@@ -361,7 +366,17 @@
+@@ -361,8 +366,18 @@ static int ipq_pcs_config_mode(struct ip
  	unsigned long rate = 125000000;
  	unsigned int val, mask, misc2 = 0;
  	bool xpcs_mode = false;
 +	bool diag_mode;
  	int ret;
-+
+ 
 +	diag_mode = qpcs->mppe && qpcs->diag_mode_reconfigs < 3;
 +	if (diag_mode) {
 +		qpcs->diag_mode_reconfigs++;
@@ -46,22 +45,23 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
 +			 qpcs->diag_mode_reconfigs, phy_modes(qpcs->interface),
 +			 phy_modes(interface));
 +	}
- 
++
  	/* Hold the affected port clocks off across mode reconfiguration. */
  	ipq_pcs_disable_port_clks(qpcs, interface);
-@@ -543,6 +558,11 @@
- 	/* Deassert XPCS */
+ 
+@@ -544,6 +559,11 @@ static int ipq_pcs_config_mode(struct ip
  	if (xpcs_mode)
  		reset_control_deassert(qpcs->xpcs_rstc);
-+
+ 
 +	if (diag_mode)
 +		dev_info(qpcs->dev,
 +			 "wave7-diag: pcs mode-ready[%u] interface=%s rate=%lu\n",
 +			 qpcs->diag_mode_reconfigs, phy_modes(interface), rate);
- 
++
  	return 0;
  
-@@ -887,6 +907,14 @@
+ err_clk:
+@@ -887,6 +907,14 @@ static void ipq_pcs_get_state(struct phy
  		break;
  	}
  
@@ -76,11 +76,10 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
  	dev_dbg_ratelimited(qpcs->dev,
  			    "mode=%s/%s/%s link=%u\n",
  			    phy_modes(state->interface),
-@@ -904,6 +932,14 @@
- 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+@@ -905,6 +933,14 @@ static int ipq_pcs_config(struct phylink
  	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
  	int index = qpcs_mii->index;
-+
+ 
 +	if (qpcs->mppe && index == 0 && qpcs_mii->diag_configs < 4) {
 +		qpcs_mii->diag_configs++;
 +		dev_info(qpcs->dev,
@@ -88,16 +87,17 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
 +			 qpcs_mii->diag_configs, phy_modes(qpcs->interface),
 +			 phy_modes(interface), neg_mode, permit);
 +	}
- 
++
  	switch (interface) {
  	case PHY_INTERFACE_MODE_SGMII:
-@@ -936,7 +972,18 @@
+ 	case PHY_INTERFACE_MODE_QSGMII:
+@@ -936,8 +972,19 @@ static void ipq_pcs_link_up(struct phyli
  	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
  	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
  	int index = qpcs_mii->index;
 +	bool diag_link_up;
  	int ret;
-+
+ 
 +	diag_link_up = qpcs->mppe && index == 0 &&
 +		       qpcs_mii->diag_link_ups < 4;
 +	if (diag_link_up) {
@@ -107,18 +107,19 @@ diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq95
 +			 qpcs_mii->diag_link_ups, phy_modes(interface),
 +			 speed, duplex, neg_mode);
 +	}
- 
++
  	switch (interface) {
  	case PHY_INTERFACE_MODE_SGMII:
-@@ -959,6 +1006,11 @@
- 	default:
+ 	case PHY_INTERFACE_MODE_QSGMII:
+@@ -960,6 +1007,11 @@ static void ipq_pcs_link_up(struct phyli
  		return;
  	}
-+
+ 
 +	if (diag_link_up)
 +		dev_info(qpcs->dev,
 +			 "wave7-diag: pcs link-up-result[%u] result=%d\n",
 +			 qpcs_mii->diag_link_ups, ret);
- 
++
  	if (ret)
  		dev_err(qpcs->dev, "PCS link up fail for interface %s\n",
+ 			phy_modes(interface));

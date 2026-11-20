@@ -14,8 +14,6 @@ Reviewed-by: Linus Walleij <linusw@kernel.org>
  Documentation/devicetree/bindings/net/dsa/realtek.yaml | 2 +-
  1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/Documentation/devicetree/bindings/net/dsa/realtek.yaml b/Documentation/devicetree/bindings/net/dsa/realtek.yaml
-index f348e66..aeb33a9 100644
 --- a/Documentation/devicetree/bindings/net/dsa/realtek.yaml
 +++ b/Documentation/devicetree/bindings/net/dsa/realtek.yaml
 @@ -43,7 +43,7 @@ properties:

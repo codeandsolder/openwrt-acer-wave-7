@@ -21,11 +21,10 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -579,6 +579,20 @@
- 				phy_interface_t interface)
+@@ -580,6 +580,20 @@ static int ipq_pcs_config_sgmii(struct i
  {
  	int ret;
-+
+ 
 +	/*
 +	 * On MPPE with an external out-of-band SGMII PHY, media link may
 +	 * still be down when phylink first configures the PCS. Calibrating
@@ -39,10 +38,11 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 +	    interface == PHY_INTERFACE_MODE_SGMII &&
 +	    qpcs->interface != interface)
 +		return 0;
- 
++
  	/* Configure the PCS mode if required */
  	if (qpcs->interface != interface) {
-@@ -985,6 +999,29 @@
+ 		ret = ipq_pcs_config_mode(qpcs, interface);
+@@ -985,6 +999,29 @@ static void ipq_pcs_link_up(struct phyli
  			 speed, duplex, neg_mode);
  	}
  

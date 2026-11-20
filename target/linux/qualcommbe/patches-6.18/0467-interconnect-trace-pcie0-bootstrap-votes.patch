@@ -12,9 +12,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/interconnect/core.c
 +++ b/drivers/interconnect/core.c
-@@ -1200,10 +1200,12 @@
- 	struct icc_provider *p;
- 	struct icc_node *n;
+@@ -1202,6 +1202,8 @@ void icc_sync_state(struct device *dev)
  	static int count;
  
  	count++;
@@ -23,11 +21,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  
  	if (count < providers_count)
  		return;
- 
- 	mutex_lock(&icc_lock);
-@@ -1220,10 +1222,11 @@
- 			}
- 		}
+@@ -1222,6 +1224,7 @@ void icc_sync_state(struct device *dev)
  	}
  	mutex_unlock(&icc_bw_lock);
  	mutex_unlock(&icc_lock);
@@ -35,13 +29,9 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  }
  EXPORT_SYMBOL_GPL(icc_sync_state);
  
- static int __init icc_init(void)
- {
 --- a/drivers/interconnect/icc-clk.c
 +++ b/drivers/interconnect/icc-clk.c
-@@ -5,10 +5,11 @@
- 
- #include <linux/clk.h>
+@@ -7,6 +7,7 @@
  #include <linux/device.h>
  #include <linux/interconnect-clk.h>
  #include <linux/interconnect-provider.h>
@@ -49,23 +39,17 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  
  struct icc_clk_node {
  	struct clk *clk;
- 	bool enabled;
- };
-@@ -27,10 +28,17 @@
- 	struct icc_clk_node *qn = src->data;
- 	int ret;
- 
+@@ -30,6 +31,13 @@ static int icc_clk_set(struct icc_node *
  	if (!qn || !qn->clk)
  		return 0;
-+
+ 
 +	if (!strcmp(src->name, "gcc_snoc_pcie3_1lane_m_clk_master") ||
 +	    !strcmp(src->name, "gcc_snoc_pcie3_1lane_s_clk_master"))
 +		dev_info(src->provider->dev,
 +			 "icc-trace: %s set peak=%u enabled=%u rate=%lu\n",
 +			 src->name, src->peak_bw, qn->enabled,
 +			 clk_get_rate(qn->clk));
- 
++
  	if (!src->peak_bw) {
  		if (qn->enabled)
  			clk_disable_unprepare(qn->clk);
- 		qn->enabled = false;

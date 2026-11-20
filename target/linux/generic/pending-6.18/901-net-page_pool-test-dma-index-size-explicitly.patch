@@ -12,7 +12,7 @@ time behavior for every supported bit count and keeps WERROR enabled.
 ---
 --- a/net/core/page_pool.c
 +++ b/net/core/page_pool.c
-@@ -479,7 +479,7 @@
+@@ -479,7 +479,7 @@ static int page_pool_register_dma_index(
  	int err = 0;
  	u32 id;
  
@@ -21,7 +21,7 @@ time behavior for every supported bit count and keeps WERROR enabled.
  		goto out;
  
  	/*
-@@ -521,7 +521,7 @@
+@@ -521,7 +521,7 @@ static void __page_pool_unmap_netmem_dma
  	 */
  	dma = page_pool_get_dma_addr_netmem(netmem);
  
@@ -30,7 +30,7 @@ time behavior for every supported bit count and keeps WERROR enabled.
  		id = netmem_get_dma_index(netmem);
  		if (!id)
  			return;
-@@ -752,7 +752,7 @@
+@@ -752,7 +752,7 @@ static __always_inline void __page_pool_
  
  	__page_pool_unmap_netmem_dma(pool, netmem);
  	page_pool_set_dma_addr_netmem(netmem, 0);

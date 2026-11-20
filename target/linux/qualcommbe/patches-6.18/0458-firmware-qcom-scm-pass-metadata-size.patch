@@ -10,7 +10,7 @@ Signed-off-by: Manikanta Mylavarapu <quic_mmanikan@quicinc.com>
 ---
 --- a/drivers/firmware/qcom/qcom_scm.c
 +++ b/drivers/firmware/qcom/qcom_scm.c
-@@ -627,9 +627,6 @@
+@@ -627,9 +627,6 @@ int qcom_scm_pas_init_image(u32 pas_id,
  	int ret;
  	struct qcom_scm_desc desc = {
  		.svc = QCOM_SCM_SVC_PIL,
@@ -20,7 +20,7 @@ Signed-off-by: Manikanta Mylavarapu <quic_mmanikan@quicinc.com>
  		.owner = ARM_SMCCC_OWNER_SIP,
  	};
  	struct qcom_scm_res res;
-@@ -661,7 +658,19 @@
+@@ -661,7 +658,19 @@ int qcom_scm_pas_init_image(u32 pas_id,
  	if (ret)
  		goto disable_clk;
  
@@ -43,7 +43,7 @@ Signed-off-by: Manikanta Mylavarapu <quic_mmanikan@quicinc.com>
  	qcom_scm_bw_disable();
 --- a/drivers/firmware/qcom/qcom_scm.h
 +++ b/drivers/firmware/qcom/qcom_scm.h
-@@ -100,6 +100,7 @@
+@@ -100,6 +100,7 @@ int qcom_scm_shm_bridge_enable(struct de
  
  #define QCOM_SCM_SVC_PIL		0x02
  #define QCOM_SCM_PIL_PAS_INIT_IMAGE	0x01

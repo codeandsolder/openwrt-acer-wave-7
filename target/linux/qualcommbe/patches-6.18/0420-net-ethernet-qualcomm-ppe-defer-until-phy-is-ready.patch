@@ -27,7 +27,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  #include <linux/pcs/pcs-qcom-ipq9574.h>
  #include <linux/phylink.h>
  #include <linux/regmap.h>
-@@ -1103,6 +1104,28 @@
+@@ -1091,6 +1092,28 @@ static const phy_interface_t mac_interfa
  	PHY_INTERFACE_MODE_10G_QXGMII,
  };
  
@@ -56,7 +56,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  /**
   * ppe_port_phylink_setup() - Set phylink instance for the given PPE port
   * @ppe_port: PPE port
-@@ -1119,6 +1142,10 @@
+@@ -1107,6 +1130,10 @@ int ppe_port_phylink_setup(struct ppe_po
  	struct device_node *pcs_node;
  	int i, ret;
  
