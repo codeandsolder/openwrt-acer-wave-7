@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -15,6 +15,10 @@ accepted_module_sha=''
 accepted_module_taint=''
 trunk_trial=0
 phy_trial=0
+relink_trial=0
+accepted_phy_patch=''
+accepted_fit_sha=''
+accepted_phy_marker=0
 candidate_fit_sha=''
 candidate_phy_patch=''
 candidate_artifact=''
@@ -87,7 +91,36 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  *) echo 'unknown candidate profile'   >&2; exit 2 ;;
+  relink)
+    trunk_trial=1
+    phy_trial=1
+    relink_trial=1
+    profile=dhcp
+    base="$guard8/conditional-relink-dhcp-guard8"
+    candidate_artifact=wave7-conditional-relink-dhcp-guard8-sysupgrade.bin
+    candidate_rev=r0+38346-fe5568a4fb-ap-dhcp-guard8
+    candidate_builder=7d325fb175ddf66a9066b995d9054d5ad797c3f0
+    expected_candidate_sha=175e06c0611b7ec971bc67f1861e2b04991734fdf88e0e94e12a1c73e4fb4213
+    candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+    candidate_fit_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
+    candidate_phy_patch=0418bb7af25d13406bb896696eb78541ccd2aa00
+    candidate_relink_patch=fe5568a4fbd93516f7cbc3d4f2e6ca622e62accc
+    candidate_pcs_sha=168d278179537c5a463119c4c89fa6642c800ce00a455b4714ebb54d94d11dc1
+    candidate_ppe_sha=eb9083d152f717c3069532ef121107ef5ca3209164e42ef205c964aa64857b49
+    accepted="$guard8/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
+    accepted_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
+    accepted_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
+    accepted_builder=749c36c682119f223341d30e7a6d9992160966c0
+    accepted_mode=dhcp
+    accepted_module_sha=$candidate_module_sha
+    accepted_module_taint=O
+    accepted_phy_patch=$candidate_phy_patch
+    accepted_fit_sha=$candidate_fit_sha
+    accepted_phy_marker=1
+    accepted_pcs_sha=74bd3fddd9e35f543100073a4f7a85ebfe7aca503e5c48191dd3c2ee8190b473
+    accepted_ppe_sha=1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0
+    ;;
+  *) echo 'unknown candidate profile'    >&2; exit 2 ;;
 esac
 candidate="$base/${candidate_artifact:-wave7-secondary-ap-$profile-guard8-sysupgrade.bin}"
 candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name || $2 == "./"name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
@@ -183,6 +216,16 @@ read_state() {
     echo "manifest_phy_patch=$(sed -n "s/^trial_phy_kernel_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_fit_sha=$(sed -n "s/^trial_fit_sha256=//p" /rom/etc/wave7-role-profile)"
     echo "phy_poll_marker=$(dmesg | grep -q "fifo_action=stock_status_poll" && echo 1 || echo 0)"
+    for item in pcs:pcs-qcom-ipq9574:pcs_qcom_ipq9574 ppe:qcom-ppe:qcom_ppe; do
+      name=${item%%:*}; rest=${item#*:}; file=${rest%%:*}; mod=${rest#*:}
+      p=lib/modules/6.18.60/$file.ko
+      echo "${name}_sha=$(sha256sum /$p 2>/dev/null | cut -d" " -f1)"
+      echo "${name}_rom_sha=$(sha256sum /rom/$p 2>/dev/null | cut -d" " -f1)"
+      echo "${name}_live=$(cat /sys/module/$mod/initstate 2>/dev/null || echo absent)"
+      echo "${name}_taint=$(cat /sys/module/$mod/taint 2>/dev/null || echo absent)"
+      echo "manifest_${name}_sha=$(sed -n "s/^trial_\${name}_sha256=//p" /rom/etc/wave7-role-profile)"
+    done
+    echo "manifest_relink_patch=$(sed -n "s/^trial_relink_patch_commit=//p" /rom/etc/wave7-role-profile)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
       $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
       $1=="s00_p06_ifInUcastPkts:"{print "cpu_ucast=" $2}
@@ -209,6 +252,21 @@ module_matches() {
   for exp in "module_sha=$hash" "module_rom_sha=$hash" "module_taint=$taint" module_live=1 module_upper_clear=1; do
     grep -Fxq "$exp" <<< "$s" || return 1
   done
+}
+relink_matches() {
+  local s=$1 pcs=$2 ppe=$3 patch=$4 manifest_pcs='' manifest_ppe='' exp
+  if [[ -n $patch ]]; then manifest_pcs=$pcs; manifest_ppe=$ppe; fi
+  for exp in "pcs_sha=$pcs" "pcs_rom_sha=$pcs" pcs_live=live pcs_taint= \
+    "ppe_sha=$ppe" "ppe_rom_sha=$ppe" ppe_live=live ppe_taint= \
+    "manifest_relink_patch=$patch" "manifest_pcs_sha=$manifest_pcs" "manifest_ppe_sha=$manifest_ppe" module_upper_clear=1; do
+    grep -Fxq "$exp" <<< "$s" || return 1
+  done
+}
+phy_matches() {
+  local s=$1 patch=$2 fit=$3 marker=$4
+  grep -Fxq "manifest_phy_patch=$patch" <<< "$s" &&
+    grep -Fxq "manifest_fit_sha=$fit" <<< "$s" &&
+    grep -Fxq "phy_poll_marker=$marker" <<< "$s"
 }
 trunk_counters_valid() {
   local s=$1 field
@@ -265,9 +323,10 @@ baseline_healthy() {
     fi
   fi
   if [[ $phy_trial == 1 ]]; then
-    grep -Fxq manifest_phy_patch= <<< "$1" &&
-      grep -Fxq manifest_fit_sha= <<< "$1" &&
-      grep -Fxq phy_poll_marker=0 <<< "$1"
+    phy_matches "$1" "$accepted_phy_patch" "$accepted_fit_sha" "$accepted_phy_marker" || return 1
+  fi
+  if [[ $relink_trial == 1 ]]; then
+    relink_matches "$1" "$accepted_pcs_sha" "$accepted_ppe_sha" '' || return 1
   fi
 }
 rollback_eligible() {
@@ -284,9 +343,10 @@ healthy() {
       trunk_path_healthy "$1" || return 1
   fi
   if [[ $phy_trial == 1 ]]; then
-    grep -Fxq "manifest_phy_patch=$candidate_phy_patch" <<< "$1" &&
-      grep -Fxq "manifest_fit_sha=$candidate_fit_sha" <<< "$1" &&
-      grep -Fxq phy_poll_marker=1 <<< "$1"
+    phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 || return 1
+  fi
+  if [[ $relink_trial == 1 ]]; then
+    relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" || return 1
   fi
 }
 role_healthy() {
@@ -351,6 +411,9 @@ if [[ $mode == --selftest ]]; then
   if [[ $phy_trial == 1 ]]; then
     s+=$(printf '\nmanifest_phy_patch=%s\nmanifest_fit_sha=%s\nphy_poll_marker=1' "$candidate_phy_patch" "$candidate_fit_sha")
   fi
+  if [[ $relink_trial == 1 ]]; then
+    s+=$(printf '\npcs_sha=%s\npcs_rom_sha=%s\npcs_live=live\npcs_taint=\nppe_sha=%s\nppe_rom_sha=%s\nppe_live=live\nppe_taint=\nmanifest_pcs_sha=%s\nmanifest_ppe_sha=%s\nmanifest_relink_patch=%s' "$candidate_pcs_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_ppe_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch")
+  fi
   healthy "$s" || fatal 'good state rejected'
   if [[ $phy_trial == 1 ]]; then
     for change in manifest_phy_patch=wrong manifest_fit_sha=wrong phy_poll_marker=0 direct_verified=0; do
@@ -385,7 +448,22 @@ if [[ $mode == --selftest ]]; then
     done
   fi
   if [[ $phy_trial == 1 ]]; then
-    baseline=$(sed -e 's/^manifest_phy_patch=.*/manifest_phy_patch=/' -e 's/^manifest_fit_sha=.*/manifest_fit_sha=/' -e 's/^phy_poll_marker=.*/phy_poll_marker=0/' <<< "$baseline")
+    baseline=$(sed -e "s/^manifest_phy_patch=.*/manifest_phy_patch=$accepted_phy_patch/" -e "s/^manifest_fit_sha=.*/manifest_fit_sha=$accepted_fit_sha/" -e "s/^phy_poll_marker=.*/phy_poll_marker=$accepted_phy_marker/" <<< "$baseline")
+  fi
+  if [[ $relink_trial == 1 ]]; then
+    baseline=$(sed -e "s/^pcs_sha=.*/pcs_sha=$accepted_pcs_sha/" -e "s/^pcs_rom_sha=.*/pcs_rom_sha=$accepted_pcs_sha/" -e "s/^ppe_sha=.*/ppe_sha=$accepted_ppe_sha/" -e "s/^ppe_rom_sha=.*/ppe_rom_sha=$accepted_ppe_sha/" -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' -e 's/^manifest_relink_patch=.*/manifest_relink_patch=/' <<< "$baseline")
+    for field in pcs_sha pcs_rom_sha pcs_live pcs_taint ppe_sha ppe_rom_sha ppe_live ppe_taint manifest_pcs_sha manifest_ppe_sha manifest_relink_patch manifest_phy_patch manifest_fit_sha phy_poll_marker; do
+      for replacement in wrong MISSING; do
+        if [[ $replacement == MISSING ]]; then
+          bad=$(sed "/^$field=/d" <<< "$s")
+          bad_baseline=$(sed "/^$field=/d" <<< "$baseline")
+        else
+          bad=$(sed "s/^$field=.*/$field=$replacement/" <<< "$s")
+          bad_baseline=$(sed "s/^$field=.*/$field=$replacement/" <<< "$baseline")
+        fi
+        if healthy "$bad" || baseline_healthy "$bad_baseline"; then fatal "bad relink identity accepted: $field $replacement"; fi
+      done
+    done
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   if [[ -n $accepted_module_taint ]]; then
@@ -659,6 +737,16 @@ if [[ $mode == --watch ]]; then
           if [[ $trunk_trial == 1 ]] &&
              { [[ -n $rollback_cause ]] || ! module_matches "$s" "$candidate_module_sha" O || ! grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$s"; }; then
             log TRUNK_ATTESTATION_BLOCKED_MODULE_OR_REBOOT
+            sleep 3
+            continue
+          fi
+          if [[ $phy_trial == 1 ]] && ! phy_matches "$s" "$candidate_phy_patch" "$candidate_fit_sha" 1; then
+            log PHY_ATTESTATION_BLOCKED_IDENTITY
+            sleep 3
+            continue
+          fi
+          if [[ $relink_trial == 1 ]] && ! relink_matches "$s" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch"; then
+            log RELINK_ATTESTATION_BLOCKED_IDENTITY
             sleep 3
             continue
           fi
