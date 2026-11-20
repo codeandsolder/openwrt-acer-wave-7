@@ -5,13 +5,18 @@ umask 077
 base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 [[ $(id -un) == jan && $# == 1 ]] || exit 2
 run=$(realpath -e "$1")
-[[ $run == "$base"/trunk-health-dhcp-guard8/runs/* ||
-   $run == "$base"/native-recovery-dhcp-guard8/runs/* ]] || exit 2
+case "$run" in
+  "$base"/trunk-health-dhcp-guard8/runs/*|"$base"/native-recovery-dhcp-guard8/runs/*)
+    iface=enp4s0f4u2u4; addr=192.168.76.2 ;;
+  "$base"/stock-poll-fifo-dhcp-guard8/runs/*|"$base"/conditional-relink-dhcp-guard8/runs/*)
+    iface=enp4s0f4u2u2u4; addr=192.168.76.250 ;;
+  *) exit 2 ;;
+esac
 [[ $(cat "$run/status") == SOAK_PASS ]] || { echo 'not a completed soak'; exit 2; }
 [[ ! -e $run/evidence.sha256 ]] || { echo 'already archived'; exit 2; }
 boot=$(sed -n 's/^boot=//p' "$run/latest-state.txt")
 [[ $boot =~ ^[a-f0-9-]{36}$ ]]
-opts=(-i /home/jan/.ssh/wave7-root-rsa -o BindInterface=enp4s0f4u2u4 -o BindAddress=192.168.76.2 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$base/known_hosts" -o ConnectTimeout=4)
+opts=(-i /home/jan/.ssh/wave7-root-rsa -o "BindInterface=$iface" -o "BindAddress=$addr" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$base/known_hosts" -o ConnectTimeout=4)
 remote() { ssh -nT "${opts[@]}" root@192.168.76.1 "$@"; }
 script_dir=$(dirname "$(realpath "$0")")
 for f in final-dmesg.txt final-hardware.txt report.json; do
@@ -28,7 +33,11 @@ for f in final-dmesg.txt final-hardware.txt report.json; do
 done
 (
   cd "$run"
-  sha256sum status observer.log trunk-counters.tsv latest-state.txt final-dmesg.txt final-hardware.txt report.json > evidence.sha256
+  files=(status observer.log trunk-counters.tsv latest-state.txt final-dmesg.txt final-hardware.txt report.json)
+  for f in preflight.txt sysupgrade.log attestation-success.log; do
+    if [[ -f $f ]]; then files+=("$f"); fi
+  done
+  sha256sum "${files[@]}" > evidence.sha256
   sha256sum -c evidence.sha256
 )
 cat "$run/report.json"
