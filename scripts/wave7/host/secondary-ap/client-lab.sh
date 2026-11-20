@@ -44,8 +44,8 @@ for i in 0 1; do
 done
 # Source binding matters on this dual-homed host; interface binding alone
 # could select another interface's source before DHCP has completed.
-ping -I "$v4" -c 20 -i 0.25 -W 1 192.168.76.2
+ping -I "$v4" -c 20 -i 0.25 -W 1 -w 15 192.168.76.2
 if [[ $mode == dhcp ]]; then
-  ping -6 -I "$v6" -c 20 -i 0.25 -W 1 fd76:7::2
+  ping -6 -I "$v6" -c 20 -i 0.25 -W 1 -w 15 fd76:7::2
 fi
 echo "WAVE7_CLIENT_PASS mode=$mode"
