@@ -7,14 +7,18 @@ base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 runtime=/home/jan/firmware/wave7/trials/20261115-deferred-regression/iperf-runtime
 [[ $(id -un) == jan && $# == 1 ]] || { echo 'usage: bench-trunk.sh RUN_DIR'; exit 2; }
 run=$(realpath -e "$1")
-[[ $run == "$base"/trunk-health-dhcp-guard8/runs/* && -f $run/latest-state.txt ]] || exit 2
+case "$run" in
+  "$base"/trunk-health-dhcp-guard8/runs/*) revision=r0+38346-895ed9016d-ap-dhcp-guard8 ;;
+  "$base"/native-recovery-dhcp-guard8/runs/*) revision=r0+38346-0e69b8931c-ap-dhcp-guard8 ;;
+  *) exit 2 ;;
+esac
+[[ -f $run/latest-state.txt ]] || exit 2
 out=$run/throughput
 [[ ! -e $out ]] || { echo 'refusing to overwrite prior benchmark'; exit 2; }
 state=$run/latest-state.txt
 boot=$(sed -n 's/^boot=//p' "$state")
 [[ $boot =~ ^[a-f0-9-]{36}$ ]]
 remote_dir=/tmp/wave7-trunk-bench-$boot
-revision=r0+38346-895ed9016d-ap-dhcp-guard8
 direct=enp4s0f4u2u4
 switch=enp4s0f4u2u2u4
 opts=(-i /home/jan/.ssh/wave7-root-rsa -o BindInterface="$direct" -o BindAddress=192.168.76.2 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$base/known_hosts" -o ConnectTimeout=4)

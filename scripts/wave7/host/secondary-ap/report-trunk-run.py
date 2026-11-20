@@ -63,6 +63,14 @@ def report(run):
                "SerDes CPU port" in line and "corrupt-only ingress" in line]
     link_loss = [line for line in dmesg.splitlines() if
                  "SerDes link lost outside a reconfiguration" in line]
+    pulse_attempts = [line for line in dmesg.splitlines() if
+                      "trying stock-derived recovery pulse" in line]
+    pulse_completed = [line for line in dmesg.splitlines() if
+                       "SerDes recovery pulse completed" in line]
+    pulse_failed = [line for line in dmesg.splitlines() if
+                    "SerDes recovery pulse failed" in line or
+                    "SerDes recovery controls still pending" in line]
+    recovery_seen = bool(trigger or link_loss or pulse_attempts or pulse_completed or pulse_failed)
     state_good = all(state.get(k) == v for k, v in {
         "keep": "1", "bootfail": "0", "q6": "3", "ap": "2", "noc": "0",
         "module_live": "1", "switch_verified": "1", "local_ready": "1",
@@ -86,9 +94,13 @@ def report(run):
         "resets_or_wraps_at": resets, "error_deltas": errors,
         "sampled_corrupt_only_at": corrupt_only, "driver_corruption_triggers": trigger,
         "driver_link_loss_events": link_loss,
+        "native_pulse_attempts": pulse_attempts,
+        "native_pulse_completed": pulse_completed,
+        "native_pulse_failed_or_pending": pulse_failed,
         "classification": (
-            "CLEAN_BOOT_NO_CORRUPTION_OBSERVED" if clean and not trigger else
+            "CLEAN_BOOT_NO_CORRUPTION_OBSERVED" if clean and not recovery_seen else
             "CORRUPTION_TRIGGER_OBSERVED_REVIEW_RECOVERY" if trigger else
+            "LINK_RECOVERY_OBSERVED_REVIEW_RECOVERY" if recovery_seen else
             "REVIEW_REQUIRED"),
     }
 

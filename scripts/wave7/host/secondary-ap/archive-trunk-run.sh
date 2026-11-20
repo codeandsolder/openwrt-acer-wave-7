@@ -5,7 +5,8 @@ umask 077
 base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 [[ $(id -un) == jan && $# == 1 ]] || exit 2
 run=$(realpath -e "$1")
-[[ $run == "$base"/trunk-health-dhcp-guard8/runs/* ]] || exit 2
+[[ $run == "$base"/trunk-health-dhcp-guard8/runs/* ||
+   $run == "$base"/native-recovery-dhcp-guard8/runs/* ]] || exit 2
 [[ $(cat "$run/status") == SOAK_PASS ]] || { echo 'not a completed soak'; exit 2; }
 [[ ! -e $run/evidence.sha256 ]] || { echo 'already archived'; exit 2; }
 boot=$(sed -n 's/^boot=//p' "$run/latest-state.txt")

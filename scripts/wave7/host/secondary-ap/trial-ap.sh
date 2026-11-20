@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -12,6 +12,9 @@ accepted_mode=static
 accepted_builder=''
 candidate_module_sha=''
 accepted_module_sha=''
+accepted_module_taint=''
+trunk_trial=0
+candidate_artifact=''
 case "$profile" in
   static)
     base="$guard8/guard8-static-lab"
@@ -29,6 +32,8 @@ case "$profile" in
     accepted_builder=$candidate_builder
     ;;
   trunk)
+    trunk_trial=1
+    candidate_artifact=wave7-trunk-health-dhcp-guard8-sysupgrade.bin
     profile=dhcp
     base="$guard8/trunk-health-dhcp-guard8"
     candidate_rev=r0+38346-895ed9016d-ap-dhcp-guard8
@@ -42,10 +47,26 @@ case "$profile" in
     accepted_builder=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b
     accepted_module_sha=ef2fd6186279e997be4368e358f6bda9c2f4222150c9704ad6c24c69a1f99ed7
     ;;
-  *) echo 'unknown candidate profile' >&2; exit 2 ;;
+  native)
+    trunk_trial=1
+    candidate_artifact=wave7-native-recovery-dhcp-guard8-sysupgrade.bin
+    profile=dhcp
+    base="$guard8/native-recovery-dhcp-guard8"
+    candidate_rev=r0+38346-0e69b8931c-ap-dhcp-guard8
+    candidate_builder=3d057f1f70b76a1bc3d032d3f16357b6a7f4dc0f
+    expected_candidate_sha=1da743efe01ab63043b314a6d44de52e99d65456259f0dae0c1d53a013918f2c
+    candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+    accepted="$guard8/trunk-health-dhcp-guard8/wave7-trunk-health-dhcp-guard8-sysupgrade.bin"
+    accepted_sha=31e62fa9e107acbc8e70adaf9dd8fa55c24d4e5ed083948f15579761af987305
+    accepted_rev=r0+38346-895ed9016d-ap-dhcp-guard8
+    accepted_mode=dhcp
+    accepted_builder=72a0c4fc9e797ceeb2776b09233aa824120935fb
+    accepted_module_sha=b854937955dc136b626b95c06f1e96ca457725bcb30c9747a5d3a4b581362b85
+    accepted_module_taint=O
+    ;;
+  *) echo 'unknown candidate profile'  >&2; exit 2 ;;
 esac
-candidate="$base/wave7-secondary-ap-$profile-guard8-sysupgrade.bin"
-[[ $trial_kind != trunk ]] || candidate="$base/wave7-trunk-health-dhcp-guard8-sysupgrade.bin"
+candidate="$base/${candidate_artifact:-wave7-secondary-ap-$profile-guard8-sysupgrade.bin}"
 candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name || $2 == "./"name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
 leasefile="$guard8/upstream/dnsmasq.leases"
 upstream_unit=wave7-lab-upstream-guard8
@@ -57,7 +78,7 @@ management_ip=192.168.76.250
 management_iface=enp4s0f4u2u2u4
 switch_iface=$management_iface
 switch_ip=$management_ip
-if [[ $trial_kind == trunk ]]; then
+if [[ $trunk_trial == 1 ]]; then
   # RTL8367D is the device under test, not a reliable recovery path.
   management_ip=192.168.76.2
   management_iface=enp4s0f4u2u4
@@ -117,7 +138,7 @@ read_state() {
   local s extra peer boot
   s=$(read_state_core) || return 1
   printf '%s\n' "$s"
-  [[ $trial_kind == trunk && $(value "$s" kernel) == 6.18.60 ]] || return 0
+  [[ $trunk_trial == 1 && $(value "$s" kernel) == 6.18.60 ]] || return 0
   boot=$(value "$s" boot)
   extra=$(remote '
     echo "sample_boot=$(cat /proc/sys/kernel/random/boot_id)"
@@ -170,7 +191,7 @@ trunk_counter_row() {
   printf '\n'
 }
 trunk_error_key() {
-  printf '%s:%s\n' "$(value "$1" cpu_fcs)" "$(value "$1" cpu_fragments)"
+  printf '%s:%s:%s\n' "$(value "$1" cpu_fcs)" "$(value "$1" cpu_fragments)" "$(value "$1" cpu_drops)"
 }
 trunk_path_healthy() {
   grep -Fxq switch_verified=1 <<< "$1" &&
@@ -196,8 +217,11 @@ baseline_healthy() {
   if [[ -n $accepted_builder ]]; then
     grep -Fxq "builder_commit=$accepted_builder" <<< "$1" || return 1
   fi
-  if [[ $trial_kind == trunk ]]; then
-    module_matches "$1" "$accepted_module_sha" "" && trunk_path_healthy "$1"
+  if [[ $trunk_trial == 1 ]]; then
+    module_matches "$1" "$accepted_module_sha" "$accepted_module_taint" && trunk_path_healthy "$1" || return 1
+    if [[ -n $accepted_module_taint ]]; then
+      grep -Fxq "manifest_module_sha=$accepted_module_sha" <<< "$1" || return 1
+    fi
   fi
 }
 rollback_eligible() {
@@ -208,7 +232,7 @@ rollback_eligible() {
 healthy() {
   role_healthy "$1" "$candidate_rev" "$profile" &&
     grep -Fxq "builder_commit=$candidate_builder" <<< "$1" || return 1
-  if [[ $trial_kind == trunk ]]; then
+  if [[ $trunk_trial == 1 ]]; then
     module_matches "$1" "$candidate_module_sha" O &&
       grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$1" &&
       trunk_path_healthy "$1"
@@ -270,7 +294,7 @@ if [[ $mode == --selftest ]]; then
   s=$(sed -e "s/^rev=.*/rev=$candidate_rev/" -e "s/^mode=.*/mode=$profile/" -e "s/^proto=.*/proto=$profile/" \
     -e "s/^builder_commit=.*/builder_commit=$candidate_builder/" -e "s/^management_peer=.*/management_peer=$management_ip/" <<< "$s")
   s+=$'\nbridge_ip=192.168.76.1/24'
-  if [[ $trial_kind == trunk ]]; then
+  if [[ $trunk_trial == 1 ]]; then
     s+=$(printf '\nmodule_sha=%s\nmodule_rom_sha=%s\nmanifest_module_sha=%s\nmodule_taint=O\nmodule_live=1\nmodule_upper_clear=1\nswitch_verified=1\nlocal_ready=1\ncpu_fcs=0\ncpu_fragments=0\ncpu_ucast=1\ncpu_mcast=1\ncpu_bcast=1\ncpu_drops=0' "$candidate_module_sha" "$candidate_module_sha" "$candidate_module_sha")
   fi
   healthy "$s" || fatal 'good state rejected'
@@ -292,8 +316,8 @@ if [[ $mode == --selftest ]]; then
   done
   baseline=$(sed -e "s/^rev=.*/rev=$accepted_rev/" -e "s/^mode=.*/mode=$accepted_mode/" -e "s/^proto=.*/proto=$accepted_mode/" \
     -e "s/^builder_commit=.*/builder_commit=$accepted_builder/" <<< "$s")
-  if [[ $trial_kind == trunk ]]; then
-    baseline=$(sed -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" -e 's/^module_taint=.*/module_taint=/' <<< "$baseline")
+  if [[ $trunk_trial == 1 ]]; then
+    baseline=$(sed -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" -e "s/^module_taint=.*/module_taint=$accepted_module_taint/" -e "s/^manifest_module_sha=.*/manifest_module_sha=$accepted_module_sha/" <<< "$baseline")
     for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_live=0 module_upper_clear=0 module_taint= switch_verified=0 local_ready=0 cpu_fcs=missing; do
       field=${change%%=*}
       bad=$(sed "s|^$field=.*|$change|" <<< "$s")
@@ -301,6 +325,13 @@ if [[ $mode == --selftest ]]; then
     done
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
+  if [[ -n $accepted_module_taint ]]; then
+    for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_taint=; do
+      field=${change%%=*}
+      bad=$(sed "s|^$field=.*|$change|" <<< "$baseline")
+      if baseline_healthy "$bad"; then fatal "bad external-module rollback accepted $change"; fi
+    done
+  fi
   for change in bootfail=1 keep=0 q6=2 ap=1 noc=1 lan1=0 ping=0; do
     field=$(cut -d= -f1 <<< "$change")
     bad=$(sed "s|^$field=.*|$change|" <<< "$baseline")
@@ -323,11 +354,11 @@ if [[ $mode == --selftest ]]; then
     bad=$(sed "s|^$field=.*|$change|" <<< "$good")
     if autonomous_approval_ok "$bad"; then fatal "autonomous false positive: $change"; fi
   done
-  if [[ $trial_kind == trunk ]]; then
+  if [[ $trunk_trial == 1 ]]; then
     sample="$s"$'\nuptime=42'
     [[ $(trunk_counter_row "$sample" 123 boot) == $'123\tboot\t42\t0\t0\t1\t1\t1\t0\t1\t1' ]] ||
       fatal 'counter row mismatch'
-    [[ $(trunk_error_key "$sample") == 0:0 ]] || fatal 'counter key mismatch'
+    [[ $(trunk_error_key "$sample") == 0:0:0 ]] || fatal 'counter key mismatch'
     bad=$(sed 's/^cpu_fcs=.*/cpu_fcs=missing/' <<< "$sample")
     if trunk_counter_row "$bad" 123 boot >/dev/null; then fatal 'malformed counter accepted'; fi
   fi
@@ -357,7 +388,7 @@ if [[ $mode == --observe-reboot ]]; then
   new_boot=
   healthy_since=0
   last_errors=''
-  if [[ $trial_kind == trunk ]]; then
+  if [[ $trunk_trial == 1 ]]; then
     trunk_counter_header > "$out/trunk-counters.tsv"
   fi
   deadline=$(( $(date +%s) + 900 ))
@@ -381,7 +412,7 @@ if [[ $mode == --observe-reboot ]]; then
         [[ $(value "$s" token) == 0 ]] || finish EXTERNAL_TOKEN_DETECTED 5
         [[ $(value "$s" noc) == 0 ]] || finish NOC_FATAL 5
         now=$(date +%s)
-        if [[ $trial_kind == trunk ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
+        if [[ $trunk_trial == 1 ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
           errors=$(trunk_error_key "$s")
           if [[ -n $last_errors && $errors != "$last_errors" ]]; then
             log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
@@ -472,7 +503,7 @@ if [[ $mode == --watch ]]; then
   restore_attested=0
   last_restore_attest=0
   last_errors=''
-  if [[ $trial_kind == trunk ]]; then
+  if [[ $trunk_trial == 1 ]]; then
     trunk_counter_header > "$out/trunk-counters.tsv"
   fi
   restore() {
@@ -529,7 +560,7 @@ if [[ $mode == --watch ]]; then
         (( i % 5 )) || log "WAIT_RESTORED_BASELINE_READY boot=$boot"
       elif [[ $rev == "$candidate_rev" ]]; then
         if [[ $trial_boot != "$boot" ]]; then
-          if [[ $trial_kind == trunk && -n $trial_boot ]]; then
+          if [[ $trunk_trial == 1 && -n $trial_boot ]]; then
             log "UNEXPECTED_REBOOT predecessor=$trial_boot new=$boot"
             rollback_cause=UNEXPECTED_REBOOT
           fi
@@ -538,7 +569,7 @@ if [[ $mode == --watch ]]; then
           log "TRIAL_BOOT boot=$boot"
         fi
         printf '%s\n' "$s" > "$out/latest-state.txt"
-        if [[ $trial_kind == trunk ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
+        if [[ $trunk_trial == 1 ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
           errors=$(trunk_error_key "$s")
           if [[ -n $last_errors && $errors != "$last_errors" ]]; then
             log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
@@ -551,7 +582,7 @@ if [[ $mode == --watch ]]; then
         # not bypass the 120-second hard deadline if no valid token arrives.
         if (( !attested && now-first_seen < 98 && now-last_attest >= 4 )) &&
            [[ $(value "$s" keep) == 0 ]]; then
-          if [[ $trial_kind == trunk ]] &&
+          if [[ $trunk_trial == 1 ]] &&
              { [[ -n $rollback_cause ]] || ! module_matches "$s" "$candidate_module_sha" O || ! grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$s"; }; then
             log TRUNK_ATTESTATION_BLOCKED_MODULE_OR_REBOOT
             sleep 3
@@ -628,7 +659,7 @@ baseline_healthy "$s" || fatal "unhealthy source: $s"
 if [[ $profile == dhcp ]]; then
   grep -Fxq approval=1 <<< "$s" || fatal 'rollback not persistently approved'
   upstream_ready || fatal 'isolated upstream service not ready'
-  if [[ $trial_kind == trunk ]]; then
+  if [[ $trunk_trial == 1 ]]; then
     lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)" || fatal 'approved DHCP rollback lease absent'
     has_permanent_address "$(ip -4 -o addr show dev "$switch_iface")" "$switch_ip/24" || fatal 'independent switch peer address absent'
     [[ $(cat "/sys/class/net/$switch_iface/carrier") == 1 ]] || fatal 'switch peer carrier down'

@@ -175,3 +175,12 @@ during an accepted boot and requires unchanged switch CPU-port errors.
 This uses the known hashed temporary ARM64 iperf runtime. No persistent
 package install; per-boot router files are deleted on exit. Raw
 throughput JSON and evidence SHA stay in the run directory.
+
+The `native` trial profile is the stock-derived internal recovery pulse
+escalation candidate. It uses the same independent direct management
+path and counter observer as `trunk`, but its exact approved rollback
+is the previously accepted external-module trunk-health image. The
+baseline gate pins that module's SHA, O taint, manifest, and builder.
+The per-boot report also records the native pulse attempt, completion
+and failure/pending-release warnings separately. Clean-boot results
+must never be interpreted as a demonstrated recovery.

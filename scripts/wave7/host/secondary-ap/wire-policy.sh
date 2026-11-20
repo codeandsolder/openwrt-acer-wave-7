@@ -12,7 +12,9 @@ switch=enp4s0f4u2u2u4
 pcap="$base/client-wire/solicit-direct.pcap"
 digest=f3808227e5f88faa33903aed4709229943464acd894d52d5cd4aeeb2813fb7f0
 out=$(realpath -m "$1")
-[[ $out == "$base"/trunk-health-dhcp-guard8/wire-policy-* && ! -e $out ]] || exit 2
+[[ ! -e $out ]] || exit 2
+[[ $out == "$base"/trunk-health-dhcp-guard8/wire-policy-* ||
+   $out == "$base"/native-recovery-dhcp-guard8/wire-policy-* ]] || exit 2
 [[ $(sha256sum "$pcap" | cut -d' ' -f1) == "$digest" ]] || exit 2
 [[ $(cat /sys/class/net/$direct/address) == 00:e0:4c:68:00:6d ]]
 [[ $(cat /sys/class/net/$switch/address) == 00:e0:4c:68:01:45 ]]
