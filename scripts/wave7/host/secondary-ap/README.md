@@ -46,6 +46,14 @@ an upstream DHCP lease. Static mode still requires its configured address.
 Unapproved candidates remain fail-closed; no automatic promotion after
 firstboot. The Guard8 trial-ap.sh static mode uses accepted Guard7 static rollback;
 DHCP mode uses the persistently approved Guard8 static rollback.
+Trunk mode uses the approved Guard8 DHCP rollback and the independent
+2.5G management path; the second SSH session must traverse the actual
+RTL8367D switch. Both flash and approved reboot observers log CPU-port
+MIB counters and restart the 300-second soak on any FCS/fragment change.
+After explicit lab approval, <profile> --arm-reboot supports all three
+profiles and arms read-only observers before a separately issued reboot.
+DHCP and trunk reboot tests require an active upstream lease; this does
+not change the router's autonomous no-lease acceptance policy.
 
 ## Boot gate
 

@@ -155,6 +155,23 @@ trunk_counters_valid() {
     [[ $(value "$s" "$field") =~ ^[0-9]+$ ]] || return 1
   done
 }
+# Both native-flash and approved-reboot guards use the same counter
+# sampling and continuous error-free window.
+trunk_counter_header() {
+  printf 'wall_epoch\tboot\tuptime\tfcs\tfragments\tucast\tmcast\tbcast\tdrops\tswitch\tkeep\n'
+}
+trunk_counter_row() {
+  local s=$1 now=$2 boot=$3 field
+  trunk_counters_valid "$s" || return 1
+  printf '%s\t%s' "$now" "$boot"
+  for field in uptime cpu_fcs cpu_fragments cpu_ucast cpu_mcast cpu_bcast cpu_drops switch_verified keep; do
+    printf '\t%s' "$(value "$s" "$field")"
+  done
+  printf '\n'
+}
+trunk_error_key() {
+  printf '%s:%s\n' "$(value "$1" cpu_fcs)" "$(value "$1" cpu_fragments)"
+}
 trunk_path_healthy() {
   grep -Fxq switch_verified=1 <<< "$1" &&
     grep -Fxq local_ready=1 <<< "$1" &&
@@ -221,11 +238,13 @@ candidate_healthy() {
     systemctl is-active --quiet "$upstream_unit.service" && lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"
   fi
 }
-autonomous_healthy() {
-  candidate_healthy "$1" &&
-    grep -Fxq approval=1 <<< "$1" &&
+autonomous_approval_ok() {
+  grep -Fxq approval=1 <<< "$1" &&
     grep -Fxq token=0 <<< "$1" &&
     grep -Fxq local_ready=1 <<< "$1"
+}
+autonomous_healthy() {
+  candidate_healthy "$1" && autonomous_approval_ok "$1"
 }
 XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
@@ -291,16 +310,26 @@ if [[ $mode == --selftest ]]; then
   for bad in '99 70:5a:6f:5a:bb:14 192.168.76.1 test *' '200 00:00:00:00:00:00 192.168.76.1 test *' '200 70:5a:6f:5a:bb:14 192.168.76.2 test *' ''; do
     if lease_valid "$bad" 100; then fatal 'wrong lease accepted'; fi
   done
-  # Test the autonomous acceptance predicate independently of the real
-  # upstream service: static is sufficient to exercise its token checks.
+  # Exercise the identity gate without depending on a real upstream service.
+  good="$s"
+  good=$(sed '/^local_ready=/d' <<< "$good")
+  good+=$'\napproval=1\ntoken=0\nlocal_ready=1'
+  autonomous_approval_ok "$good" || fatal 'autonomous approval rejected'
   if [[ $profile == static ]]; then
-    good="$s"$'\napproval=1\ntoken=0\nlocal_ready=1'
     autonomous_healthy "$good" || fatal 'autonomous healthy state rejected'
-    for change in approval=0 token=1 local_ready=0; do
-      field=${change%%=*}
-      bad=$(sed "s|^$field=.*|$change|" <<< "$good")
-      if autonomous_healthy "$bad"; then fatal "autonomous false positive: $change"; fi
-    done
+  fi
+  for change in approval=0 token=1 local_ready=0; do
+    field=${change%%=*}
+    bad=$(sed "s|^$field=.*|$change|" <<< "$good")
+    if autonomous_approval_ok "$bad"; then fatal "autonomous false positive: $change"; fi
+  done
+  if [[ $trial_kind == trunk ]]; then
+    sample="$s"$'\nuptime=42'
+    [[ $(trunk_counter_row "$sample" 123 boot) == $'123\tboot\t42\t0\t0\t1\t1\t1\t0\t1\t1' ]] ||
+      fatal 'counter row mismatch'
+    [[ $(trunk_error_key "$sample") == 0:0 ]] || fatal 'counter key mismatch'
+    bad=$(sed 's/^cpu_fcs=.*/cpu_fcs=missing/' <<< "$sample")
+    if trunk_counter_row "$bad" 123 boot >/dev/null; then fatal 'malformed counter accepted'; fi
   fi
   echo "AP_GUARD8_SELFTEST_PASS profile=$trial_kind"
   exit 0
@@ -314,7 +343,7 @@ test -x "$attestor" ||
 # Read-only SSH observation of a new approved boot; intentionally no
 # attestor, upload, sysupgrade or manual bootfail/keep modification.
 if [[ $mode == --observe-reboot ]]; then
-  [[ $# == 2 && $profile == static ]] || fatal 'static reboot observer requires predecessor and run directory'
+  [[ $# == 2 ]] || fatal 'reboot observer requires predecessor and run directory'
   old_boot=$1
   out=$2
   [[ $old_boot =~ ^[0-9a-f-]{36}$ && $out == "$base"/runs/autonomous-* ]] ||
@@ -327,6 +356,10 @@ if [[ $mode == --observe-reboot ]]; then
   echo ARMED > "$out/status"
   new_boot=
   healthy_since=0
+  last_errors=''
+  if [[ $trial_kind == trunk ]]; then
+    trunk_counter_header > "$out/trunk-counters.tsv"
+  fi
   deadline=$(( $(date +%s) + 900 ))
   until (( $(date +%s) >= deadline )); do
     if s=$(read_state 2>/dev/null); then
@@ -348,6 +381,14 @@ if [[ $mode == --observe-reboot ]]; then
         [[ $(value "$s" token) == 0 ]] || finish EXTERNAL_TOKEN_DETECTED 5
         [[ $(value "$s" noc) == 0 ]] || finish NOC_FATAL 5
         now=$(date +%s)
+        if [[ $trial_kind == trunk ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
+          errors=$(trunk_error_key "$s")
+          if [[ -n $last_errors && $errors != "$last_errors" ]]; then
+            log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
+            healthy_since=0
+          fi
+          last_errors=$errors
+        fi
         if autonomous_healthy "$s"; then
           if (( healthy_since == 0 )); then
             healthy_since=$now
@@ -375,11 +416,11 @@ if [[ $mode == --observe-reboot ]]; then
 fi
 
 if [[ $mode == --arm-reboot ]]; then
-  [[ $profile == static && $# == 0 ]] || fatal 'only approved static reboot supported'
+  [[ $# == 0 ]] || fatal 'reboot arming takes no extra arguments'
   s=$(read_state) || fatal 'router inaccessible'
   boot=$(value "$s" boot)
   [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid predecessor'
-  healthy "$s" && grep -Fxq approval=1 <<< "$s" &&
+  candidate_healthy "$s" && grep -Fxq approval=1 <<< "$s" &&
     grep -Fxq local_ready=1 <<< "$s" || fatal 'predecessor not approved and healthy'
   for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
     systemctl --user is-active --quiet "$name.service" || fatal "$name inactive"
@@ -400,7 +441,7 @@ if [[ $mode == --arm-reboot ]]; then
   }
   trap cleanup_arm EXIT
   systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=950 -- \
-    /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh static --observe-reboot "$boot" "$out"
+    /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$trial_kind" --observe-reboot "$boot" "$out"
   systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1000 -- \
     /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
   await_observers "$guard" "$fallback" "$out"
@@ -432,7 +473,7 @@ if [[ $mode == --watch ]]; then
   last_restore_attest=0
   last_errors=''
   if [[ $trial_kind == trunk ]]; then
-    printf 'wall_epoch\tboot\tuptime\tfcs\tfragments\tucast\tmcast\tbcast\tdrops\tswitch\tkeep\n' > "$out/trunk-counters.tsv"
+    trunk_counter_header > "$out/trunk-counters.tsv"
   fi
   restore() {
     local cause=$1 state=$2 check
@@ -497,13 +538,8 @@ if [[ $mode == --watch ]]; then
           log "TRIAL_BOOT boot=$boot"
         fi
         printf '%s\n' "$s" > "$out/latest-state.txt"
-        if [[ $trial_kind == trunk ]] && trunk_counters_valid "$s"; then
-          printf '%s\t%s' "$now" "$boot" >> "$out/trunk-counters.tsv"
-          for field in uptime cpu_fcs cpu_fragments cpu_ucast cpu_mcast cpu_bcast cpu_drops switch_verified keep; do
-            printf '\t%s' "$(value "$s" "$field")" >> "$out/trunk-counters.tsv"
-          done
-          printf '\n' >> "$out/trunk-counters.tsv"
-          errors="$(value "$s" cpu_fcs):$(value "$s" cpu_fragments)"
+        if [[ $trial_kind == trunk ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
+          errors=$(trunk_error_key "$s")
           if [[ -n $last_errors && $errors != "$last_errors" ]]; then
             log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
             healthy_since=0
