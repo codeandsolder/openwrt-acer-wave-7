@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp --selftest|--check|--check-baseline|--run" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
 profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -80,6 +80,8 @@ read_state() {
     echo "builder_commit=$(sed -n "s/^builder_commit=//p" /etc/wave7-role-profile 2>/dev/null | head -1)";
     echo "bridge_ip=$(ip -4 -o addr show dev br-lan | awk '\''$3=="inet" {print $4}'\'' | head -1)";
     echo "approval=$(if [ -r /rom/lib/wave7/role-firstboot.sh ]; then . /rom/lib/wave7/role-firstboot.sh; if command -v wave7_secondary_ap_approval_matches >/dev/null 2>&1 && wave7_secondary_ap_approval_matches /rom/etc/wave7-role-profile "$(cat /rom/etc/openwrt_version)" /overlay/wave7-ap-approved; then echo 1; else echo 0; fi; else echo 0; fi)";
+    echo "token=$(test -e /tmp/wave7-ap-management-verified && echo 1 || echo 0)";
+    echo "local_ready=$(if [ -r /rom/lib/wave7/role-firstboot.sh ]; then . /rom/lib/wave7/role-firstboot.sh; if command -v wave7_secondary_ap_local_ready >/dev/null 2>&1 && wave7_secondary_ap_local_ready; then echo 1; else echo 0; fi; else echo 0; fi)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)"'
 }
 # A permanently configured local address is required, not a DHCP lease
@@ -134,6 +136,12 @@ candidate_healthy() {
     systemctl is-active --quiet "$upstream_unit.service" && lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"
   fi
 }
+autonomous_healthy() {
+  candidate_healthy "$1" &&
+    grep -Fxq approval=1 <<< "$1" &&
+    grep -Fxq token=0 <<< "$1" &&
+    grep -Fxq local_ready=1 <<< "$1"
+}
 XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
@@ -169,6 +177,17 @@ if [[ $mode == --selftest ]]; then
   for bad in '99 70:5a:6f:5a:bb:14 192.168.76.1 test *' '200 00:00:00:00:00:00 192.168.76.1 test *' '200 70:5a:6f:5a:bb:14 192.168.76.2 test *' ''; do
     if lease_valid "$bad" 100; then fatal 'wrong lease accepted'; fi
   done
+  # Test the autonomous acceptance predicate independently of the real
+  # upstream service: static is sufficient to exercise its token checks.
+  if [[ $profile == static ]]; then
+    good="$s"$'\napproval=1\ntoken=0\nlocal_ready=1'
+    autonomous_healthy "$good" || fatal 'autonomous healthy state rejected'
+    for change in approval=0 token=1 local_ready=0; do
+      field=${change%%=*}
+      bad=$(sed "s|^$field=.*|$change|" <<< "$good")
+      if autonomous_healthy "$bad"; then fatal "autonomous false positive: $change"; fi
+    done
+  fi
   echo "AP_GUARD8_SELFTEST_PASS profile=$profile"
   exit 0
 fi
@@ -178,6 +197,97 @@ test -x "$attestor" ||
 "$attestor" --selftest ||
   fatal 'management attestor selftest failed'
 
+# Read-only SSH observation of a new approved boot; intentionally no
+# attestor, upload, sysupgrade or manual bootfail/keep modification.
+if [[ $mode == --observe-reboot ]]; then
+  [[ $# == 2 && $profile == static ]] || fatal 'static reboot observer requires predecessor and run directory'
+  old_boot=$1
+  out=$2
+  [[ $old_boot =~ ^[0-9a-f-]{36}$ && $out == "$base"/runs/autonomous-* ]] ||
+    fatal 'invalid reboot observation arguments'
+  exec 9>"$out/.watch.lock"
+  flock -n 9 || fatal 'observer already running'
+  log() { echo "$(date -Is) $*" | tee -a "$out/observer.log"; }
+  finish() { log "$1"; echo "$1" > "$out/status"; exit "${2:-0}"; }
+  log "ARMED predecessor=$old_boot"
+  echo ARMED > "$out/status"
+  new_boot=
+  healthy_since=0
+  deadline=$(( $(date +%s) + 900 ))
+  until (( $(date +%s) >= deadline )); do
+    if s=$(read_state 2>/dev/null); then
+      boot=$(value "$s" boot)
+      rev=$(value "$s" rev)
+      [[ $boot =~ ^[0-9a-f-]{36}$ ]] || { sleep 3; continue; }
+      if [[ $(value "$s" kernel) == 5.4.213 ]]; then
+        finish VENDOR_FALLBACK 4
+      elif [[ $boot == "$old_boot" ]]; then
+        [[ -z $new_boot ]] || finish PREDECESSOR_REAPPEARED 5
+      else
+        printf '%s\n' "$s" > "$out/latest-state.txt"
+        [[ $rev == "$candidate_rev" ]] || finish WRONG_REVISION 5
+        if [[ -z $new_boot ]]; then
+          new_boot=$boot
+          log "NEW_BOOT boot=$boot"
+        fi
+        [[ $new_boot == "$boot" ]] || finish UNEXPECTED_REBOOT 5
+        [[ $(value "$s" token) == 0 ]] || finish EXTERNAL_TOKEN_DETECTED 5
+        [[ $(value "$s" noc) == 0 ]] || finish NOC_FATAL 5
+        now=$(date +%s)
+        if autonomous_healthy "$s"; then
+          if (( healthy_since == 0 )); then
+            healthy_since=$now
+            log "AUTONOMOUS_ACCEPTED boot=$boot uptime=$(value "$s" uptime)"
+            cp "$out/latest-state.txt" "$out/first-healthy-state.txt"
+            echo SOAKING > "$out/status"
+          fi
+          if (( now-healthy_since >= 300 )); then
+            log "AUTONOMOUS_SOAK_PASS seconds=$((now-healthy_since))"
+            echo SOAK_PASS > "$out/status"
+            exit 0
+          fi
+        else
+          healthy_since=0
+          log "WAIT uptime=$(value "$s" uptime) approval=$(value "$s" approval) keep=$(value "$s" keep) q6=$(value "$s" q6) ap=$(value "$s" ap)"
+          echo WAITING > "$out/status"
+        fi
+      fi
+    else
+      healthy_since=0
+    fi
+    sleep 3
+  done
+  finish WATCH_TIMEOUT 6
+fi
+
+if [[ $mode == --arm-reboot ]]; then
+  [[ $profile == static && $# == 0 ]] || fatal 'only approved static reboot supported'
+  s=$(read_state) || fatal 'router inaccessible'
+  boot=$(value "$s" boot)
+  [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid predecessor'
+  healthy "$s" && grep -Fxq approval=1 <<< "$s" &&
+    grep -Fxq local_ready=1 <<< "$s" || fatal 'predecessor not approved and healthy'
+  for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
+    systemctl --user is-active --quiet "$name.service" || fatal "$name inactive"
+  done
+  test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*')" || fatal 'another supervisor active'
+  tag=autonomous-$(date +%Y%m%d-%H%M%S)
+  out="$base/runs/$tag"
+  mkdir -m 0700 "$out"
+  printf '%s\n' "$s" > "$out/preflight.txt"
+  guard="wave7-autonomous-observer-$tag"
+  fallback="wave7-fallback-watch-$tag"
+  systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=950 -- \
+    /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh static --observe-reboot "$boot" "$out"
+  systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1000 -- \
+    /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
+  sleep 2
+  systemctl --user is-active --quiet "$guard.service" || fatal 'reboot observer failed to arm'
+  systemctl --user is-active --quiet "$fallback.service" || fatal 'fallback observer failed to arm'
+  [[ $(cat "$out/status") == ARMED ]] || fatal 'observer acknowledgment absent'
+  echo "REBOOT_OBSERVERS_ARMED predecessor=$boot RUN_DIR=$out"
+  exit 0
+fi
 if [[ $mode == --watch ]]; then
   [[ $# == 2 ]] || fatal 'watch requires old boot and directory'
   old_boot=$1
