@@ -1,0 +1,526 @@
+From: Wave7 development <wave7-test@localhost>
+Subject: [PATCH] net: dsa: realtek: rtl8365mb: escalate persistent RTL8367D SerDes faults
+
+The stock 067 firmware's RTL8367D DW8051 has an internal recovery
+sequence in addition to link-state polling. Its exact instructions
+were traced against a mock ASIC register bus. The sequence asserts
+SDS 0x003f bit 5, pulses SDS 0x0400 bit 2, then clears bit 5.
+
+Keep the existing first mode edge and fast link-down retries. For
+persistent faults on the evidenced silicon revision, alternate the
+known mode edge with the stock-derived internal pulse. Preserve
+unrelated bits and serialize the full sequence under the indirect
+window mutex. Track ambiguous assertion-write failures and retry
+release in reverse order before another recovery attempt or PCS
+configuration. Keep DW8051 disabled; no simultaneous register owners.
+
+This is an experimental candidate. The stock sequence is observed
+for link-down events; application to corrupt-only ingress is a
+hypothesis, not a hardware-proven correction.
+
+Signed-off-by: Wave7 development <wave7-test@localhost>
+---
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -358,6 +358,15 @@
+ 
+ /* Family D uses the SDS13 indirect window for its MAC6 SerDes. */
+ #define RTL8365MB_D_SDS_EXT0_INDEX			13
++/* Undocumented recovery controls used by the stock RTL8367D DW8051.
++ * Names describe the observed pulse sequence, not a claimed bit meaning.
++ */
++#define RTL8365MB_D_SDS_RECOVERY_OUTER_REG	0x003f
++#define RTL8365MB_D_SDS_RECOVERY_OUTER_MASK	BIT(5)
++#define RTL8365MB_D_SDS_RECOVERY_INNER_REG	0x0400
++#define RTL8365MB_D_SDS_RECOVERY_INNER_MASK	BIT(2)
++#define RTL8365MB_D_SDS_RECOVERY_OUTER		BIT(0)
++#define RTL8365MB_D_SDS_RECOVERY_INNER		BIT(1)
+ #define RTL8365MB_D_FIBER_CFG2_REG			0x13E8
+ #define   RTL8365MB_D_FIBER_CFG2_RX_DISABLE_MASK	GENMASK(7, 6)
+ #define   RTL8365MB_D_FIBER_CFG2_RX_DISABLE_SDS0	BIT(6)
+@@ -377,10 +386,9 @@
+  */
+ #define RTL8365MB_D_PORT_SDS_MODE_DISABLE		0x1f
+ 
+-/* Embedded DW8051 microcontroller control registers. The microcontroller
+- * can run firmware to manage the SerDes link, but this driver keeps it in
+- * reset and disabled: phylink already performs the link management that
+- * the firmware would otherwise do.
++/* The vendor DW8051 manages SerDes link state and performs internal
++ * recovery through the same SDS_INDACS window. Keep it disabled so
++ * phylink and our recovery worker own this window exclusively.
+  */
+ #define RTL8365MB_MISC_CFG0_REG			0x130C
+ #define   RTL8365MB_MISC_CFG0_DW8051_EN_MASK	BIT(5)
+@@ -806,6 +814,7 @@
+  * @chip_id: chip identifier
+  * @chip_ver: chip silicon revision
+  * @family: chip family
++ * @sds_pulse_recovery: stock-derived internal pulse supported on this chip
+  * @extints: available external interfaces
+  * @jam_table: chip-specific initialization jam table
+  * @jam_size: size of the chip's jam table
+@@ -819,6 +828,7 @@
+ 	u32 chip_id;
+ 	u32 chip_ver;
+ 	enum rtl8365mb_family family;
++	bool sds_pulse_recovery;
+ 	const struct rtl8365mb_extint extints[RTL8365MB_MAX_NUM_EXTINTS];
+ 	const struct rtl8365mb_jam_tbl_entry *jam_table;
+ 	size_t jam_size;
+@@ -899,6 +909,7 @@
+ 		.chip_id = 0x6642,
+ 		.chip_ver = 0x0020,
+ 		.family = RTL8365MB_FAMILY_D,
++		.sds_pulse_recovery = true,
+ 		.extints = {
+ 			{ 6, 0, PHY_INTF(SGMII) | PHY_INTF(HSGMII) },
+ 			{ 7, 1, PHY_INTF(MII) | PHY_INTF(TMII) |
+@@ -991,6 +1002,7 @@
+ 	u64 bad_events;
+ 	unsigned int bad_intervals;
+ 	bool valid;
++	bool relatch_attempted;
+ };
+ 
+ /**
+@@ -1017,6 +1029,8 @@
+  * @sds_relatch_armed: pcs_config() set up 2500base-x; the re-latch work may run
+  * @sds_conduit_up: the CPU port conduit is admin and oper up
+  * @sds_rx_health: CPU trunk ingress samples owned by the re-latch worker
++ * @sds_recovery_pending: controls that may be asserted, under sds_lock
++ * @sds_link_pulse_next: alternate slow link-down recovery actions
+  *
+  * Private data for this driver.
+  */
+@@ -1038,6 +1052,8 @@
+ 	bool sds_relatch_armed;
+ 	bool sds_conduit_up;
+ 	struct rtl8365mb_sds_rx_health sds_rx_health;
++	unsigned int sds_recovery_pending;
++	bool sds_link_pulse_next;
+ };
+ 
+ #define pcs_to_rtl8365mb(_pcs) container_of((_pcs), struct rtl8365mb, pcs)
+@@ -1376,56 +1392,60 @@
+ 	return 0;
+ }
+ 
+-static int rtl8365mb_sds_write(struct realtek_priv *priv, u8 index,
+-			       u16 addr, u16 data)
++static int rtl8365mb_sds_write_locked(struct realtek_priv *priv, u8 index,
++				      u16 addr, u16 data)
+ {
+ 	struct rtl8365mb *mb = priv->chip_data;
+ 	int ret;
+ 
+-	mutex_lock(&mb->sds_lock);
++	lockdep_assert_held(&mb->sds_lock);
+ 
+ 	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_DATA_REG, data);
+ 	if (ret)
+-		goto out_unlock;
++		return ret;
+ 
+ 	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_ADR_REG, addr);
+ 	if (ret)
+-		goto out_unlock;
++		return ret;
+ 
+ 	/* The SerDes indirect access engine completes the command within the
+-	 * register write transaction, so there is no need to wait or poll for
+-	 * completion before the next access, matching the vendor driver.
++	 * register write transaction, matching the vendor driver.
+ 	 */
+-	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
+-			   RTL8365MB_SDS_INDACS_CMD_RUN_MASK |
+-			   RTL8365MB_SDS_INDACS_CMD_WR_MASK |
+-			   FIELD_PREP(RTL8365MB_SDS_INDACS_CMD_INDEX_MASK,
+-				      index));
++	return regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
++			    RTL8365MB_SDS_INDACS_CMD_RUN_MASK |
++			    RTL8365MB_SDS_INDACS_CMD_WR_MASK |
++			    FIELD_PREP(RTL8365MB_SDS_INDACS_CMD_INDEX_MASK,
++				       index));
++}
+ 
+-out_unlock:
+-	mutex_unlock(&mb->sds_lock);
+-	return ret;
++static int rtl8365mb_sds_write(struct realtek_priv *priv, u8 index,
++			       u16 addr, u16 data)
++{
++	struct rtl8365mb *mb = priv->chip_data;
++
++	guard(mutex)(&mb->sds_lock);
++	return rtl8365mb_sds_write_locked(priv, index, addr, data);
+ }
+ 
+-static int rtl8365mb_sds_read(struct realtek_priv *priv, u8 index,
+-			      u16 addr, u16 *data)
++static int rtl8365mb_sds_read_locked(struct realtek_priv *priv, u8 index,
++				     u16 addr, u16 *data)
+ {
+ 	struct rtl8365mb *mb = priv->chip_data;
+ 	u32 val;
+ 	int ret;
+ 
+-	mutex_lock(&mb->sds_lock);
++	lockdep_assert_held(&mb->sds_lock);
+ 
+ 	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_ADR_REG, addr);
+ 	if (ret)
+-		goto out_unlock;
++		return ret;
+ 
+ 	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
+ 			   RTL8365MB_SDS_INDACS_CMD_RUN_MASK |
+ 			   FIELD_PREP(RTL8365MB_SDS_INDACS_CMD_INDEX_MASK,
+ 				      index));
+ 	if (ret)
+-		goto out_unlock;
++		return ret;
+ 
+ 	/* Wait for the indirect read to complete: the engine clears the BUSY
+ 	 * bit once the data register holds the result.
+@@ -1435,21 +1455,135 @@
+ 				       !(val & RTL8365MB_SDS_INDACS_CMD_BUSY_MASK),
+ 				       10, 1000);
+ 	if (ret)
+-		goto out_unlock;
++		return ret;
+ 
+ 	ret = regmap_read(priv->map, RTL8365MB_SDS_INDACS_DATA_REG, &val);
+ 	if (ret)
+-		goto out_unlock;
++		return ret;
+ 
+ 	*data = val;
++	return 0;
++}
+ 
+-	ret = 0;
++static int rtl8365mb_sds_read(struct realtek_priv *priv, u8 index,
++			      u16 addr, u16 *data)
++{
++	struct rtl8365mb *mb = priv->chip_data;
++
++	guard(mutex)(&mb->sds_lock);
++	return rtl8365mb_sds_read_locked(priv, index, addr, data);
++}
++
++/* The 0x6642 stock DW8051 checks SDS 0x003d bit 4 twice, then
++ * asserts SDS 0x003f bit 5, pulses 0x0400 bit 2, and releases bit 5.
++ * The MDIO transport can return an error after a write reached the
++ * device. Mark a control pending before the first assertion write;
++ * release it in reverse order even on an ambiguous write failure.
++ * Preserve unrelated bits on every write.
++ */
++static int rtl8365mb_d_sds_recovery_step(struct rtl8365mb *mb, u16 reg,
++					 u16 mask, unsigned int pending,
++					 bool assert)
++{
++	struct realtek_priv *priv = mb->priv;
++	u16 value;
++	int ret;
++
++	lockdep_assert_held(&mb->sds_lock);
++
++	ret = rtl8365mb_sds_read_locked(priv, RTL8365MB_D_SDS_EXT0_INDEX,
++					reg, &value);
++	if (ret)
++		return ret;
++
++	if (assert) {
++		mb->sds_recovery_pending |= pending;
++		value |= mask;
++	} else {
++		value &= ~mask;
++	}
++
++	ret = rtl8365mb_sds_write_locked(priv, RTL8365MB_D_SDS_EXT0_INDEX,
++					 reg, value);
++	if (!ret && !assert)
++		mb->sds_recovery_pending &= ~pending;
+ 
+-out_unlock:
+-	mutex_unlock(&mb->sds_lock);
+ 	return ret;
+ }
+ 
++static int rtl8365mb_d_sds_recovery_clear_locked(struct rtl8365mb *mb)
++{
++	int ret;
++
++	if (mb->sds_recovery_pending & RTL8365MB_D_SDS_RECOVERY_INNER) {
++		ret = rtl8365mb_d_sds_recovery_step(mb,
++						    RTL8365MB_D_SDS_RECOVERY_INNER_REG,
++						    RTL8365MB_D_SDS_RECOVERY_INNER_MASK,
++						    RTL8365MB_D_SDS_RECOVERY_INNER, false);
++		if (ret)
++			return ret;
++	}
++
++	if (mb->sds_recovery_pending & RTL8365MB_D_SDS_RECOVERY_OUTER)
++		return rtl8365mb_d_sds_recovery_step(mb,
++						     RTL8365MB_D_SDS_RECOVERY_OUTER_REG,
++						     RTL8365MB_D_SDS_RECOVERY_OUTER_MASK,
++						     RTL8365MB_D_SDS_RECOVERY_OUTER, false);
++
++	return 0;
++}
++
++static int rtl8365mb_d_sds_recovery_finish_locked(struct rtl8365mb *mb)
++{
++	int i, ret;
++
++	for (i = 0; i < RTL8365MB_D_SDS_RESTORE_TRIES; i++) {
++		ret = rtl8365mb_d_sds_recovery_clear_locked(mb);
++		if (!ret)
++			return 0;
++		if (i < RTL8365MB_D_SDS_RESTORE_TRIES - 1)
++			usleep_range(1000, 2000);
++	}
++
++	dev_err_ratelimited(mb->priv->dev,
++			    "SerDes recovery controls still pending: %pe\n",
++			    ERR_PTR(ret));
++	return ret;
++}
++
++static int rtl8365mb_d_sds_recovery_finish(struct rtl8365mb *mb)
++{
++	guard(mutex)(&mb->sds_lock);
++	return rtl8365mb_d_sds_recovery_finish_locked(mb);
++}
++
++static int rtl8365mb_d_sds_recovery_pulse(struct rtl8365mb *mb)
++{
++	int ret, cleanup;
++
++	/* Do not allow another indirect transaction to interleave with
++	 * this entire four-step pulse, not just its individual accesses.
++	 */
++	guard(mutex)(&mb->sds_lock);
++
++	ret = rtl8365mb_d_sds_recovery_finish_locked(mb);
++	if (ret)
++		return ret;
++
++	ret = rtl8365mb_d_sds_recovery_step(mb,
++					    RTL8365MB_D_SDS_RECOVERY_OUTER_REG,
++					    RTL8365MB_D_SDS_RECOVERY_OUTER_MASK,
++					    RTL8365MB_D_SDS_RECOVERY_OUTER, true);
++	if (!ret)
++		ret = rtl8365mb_d_sds_recovery_step(mb,
++						    RTL8365MB_D_SDS_RECOVERY_INNER_REG,
++						    RTL8365MB_D_SDS_RECOVERY_INNER_MASK,
++						    RTL8365MB_D_SDS_RECOVERY_INNER, true);
++
++	cleanup = rtl8365mb_d_sds_recovery_finish_locked(mb);
++	return ret ?: cleanup;
++}
++
+ /* The vendor driver selects between two sets of SerDes tuning parameters based
+  * on the chip option register. Only the variant for a non-zero option has been
+  * tested on real hardware - the RTL8367S parts seen so far all report 1. The
+@@ -1577,6 +1711,8 @@
+ 	 */
+ 	errors = reset ? 0 : (u64)(new->fcs - old.fcs) +
+ 				      (new->fragments - old.fragments);
++	if (good && !reset)
++		h->relatch_attempted = false;
+ 	if (reset || good || !errors) {
+ 		h->bad_events = 0;
+ 		h->bad_intervals = 0;
+@@ -1644,7 +1780,7 @@
+ 		return false;
+ 
+ 	dev_warn_ratelimited(priv->dev,
+-			     "SerDes CPU port %d corrupt-only ingress: %llu errors in %u intervals; re-latching\n",
++			     "SerDes CPU port %d corrupt-only ingress: %llu errors in %u intervals; recovering\n",
+ 			     port, mb->sds_rx_health.bad_events,
+ 			     mb->sds_rx_health.bad_intervals);
+ 	return true;
+@@ -1653,7 +1789,8 @@
+ static void rtl8365mb_sds_relatch_start(struct rtl8365mb *mb)
+ {
+ 	/* Callers cancel the old worker synchronously before starting it. */
+-	mb->sds_rx_health.valid = false;
++	mb->sds_rx_health = (struct rtl8365mb_sds_rx_health){};
++	mb->sds_link_pulse_next = true;
+ 	WRITE_ONCE(mb->sds_relatch_count, 1);
+ 	schedule_delayed_work(&mb->sds_relatch, 0);
+ }
+@@ -1713,6 +1850,9 @@
+ 	if (is_d) {
+ 		WRITE_ONCE(mb->sds_relatch_armed, false);
+ 		cancel_delayed_work_sync(&mb->sds_relatch);
++		ret = rtl8365mb_d_sds_recovery_finish(mb);
++		if (ret)
++			return ret;
+ 	}
+ 
+ 	/* Select the appropriate tuning table and SDS mode */
+@@ -1742,10 +1882,8 @@
+ 
+ 	/* Hold the embedded DW8051 microcontroller in reset and keep it
+ 	 * disabled. The vendor driver loads firmware into it to manage the
+-	 * SerDes link, but the firmware only duplicates work that phylink
+-	 * already does: it polls the port status and forces the external
+-	 * interface configuration in the very registers this driver manages.
+-	 * Letting it run would race with phylink.
++	 * SerDes link. It also performs a recovery pulse through the
++	 * indirect window, so letting it run would race with our accesses.
+ 	 */
+ 	ret = regmap_update_bits(priv->map, RTL8365MB_CHIP_RESET_REG,
+ 				 RTL8365MB_CHIP_RESET_DW8051_MASK,
+@@ -1890,6 +2028,8 @@
+ 
+ 	WRITE_ONCE(mb->sds_conduit_up, operational);
+ 	cancel_delayed_work_sync(&mb->sds_relatch);
++	if (!operational)
++		rtl8365mb_d_sds_recovery_finish(mb);
+ 	if (operational && READ_ONCE(mb->sds_relatch_armed))
+ 		rtl8365mb_sds_relatch_start(mb);
+ }
+@@ -1911,9 +2051,11 @@
+  * comes up costs a bounded burst of 20 ms parks. The run after the last
+  * edge only checks whether it took and reports failure; from then on one
+  * edge is driven per RTL8365MB_D_SDS_HEALTHCHECK_INTERVAL, so a far end
+- * that comes up late is recovered without a reconfiguration. Once the
+- * receiver has latched the work just polls the link at the same slow
+- * interval; finding it down then starts a new episode, e.g. after the far
++ * that comes up late is recovered without a reconfiguration. On the
++ * RTL8367D, persistent failure alternates mode edges with the stock
++ * internal pulse. Once the receiver has latched, the work polls the link
++ * and valid ingress at the same slow interval; finding it down then
++ * starts a new episode, e.g. after the far
+  * end reset its PLL without a reconfiguration.
+  *
+  * sds_relatch_count is the number of the next attempt of the episode: 0
+@@ -1930,10 +2072,21 @@
+ 		   RTL8365MB_D_PORT_SDS_MODE_DISABLE;
+ 	unsigned long delay = RTL8365MB_D_SDS_RELATCH_INTERVAL;
+ 	unsigned int attempts;
++	bool corrupt = false;
+ 	u16 status;
+ 	u32 misc;
+ 	int ret;
+ 
++	/* A failed pulse must release its controls before any new edge.
++	 * The worker and stopped configuration paths own this state; the
++	 * actual transaction uses the same lock as normal PCS accesses.
++	 */
++	if (mb->sds_recovery_pending) {
++		mb->sds_rx_health.valid = false;
++		rtl8365mb_d_sds_recovery_finish(mb);
++		goto rearm;
++	}
++
+ 	/* An earlier run may have failed to restore the target mode, which
+ 	 * leaves the lane parked. The mode field in SDS_MISC says so: put it
+ 	 * back before anything else.
+@@ -1972,15 +2125,24 @@
+ 		 * poll cadence for corrupt-only ingress, even after an edge.
+ 		 */
+ 		WRITE_ONCE(mb->sds_relatch_count, 0);
++		mb->sds_link_pulse_next = true;
+ 		delay = RTL8365MB_D_SDS_HEALTHCHECK_INTERVAL;
+ 		if (!rtl8365mb_sds_rx_unhealthy(mb))
+ 			goto rearm;
+ 
++		corrupt = true;
++		if (mb->chip_info->sds_pulse_recovery &&
++		    mb->sds_rx_health.relatch_attempted) {
++			mb->sds_rx_health.relatch_attempted = false;
++			goto pulse_lane;
++		}
++
+ 		attempts = 1;
+ 		goto park_lane;
+ 	}
+ 
+ 	mb->sds_rx_health.valid = false;
++	mb->sds_rx_health.relatch_attempted = false;
+ 	attempts = READ_ONCE(mb->sds_relatch_count);
+ 	if (!attempts) {
+ 		dev_warn(priv->dev,
+@@ -2000,15 +2162,21 @@
+ 		goto rearm;
+ 	}
+ 
+-	if (attempts <= RTL8365MB_D_SDS_RELATCH_MAX_TRIES)
++	if (attempts <= RTL8365MB_D_SDS_RELATCH_MAX_TRIES) {
+ 		WRITE_ONCE(mb->sds_relatch_count, attempts + 1);
+-	else
+-		/* Past the fast-retry budget. The receiver latches only on a
+-		 * DISABLE -> mode edge and nothing re-runs pcs_config() for a
+-		 * link without in-band signalling, so keep driving one edge
+-		 * per interval.
++	} else {
++		/* Keep the initial fast mode-edge budget unchanged. Escalate
++		 * only persistent link-down episodes, at the slow cadence.
+ 		 */
+ 		delay = RTL8365MB_D_SDS_HEALTHCHECK_INTERVAL;
++		if (mb->chip_info->sds_pulse_recovery) {
++			if (mb->sds_link_pulse_next) {
++				mb->sds_link_pulse_next = false;
++				goto pulse_lane;
++			}
++			mb->sds_link_pulse_next = true;
++		}
++	}
+ 
+ park_lane:
+ 	/* Never compare post-edge samples to the pre-edge baseline. */
+@@ -2022,6 +2190,9 @@
+ 		goto rearm;
+ 	}
+ 
++	if (corrupt)
++		mb->sds_rx_health.relatch_attempted = true;
++
+ 	usleep_range(20000, 21000);
+ 
+ 	if (rtl8365mb_sds_relatch_restore(mb)) {
+@@ -2036,6 +2207,23 @@
+ 		attempts);
+ 
+ 	/* This edge may not have taken either; the next run checks. */
++	goto rearm;
++
++pulse_lane:
++	mb->sds_rx_health.valid = false;
++	dev_warn_ratelimited(priv->dev,
++			     "SerDes persistent %s fault: trying stock-derived recovery pulse\n",
++			     corrupt ? "corrupt-only ingress" : "link-down");
++	ret = rtl8365mb_d_sds_recovery_pulse(mb);
++	if (ret) {
++		dev_err_ratelimited(priv->dev, "SerDes recovery pulse failed: %pe\n",
++				    ERR_PTR(ret));
++		if (mb->sds_recovery_pending)
++			delay = RTL8365MB_D_SDS_RELATCH_INTERVAL;
++	} else {
++		dev_info_ratelimited(priv->dev, "SerDes recovery pulse completed\n");
++	}
++
+ rearm:
+ 	schedule_delayed_work(&mb->sds_relatch, delay);
+ }
+@@ -2209,6 +2397,7 @@
+ 
+ 	WRITE_ONCE(mb->sds_relatch_armed, false);
+ 	cancel_delayed_work_sync(&mb->sds_relatch);
++	rtl8365mb_d_sds_recovery_finish(mb);
+ }
+ 
+ static const struct phylink_pcs_ops rtl8365mb_pcs_ops = {
+@@ -3930,6 +4119,7 @@
+ 
+ 		WRITE_ONCE(mb->sds_relatch_armed, false);
+ 		cancel_delayed_work_sync(&mb->sds_relatch);
++		rtl8365mb_d_sds_recovery_finish(mb);
+ 	}
+ 
+ 	rtl8365mb_stats_teardown(priv);
