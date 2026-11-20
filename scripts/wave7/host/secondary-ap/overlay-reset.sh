@@ -14,12 +14,24 @@ wave7_ap_policy_paths() {
         lib/wave7/overlay-reset.sh lib/wave7/role-firstboot.sh
 }
 
+# Check the complete migration contract before touching the volume, also
+# called by the image packager against the actual extracted SquashFS.
+wave7_ap_check_image() (
+    [ "$#" -eq 1 ] || return 1
+    for file in $(wave7_ap_policy_paths); do
+        [ -f "$1/$file" ] && [ ! -L "$1/$file" ] || {
+            echo "unexpected lower file: $file" >&2; return 1;
+        }
+    done
+)
+
 # Operate only on an unmounted-from-overlayfs writable volume. The caller
 # supplies the temporary UBIFS mount and the immutable root independently.
 wave7_ap_reset_upper() (
     [ "$#" -eq 2 ] || return 1
     upper="$1/upper"
     rom="$2"
+    wave7_ap_check_image "$rom" || return 1
     # A fresh UBIFS need not have an upper directory yet.
     [ ! -L "$upper" ] || { echo 'invalid upper symlink' >&2; return 1; }
     [ -e "$upper" ] || return 0
@@ -32,9 +44,6 @@ wave7_ap_reset_upper() (
         }
     done
     for file in $(wave7_ap_policy_paths); do
-        [ -f "$rom/$file" ] && [ ! -L "$rom/$file" ] || {
-            echo "unexpected lower file: $file" >&2; return 1;
-        }
         if [ -d "$upper/$file" ] && [ ! -L "$upper/$file" ]; then
             echo "upper is directory: $file" >&2
             return 1

@@ -119,6 +119,9 @@ for file in $(wave7_ap_policy_paths); do
   cp "$p/$file" "$p/rom/$file"
   printf 'LEGACY-OVERRIDE-%s\\n' "$file" > "$p/overlay/upper/$file"
 done
+# System UCI is generated on first boot; the real SquashFS has no such file.
+test ! -e "$p/rom/etc/config/system"
+printf 'generated-system-MUST-SURVIVE\n' > "$p/overlay/upper/etc/config/system"
 printf 'env-config-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/fw_env.config"
 printf 'host-identity-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/dropbear/dropbear_ed25519_host_key"
 printf 'ubootenv-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/config/ubootenv"
@@ -128,12 +131,21 @@ wave7_ap_reset_upper "$p/overlay" "$p/rom" # idempotent on repeat boot
 for file in $(wave7_ap_policy_paths); do
   test ! -e "$p/overlay/upper/$file"
 done
+rg -q '^generated-system-MUST-SURVIVE' "$p/overlay/upper/etc/config/system"
 rg -q '^env-config-MUST-SURVIVE' "$p/overlay/upper/etc/fw_env.config"
 rg -q '^host-identity-MUST-SURVIVE' "$p/overlay/upper/etc/dropbear/dropbear_ed25519_host_key"
 rg -q '^ubootenv-MUST-SURVIVE' "$p/overlay/upper/etc/config/ubootenv"
 # A fresh volume (stock OTA reformats it) has no upper yet.
 mkdir "$work/fresh-volume"
 wave7_ap_reset_upper "$work/fresh-volume" "$p/rom"
+wave7_ap_check_image "$p/rom"
+mv "$p/rom/etc/config/dhcp" "$work/missing-dhcp"
+if wave7_ap_reset_upper "$work/fresh-volume" "$p/rom"; then
+  echo 'INCOMPLETE_IMAGE_POLICY_ACCEPTED' >&2
+  exit 1
+fi
+mv "$work/missing-dhcp" "$p/rom/etc/config/dhcp"
+
 # Verify a stale merged policy does not pass the lowerdir check.
 printf 'incorrect-merged-network\\n' > "$p/etc/config/network"
 if wave7_ap_policy_matches_lower "$p"; then

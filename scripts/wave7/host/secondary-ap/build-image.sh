@@ -61,6 +61,10 @@ test "$(cat "$work/root/etc/openwrt_version")" = "$source_rev"
 cp -a "$work/root" "$work/original-root"
 "$repo/scripts/wave7/host/secondary-ap/stage-root.sh" "$work/root" "$mode" "$address" > "$work/stage.log"
 test "$(cat "$work/root/etc/openwrt_version")" = "$new_rev"
+# The real image must meet the same complete policy-file contract as preinit.
+sh -c '. "$1"; wave7_ap_check_image "$2"' sh \
+    "$work/root/lib/wave7/overlay-reset.sh" "$work/root"
+
 cmp "$work/original-root/etc/config/wireless" "$work/root/etc/config/wireless"
 cmp "$work/original-root/etc/dropbear/authorized_keys" "$work/root/etc/dropbear/authorized_keys"
 (cd "$work/root/lib/firmware/ath12k" &&
