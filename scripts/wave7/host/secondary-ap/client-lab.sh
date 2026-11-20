@@ -3,14 +3,14 @@
 # and default routes untouched. The temporary cloned profile is removed.
 set -euo pipefail
 mode=${1:-dhcp}
-ndp_diagnostic=${2:-}
+test_variant=${2:-}
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 tmp="Wave7-lab-test-$$"
 if [[ $mode != dhcp && $mode != static ]] ||
-   [[ -n $ndp_diagnostic && ( $mode != dhcp || $ndp_diagnostic != --diagnose-ndp ) ]] ||
+   [[ -n $test_variant && $test_variant != --settled && ( $mode != dhcp || $test_variant != --diagnose-ndp ) ]] ||
    (( $# > 2 )); then
-  echo 'usage: client-lab.sh dhcp|static [--diagnose-ndp]' >&2
+  echo 'usage: client-lab.sh dhcp|static [--settled|--diagnose-ndp]' >&2
   exit 2
 fi
 sudo -n nmcli connection clone "$profile" "$tmp"
@@ -45,6 +45,12 @@ if ip -4 route show default | grep -Fq "dev $iface " ||
   echo 'WLAN_DEFAULT_ROUTE' >&2
   exit 1
 fi
+if [[ $test_variant == --settled ]]; then
+  # Separate startup/roaming-scan behavior from steady-state forwarding.
+  # The regular immediate run remains a distinct required test.
+  echo CLIENT_SETTLE_SECONDS=15
+  sleep 15
+fi
 date -Is
 ip -br addr show dev "$iface"
 ip -4 route show dev "$iface"
@@ -70,7 +76,7 @@ if [[ $mode == dhcp ]]; then
   if ! check_ping -6 -I "$v6" fd76:7::2; then
     failed=1
     ip -6 neigh show dev "$iface"
-    if [[ $ndp_diagnostic == --diagnose-ndp ]]; then
+    if [[ $test_variant == --diagnose-ndp ]]; then
       # Use only the known isolated upstream's NIC address. Do not
       # replace an existing permanent neighbor or alter another interface.
       # A passing later run is not proof of NDP causality when the first
