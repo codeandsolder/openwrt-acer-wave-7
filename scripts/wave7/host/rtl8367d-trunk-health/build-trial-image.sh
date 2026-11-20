@@ -46,7 +46,7 @@ rel=lib/modules/6.18.60/rtl8365mb.ko
 [[ $(digest "$root/$rel") == "$old_module_sha" ]] || fail 'original module identity'
 [[ $(cat "$root/etc/openwrt_version") == "$parent_rev" ]] || fail 'parent revision'
 rg -qx 'mode=dhcp' "$root/etc/wave7-role-profile"
-rg -qx "revision=$parent_rev" "$root/etc/wave7-role-profile"
+rg -Fxq "revision=$parent_rev" "$root/etc/wave7-role-profile"
 # Use the same module-strip implementation/settings as the production image.
 cp "$module" "$work/candidate.ko"
 CROSS="$toolchain/aarch64-openwrt-linux-musl-" NO_RENAME=1 "$repo/scripts/strip-kmod.sh" "$work/candidate.ko"
