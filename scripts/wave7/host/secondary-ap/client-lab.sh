@@ -60,7 +60,7 @@ done
 # replies. Use a fixed send count, then check the actual summary instead.
 check_ping() {
   local result rc=0
-  result=$(LC_ALL=C ping -c 20 -i 0.25 -W 1 "$@") || rc=$?
+  result=$(LC_ALL=C ping -D -c 20 -i 0.25 -W 1 "$@") || rc=$?
   printf '%s\n' "$result"
   [[ $rc == 0 ]] && grep -Eq '^20 packets transmitted, 20 received, (\+0 duplicates, )?0% packet loss,' <<< "$result"
 }
