@@ -7,7 +7,12 @@ ndp_diagnostic=${2:-}
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 tmp="Wave7-lab-test-$$"
-[[ $mode == dhcp || $mode == static ]] && [[ -z $ndp_diagnostic || ( $mode == dhcp && $ndp_diagnostic == --diagnose-ndp ) ]] && (( $# <= 2 )) || { echo 'usage: client-lab.sh dhcp|static [--diagnose-ndp]' >&2; exit 2; }
+if [[ $mode != dhcp && $mode != static ]] ||
+   [[ -n $ndp_diagnostic && ( $mode != dhcp || $ndp_diagnostic != --diagnose-ndp ) ]] ||
+   (( $# > 2 )); then
+  echo 'usage: client-lab.sh dhcp|static [--diagnose-ndp]' >&2
+  exit 2
+fi
 sudo -n nmcli connection clone "$profile" "$tmp"
 neighbor_added=0
 cleanup() {
@@ -68,6 +73,8 @@ if [[ $mode == dhcp ]]; then
     if [[ $ndp_diagnostic == --diagnose-ndp ]]; then
       # Use only the known isolated upstream's NIC address. Do not
       # replace an existing permanent neighbor or alter another interface.
+      # A passing later run is not proof of NDP causality when the first
+      # run already has a REACHABLE neighbor; packet captures decide.
       if ip -6 neigh show to fd76:7::2 dev "$iface" | grep -Eq 'PERMANENT|NOARP'; then
         echo NDP_DIAGNOSTIC_REFUSED >&2
         exit 1
