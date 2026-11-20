@@ -198,6 +198,7 @@ def report(rows):
     last_good=None
     episode=None
     window=[]
+    seen_up_edge=None
     def flush():
         nonlocal window
         if episode is not None and window:
@@ -209,6 +210,26 @@ def report(rows):
             flush()
             last_good=None
             continue
+        if s.get("revision")==RELINK_REV:
+            # Real kernel edges can occur entirely between snapshots.
+            # Use the logged pair without treating pre-capture history
+            # as a fresh event or claiming an unobserved healthy baseline.
+            events=s.get("phy_edges",[])
+            ups=[e for e in events if e["link"]==1]
+            newest=max(ups,key=lambda e:e["edge"],default=None)
+            if newest is not None:
+                n=newest["edge"]
+                if seen_up_edge is not None and n>seen_up_edge:
+                    downs=[e for e in events if e["link"]==0 and e["edge"]==n-1 and e["uptime"]<newest["uptime"]]
+                    if len(downs)==1 and n==seen_up_edge+2 and s["carrier"]=="1":
+                        flush()
+                        down=downs[0]["uptime"]
+                        if episode is None or episode["up"] is not None:
+                            prior=last_good if last_good and last_good["uptime"]<=down else None
+                            episode={"down":down,"up":None,"prior_speed":prior and prior["speed"],"windows":[]}
+                            episodes.append(episode)
+                        episode.update(down=down,up=newest["uptime"],post_speed=s["speed"],edge_source="kernel_log")
+                seen_up_edge=n
         if s["carrier"]=="0":
             flush()
             if episode is None or episode["up"] is not None:
@@ -349,6 +370,20 @@ def selftest():
     for r in rows:
         r["snapshot"]["state"]["relink_events"][0]["uptime"]=9
     assert report(rows)["classification"]=="INCONCLUSIVE"
+    # A carrier flap between snapshots is still observed when the
+    # driver records its complete fresh adjacent edge pair.
+    rows=[row(1)]+[row(t) for t in range(12,58,2)]
+    for i,r in enumerate(rows):
+        st=r["snapshot"]["state"]
+        st.update(revision=RELINK_REV,phy_edges=[{"edge":1,"link":1,"uptime":0.5}],relink_events=[])
+        r["host_counters"]["direct"]["speed"]="1000"
+        if i:
+            st["phy_edges"] += [{"edge":2,"link":0,"uptime":9},{"edge":3,"link":1,"uptime":11}]
+            st["relink_events"]=[{"uptime":11.1,"action":"preserve","tuple":["1000","1","1","1"]},{"uptime":11.2,"action":"committed","tuple":[None]*4}]
+    result=report(rows)
+    assert result["classification"]=="ONE_GIG_RECONNECT_PASS",result
+    assert result["episodes"][0]["edge_source"]=="kernel_log"
+    assert report(rows[1:])["classification"]=="NO_CARRIER_EDGE_OBSERVED"
     print("PHY_RECONNECT_SELFTEST_PASS")
 
 
