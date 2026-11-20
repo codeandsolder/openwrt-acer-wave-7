@@ -3,12 +3,19 @@
 # and default routes untouched. The temporary cloned profile is removed.
 set -euo pipefail
 mode=${1:-dhcp}
+ndp_diagnostic=${2:-}
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 tmp="Wave7-lab-test-$$"
-[[ $mode == dhcp || $mode == static ]] || { echo 'usage: client-lab.sh dhcp|static' >&2; exit 2; }
+[[ $mode == dhcp || $mode == static ]] && [[ -z $ndp_diagnostic || ( $mode == dhcp && $ndp_diagnostic == --diagnose-ndp ) ]] && (( $# <= 2 )) || { echo 'usage: client-lab.sh dhcp|static [--diagnose-ndp]' >&2; exit 2; }
 sudo -n nmcli connection clone "$profile" "$tmp"
-cleanup() { sudo -n nmcli connection delete "$tmp" >/dev/null 2>&1 || :; }
+neighbor_added=0
+cleanup() {
+  if (( neighbor_added )); then
+    sudo -n ip -6 neigh del fd76:7::2 dev "$iface" >/dev/null 2>&1 || :
+  fi
+  sudo -n nmcli connection delete "$tmp" >/dev/null 2>&1 || :
+}
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -55,7 +62,27 @@ check_ping() {
 failed=0
 check_ping -I "$v4" 192.168.76.2 || failed=1
 if [[ $mode == dhcp ]]; then
-  check_ping -6 -I "$v6" fd76:7::2 || failed=1
+  if ! check_ping -6 -I "$v6" fd76:7::2; then
+    failed=1
+    ip -6 neigh show dev "$iface"
+    if [[ $ndp_diagnostic == --diagnose-ndp ]]; then
+      # Use only the known isolated upstream's NIC address. Do not
+      # replace an existing permanent neighbor or alter another interface.
+      if ip -6 neigh show to fd76:7::2 dev "$iface" | grep -Eq 'PERMANENT|NOARP'; then
+        echo NDP_DIAGNOSTIC_REFUSED >&2
+        exit 1
+      fi
+      sudo -n iw dev "$iface" station dump
+      sudo -n ip -6 neigh replace fd76:7::2 lladdr 00:e0:4c:68:00:6d nud permanent dev "$iface"
+      neighbor_added=1
+      if check_ping -6 -I "$v6" fd76:7::2; then
+        echo NDP_BYPASS_PASS
+      else
+        echo NDP_BYPASS_LOSS
+      fi
+      sudo -n iw dev "$iface" station dump
+    fi
+  fi
 fi
 if (( failed )); then
   echo "WAVE7_CLIENT_LOSS mode=$mode" >&2
