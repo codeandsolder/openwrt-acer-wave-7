@@ -63,9 +63,21 @@ Original executable paths, not a translated pseudocode model:
   Final TX/RX/bridge on and notification happen on either up path.
   The independent mode-status check may still invoke mode apply,
   even for an unchanged tuple; the mode-apply internals are mocked.
-* For SGMII and SGMII+ port2 the stock wrapper selectors 15/12
-  both select GMAC type 1; the fixture uses that type. GMAC and
-  bridge register-address calculations execute actual instructions.
+* Corrected MAC selector scope: original ARM block 0x88c4–0x8990
+  selects type 1 (GMAC) for wrapper 15/SGMII. Wrapper 12/SGMII+
+  selects type 2 (XGMAC) with feature mask 4 clear, type 1 with
+  that feature set. All three selectors are now executed in the
+  fixture. At DT parser 0x982c4–0x98320, literal references
+  resolve to `port_mac_sel`, `QGMAC_PORT`, `XGMAC_PORT`; QGMAC
+  sets mask 4, XGMAC sets mask 8. Captured port2 PHY24 node
+  has neither property nor forced-speed/duplex. Thus default
+  2.5G selection is expected XGMAC, not GMAC (runtime feature
+  state was not captured). The existing worker matrix intentionally
+  mocks mode apply and holds MAC type at GMAC even at 2500; its
+  GMAC enable traces for 2500 are synthetic and must not be claimed
+  as stock hardware parity. The 1G GMAC traces remain applicable.
+  GMAC and bridge register-address calculations execute original
+  instructions.
 
 ## Scope and results
 
@@ -79,7 +91,7 @@ MAC speed/duplex/pause internals, kernel scheduling and actual clock
 hardware are boundaries; neither electrical behavior nor recovery is
 proved by this experiment.
 
-22 named cases (9 full worker/PHY cases, 10 host cases, 3 phylib cases), plus 2,304
+25 named cases (9 full worker/PHY cases, 10 host cases, 3 phylib cases, 3 original MAC selector cases), plus 2,304
 synthetic status combinations (24 negotiated tuples squared times
 four old/new carrier combinations) pass. Half duplex included only
 for 10/100; pause inputs independently varied to exercise decisions.

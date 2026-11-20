@@ -1,8 +1,9 @@
-# Conditional PCS preservation — prospective experiment
+# Conditional PCS preservation — completed negative experiment
 
-Status: design only, not a kernel patch or an observed fix. The existing
-0491 build must first undergo the matched 1G reconnect test. If 0491
-works, do not add a new intervention merely to approximate stock.
+Status: 0491 and 0492 both failed matched 1G reconnect. 0492 additionally
+had two later 2.5G→1G failures, despite one earlier successful transition.
+All recovered at 2.5G without reboot. The scope/design below is retained
+as historical rationale; preservation is not a fix. Do not repeat it.
 
 ## Decision boundary
 
@@ -110,3 +111,27 @@ test of one host-side difference, not an attempt at wholesale parity.
 - If preservation fails, compare timings with the stock replay before
   proposing another intervention. Do not repeat already-negative
   blanket resets or tune several variables at once.
+
+## Next discriminating intervention — MAC sequencing
+
+The stock worker performs bridge TX off, 10ms drain, RX off on copper
+down (TX retained), and TX off before mode/tuple preparation on up,
+then enables TX, RX, bridge separately. 0492 keeps Linux's immediate
+combined RX/TX disable, and combined up. Test this difference only
+for direct QCA8081 port2 and GMAC/SGMII; do not infer XGMAC operation
+from the synthetic 2500 worker traces. Reject a cache-only intervention:
+changed-speed transitions now fail too.
+
+The retained TX state must not survive administrative stop, teardown,
+failed major configuration or mode transition: explicitly quiesce it
+without relying on the next copper edge. Review the actual phylink/EDMA
+lifecycle and error paths before implementation. Keep prior FIFO, PCS
+and clock programming fixed for this focused test; distinguish any
+separate MAC tuple-skip experiment. Check original-instruction ordering,
+including real bridge/GMAC bit masks, in actual patched code tests.
+
+Do not promote failed 0492 to persistent approval to stage a new image.
+Use the existing approved rollback as the next guarded deployment
+baseline. A successful first link or carrier indication is inadequate;
+require bidirectional packet counters and route-bound traffic over both
+changed-speed and genuine same-speed reconnects.

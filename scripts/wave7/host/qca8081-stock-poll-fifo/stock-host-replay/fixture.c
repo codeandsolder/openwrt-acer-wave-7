@@ -4,7 +4,7 @@ typedef unsigned char u8;
 enum { CASE, POLL, BRIDGE, TX, RX, DELAY, MODE_RECORD, MODE_APPLY,
        GATE, RATE, MAC_SPEED, DUPLEX, TX_PAUSE, RX_PAUSE, REG_READ, REG_WRITE,
        NOTIFY, FDB, MODE_STATUS, END, ERROR, MII_READ, MMD_READ, MMD_WRITE,
-       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE };
+       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE };
 struct event { u32 type, a, b, c; };
 static struct event trace[131072];
 static u32 count;
@@ -43,7 +43,12 @@ struct { void (*delay)(u32), (*constant)(u32), (*variable)(u32); u32 ticks; }
 mock_arm_delay_ops={delay,delay,delay,0};
 u32 mock_qca_ssdk_port_bmp_get(u32 dev) { CHECK(dev==0); return 4; }
 u32 mock_hsl_port_is_sfp(u32 dev,u32 port) { PORT_CHECK; return 0; }
-u32 mock_hsl_port_feature_get(u32 dev,u32 port,u32 feature) { PORT_CHECK; CHECK(feature==64); return 0; }
+static u32 selector_feature;
+u32 mock_hsl_port_feature_get(u32 dev,u32 port,u32 feature) {
+    PORT_CHECK;
+    if(feature==4) return selector_feature;
+    CHECK(feature==64); return 0;
+}
 u32 mock_hppe_mac_port_valid_check(u32 dev,u32 port) { PORT_CHECK; return 1; }
 u32 mock_hsl_port_prop_check(u32 dev,u32 port,u32 prop) { PORT_CHECK; CHECK(prop==0 || prop==2); return 1; }
 static u32 synthetic_status(u32 dev,u32 phy,u32 *out) {
@@ -96,8 +101,8 @@ u32 mock_ssdk_uniphy_clock_rate_set(u32 dev,u32 id,u32 rate) {
 /* Replay the real bridge helper and real register-address calculation.
  * At the hardware boundary, enforce the exact port-2 offset and isolate
  * the bridge TX bit from the GMAC TX/RX enable bits. */
-/* The stock port-2 SGMII/SGMII+ mode-to-wrapper map is 15/12.
- * Both select GMAC type 1 in the stock mux selector. */
+/* Worker fixture holds MAC type at GMAC to isolate transition policy.
+ * The separately replayed selector checks the actual wrapper-dependent type. */
 u32 mock_qca_hppe_port_mac_type_get(u32 dev,u32 port) {
     PORT_CHECK; CHECK(host_mode==4 || host_mode==6); return 1;
 }
@@ -259,6 +264,24 @@ static void phylib_case(u32 id,u32 spec,u32 initial_fifo) {
     CHECK(!bus_locked && !work_locked);
     record(END,(((u8*)phydev)[0x23d]>>2)&1,phydev[0x24c/4],phydev[0x250/4]);
 }
+u32 mock_qca_hppe_port_mac_type_set(u32 dev,u32 port,u32 type) {
+    PORT_CHECK; record(MAC_TYPE,type,0,0); return 0;
+}
+/* Execute the original selector block at 0x88c4 with its required
+ * live register inputs. Its common continuation is an explicit exit
+ * boundary; do not execute the rest of mode application. */
+__attribute__((naked)) static void selector(u32 wrapper __attribute__((unused))) {
+    asm volatile("push {r4,r5,r7,lr}\nmov r7,r0\nmov r4,#2\nmov r5,#0\nldr r3,=0x010088c4\nbx r3");
+}
+__attribute__((naked)) void mock_selector_return(void) {
+    asm volatile("pop {r4,r5,r7,pc}");
+}
+static void selector_case(u32 id,u32 wrapper,u32 feature) {
+    record(CASE,id,wrapper,feature);
+    selector_feature=feature; phy_info[102]=255;
+    selector(wrapper);
+    record(END,phy_info[102],0,0);
+}
 void _start(void) {
     run_case(0,0,1000,1,0,0, 0,1000,1,0,0,4,4,0);
     run_case(1,1,1000,1,0,0, 1,1000,1,0,0,4,4,0);
@@ -285,6 +308,9 @@ void _start(void) {
     phylib_case(19,0x2500,0x8844);
     phylib_case(20,0,0x8844);
     phylib_case(21,0xffff,0x8844);
+    selector_case(22,15,0);
+    selector_case(23,12,0);
+    selector_case(24,12,1);
     const u32 speeds[]={10,100,1000,2500};
     u32 id=100;
     for(u32 os=0;os<4;os++) for(u32 od=0;od<2;od++) {
