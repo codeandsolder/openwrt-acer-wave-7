@@ -1,21 +1,34 @@
 #!/usr/bin/env bash
-# Independent Asus guarded native trial of the static authenticated Wave7 AP.
-# Guard8 trial with exact accepted static Guard7 rollback.
+# Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-mode=--check
-if (( $# )); then mode=$1; fi
-base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/guard8-static-lab
-candidate="$base/wave7-secondary-ap-static-guard8-sysupgrade.bin"
-accepted=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/guard7-static-lab/wave7-secondary-ap-static-guard7-sysupgrade.bin
-# SHA manifest arrives only after final image QA and verified transport from
-# Acer; no fallback SHA or force mode exists.
-candidate_sha=$(awk '$2 == "wave7-secondary-ap-static-guard8-sysupgrade.bin" {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
-expected_candidate_sha=b3c5c96ed47fb8ea4c9ea6fd726b499fe52b1391b6591b7016a349f296c35ec8
-accepted_sha=54c3f108efb740339a1f3241ef86d74453745b4918655575ec62789d3d109055
-candidate_rev=r0+38346-0fbc2cc77b-ap-static-guard8
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp --selftest|--check|--check-baseline|--run" >&2; exit 2; }
+profile=$1; mode=$2; shift 2
+root=/home/jan/firmware/wave7/trials
+guard8="$root/20261120-secondary-ap-guard8"
 candidate_builder=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b
-accepted_rev=r0+38346-0fbc2cc77b-ap-static-guard7
+candidate_rev="r0+38346-0fbc2cc77b-ap-$profile-guard8"
+case "$profile" in
+  static)
+    base="$guard8/guard8-static-lab"
+    expected_candidate_sha=b3c5c96ed47fb8ea4c9ea6fd726b499fe52b1391b6591b7016a349f296c35ec8
+    accepted="$root/20261120-secondary-ap-guard7/guard7-static-lab/wave7-secondary-ap-static-guard7-sysupgrade.bin"
+    accepted_sha=54c3f108efb740339a1f3241ef86d74453745b4918655575ec62789d3d109055
+    accepted_rev=r0+38346-0fbc2cc77b-ap-static-guard7
+    ;;
+  dhcp)
+    base="$guard8/guard8-dhcp-managed"
+    expected_candidate_sha=3a84923c5c18b1f1354985de975a775e3fbea464fc69dbf8e086267f0b917172
+    accepted="$guard8/guard8-static-lab/wave7-secondary-ap-static-guard8-sysupgrade.bin"
+    accepted_sha=b3c5c96ed47fb8ea4c9ea6fd726b499fe52b1391b6591b7016a349f296c35ec8
+    accepted_rev=r0+38346-0fbc2cc77b-ap-static-guard8
+    ;;
+  *) echo 'unknown candidate profile' >&2; exit 2 ;;
+esac
+candidate="$base/wave7-secondary-ap-$profile-guard8-sysupgrade.bin"
+candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
+leasefile="$guard8/upstream/dnsmasq.leases"
+upstream_unit=wave7-lab-upstream-guard8
 key=/home/jan/.ssh/wave7-root-rsa
 known=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/known_hosts
 host=root@192.168.76.1
@@ -65,6 +78,8 @@ read_state() {
     echo "password_auth=$(uci -q get dropbear.main.PasswordAuth)";
     echo "root_password_auth=$(uci -q get dropbear.main.RootPasswordAuth)";
     echo "builder_commit=$(sed -n "s/^builder_commit=//p" /etc/wave7-role-profile 2>/dev/null | head -1)";
+    echo "bridge_ip=$(ip -4 -o addr show dev br-lan | awk '\''$3=="inet" {print $4}'\'' | head -1)";
+    echo "approval=$(if [ -r /rom/lib/wave7/role-firstboot.sh ]; then . /rom/lib/wave7/role-firstboot.sh; if command -v wave7_secondary_ap_approval_matches >/dev/null 2>&1 && wave7_secondary_ap_approval_matches /rom/etc/wave7-role-profile "$(cat /rom/etc/openwrt_version)" /overlay/wave7-ap-approved; then echo 1; else echo 0; fi; else echo 0; fi)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)"'
 }
 # A permanently configured local address is required, not a DHCP lease
@@ -82,7 +97,10 @@ has_permanent_address() {
 # One definition of the healthy accepted baseline, used before the trial
 # and when checking that the rollback has actually booted successfully.
 baseline_healthy() {
-  static_role_healthy "$1" "$accepted_rev"
+  role_healthy "$1" "$accepted_rev" static || return 1
+  if [[ $profile == dhcp ]]; then
+    grep -Fxq "builder_commit=$candidate_builder" <<< "$1"
+  fi
 }
 rollback_eligible() {
   local s=$1
@@ -90,27 +108,43 @@ rollback_eligible() {
      $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
 }
 healthy() {
-  static_role_healthy "$1" "$candidate_rev" && grep -Fxq "builder_commit=$candidate_builder" <<< "$1"
+  role_healthy "$1" "$candidate_rev" "$profile" && grep -Fxq "builder_commit=$candidate_builder" <<< "$1"
 }
-static_role_healthy() {
-  local s=$1 expected_revision=$2
+role_healthy() {
+  local s=$1 expected_revision=$2 expected_mode=$3
   for expect in "rev=$expected_revision" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
     q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000 \
-    role=secondary-ap mode=static proto=static dnsmasq_disabled=1 \
+    role=secondary-ap "mode=$expected_mode" "proto=$expected_mode" bridge_ip=192.168.76.1/24 dnsmasq_disabled=1 \
     dhcpv4=disabled dhcpv6=disabled ra=disabled root_password='!' \
     password_auth=off root_password_auth=off overlay_ready=1; do
     grep -Fxq "$expect" <<< "$s" || return 1
   done
+}
+lease_valid() {
+  local records=$1 now=$2
+  awk -v now="$now" '$1 > now && tolower($2)=="70:5a:6f:5a:bb:14" && $3=="192.168.76.1" {n++} END {exit n!=1}' <<< "$records"
+}
+upstream_ready() {
+  systemctl is-active --quiet "$upstream_unit.service" &&
+    /home/jan/scripts/wave7/secondary-ap-guard8/lab-upstream.sh --check >/dev/null
+}
+candidate_healthy() {
+  healthy "$1" || return 1
+  if [[ $profile == dhcp ]]; then
+    systemctl is-active --quiet "$upstream_unit.service" && lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"
+  fi
 }
 XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 if [[ $mode == --selftest ]]; then
   s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard8\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1\nbuilder_commit=13d84dd2b19cdfd2e7d52bbe107581eaf0ddda4b'
+  s=$(sed -e "s/^rev=.*/rev=$candidate_rev/" -e "s/^mode=.*/mode=$profile/" -e "s/^proto=.*/proto=$profile/" <<< "$s")
+  s+=$'\nbridge_ip=192.168.76.1/24'
   healthy "$s" || fatal 'good state rejected'
-  for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=dhcp proto=dhcp dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
+  for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=wrong proto=wrong bridge_ip=192.168.76.99/24 dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")
-    bad=$(sed "s/^$field=.*/$change/" <<< "$s")
+    bad=$(sed "s|^$field=.*|$change|" <<< "$s")
     if healthy "$bad"; then fatal "bad state accepted: $change"; fi
   done
   permanent='87: eth0 inet 192.168.76.250/24 scope global valid_lft forever preferred_lft forever'
@@ -121,17 +155,21 @@ if [[ $mode == --selftest ]]; then
   rollback_eligible "$s" || fatal 'accepted trial ineligible for rollback'
   for change in bootfail=1 keep=0 "rev=$accepted_rev"; do
     field=$(cut -d= -f1 <<< "$change")
-    bad=$(sed "s/^$field=.*/$change/" <<< "$s")
+    bad=$(sed "s|^$field=.*|$change|" <<< "$s")
     if rollback_eligible "$bad"; then fatal "unsafe rollback accepted: $change"; fi
   done
-  baseline=$(sed "s/^rev=.*/rev=$accepted_rev/" <<< "$s")
+  baseline=$(sed -e "s/^rev=.*/rev=$accepted_rev/" -e "s/^mode=.*/mode=static/" -e "s/^proto=.*/proto=static/" <<< "$s")
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   for change in bootfail=1 keep=0 q6=2 ap=1 noc=1 lan1=0 ping=0; do
     field=$(cut -d= -f1 <<< "$change")
-    bad=$(sed "s/^$field=.*/$change/" <<< "$baseline")
+    bad=$(sed "s|^$field=.*|$change|" <<< "$baseline")
     if baseline_healthy "$bad"; then fatal "unhealthy restore accepted: $change"; fi
   done
-  echo STATIC_AP_GUARD8_SELFTEST_PASS
+  lease_valid '200 70:5a:6f:5a:bb:14 192.168.76.1 test *' 100 || fatal 'valid lease rejected'
+  for bad in '99 70:5a:6f:5a:bb:14 192.168.76.1 test *' '200 00:00:00:00:00:00 192.168.76.1 test *' '200 70:5a:6f:5a:bb:14 192.168.76.2 test *' ''; do
+    if lease_valid "$bad" 100; then fatal 'wrong lease accepted'; fi
+  done
+  echo "AP_GUARD8_SELFTEST_PASS profile=$profile"
   exit 0
 fi
 [[ $(id -un) == jan && -r $known && -r $key ]] || fatal 'Asus jan SSH identity absent'
@@ -141,9 +179,9 @@ test -x "$attestor" ||
   fatal 'management attestor selftest failed'
 
 if [[ $mode == --watch ]]; then
-  [[ $# == 3 ]] || fatal 'watch requires old boot and directory'
-  old_boot=$2
-  out=$3
+  [[ $# == 2 ]] || fatal 'watch requires old boot and directory'
+  old_boot=$1
+  out=$2
   [[ $old_boot =~ ^[0-9a-f-]{36}$ && $out == "$base"/runs/* ]] || fatal 'invalid watch parameters'
   mkdir -p "$out"
   exec 9>"$out/.watch.lock"
@@ -241,7 +279,7 @@ if [[ $mode == --watch ]]; then
           (( i % 10 )) || log AWAITING_RESTORE
         elif [[ -n $rollback_cause ]]; then
           restore "$rollback_cause" "$s" || :
-        elif healthy "$s"; then
+        elif candidate_healthy "$s"; then
           if (( healthy_since == 0 )); then
             healthy_since=$now; log FIRST_HEALTHY; echo SOAKING > "$out/status"
           fi
@@ -294,6 +332,13 @@ s=$(read_state) || fatal 'router inaccessible'
 boot=$(value "$s" boot)
 [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid boot ID'
 baseline_healthy "$s" || fatal "unhealthy source: $s"
+if [[ $profile == dhcp ]]; then
+  grep -Fxq approval=1 <<< "$s" || fatal 'static rollback not persistently approved'
+  upstream_ready || fatal 'isolated upstream service not ready'
+  if lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"; then
+    fatal 'stale router DHCP lease already present'
+  fi
+fi
 for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
   systemctl --user is-active --quiet "$name.service" || fatal "$name inactive"
 done
@@ -322,7 +367,7 @@ cleanup() {
 }
 trap cleanup EXIT
 systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=1500 -- \
-  /home/jan/scripts/wave7/secondary-ap-guard8/trial-static.sh --watch "$boot" "$out"
+  /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$profile" --watch "$boot" "$out"
 systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
 sleep 2

@@ -1,9 +1,10 @@
 # Acer Wave 7 — secondary-AP firmware role
 
-Guard7 static hardware acceptance and client/wire validation passed.
-Guard8 is the next role generation, adding explicit persistent approval
-for autonomous subsequent boots. Do not flash until its separate guarded
-trial and rollback harness are ready.
+Guard8 static hardware acceptance, 301-second soak and client/wire validation passed.
+Persistent approval and an unattested reboot are the remaining static-role gates.
+The Guard8 DHCP image is built, native-preflight-verified and staged; a
+separate isolated upstream DHCP/RA service has been validated through
+the static AP.
 ## Verified current images
 
 Both derive from accepted source sysupgrade SHA256:
@@ -11,15 +12,15 @@ Both derive from accepted source sysupgrade SHA256:
 and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
-- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard7
-  SHA256: see generated guard7 manifest
-- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard7
-  SHA256: see generated guard7 manifest
+- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard8
+  SHA256: b3c5c96ed47fb8ea4c9ea6fd726b499fe52b1391b6591b7016a349f296c35ec8
+- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard8
+  SHA256: 3a84923c5c18b1f1354985de975a775e3fbea464fc69dbf8e086267f0b917172
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
 Staged copies on Asus:
-  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard7/
+  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/
 
 Both bridge four physical DSA ports, retain EHT MLO and all 46
 SHA-pinned radio/diagnostic files, disable DNS, DHCPv4, DHCPv6, RA
@@ -43,7 +44,8 @@ matching overlay policy, all five bridge members, all three Q6 domains,
 both MLO links and no recorded NoC fatal, but do not require a cable or
 an upstream DHCP lease. Static mode still requires its configured address.
 Unapproved candidates remain fail-closed; no automatic promotion after
-firstboot. The Guard8 trial-static.sh uses accepted Guard7 static rollback.
+firstboot. The Guard8 trial-ap.sh static mode uses accepted Guard7 static rollback;
+DHCP mode uses the persistently approved Guard8 static rollback.
 
 ## Boot gate
 
@@ -90,7 +92,7 @@ observer records fallback but is NOT by itself a proven automatic
 reinstaller for the accepted OpenWrt slot. Do not flash until that
 hardware recovery outcome is known.
 
-The external Asus trial-static.sh adapts the tested native OTA
+The external Asus trial-ap.sh static|dhcp adapts the tested native OTA
 supervisor. It pins exact current accepted OpenWrt rollback,
 checks both images, both live Ethernet links, Q6, MLO, peer and
 current firstboot status, arms observers, drives authenticated
@@ -115,7 +117,10 @@ server. The existing vendor fallback collector remains observational.
 - overlay-reset.sh: selective role-aware UBIFS upperdir reset.
 - preinit-overlay-reset.sh: pre-service mount_root hook and fail-closed gate.
 - attest-management.sh: external publickey-only SSH attestation.
-- trial-static.sh: guarded native static-role trial on Asus.
+- trial-ap.sh: shared guarded static/DHCP-role trial on Asus.
+- lab-upstream.sh and lab-upstream.conf: one-hour-bounded isolated upstream
+  DHCP/RA test service; fixed lease by bridge MAC, no default route/DNS,
+  scoped changes cleaned up on stop.
 - build-image.sh: deterministic native sysupgrade/SquashFS repacker.
 - test-stage.sh: valid/invalid role and boot acceptance tests.
 
@@ -127,13 +132,18 @@ unattested -ap-* variants are obsolete, not deployment candidates.
 
 ## Hardware acceptance
 
-1. Guard7 static passed native preflight, guarded trial, soak and wire/client tests.
-2. Guard7 DHCP passed offline QA and on-router native preflight.
-3. Both Guard8 images passed offline QA and target native preflight;
-   run the new guarded static trial, explicit approval and reboot tests.
-4. Prepare a separate, upstream-DHCP-connected lab before deploying
-   the DHCP-managed AP role.
-   the DHCP-managed AP role.
+1. Guard7 and Guard8 static native boot, soak, wire and client tests passed.
+2. Guard8 DHCP image passed offline QA and native preflight.
+3. The isolated upstream lab provided a real IPv4 lease and IPv6 SLAAC
+   address to the Wyse MLO client through Guard8 static; IPv4 5/5 and
+   IPv6 4/5 pings. Verify loss-free sustained IPv6 forwarding separately.
+4. Explicitly approve the known-good Guard8 static boot, then prove an
+   unattended reboot with no volatile attestation token.
+5. Start the isolated upstream service and run trial-ap.sh dhcp --check
+   before guarded DHCP-role testing. Preflight requires an approved static
+   rollback, active upstream, no existing router lease, and exact image
+   digests. During soak require the expected bridge address and matching
+   unexpired lease in the independent server's lease file.
 
 Current state: https://app.notion.com/p/41df74be90208166a3acf2b79a58e36e
 Dated worklog: https://app.notion.com/p/41ef74be902081b0837ccec7c3218452

@@ -5,6 +5,8 @@ set -euo pipefail
 iface=enp4s0f4u2u4
 expected_mac=00:e0:4c:68:00:6d
 prefix=fd76:7::2/64
+network=fd76:7::/64
+lab_ifaces=(enp4s0f4u2u4 enp4s0f4u2u2u4)
 base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/upstream
 unit=wave7-lab-upstream-guard8
 config=$(dirname "$(realpath "$0")")/lab-upstream.conf
@@ -36,9 +38,12 @@ case "${1:---check}" in
     preflight
     # Require newly owned address and firewall rule. Only remove our own
     # changes on completion/failure. The transient unit bounds the lifetime.
-    if ip -6 -o addr show dev "$iface" | grep -Fq "inet6 $prefix "; then
-      echo 'test IPv6 address already exists' >&2; exit 1
-    fi
+    for lab in "${lab_ifaces[@]}"; do
+      if [[ -n $(ip -6 -o addr show dev "$lab" to "$network") ||
+            -n $(ip -6 route show dev "$lab" to "$network") ]]; then
+        echo "test IPv6 prefix already exists on $lab" >&2; exit 1
+      fi
+    done
     if iptables -C ufw-user-input "${rule[@]}" 2>/dev/null; then
       echo 'test firewall rule already exists' >&2; exit 1
     fi
@@ -48,7 +53,15 @@ case "${1:---check}" in
     cleanup() {
       if [[ -n $child ]]; then kill "$child" 2>/dev/null || :; wait "$child" 2>/dev/null || :; fi
       if (( rule_added )); then iptables -D ufw-user-input "${rule[@]}" || :; fi
-      if (( address_added )); then ip -6 addr del "$prefix" dev "$iface" || :; fi
+      if (( address_added )); then
+        # Our RA may have traversed the bridge and configured an additional
+        # SLAAC address on either lab NIC. The start gate proved no existing
+        # addresses/routes for this dedicated prefix; remove only that scope.
+        for lab in "${lab_ifaces[@]}"; do
+          ip -6 addr flush dev "$lab" to "$network" || :
+          ip -6 route flush dev "$lab" to "$network" || :
+        done
+      fi
     }
     trap cleanup EXIT
     trap 'exit 0' TERM INT
