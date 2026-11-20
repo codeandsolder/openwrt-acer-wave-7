@@ -239,6 +239,26 @@ static void full_case(u32 id,u32 old_link,u32 old_speed,u32 spec,u32 mode,u32 in
     CHECK(!bus_locked && !work_locked);
     record(END,ctx[(0x208+8)/4],ctx[(0x248+8)/4],ctx[(0x288+8)/4]);
 }
+u32 mock_qca808x_phy_get_partner_ability(u32 dev,u32 phy,u32 *adv) {
+    CHECK(dev==0 && phy==24); *adv=0; return 0;
+}
+void *mock_qca808x_lp_adv_to_ethtool_adv(void *dev,u32 adv) {
+    CHECK(dev==phydev && adv==0); return dev;
+}
+void mock_phy_resolve_aneg_pause(void *dev) { CHECK(dev==phydev); }
+static void phylib_case(u32 id,u32 spec,u32 initial_fifo) {
+    static u32 priv[2], phy_rec[4];
+    record(CASE,id,0,0);
+    mock_memset(phydev,0,sizeof(phydev));
+    priv[1]=(u32)phy_rec; phy_rec[2]=0; phy_rec[3]=24;
+    phydev[0x294/4]=(u32)priv;
+    full_path=1; fifo=initial_fifo; seed=0xa002; c22_status=spec;
+    ms_fault=0; write_error=0;
+    CHECK(!bus_locked && !work_locked);
+    CHECK(((u32 (*)(void *))0x01069cc4)(phydev)==0);
+    CHECK(!bus_locked && !work_locked);
+    record(END,(((u8*)phydev)[0x23d]>>2)&1,phydev[0x24c/4],phydev[0x250/4]);
+}
 void _start(void) {
     run_case(0,0,1000,1,0,0, 0,1000,1,0,0,4,4,0);
     run_case(1,1,1000,1,0,0, 1,1000,1,0,0,4,4,0);
@@ -262,6 +282,9 @@ void _start(void) {
     // negotiated tuple: mode apply can still run, independently of
     // the explicit host clock/reset path.
     run_case(18,0,1000,1,0,0, 1,1000,1,0,0,6,4,0);
+    phylib_case(19,0x2500,0x8844);
+    phylib_case(20,0,0x8844);
+    phylib_case(21,0xffff,0x8844);
     const u32 speeds[]={10,100,1000,2500};
     u32 id=100;
     for(u32 os=0;os<4;os++) for(u32 od=0;od<2;od++) {
