@@ -23,6 +23,8 @@ config dropbear 'main'
  option PasswordAuth 'on'
 CFG
   echo "config dhcp 'lan'" > "$d/etc/config/dhcp"
+  echo "config firewall 'main'" > "$d/etc/config/firewall"
+  echo "config system 'main'" > "$d/etc/config/system"
   printf '%s\n' 'root::0:0:99999:7:::' 'daemon:*:0:0:99999:7:::' > "$d/etc/shadow"
   echo 'ssh-ed25519 placeholder-synthetic-test-key' > "$d/etc/dropbear/authorized_keys"
   echo 'r0+1234-c0ffee1234' > "$d/etc/openwrt_version"
@@ -66,6 +68,10 @@ for d in "$work/dhcp" "$work/static"; do
   rg -q 'wave7_secondary_ap_link_ready' "$d/lib/preinit/05_wave7_firstboot_watchdog"
   sh -n "$d/lib/preinit/05_wave7_firstboot_watchdog"
   test -s "$d/lib/wave7/role-firstboot.sh"
+  test -s "$d/lib/wave7/overlay-reset.sh"
+  test -s "$d/lib/preinit/76_wave7_ap_overlay_reset"
+  rg -Fq 'boot_hook_add preinit_mount_root wave7_ap_reset_preinit' "$d/lib/preinit/76_wave7_ap_overlay_reset"
+  sh -n "$d/lib/preinit/76_wave7_ap_overlay_reset" "$d/lib/wave7/overlay-reset.sh"
   sh -n "$d/etc/init.d/wave7-firstboot-failsafe"
   rg -q 'return 1' "$d/etc/init.d/wave7-firstboot-failsafe"
   if rg -q '192[.]168[.]76[.][12]' "$d/etc/init.d/wave7-firstboot-failsafe"; then
@@ -99,11 +105,47 @@ if "$stage" "$work/no-key" dhcp >/dev/null 2>&1; then
   echo 'MISSING_SSH_KEY_ACCEPTED' >&2
   exit 1
 fi
+# Verify inherited lab UCI overrides are removed from the *persistent*
+# overlay, not from new image defaults. Keep independent UBIFS state.
+make_fixture "$work/overlay-reset"
+p="$work/overlay-reset"
+mkdir -p "$p/overlay/upper/etc/config" "$p/overlay/upper/etc/dropbear"   "$p/rom/etc/config" "$p/rom/etc/dropbear"
+for name in network dhcp dropbear wireless firewall system; do
+  cp "$p/etc/config/$name" "$p/rom/etc/config/$name"
+  printf 'LEGACY-ROUTER-OVERRIDE-%s\\n' "$name" > "$p/overlay/upper/etc/config/$name"
+done
+cp "$p/etc/dropbear/authorized_keys" "$p/rom/etc/dropbear/authorized_keys"
+cp "$p/etc/shadow" "$p/rom/etc/shadow"
+printf 'legacy-ssh-authorized-key\\n' > "$p/overlay/upper/etc/dropbear/authorized_keys"
+printf 'root::0:0:99999:7:::\\n' > "$p/overlay/upper/etc/shadow"
+printf 'env-config-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/fw_env.config"
+printf 'host-identity-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/dropbear/dropbear_ed25519_host_key"
+printf 'ubootenv-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/config/ubootenv"
+. "$(dirname -- "$stage")/overlay-reset.sh"
+wave7_ap_reset_upper "$p"
+wave7_ap_reset_upper "$p"
+for f in etc/config/network etc/config/dhcp etc/config/dropbear \
+         etc/config/wireless etc/config/firewall etc/config/system \
+         etc/dropbear/authorized_keys etc/shadow; do
+  test ! -e "$p/overlay/upper/$f"
+done
+rg -q '^env-config-MUST-SURVIVE' "$p/overlay/upper/etc/fw_env.config"
+rg -q '^host-identity-MUST-SURVIVE' "$p/overlay/upper/etc/dropbear/dropbear_ed25519_host_key"
+rg -q '^ubootenv-MUST-SURVIVE' "$p/overlay/upper/etc/config/ubootenv"
+# Dangling symlink in a managed parent must be rejected, not traversed.
+make_fixture "$work/overlay-bad"
+q="$work/overlay-bad"
+mkdir -p "$q/overlay/upper/etc" "$q/rom/etc/config" "$q/rom/etc/dropbear"
+ln -s /tmp/untrusted "$q/overlay/upper/etc/config"
+if wave7_ap_reset_upper "$q"; then
+  echo 'SYMLINKED_OVERLAY_PARENT_ACCEPTED' >&2
+  exit 1
+fi
 # Pure firstboot gate test; no kernel/router calls.
 . "$(dirname -- "$stage")/role-firstboot.sh"
 boot=11111111-2222-3333-4444-555555555555
-rev_static=r0+38346-0fbc2cc77b-ap-static-guard2
-rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard2
+rev_static=r0+38346-0fbc2cc77b-ap-static-guard3
+rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard3
 profile_static=$'role=secondary-ap\nmode=static\nmanagement_ipv4=192.168.76.1/24'
 profile_dhcp=$'role=secondary-ap\nmode=dhcp'
 ipstatic='3: br-lan    inet 192.168.76.1/24 brd 192.168.76.255 scope global br-lan'

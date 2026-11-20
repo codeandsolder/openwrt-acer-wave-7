@@ -23,7 +23,7 @@ valid() {
   [[ $boot =~ ^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$ ]] || return 1
   [[ $bootfail =~ ^[1-5]$ && $keep == 0 ]] || return 1
   wanted=dhcp
-  [[ $expected == *-ap-static-guard2 ]] && wanted=static
+  [[ $expected == *-ap-static-guard3 ]] && wanted=static
   netmode=$(value "$s" netproto)
   [[ $(value "$s" role) == secondary-ap ]] || return 1
   [[ $(value "$s" profile_mode) == "$wanted" ]] || return 1
@@ -31,7 +31,7 @@ valid() {
   for field in 'kernel=6.18.60' 'root_hash=!' 'rootkey=1' \
     'pass=off' 'rootpass=off' 'rootlogin=on' 'dnsmasq=1' \
     'dhcpv4=disabled' 'dhcpv6=disabled' 'ra=disabled' \
-    'lan=1' 'lan1=1' 'q6=3' 'mlo=2' 'ping=1' 'noc=0'; do
+    'lan=1' 'lan1=1' 'q6=3' 'mlo=2' 'ping=1' 'noc=0' 'overlay_ready=1'; do
     grep -Fxq "$field" <<< "$s" || return 1
   done
   [[ $(value "$s" bridge_ip) =~ ^[0-9]+(\.[0-9]+){3}/[0-9]+$ ]] || return 1
@@ -45,11 +45,11 @@ valid() {
   fi
 }
 if [[ $mode == --selftest ]]; then
-  rev=r0+38346-0fbc2cc77b-ap-static-guard2
+  rev=r0+38346-0fbc2cc77b-ap-static-guard3
   boot=11111111-2222-3333-4444-555555555555
-  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard2\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
+  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard3\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\noverlay_ready=1\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
   valid "$good" "$rev"
-  for change in 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' \
+  for change in 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' 'overlay_ready=0' \
     'pass=on' 'rootpass=on' 'rootlogin=off' 'dnsmasq=0' \
     'dhcpv4=server' 'dhcpv6=server' 'ra=server' 'lan=0' \
     'lan1=0' 'q6=2' 'mlo=1' 'ping=0' 'noc=1' \
@@ -60,7 +60,7 @@ if [[ $mode == --selftest ]]; then
       exit 1
     fi
   done
-  dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard2
+  dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard3
   dynamic=$(sed -e "s@$rev@$dynamic_rev@" \
     -e 's@netproto=static@netproto=dhcp@' \
     -e 's@profile_mode=static@profile_mode=dhcp@' \
@@ -88,7 +88,7 @@ router=$2
 expected=$3
 iface=$4
 known=$5
-[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard2$ ]] || {
+[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard3$ ]] || {
   echo 'unexpected AP revision' >&2; exit 2
 }
 [[ $router =~ ^[a-zA-Z0-9.:_-]+$ && $iface =~ ^[a-zA-Z0-9_.:-]+$ ]] || {
@@ -122,6 +122,7 @@ state=$(remote '
   echo "role=$(sed -n '\''s/^role=//p'\'' /etc/wave7-role-profile | head -1)"
   echo "profile_mode=$(sed -n '\''s/^mode=//p'\'' /etc/wave7-role-profile | head -1)"
   echo "management_ipv4=$(sed -n '\''s/^management_ipv4=//p'\'' /etc/wave7-role-profile | head -1)"
+  echo "overlay_ready=$(test -e /tmp/wave7-ap-overlay-ready && echo 1 || echo 0)"
   echo "netproto=$(uci -q get network.lan.proto)"
   echo "bridge_ip=$(ip -4 -o addr show dev br-lan | sed -n '\''s/.*inet \([^ ]*\).*/\1/p'\'' | head -1)"
   echo "lan=$(cat /sys/class/net/lan/carrier)"

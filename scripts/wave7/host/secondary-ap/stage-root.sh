@@ -74,7 +74,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode-guard2"
+newrev="$oldrev-ap-$mode-guard3"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'
@@ -200,6 +200,21 @@ sh -n "$fallback"
 rg -Fq 'AP role: only the preinit token-gated path' "$fallback"
 ! rg -q '192[.]168[.]76[.][12]' "$fallback" ||
   { echo "late-init fallback still contains lab acceptance" >&2; exit 2; }
+# Mount_root preinit hook runs before /etc/init.d/network, dnsmasq, SSH and
+# uci-defaults. Remove inherited standalone-router overlay config or it
+# would shadow the new SquashFS defaults despite sysupgrade -n.
+overlay_tool=$(cd -- "$(dirname -- "$0")" && pwd)/overlay-reset.sh
+overlay_hook=$(cd -- "$(dirname -- "$0")" && pwd)/preinit-overlay-reset.sh
+test -s "$overlay_tool" && test -s "$overlay_hook"
+test ! -e "$root/lib/preinit/76_wave7_ap_overlay_reset" || {
+  echo 'duplicate AP overlay hook' >&2; exit 2
+}
+cp "$overlay_tool" "$root/lib/wave7/overlay-reset.sh"
+cp "$overlay_hook" "$root/lib/preinit/76_wave7_ap_overlay_reset"
+chmod 0644 "$root/lib/wave7/overlay-reset.sh"
+chmod 0755 "$root/lib/preinit/76_wave7_ap_overlay_reset"
+sh -n "$root/lib/wave7/overlay-reset.sh"   "$root/lib/preinit/76_wave7_ap_overlay_reset"
+rg -Fq 'boot_hook_add preinit_mount_root wave7_ap_reset_preinit'   "$root/lib/preinit/76_wave7_ap_overlay_reset"
 # Explicitly distinct revision so trial monitors cannot mistake this
 # role for the accepted lab image.
 for f in "$root/etc/openwrt_version" "$root/etc/openwrt_release" \

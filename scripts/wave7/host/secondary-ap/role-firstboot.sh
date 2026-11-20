@@ -17,7 +17,7 @@ wave7_secondary_ap_contract_ok() {
   printf '%s\n' "$profile" | grep -Fxq 'role=secondary-ap' || return 1
   mode=$(printf '%s\n' "$profile" | sed -n 's/^mode=//p')
   case "$mode:$revision" in
-    static:r0+*-ap-static-guard2|dhcp:r0+*-ap-dhcp-guard2) ;;
+    static:r0+*-ap-static-guard3|dhcp:r0+*-ap-dhcp-guard3) ;;
     *) return 1 ;;
   esac
   [ "$carrier" = 1 ] || return 1
@@ -36,6 +36,7 @@ wave7_secondary_ap_contract_ok() {
   fi
 }
 wave7_secondary_ap_link_ready() {
+  [ -e /tmp/wave7-ap-overlay-ready ] || return 1
   [ "$(cat /sys/class/net/lan/carrier 2>/dev/null)" = 1 ] || return 1
   [ -r /etc/wave7-role-profile ] || return 1
   [ -r /tmp/wave7-ap-management-verified ] || return 1

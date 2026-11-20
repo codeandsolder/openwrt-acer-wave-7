@@ -13,15 +13,15 @@ Both derive from accepted source sysupgrade SHA256:
 and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
-- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard2
-  SHA256 201bfda23b68846a2263531b76b0d31aa8d1c121dc283d8dbe61967831497280
-- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard2
-  SHA256 69c985389dd61533bbbbcf4d967a53f2b530f511824ab2f810ca054bfff21784
+- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard3
+  SHA256 09184ab15ab17b4b9453b2d38a52a0cbe225f152342f82d060bc6eea9c33b19f
+- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard3
+  SHA256 a1bfc4bf40b057e2d5aea8c18f8d6b5ff407d30bf9e81f03959aedbbceffb9cf
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
 Staged copies on Asus:
-  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard2/
+  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard3/
 
 Both bridge four physical DSA ports, retain EHT MLO and all 46
 SHA-pinned radio/diagnostic files, disable DNS, DHCPv4, DHCPv6, RA
@@ -32,11 +32,25 @@ upstream DHCP server and upstream IPv6 RA.
 
 ## Boot gate
 
-The accepted lab image is not modified. In the AP-derived rootfs,
-the preinit acceptance function checks a volatile token of the current
+The accepted lab image is not modified. The current native OTA path
+retains the independent ubi1:openwrt_data overlay EVEN with sysupgrade -n.
+On the live original firmware, old standalone-router network, dhcp, system
+configuration is present in /overlay/upper and shadows /rom defaults.
+The AP role's early preinit_mount_root hook therefore clears just the
+inherited /etc/config/{network,dhcp,dropbear,wireless,firewall,system},
+/etc/shadow and /etc/dropbear/authorized_keys upper entries after the
+UBIFS pivot, before UCI config generation and service startup. It keeps
+fw_env.config, ubootenv, ubihealthd and SSH host keys. It checks that
+all resulting live files match the role image's /rom originals and sets
+the ephemeral /tmp/wave7-ap-overlay-ready marker only after success.
+If anything fails, it BLOCKS service startup while the already-armed
+hard firstboot watchdog enters recovery; never expose old DHCP/RA/SSH.
+
+The role's preinit acceptance function requires that overlay-ready
+marker AND a volatile token of the current
 boot UUID and exact role revision. The external Asus
 attest-management.sh connects with publickey-only SSH and verifies
-root shadow, Dropbear policy, bridge address, service policy, Q6 3/3,
+root shadow, Dropbear policy, overlay-ready marker, bridge address, service policy, Q6 3/3,
 MLO2, both Ethernet links, NoC0 and return ping before writing the
 token. Only the existing preinit watchdog can commit bootfail=0.
 
@@ -61,8 +75,10 @@ any --run flash attempt.
 
 ## Source files
 
-- stage-root.sh: applies role config and patches both boot paths.
+- stage-root.sh: derives role policy and patches both boot paths.
 - role-firstboot.sh: boot/token contract.
+- overlay-reset.sh: selective role-aware UBIFS upperdir reset.
+- preinit-overlay-reset.sh: pre-service mount_root hook and fail-closed gate.
 - attest-management.sh: external publickey-only SSH attestation.
 - trial-static.sh: guarded native static-role trial on Asus.
 - build-image.sh: deterministic native sysupgrade/SquashFS repacker.
@@ -71,7 +87,7 @@ any --run flash attempt.
 All scripts ShellCheck clean. Image packager verifies allowed root
 changes, special /dev/console inode, roundtrip extraction, 46 firmware
 files, unchanged kernel and fwtool/board metadata. It never contacts
-the router and refuses output overwrites. Previous -ap-*-auth and
+the router and refuses output overwrites. Previous -ap-*-auth, -ap-*-guard2 and
 unattested -ap-* variants are obsolete, not deployment candidates.
 
 ## Hardware acceptance
