@@ -81,6 +81,16 @@ candidate firstboot, and requires 300s continuous post-acceptance
 health. Read-only --selftest, --check-baseline, and --check run before
 any --run flash attempt.
 
+The independent Asus observer uses permanent 192.168.76.250/24 on
+enp4s0f4u2u2u4, and the direct 2.5GbE peer uses permanent
+192.168.76.2/24. Neither DHCP-assigned address is a prerequisite.
+All supervisor SSH/SCP and the SSH attestor bind the management
+interface and source IP; the router reports the actual authenticated
+peer and both acceptance checks require it to match. This keeps the
+management path independent of the AP's intentionally disabled DHCP
+server. The existing vendor fallback collector remains observational.
+
+
 ## Source files
 
 - stage-root.sh: derives role policy and patches both boot paths.

@@ -3,23 +3,24 @@
 # trial supervisor. It does not commit bootfail or request a flash/reboot.
 set -euo pipefail
 if (( $# == 0 )); then
-  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE KNOWN_HOSTS" >&2
+  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS" >&2
   exit 2
 fi
 mode=$1
 if [[ ( $mode == --selftest && $# != 1 ) ||
-      ( $mode != --selftest && ( $mode != --run || $# != 5 ) ) ]]; then
-  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE KNOWN_HOSTS" >&2
+      ( $mode != --selftest && ( $mode != --run || $# != 6 ) ) ]]; then
+  echo "usage: $0 --selftest | --run ROUTER EXPECTED_REV BIND_INTERFACE SOURCE_IPV4 KNOWN_HOSTS" >&2
   exit 2
 fi
 value() { sed -n "s/^$2=//p" <<< "$1" | head -1; }
 valid() {
-  local s=$1 expected=$2 rev boot bootfail keep netmode wanted
+  local s=$1 expected=$2 source=$3 rev boot bootfail keep netmode wanted
   rev=$(value "$s" rev)
   boot=$(value "$s" boot)
   bootfail=$(value "$s" bootfail)
   keep=$(value "$s" keep)
   [[ $rev == "$expected" ]] || return 1
+  [[ $(value "$s" management_peer) == "$source" ]] || return 1
   [[ $boot =~ ^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$ ]] || return 1
   [[ $bootfail =~ ^[1-5]$ && $keep == 0 ]] || return 1
   wanted=dhcp
@@ -47,15 +48,15 @@ valid() {
 if [[ $mode == --selftest ]]; then
   rev=r0+38346-0fbc2cc77b-ap-static-guard4
   boot=11111111-2222-3333-4444-555555555555
-  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard4\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\noverlay_ready=1\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
-  valid "$good" "$rev"
-  for change in 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' 'overlay_ready=0' \
+  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard4\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\noverlay_ready=1\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
+  valid "$good" "$rev" 192.168.76.250
+  for change in 'management_peer=192.168.76.190' 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' 'overlay_ready=0' \
     'pass=on' 'rootpass=on' 'rootlogin=off' 'dnsmasq=0' \
     'dhcpv4=server' 'dhcpv6=server' 'ra=server' 'lan=0' \
     'lan1=0' 'q6=2' 'mlo=1' 'ping=0' 'noc=1' \
     'bridge_ip=192.168.76.2/24' 'netproto=dhcp'; do
     field=$(cut -d= -f1 <<< "$change")
-    if valid "$(sed "s@^$field=.*@$change@" <<< "$good")" "$rev"; then
+    if valid "$(sed "s@^$field=.*@$change@" <<< "$good")" "$rev" 192.168.76.250; then
       echo "ATTESATION_REJECT_TEST_FAIL $change" >&2
       exit 1
     fi
@@ -66,17 +67,17 @@ if [[ $mode == --selftest ]]; then
     -e 's@profile_mode=static@profile_mode=dhcp@' \
     -e 's@management_ipv4=192.168.76.1/24@management_ipv4=@' \
     -e 's@bridge_ip=192.168.76.1/24@bridge_ip=10.22.33.44/24@' <<< "$good")
-  valid "$dynamic" "$dynamic_rev"
+  valid "$dynamic" "$dynamic_rev" 192.168.76.250
   for change in 'role=lab' 'profile_mode=dhcp' 'management_ipv4=192.168.76.99/24'; do
     field=$(cut -d= -f1 <<< "$change")
-    if valid "$(sed "s@^$field=.*@$change@" <<< "$good")" "$rev"; then
+    if valid "$(sed "s@^$field=.*@$change@" <<< "$good")" "$rev" 192.168.76.250; then
       echo "ATTESTATION_PROFILE_MISMATCH_ACCEPTED $change" >&2
       exit 1
     fi
   done
   for change in 'role=lab' 'profile_mode=static' 'management_ipv4=192.168.76.1/24'; do
     field=$(cut -d= -f1 <<< "$change")
-    if valid "$(sed "s@^$field=.*@$change@" <<< "$dynamic")" "$dynamic_rev"; then
+    if valid "$(sed "s@^$field=.*@$change@" <<< "$dynamic")" "$dynamic_rev" 192.168.76.250; then
       echo "DHCP_ATTESTATION_PROFILE_MISMATCH_ACCEPTED $change" >&2
       exit 1
     fi
@@ -87,10 +88,12 @@ fi
 router=$2
 expected=$3
 iface=$4
-known=$5
+source_ip=$5
+known=$6
 [[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard4$ ]] || {
   echo 'unexpected AP revision' >&2; exit 2
 }
+[[ $source_ip =~ ^[0-9]+(\.[0-9]+){3}$ ]] || { echo "invalid source IPv4" >&2; exit 2; }
 [[ $router =~ ^[a-zA-Z0-9.:_-]+$ && $iface =~ ^[a-zA-Z0-9_.:-]+$ ]] || {
   echo 'unsafe router/iface' >&2; exit 2
 }
@@ -98,13 +101,15 @@ known=$5
   echo 'known host or SSH identity missing' >&2; exit 2
 }
 remote() {
-  ssh -n -T -i /home/jan/.ssh/wave7-root-rsa -o "BindInterface=$iface" \
+  ssh -n -T -i /home/jan/.ssh/wave7-root-rsa -o "BindInterface=$iface" -o "BindAddress=$source_ip" \
     -o BatchMode=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey \
     -o PasswordAuthentication=no -o ConnectTimeout=4 \
     -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$known" \
     "root@$router" "$@"
 }
 state=$(remote '
+  set -- $SSH_CONNECTION
+  echo "management_peer=$1"
   echo "rev=$(cat /etc/openwrt_version)"
   echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
   echo "bootfail=$(fw_printenv -n bootfail)"
@@ -132,7 +137,7 @@ state=$(remote '
   echo "noc=$(dmesg | grep -Ec NOC.*ERROR || :)"
   echo "ping=$(set -- $SSH_CONNECTION; ping -I br-lan -c 1 -W 1 "$1" >/dev/null 2>&1 && echo 1 || echo 0)"
 ')
-if ! valid "$state" "$expected"; then
+if ! valid "$state" "$expected" "$source_ip"; then
   echo 'SECONDARY_AP_MANAGEMENT_ATTESTATION_REFUSED'
   printf '%s\n' "$state" | rg -v '^root_hash='
   exit 3

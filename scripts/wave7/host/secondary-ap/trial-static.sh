@@ -16,16 +16,18 @@ accepted_rev=r0+38346-0fbc2cc77b
 key=/home/jan/.ssh/wave7-root-rsa
 known=/home/jan/firmware/wave7/trials/20261118-asus-dualport/known_hosts
 host=root@192.168.76.1
+management_ip=192.168.76.250
+management_iface=enp4s0f4u2u2u4
 remote() {
-  ssh -n -T -i "$key" -o BindInterface=enp4s0f4u2u2u4 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
+  ssh -n -T -i "$key" -o "BindInterface=$management_iface" -o "BindAddress=$management_ip" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
     -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" "$@"
 }
 remote_timed() {
-  timeout 135 ssh -n -T -i "$key" -o BindInterface=enp4s0f4u2u2u4 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
+  timeout 135 ssh -n -T -i "$key" -o "BindInterface=$management_iface" -o "BindAddress=$management_ip" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
     -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" "$@"
 }
 upload() {
-  scp -q -O -i "$key" -o BindInterface=enp4s0f4u2u2u4 -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=5 \
+  scp -q -O -i "$key" -o "BindInterface=$management_iface" -o "BindAddress=$management_ip" -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=5 \
     -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$1" "$host:$2"
 }
 fatal() { printf 'PREFLIGHT_BLOCKED: %s\n' "$*" >&2; exit 3; }
@@ -33,6 +35,8 @@ value() { sed -n "s/^$2=//p" <<< "$1" | head -1; }
 read_state() {
   remote 'echo "boot=$(cat /proc/sys/kernel/random/boot_id)";
     echo "rev=$(cat /etc/openwrt_version)";
+    set -- $SSH_CONNECTION;
+    echo "management_peer=$1";
     echo "kernel=$(uname -r)";
     echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || :)";
     echo "keep=$(test -e /tmp/wave7-keep-boot && echo 1 || echo 0)";
@@ -58,9 +62,21 @@ read_state() {
     echo "root_password_auth=$(uci -q get dropbear.main.RootPasswordAuth)";
     echo "uptime=$(cut -d. -f1 /proc/uptime)"'
 }
+# A permanently configured local address is required, not a DHCP lease
+# that may expire when the AP disables its own DHCP server.
+has_permanent_address() {
+  local addresses=$1 cidr=$2
+  awk -v wanted="$cidr" '
+    $3 == "inet" && $4 == wanted {
+      if ($0 ~ /(^|[[:space:]])dynamic([[:space:]]|$)/) next
+      if ($0 ~ /valid_lft forever preferred_lft forever/) found=1
+    }
+    END {exit !found}
+  ' <<< "$addresses"
+}
 healthy() {
   local s=$1
-  for expect in "rev=$candidate_rev" kernel=6.18.60 bootfail=0 keep=1 ap=2 \
+  for expect in "rev=$candidate_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
     q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000 \
     role=secondary-ap mode=static proto=static dnsmasq_disabled=1 \
     dhcpv4=disabled dhcpv6=disabled ra=disabled root_password='!' \
@@ -72,13 +88,18 @@ XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
 if [[ $mode == --selftest ]]; then
-  s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard4\nkernel=6.18.60\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1'
+  s=$'rev=r0+38346-0fbc2cc77b-ap-static-guard4\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nbootfail=0\nkeep=1\nap=2\nq6=3\nping=1\nnoc=0\nlan=1\nlan_speed=2500\nlan1=1\nbridge=1\nspeed=1000\nrole=secondary-ap\nmode=static\nproto=static\ndnsmasq_disabled=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nroot_password=!\npassword_auth=off\nroot_password_auth=off\noverlay_ready=1'
   healthy "$s" || fatal 'good state rejected'
-  for change in q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=dhcp proto=dhcp dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
+  for change in management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=dhcp proto=dhcp dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")
     bad=$(sed "s/^$field=.*/$change/" <<< "$s")
     if healthy "$bad"; then fatal "bad state accepted: $change"; fi
   done
+  permanent='87: eth0 inet 192.168.76.250/24 scope global valid_lft forever preferred_lft forever'
+  leased='87: eth0 inet 192.168.76.250/24 scope global dynamic valid_lft 300sec preferred_lft 300sec'
+  has_permanent_address "$permanent" "$management_ip/24" || fatal 'static address rejected'
+  if has_permanent_address "$leased" "$management_ip/24"; then fatal 'DHCP lease accepted'; fi
+  if has_permanent_address "$permanent" '192.168.76.190/24'; then fatal 'wrong address accepted'; fi
   echo STATIC_AP_GUARD_SELFTEST_PASS
   exit 0
 fi
@@ -147,7 +168,7 @@ if [[ $mode == --watch ]]; then
            [[ $(value "$s" keep) == 0 ]]; then
           last_attest=$now
           if /home/jan/scripts/wave7/secondary-ap/attest-management.sh --run \
-            192.168.76.1 "$candidate_rev" enp4s0f4u2u2u4 "$known" \
+            192.168.76.1 "$candidate_rev" "$management_iface" "$management_ip" "$known" \
             > "$out/attestation-latest.log" 2>&1; then
             attested=1
             log "MANAGEMENT_ATTESTED boot=$boot"
@@ -202,14 +223,15 @@ if [[ $mode != --check-baseline ]]; then
   [[ $(sha256sum "$candidate" | cut -d' ' -f1) == "$candidate_sha" ]] || fatal 'candidate SHA mismatch'
   [[ $(tar xOf "$candidate" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fatal 'wrong candidate board'
 fi
-ip -4 addr show dev enp4s0f4u2u4 | grep -q '192.168.76.2/24' || fatal 'Asus 2.5GbE .2 peer absent'
-ip -4 addr show dev enp4s0f4u2u4 | grep -q '192.168.76.181/24' || fatal 'Asus 2.5GbE DHCP address absent'
-ip -4 addr show dev enp4s0f4u2u2u4 | grep -q '192.168.76.190/24' || fatal 'independent 1GbE management absent'
-[[ $(cat /sys/class/net/enp4s0f4u2u2u4/carrier) == 1 ]] || fatal 'management carrier down'
+has_permanent_address "$(ip -4 -o addr show dev enp4s0f4u2u4)" 192.168.76.2/24 ||
+  fatal 'permanent Asus 2.5GbE .2 peer absent'
+has_permanent_address "$(ip -4 -o addr show dev "$management_iface")" "$management_ip/24" ||
+  fatal 'permanent independent 1GbE management address absent'
+[[ $(cat "/sys/class/net/$management_iface/carrier") == 1 ]] || fatal 'management carrier down'
 s=$(read_state) || fatal 'router inaccessible'
 boot=$(value "$s" boot)
 [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid boot ID'
-for expect in "rev=$accepted_rev" kernel=6.18.60 bootfail=0 keep=1 ap=2 q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000; do
+for expect in "rev=$accepted_rev" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000; do
   grep -Fxq "$expect" <<< "$s" || fatal "unhealthy source: $expect; $s"
 done
 for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
