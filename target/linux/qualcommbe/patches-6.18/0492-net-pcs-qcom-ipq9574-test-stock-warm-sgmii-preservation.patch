@@ -1,0 +1,455 @@
+Subject: [PATCH] net: pcs: ipq9574: test stock same-tuple SGMII preservation
+
+Wave7 0491 successfully transitions from 2500Base-X to SGMII but a
+same-speed 1G autoneg restart reproduced the bidirectional frame
+blackhole. Stock ARM instruction replay showed that the stock host
+skips clock cycling and explicit adapter reset on unchanged tuples.
+
+Keep 0479 cold deferral and 0480 full setup for cold, changed or
+invalidated configurations. For the exact Wave7 port2/QCA8081 MII,
+defer eligible PCS link-up to PPE, which has both resolved pause
+flags. Preserve only a previously committed, unchanged tuple;
+invalidate on explicit configuration, reset, enable/disable,
+teardown or programming failure. Keep the existing MAC programming
+and other port paths unchanged. No phylink-wide callback ABI change.
+
+Experimental; hardware efficacy is not established.
+
+diff --git a/drivers/net/pcs/pcs-qcom-ipq9574.c b/drivers/net/pcs/pcs-qcom-ipq9574.c
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -144,6 +144,30 @@
+ #define XPCS_TX_IPG_CHECK_DIS		BIT(0)
+ 
+ /* Per PCS MII private data */
++/*
++ * The experimental Wave7 path is serialized by the PHY/phylink
++ * callbacks, with opt-in before phylink creation and teardown after
++ * destruction. Only a full PCS+MAC+bridge success may become READY.
++ */
++enum ipq_pcs_relink_phase {
++	IPQ_RELINK_INVALID,
++	IPQ_RELINK_READY,
++	IPQ_RELINK_DEFERRED_COLD,
++	IPQ_RELINK_DEFERRED_WARM,
++	IPQ_RELINK_PREPARED,
++};
++
++struct ipq_pcs_relink {
++	enum ipq_pcs_relink_phase phase;
++	bool enabled;
++	int speed;
++	int duplex;
++	bool tx_pause;
++	bool rx_pause;
++	int pending_speed;
++	int pending_duplex;
++};
++
+ struct ipq_pcs_mii {
+ 	struct ipq_pcs *qpcs;
+ 	struct phylink_pcs pcs;
+@@ -157,6 +181,7 @@
+ 	u8 diag_configs;
+ 	u8 diag_states;
+ 	u8 diag_link_ups;
++	struct ipq_pcs_relink relink;
+ };
+ 
+ /* PCS private data */
+@@ -317,6 +342,40 @@
+ 	state->pause |= MLO_PAUSE_TXRX_MASK;
+ }
+ 
++static void ipq_pcs_relink_invalidate(struct ipq_pcs_mii *mii)
++{
++	mii->relink.phase = IPQ_RELINK_INVALID;
++}
++
++void ipq_pcs_wave7_relink_invalidate(struct phylink_pcs *pcs)
++{
++	ipq_pcs_relink_invalidate(phylink_pcs_to_qpcs_mii(pcs));
++}
++EXPORT_SYMBOL_GPL(ipq_pcs_wave7_relink_invalidate);
++
++int ipq_pcs_wave7_relink_enable(struct phylink_pcs *pcs)
++{
++	struct ipq_pcs_mii *mii = phylink_pcs_to_qpcs_mii(pcs);
++	struct ipq_pcs *qpcs = mii->qpcs;
++	int i;
++
++	/* This experiment has no system-suspend lifecycle on its target. */
++	if (IS_ENABLED(CONFIG_PM_SLEEP) ||
++	    !of_machine_is_compatible("acer,wave7") || !qpcs->mppe ||
++	    mii->index != 0)
++		return -EOPNOTSUPP;
++
++	/* No other phylink instance may reconfigure this shared block. */
++	for (i = 1; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			return -EOPNOTSUPP;
++
++	ipq_pcs_relink_invalidate(mii);
++	mii->relink.enabled = true;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(ipq_pcs_wave7_relink_enable);
++
+ static bool ipq_pcs_reconfig_port_clks(struct ipq_pcs *qpcs,
+ 				       phy_interface_t interface)
+ {
+@@ -367,7 +426,12 @@
+ 	unsigned int val, mask, misc2 = 0;
+ 	bool xpcs_mode = false;
+ 	bool diag_mode;
+-	int ret;
++	int i, ret;
++
++	/* An explicit reset or mode change invalidates any retained tuple. */
++	for (i = 0; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			ipq_pcs_relink_invalidate(qpcs->qpcs_mii[i]);
+ 
+ 	diag_mode = qpcs->mppe && qpcs->diag_mode_reconfigs < 3;
+ 	if (diag_mode) {
+@@ -863,6 +927,7 @@
+ 	int index = qpcs_mii->index;
+ 	int ret;
+ 
++	ipq_pcs_relink_invalidate(qpcs_mii);
+ 	ret = clk_prepare_enable(qpcs_mii->rx_clk);
+ 	if (ret) {
+ 		dev_err(qpcs->dev, "Failed to enable MII %d RX clock\n", index);
+@@ -886,6 +951,7 @@
+ {
+ 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+ 
++	ipq_pcs_relink_invalidate(qpcs_mii);
+ 	clk_disable_unprepare(qpcs_mii->rx_clk);
+ 	clk_disable_unprepare(qpcs_mii->tx_clk);
+ }
+@@ -947,6 +1013,8 @@
+ 	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
+ 	int index = qpcs_mii->index;
+ 
++	/* Even a same-interface explicit configuration is not a cable flap. */
++	ipq_pcs_relink_invalidate(qpcs_mii);
+ 	if (qpcs->mppe && index == 0 && qpcs_mii->diag_configs < 4) {
+ 		qpcs_mii->diag_configs++;
+ 		dev_info(qpcs->dev,
+@@ -978,12 +1046,11 @@
+ 	/* Currently not used */
+ }
+ 
+-static void ipq_pcs_link_up(struct phylink_pcs *pcs,
+-			    unsigned int neg_mode,
+-			    phy_interface_t interface,
+-			    int speed, int duplex)
+-{
+-	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
++static int ipq_pcs_apply_link_up(struct ipq_pcs_mii *qpcs_mii,
++				 unsigned int neg_mode,
++				 phy_interface_t interface,
++				 int speed, int duplex)
++{
+ 	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
+ 	int index = qpcs_mii->index;
+ 	bool diag_link_up;
+@@ -1014,13 +1081,13 @@
+ 		ret = ipq_pcs_config_mode(qpcs, interface);
+ 		if (ret) {
+ 			dev_err(qpcs->dev, "SGMII media-link mode setup failed: %d\n", ret);
+-			return;
++			return ret;
+ 		}
+ 
+ 		ret = ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
+ 		if (ret) {
+ 			dev_err(qpcs->dev, "SGMII media-link force mode failed: %d\n", ret);
+-			return;
++			return ret;
+ 		}
+ 
+ 		if (initial)
+@@ -1046,9 +1113,9 @@
+ 		break;
+ 	case PHY_INTERFACE_MODE_10GBASER:
+ 		/* Nothing to do here */
+-		return;
++		return 0;
+ 	default:
+-		return;
++		return -EOPNOTSUPP;
+ 	}
+ 
+ 	if (diag_link_up)
+@@ -1059,7 +1126,106 @@
+ 	if (ret)
+ 		dev_err(qpcs->dev, "PCS link up fail for interface %s\n",
+ 			phy_modes(interface));
+-}
++
++	return ret;
++}
++
++static void ipq_pcs_link_up(struct phylink_pcs *pcs,
++			    unsigned int neg_mode,
++			    phy_interface_t interface,
++			    int speed, int duplex)
++{
++	struct ipq_pcs_mii *mii = phylink_pcs_to_qpcs_mii(pcs);
++	struct ipq_pcs_relink *relink = &mii->relink;
++
++	if (relink->enabled && neg_mode == PHYLINK_PCS_NEG_OUTBAND &&
++	    interface == PHY_INTERFACE_MODE_SGMII) {
++		/* The MAC callback receives both resolved pause flags. */
++		relink->phase = relink->phase == IPQ_RELINK_READY ?
++				IPQ_RELINK_DEFERRED_WARM : IPQ_RELINK_DEFERRED_COLD;
++		relink->pending_speed = speed;
++		relink->pending_duplex = duplex;
++		return;
++	}
++
++	ipq_pcs_relink_invalidate(mii);
++	ipq_pcs_apply_link_up(mii, neg_mode, interface, speed, duplex);
++}
++
++/*
++ * Only the opted-in PPE MAC calls these helpers. No phylink ABI change:
++ * consume exactly the deferred PCS request, and commit only after the
++ * complete MAC link-up succeeded. All other PCS paths run as before.
++ */
++int ipq_pcs_wave7_mac_prepare(struct phylink_pcs *pcs, unsigned int mode,
++			      phy_interface_t interface, int speed, int duplex,
++			      bool tx_pause, bool rx_pause, bool mac_ready)
++{
++	struct ipq_pcs_mii *mii = phylink_pcs_to_qpcs_mii(pcs);
++	struct ipq_pcs_relink *relink = &mii->relink;
++	struct ipq_pcs *qpcs = mii->qpcs;
++	bool deferred, preserve;
++	int ret;
++
++	if (!relink->enabled)
++		return 0;
++
++	deferred = relink->phase == IPQ_RELINK_DEFERRED_COLD ||
++		   relink->phase == IPQ_RELINK_DEFERRED_WARM;
++	if (!deferred && (interface != PHY_INTERFACE_MODE_SGMII ||
++			  mode != MLO_AN_PHY))
++		return 0;
++
++	if (!deferred || !mac_ready || mode != MLO_AN_PHY ||
++	    interface != PHY_INTERFACE_MODE_SGMII ||
++	    relink->pending_speed != speed || relink->pending_duplex != duplex) {
++		ipq_pcs_relink_invalidate(mii);
++		return -EINVAL;
++	}
++
++	preserve = relink->phase == IPQ_RELINK_DEFERRED_WARM &&
++		   qpcs->interface == PHY_INTERFACE_MODE_SGMII &&
++		   relink->speed == speed && relink->duplex == duplex &&
++		   relink->tx_pause == tx_pause && relink->rx_pause == rx_pause;
++	ipq_pcs_relink_invalidate(mii);
++
++	dev_info(qpcs->dev,
++		 "wave7-diag: stock-relink %s speed=%d duplex=%d pause=%d/%d\n",
++		 preserve ? "preserve" : "prepare", speed, duplex,
++		 tx_pause, rx_pause);
++
++	if (!preserve) {
++		ret = ipq_pcs_apply_link_up(mii, PHYLINK_PCS_NEG_OUTBAND,
++					    interface, speed, duplex);
++		if (ret)
++			return ret;
++	}
++
++	relink->speed = speed;
++	relink->duplex = duplex;
++	relink->tx_pause = tx_pause;
++	relink->rx_pause = rx_pause;
++	relink->phase = IPQ_RELINK_PREPARED;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(ipq_pcs_wave7_mac_prepare);
++
++void ipq_pcs_wave7_mac_finish(struct phylink_pcs *pcs, bool success)
++{
++	struct ipq_pcs_mii *mii = phylink_pcs_to_qpcs_mii(pcs);
++	struct ipq_pcs_relink *relink = &mii->relink;
++
++	if (!relink->enabled)
++		return;
++
++	if (success && relink->phase == IPQ_RELINK_PREPARED) {
++		relink->phase = IPQ_RELINK_READY;
++		dev_info(mii->qpcs->dev, "wave7-diag: stock-relink committed\n");
++	} else {
++		ipq_pcs_relink_invalidate(mii);
++	}
++}
++EXPORT_SYMBOL_GPL(ipq_pcs_wave7_mac_finish);
+ 
+ static const struct phylink_pcs_ops ipq_pcs_phylink_ops = {
+ 	.pcs_validate = ipq_pcs_validate,
+@@ -1540,6 +1706,9 @@
+ {
+ 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+ 
++	ipq_pcs_relink_invalidate(qpcs_mii);
++	qpcs_mii->relink.enabled = false;
++
+ 	/* Put reference taken by of_find_device_by_node() in
+ 	 * ipq_pcs_get().
+ 	 */
+diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -653,6 +653,15 @@
+ 	return 0;
+ }
+ 
++/* Exact Wave7 direct copper PHY, not the independent RTL8367D trunk. */
++static bool ppe_port_wave7_phy(struct ppe_port *ppe_port,
++			       struct phy_device *phy)
++{
++	return !IS_ENABLED(CONFIG_PM_SLEEP) &&
++	       of_machine_is_compatible("acer,wave7") && ppe_port->port_id == 2 &&
++	       phy && phy->phy_id == 0x004dd101 && phy->mdio.addr == 0x18;
++}
++
+ /* PPE port MAC configuration for phylink */
+ static void ppe_port_mac_config(struct phylink_config *config,
+ 				unsigned int mode,
+@@ -666,6 +675,10 @@
+ 	u32 val, mask;
+ 	int ret;
+ 
++	ppe_port->mac_configured = false;
++	if (ppe_port->wave7_relink)
++		ipq_pcs_wave7_relink_invalidate(ppe_port->pcs);
++
+ 	switch (state->interface) {
+ 	case PHY_INTERFACE_MODE_2500BASEX:
+ 	case PHY_INTERFACE_MODE_USXGMII:
+@@ -699,6 +712,7 @@
+ 		goto err_mac_config;
+ 
+ 	ppe_port->mac_type = mac_type;
++	ppe_port->mac_configured = true;
+ 
+ 	return;
+ 
+@@ -945,6 +959,15 @@
+ 	int ret, port = ppe_port->port_id;
+ 	u32 reg, val;
+ 
++	if (ppe_port->wave7_relink) {
++		ret = ipq_pcs_wave7_mac_prepare(ppe_port->pcs, mode, interface,
++						speed, duplex, tx_pause, rx_pause,
++						ppe_port->mac_configured &&
++						ppe_port_wave7_phy(ppe_port, phy));
++		if (ret)
++			goto err_port_mac_link_up;
++	}
++
+ 	/* Set PPE port MAC speed clock */
+ 	ret = ppe_port_mac_speed_clock_rate_set(ppe_port, interface, speed);
+ 	if (ret)
+@@ -975,9 +998,14 @@
+ 	if (ret)
+ 		goto err_port_mac_link_up;
+ 
++	if (ppe_port->wave7_relink)
++		ipq_pcs_wave7_mac_finish(ppe_port->pcs, true);
++
+ 	return;
+ 
+ err_port_mac_link_up:
++	if (ppe_port->wave7_relink)
++		ipq_pcs_wave7_mac_finish(ppe_port->pcs, false);
+ 	dev_err(ppe_dev->dev, "PPE port %d link up fail %d\n", port, ret);
+ }
+ 
+@@ -1042,6 +1070,8 @@
+ 	return;
+ 
+ err_port_mac_link_down:
++	if (ppe_port->wave7_relink)
++		ipq_pcs_wave7_relink_invalidate(ppe_port->pcs);
+ 	dev_err(ppe_dev->dev, "PPE port %d link down fail %d\n", port, ret);
+ }
+ 
+@@ -1098,6 +1128,7 @@
+ 	struct phy_device *phydev;
+ 	int ret = 0;
+ 
++	ppe_port->wave7_relink = false;
+ 	phy_node = of_parse_phandle(ppe_port->np, "phy-handle", 0);
+ 	if (!phy_node)
+ 		return 0;
+@@ -1109,6 +1140,8 @@
+ 
+ 	if (!device_is_bound(&phydev->mdio.dev))
+ 		ret = -EPROBE_DEFER;
++	else
++		ppe_port->wave7_relink = ppe_port_wave7_phy(ppe_port, phydev);
+ 
+ 	put_device(&phydev->mdio.dev);
+ 	return ret;
+@@ -1147,6 +1180,12 @@
+ 		return PTR_ERR(ppe_port->pcs);
+ 	}
+ 
++	if (ppe_port->wave7_relink) {
++		ret = ipq_pcs_wave7_relink_enable(ppe_port->pcs);
++		if (ret)
++			goto err_free_pcs;
++	}
++
+ 	/* Port phylink capability */
+ 	ppe_port->phylink_config.dev = &netdev->dev;
+ 	ppe_port->phylink_config.type = PHYLINK_NETDEV;
+diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_port.h b/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+@@ -52,6 +52,8 @@
+  * @phylink: Linux phylink instance
+  * @phylink_config: Linux phylink configurations
+  * @pcs: Linux phylink PCS instance
++ * @wave7_relink: Opt into the direct QCA8081 PCS preservation experiment
++ * @mac_configured: Last major MAC configuration completed successfully
+  * @clks: Port clocks
+  * @rstcs: Port resets
+  * @gmib_read: Delay work task for GMAC MIB statistics polling function
+@@ -67,6 +69,8 @@
+ 	struct phylink *phylink;
+ 	struct phylink_config phylink_config;
+ 	struct phylink_pcs *pcs;
++	bool wave7_relink;
++	bool mac_configured;
+ 	struct clk *clks[PPE_PORT_CLK_RST_MAX];
+ 	struct reset_control *rstcs[PPE_PORT_CLK_RST_MAX];
+ 	struct delayed_work gmib_read;
+diff --git a/include/linux/pcs/pcs-qcom-ipq9574.h b/include/linux/pcs/pcs-qcom-ipq9574.h
+--- a/include/linux/pcs/pcs-qcom-ipq9574.h
++++ b/include/linux/pcs/pcs-qcom-ipq9574.h
+@@ -6,10 +6,19 @@
+ #ifndef __LINUX_PCS_QCOM_IPQ9574_H
+ #define __LINUX_PCS_QCOM_IPQ9574_H
+ 
++#include <linux/phy.h>
++
+ struct device_node;
+ struct phylink_pcs;
+ 
+ struct phylink_pcs *ipq_pcs_get(struct device_node *np);
+ void ipq_pcs_put(struct phylink_pcs *pcs);
+ 
++int ipq_pcs_wave7_relink_enable(struct phylink_pcs *pcs);
++void ipq_pcs_wave7_relink_invalidate(struct phylink_pcs *pcs);
++int ipq_pcs_wave7_mac_prepare(struct phylink_pcs *pcs, unsigned int mode,
++			      phy_interface_t interface, int speed, int duplex,
++			      bool tx_pause, bool rx_pause, bool mac_ready);
++void ipq_pcs_wave7_mac_finish(struct phylink_pcs *pcs, bool success);
++
+ #endif /* __LINUX_PCS_QCOM_IPQ9574_H */
