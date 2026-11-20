@@ -244,3 +244,20 @@ expired log window does not erase earlier measured episodes.
 Synthetic tests passed; live deployment/parser check remains pending.
 The existing initial acceptance supervisor is independent of this
 experimental read-only observer.
+
+Offline `report-client-scans.py PING_LOG IW_EVENT_LOG` reports complete
+association and scan intervals, estimated per-reply send/receive
+overlap, and missing sequence numbers with nominal cadence estimates
+(not measured send timestamps). It is a separate diagnostic, not a
+replacement for the loss-free client gate. The Nov20 instrumented
+capture spent 13.253810 of 28.758080 associated seconds scanning;
+IPv4 observed-overlap RTT avg31.564ms vs8.71ms outside, but the missing
+seq20 nominally started after scan end, and all IPv6 exchanges occurred
+after the scan (including the 1037ms burst). Scan overlap is not proof
+of a cause or evidence of continuous radio off-channel dwell.
+
+The reconnect classifier records a second directional signature only
+when host GMAC TX frames advance but PHY external-MAC ingress and its
+error counters do not. PHY TX statistics are external-MAC ingress,
+not proof of copper transmission; neither a flat counter nor a
+successful forced carrier flag proves SerDes synchronization.

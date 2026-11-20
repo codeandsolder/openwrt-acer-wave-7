@@ -146,7 +146,14 @@ def evaluate(window):
         return result
     sent, received=totals["direct"]
     if sent and received == 0 and phy["rx"] > 0 and mac["rx_frames"] == 0:
+        # PHY RX is copper ingress. PHY TX is *external MAC ingress*,
+        # not proof of transmission on the copper wire.
         result["classification"]="COPPER_RX_WITH_GMAC_RX_STALL"
+        result["directional_signature"] = (
+            "HOST_TX_WITH_PHY_MAC_INGRESS_STALL"
+            if mac["tx_frames"] > 0 and phy["tx"] == phy["tx_err"] == 0
+            else "PHY_MAC_INGRESS_UNCONFIRMED")
+        result["copper_rx_errors"] = phy["rx_err"]
     elif sent and received == sent and phy["rx"] > 0 and phy["tx"] > 0 and mac["rx_frames"] > 0 and mac["tx_frames"] > 0 and not any(mac[k] for k in MAC_KEYS[2:]):
         result["classification"]="ONE_GIG_RECONNECT_PASS"
     return result
@@ -258,6 +265,17 @@ def selftest():
     for stall, expected in ((False,"ONE_GIG_RECONNECT_PASS"),(True,"COPPER_RX_WITH_GMAC_RX_STALL")):
         rows=[row(1),row(3,"0")]+[row(t,stall=stall) for t in range(12,58,2)]
         assert report(rows)["classification"] == expected, report(rows)
+        if stall:
+            # Deliberate host MAC TX activity with no PHY external-MAC
+            # ingress/error activity is a distinct second-direction clue.
+            for row_ in rows:
+                state=row_["snapshot"]["state"]
+                state["mac"]["tx_frames"] = 100+state["uptime"]
+            result=report(rows)["episodes"][-1]["windows"][-1]
+            assert result["directional_signature"] == "HOST_TX_WITH_PHY_MAC_INGRESS_STALL"
+            rows[-1]["snapshot"]["state"]["phy"]["tx_err"]=1
+            result=report(rows)["episodes"][-1]["windows"][-1]
+            assert result["directional_signature"] == "PHY_MAC_INGRESS_UNCONFIRMED"
         assert report(rows[2:])["classification"] == "NO_CARRIER_EDGE_OBSERVED"
         assert report(rows[:-10])["classification"] == "INCONCLUSIVE"
         # A stale log at end must not discard the already measured window.
