@@ -4,7 +4,7 @@
 wave7_ap_policy_paths() {
     printf '%s\n' \
         etc/config/network etc/config/dhcp etc/config/dropbear \
-        etc/config/wireless etc/config/firewall etc/config/system \
+        etc/config/wireless etc/config/firewall \
         etc/dropbear/authorized_keys etc/shadow \
         etc/openwrt_version etc/openwrt_release etc/wave7-role-profile \
         etc/init.d/wave7-firstboot-failsafe etc/banner \

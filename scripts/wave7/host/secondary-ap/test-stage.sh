@@ -152,8 +152,8 @@ fi
 # Pure firstboot gate test; no kernel/router calls.
 . "$(dirname -- "$stage")/role-firstboot.sh"
 boot=11111111-2222-3333-4444-555555555555
-rev_static=r0+38346-0fbc2cc77b-ap-static-guard5
-rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard5
+rev_static=r0+38346-0fbc2cc77b-ap-static-guard6
+rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard6
 profile_static=$'role=secondary-ap\nmode=static\nmanagement_ipv4=192.168.76.1/24'
 profile_dhcp=$'role=secondary-ap\nmode=dhcp'
 ipstatic='3: br-lan    inet 192.168.76.1/24 brd 192.168.76.255 scope global br-lan'

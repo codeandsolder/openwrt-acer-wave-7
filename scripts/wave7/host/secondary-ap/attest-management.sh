@@ -24,7 +24,7 @@ valid() {
   [[ $boot =~ ^[a-f0-9]{8}-([a-f0-9]{4}-){3}[a-f0-9]{12}$ ]] || return 1
   [[ $bootfail =~ ^[1-5]$ && $keep == 0 ]] || return 1
   wanted=dhcp
-  [[ $expected == *-ap-static-guard5 ]] && wanted=static
+  [[ $expected == *-ap-static-guard6 ]] && wanted=static
   netmode=$(value "$s" netproto)
   [[ $(value "$s" role) == secondary-ap ]] || return 1
   [[ $(value "$s" profile_mode) == "$wanted" ]] || return 1
@@ -46,9 +46,9 @@ valid() {
   fi
 }
 if [[ $mode == --selftest ]]; then
-  rev=r0+38346-0fbc2cc77b-ap-static-guard5
+  rev=r0+38346-0fbc2cc77b-ap-static-guard6
   boot=11111111-2222-3333-4444-555555555555
-  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard5\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\noverlay_ready=1\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
+  good=$'rev=r0+38346-0fbc2cc77b-ap-static-guard6\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nmanagement_peer=192.168.76.250\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\noverlay_ready=1\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
   valid "$good" "$rev" 192.168.76.250
   for change in 'management_peer=192.168.76.190' 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' 'overlay_ready=0' \
     'pass=on' 'rootpass=on' 'rootlogin=off' 'dnsmasq=0' \
@@ -61,7 +61,7 @@ if [[ $mode == --selftest ]]; then
       exit 1
     fi
   done
-  dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard5
+  dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard6
   dynamic=$(sed -e "s@$rev@$dynamic_rev@" \
     -e 's@netproto=static@netproto=dhcp@' \
     -e 's@profile_mode=static@profile_mode=dhcp@' \
@@ -90,7 +90,7 @@ expected=$3
 iface=$4
 source_ip=$5
 known=$6
-[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard5$ ]] || {
+[[ $expected =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-(static|dhcp)-guard6$ ]] || {
   echo 'unexpected AP revision' >&2; exit 2
 }
 [[ $source_ip =~ ^[0-9]+(\.[0-9]+){3}$ ]] || { echo "invalid source IPv4" >&2; exit 2; }

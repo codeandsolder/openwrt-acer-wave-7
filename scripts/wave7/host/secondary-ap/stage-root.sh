@@ -74,7 +74,7 @@ case "$oldrev" in
   r0+*) ;;
   *) echo 'unexpected OpenWrt source revision' >&2; exit 2 ;;
 esac
-newrev="$oldrev-ap-$mode-guard5"
+newrev="$oldrev-ap-$mode-guard6"
 net="$root/etc/config/network"
 cat > "$net.new" <<'NET'
 config interface 'loopback'

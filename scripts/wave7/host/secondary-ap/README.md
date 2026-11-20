@@ -13,15 +13,15 @@ Both derive from accepted source sysupgrade SHA256:
 and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
-- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard5
-  SHA256: see generated guard5 manifest
-- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard5
-  SHA256: see generated guard5 manifest
+- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard6
+  SHA256: see generated guard6 manifest
+- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard6
+  SHA256: see generated guard6 manifest
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
 Staged copies on Asus:
-  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard5/
+  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard6/
 
 Both bridge four physical DSA ports, retain EHT MLO and all 46
 SHA-pinned radio/diagnostic files, disable DNS, DHCPv4, DHCPv6, RA
@@ -41,7 +41,8 @@ The AP role now mounts only the verified dedicated UBIFS volume in the
 It removes exactly role-owned upperdir overrides while OverlayFS is not
 using that directory, unmounts the temporary UBIFS, then verifies the
 merged files against /rom in the post-mount hook. Fresh volumes with no
-upper directory are valid. Specific failed predicates and policy paths
+upper directory are valid. Generated system configuration is not role-owned and survives migration.
+Specific failed predicates and policy paths
 are logged to the kernel console without recording secrets. Unrelated
 UBIFS state and persistent SSH host identities are retained. The volatile
 overlay-ready marker is created only after the merged check succeeds.
