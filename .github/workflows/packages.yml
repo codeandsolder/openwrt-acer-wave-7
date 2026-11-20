@@ -1,4 +1,4 @@
-name: Build Wave 7 core packages
+name: Build all core packages
 
 on:
   pull_request:
