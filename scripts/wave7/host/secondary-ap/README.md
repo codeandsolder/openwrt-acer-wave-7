@@ -232,8 +232,9 @@ diagnostic harness, not running a cable flap during the acceptance soak.
 DHCP remains on the isolated direct port, with a five-minute lease;
 verify adequate remaining lease before that later diagnostic.
 
-The source-only `probe-phy-reconnect.py` observer targets the approved
-0491 candidate after initial soak. It captures switch-bound SSH GMAC
+The `probe-phy-reconnect.py` observer targets either approved
+0491 or 0492 candidate after initial soak (`capture --profile 0491`
+or `--profile 0492`). It captures switch-bound SSH GMAC
 MIBs, kernel-owned PHY edge-window logs, switch error counters, peer
 NIC counters and separately route-verified probe bursts. It neither
 changes links nor consumes PHY clear-on-read registers. A valid
@@ -241,7 +242,15 @@ classification needs observed carrier down/up, fresh same-edge PHY
 samples and 30 seconds of contiguous post-up 1G evidence. It
 distinguishes a 2.5-to-1G transition from a true 1G reconnect; an
 expired log window does not erase earlier measured episodes.
-Synthetic tests passed; live deployment/parser check remains pending.
+Live 0491 evidence confirmed a successful 2.5G-to-1G transition and a
+bidirectional datapath stall after genuine same-speed autoneg restart.
+The 0492 observer additionally requires same-edge stock-relink policy
+and commit log markers, host speed, and healthy pre-edge traffic.
+A full-prepare reconnect is classified separately, not a preservation pass.
+The pinned `relink` image changes only PCS/PPE modules and identity
+files over 0491. Its rollback retains the exact 0491 PHY manifest and
+marker; the guard validates both candidate module identities before
+attestation.
 The existing initial acceptance supervisor is independent of this
 experimental read-only observer.
 

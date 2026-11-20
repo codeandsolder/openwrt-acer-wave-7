@@ -20,8 +20,13 @@ sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("trunk_probe", Path(__file__).with_name("probe-trunk-recovery.py"))
 trunk = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trunk)
-REVISION = "r0+38346-0418bb7af2-ap-dhcp-guard8"
-BASE = trunk.BASE / "stock-poll-fifo-dhcp-guard8" / "observations"
+PROFILES = {
+    "0491": ("r0+38346-0418bb7af2-ap-dhcp-guard8", "stock-poll-fifo-dhcp-guard8"),
+    "0492": ("r0+38346-fe5568a4fb-ap-dhcp-guard8", "conditional-relink-dhcp-guard8"),
+}
+RELINK_REV = PROFILES["0492"][0]
+EDGE = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: phy-path edge=(\d+) link=([01]) ")
+RELINK = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-relink (preserve|prepare|committed)(?: speed=(\d+) duplex=(\d+) pause=([01])/([01]))?$")
 MAC_KEYS = ("rx_frames", "tx_frames", "rx_crc_err", "rx_frag_err", "rx_drop_frames")
 PHY = re.compile(
     r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: phy-path sample=(\d+) edge=(\d+) link=([01]) "
@@ -38,13 +43,14 @@ echo "switch_carrier=$(cat /sys/class/net/lan1/carrier 2>/dev/null || echo absen
 echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || echo absent)"
 ethtool -S lan | grep -E '^[[:space:]]*(rx_frames|tx_frames|rx_crc_err|rx_frag_err|rx_drop_frames):'
 ethtool -S switch | grep -E 's00_p06_(dot3StatsFCSErrors|etherStatsFragments|etherStatsDropEvents):'
-dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[)|NOC ERROR DETECTED' || :
+dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[)|wave7-diag: stock-relink |NOC ERROR DETECTED' || :
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 """
 
 
-def parse(output, expected_boot):
+def parse(output, expected_boot, revision):
     fields, mac, switch, samples = {}, {}, {}, []
+    edges, relinks = [], []
     for line in output.splitlines():
         m = re.fullmatch(r"(\w+)=(.*)", line)
         if m:
@@ -60,6 +66,12 @@ def parse(output, expected_boot):
                 if key in trunk.COUNTERS and trunk.COUNTERS[key] in trunk.ERRORS:
                     assert key not in switch, "duplicate switch counter"
                     switch[key] = int(m[2])
+        m = EDGE.match(line)
+        if m:
+            edges.append({"uptime":float(m[1]), "edge":int(m[2]), "link":int(m[3])})
+        m = RELINK.match(line)
+        if m:
+            relinks.append({"uptime":float(m[1]),"action":m[2],"tuple":list(m.groups()[2:])})
         m = PHY.match(line)
         if m:
             samples.append(dict(zip(
@@ -67,7 +79,7 @@ def parse(output, expected_boot):
                 (float(m[1]), *map(int, m.groups()[1:])),
             )))
     assert fields["boot"] == fields["end_boot"] == expected_boot
-    assert fields["revision"] == REVISION and fields["management_peer"] == trunk.PATHS["switch"][0]
+    assert fields["revision"] == revision and fields["management_peer"] == trunk.PATHS["switch"][0]
     assert set(mac) == set(MAC_KEYS)
     assert len(switch) == 3
     uptime = float(fields["uptime"])
@@ -78,10 +90,11 @@ def parse(output, expected_boot):
     sample = max(samples, key=lambda s: s["uptime"], default=None)
     return {**fields, "uptime": uptime, "mac": mac,
             "switch_errors": switch, "phy": sample,
+            "phy_edges": edges, "relink_events": relinks,
             "noc": "NOC ERROR DETECTED" in output}
 
 
-def snapshot(expected_boot, routes):
+def snapshot(expected_boot, routes, revision):
     if not routes["switch"]["valid"]:
         return {"rc": None, "skipped": "independent management route absent"}
     ip, dev, _ = trunk.PATHS["switch"]
@@ -94,7 +107,7 @@ def snapshot(expected_boot, routes):
                         f"root@{trunk.ROUTER}", REMOTE], 8)
     if result["rc"] == 0:
         try:
-            result["state"] = parse(result["stdout"], expected_boot)
+            result["state"] = parse(result["stdout"], expected_boot, revision)
         except (AssertionError, KeyError, ValueError) as exc:
             result["parse_error"] = str(exc)
     return result
@@ -108,6 +121,10 @@ def host_counters():
             out[name] = {k: int((root / "statistics" / k).read_text())
                          for k in ("rx_packets", "tx_packets")}
             out[name]["carrier"] = (root / "carrier").read_text().strip()
+            try:
+                out[name]["speed"] = (root / "speed").read_text().strip()
+            except OSError:
+                out[name]["speed"] = "absent"
         except (OSError, ValueError) as exc:
             out[name] = {"error": str(exc)}
     return out
@@ -144,6 +161,20 @@ def evaluate(window):
                 phy_edge=b["phy"]["edge"],classification="INCONCLUSIVE")
     if elapsed < 30 or min(*mac.values(),*phy.values(),*errors.values()) < 0 or any(errors.values()) or peer_tx is None or peer_tx<=0:
         return result
+    if b.get("revision") == RELINK_REV:
+        # Tie the actual policy decision to this PHY edge, not a prior
+        # successful mode transition. Require the host to agree on speed.
+        edge=b["phy"]["edge"]
+        starts=[e for e in b["phy_edges"] if e["edge"]==edge and e["link"]==1]
+        if len(starts)!=1 or any(r["host_counters"]["direct"].get("speed")!="1000" for r in window):
+            return result
+        start=starts[0]["uptime"]
+        decisions=[e for e in b["relink_events"] if start<=e["uptime"]<=start+4]
+        result["relink_events"]=decisions
+        if (len(decisions)!=2 or decisions[0]["action"] not in ("prepare","preserve")
+                or decisions[0]["tuple"][0]!="1000" or decisions[1]["action"]!="committed"):
+            return result
+        result["relink_policy"]=decisions[0]["action"]
     sent, received=totals["direct"]
     if sent and received == 0 and phy["rx"] > 0 and mac["rx_frames"] == 0:
         # PHY RX is copper ingress. PHY TX is *external MAC ingress*,
@@ -190,7 +221,17 @@ def report(rows):
             flush()
             last_good=None
             continue
-        last_good=s
+        if s.get("revision") == RELINK_REV:
+            # A matched trial requires observed healthy traffic before
+            # the edge, with both ends agreeing on the initial speed.
+            ready = (row["host_counters"]["direct"].get("speed")==s["speed"]
+                     and all(row.get(k,{}).get(n,{}).get("valid",False)
+                             for k in ("routes_before","routes_after") for n in trunk.PATHS)
+                     and all(probe_count(row,n) is not None and probe_count(row,n)[0]==probe_count(row,n)[1]
+                             for n in trunk.PATHS))
+            last_good = s if ready else None
+        else:
+            last_good=s
         if episode is None:
             continue
         if episode["up"] is None:
@@ -218,14 +259,21 @@ def report(rows):
     for e in episodes:
         classes={w["classification"] for w in e["windows"]}-{"INCONCLUSIVE"}
         e["classification"]=next(iter(classes)) if len(classes)==1 else "MIXED" if classes else "INCONCLUSIVE"
-        if e["classification"]=="ONE_GIG_RECONNECT_PASS" and e["prior_speed"]!="1000":
-            e["classification"]="ONE_GIG_TRANSITION_PASS"
+        if e["classification"]=="ONE_GIG_RECONNECT_PASS":
+            if e["prior_speed"] is None and any("relink_policy" in w for w in e["windows"]):
+                e["classification"]="ONE_GIG_UP_WITHOUT_HEALTHY_BASELINE"
+            elif e["prior_speed"]!="1000":
+                e["classification"]="ONE_GIG_TRANSITION_PASS"
+            elif any(w.get("relink_policy")=="prepare" for w in e["windows"] if w["classification"]=="ONE_GIG_RECONNECT_PASS"):
+                e["classification"]="ONE_GIG_RECONNECT_FULL_PREPARE"
     return {"episodes":episodes,"classification":episodes[-1]["classification"] if episodes else "NO_CARRIER_EDGE_OBSERVED"}
 
-def capture(out, boot, duration):
+def capture(out, boot, duration, profile):
+    revision, directory=PROFILES[profile]
+    base=trunk.BASE / directory / "observations"
     assert os.getuid() != 0 and trunk.BOOT.fullmatch(boot)
-    assert 35 <= duration <= 240 and out.parent.resolve() == BASE.resolve()
-    BASE.mkdir(mode=0o700,exist_ok=True)
+    assert 35 <= duration <= 240 and out.parent.resolve() == base.resolve()
+    base.mkdir(mode=0o700,exist_ok=True)
     out.mkdir(mode=0o700)
     rows=[]
     with (out/"samples.jsonl").open("x") as stream, ThreadPoolExecutor(2) as pool:
@@ -238,7 +286,7 @@ def capture(out, boot, duration):
             probes={n:f.result() for n,f in futures.items()}
             after=trunk.routes()
             row={"wall_epoch":time.time(),"routes_before":before,"routes_after":after,
-                 "probes":probes,"host_counters":host_counters(),"snapshot":snapshot(boot,after)}
+                 "probes":probes,"host_counters":host_counters(),"snapshot":snapshot(boot,after,revision)}
             rows.append(row)
             stream.write(json.dumps(row)+"\n"); stream.flush()
             state=row["snapshot"].get("state")
@@ -284,6 +332,23 @@ def selftest():
         assert report(rows)["classification"] == ("ONE_GIG_TRANSITION_PASS" if not stall else expected)
         rows[12]["snapshot"]={}
         assert report(rows)["classification"] == "INCONCLUSIVE"
+    rows=[row(1),row(3,"0")]+[row(t) for t in range(12,58,2)]
+    for r in rows:
+        s=r["snapshot"]["state"]
+        s.update(revision=RELINK_REV,phy_edges=[{"edge":3,"link":1,"uptime":11}],
+                 relink_events=[{"uptime":11.1,"action":"preserve","tuple":["1000","1","1","1"]},
+                                {"uptime":11.2,"action":"committed","tuple":[None]*4}])
+        r["host_counters"]["direct"]["speed"]="1000"
+    assert report(rows)["classification"]=="ONE_GIG_RECONNECT_PASS"
+    rows[0]["host_counters"]["direct"]["speed"]="2500"
+    assert report(rows)["classification"]=="ONE_GIG_UP_WITHOUT_HEALTHY_BASELINE"
+    rows[0]["host_counters"]["direct"]["speed"]="1000"
+    for r in rows:
+        r["snapshot"]["state"]["relink_events"][0]["action"]="prepare"
+    assert report(rows)["classification"]=="ONE_GIG_RECONNECT_FULL_PREPARE"
+    for r in rows:
+        r["snapshot"]["state"]["relink_events"][0]["uptime"]=9
+    assert report(rows)["classification"]=="INCONCLUSIVE"
     print("PHY_RECONNECT_SELFTEST_PASS")
 
 
@@ -291,12 +356,12 @@ if __name__ == "__main__":
     p=argparse.ArgumentParser()
     sub=p.add_subparsers(dest="cmd",required=True)
     sub.add_parser("selftest")
-    c=sub.add_parser("capture"); c.add_argument("out",type=Path); c.add_argument("boot"); c.add_argument("--duration",type=int,default=90)
+    c=sub.add_parser("capture"); c.add_argument("out",type=Path); c.add_argument("boot"); c.add_argument("--duration",type=int,default=90); c.add_argument("--profile",choices=PROFILES,required=True)
     r=sub.add_parser("report"); r.add_argument("raw",type=Path)
     args=p.parse_args()
     if args.cmd=="selftest":
         selftest()
     elif args.cmd=="capture":
-        capture(args.out,args.boot,args.duration)
+        capture(args.out,args.boot,args.duration,args.profile)
     else:
         print(json.dumps(report([json.loads(l) for l in args.raw.read_text().splitlines()]),indent=2))
