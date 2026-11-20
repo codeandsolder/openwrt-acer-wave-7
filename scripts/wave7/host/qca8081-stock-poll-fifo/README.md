@@ -75,3 +75,11 @@ and kernel-owned PHY counters and independent witness, and compare
 against the previous matched negative trials. No destructive extra
 PHY counter reads; MMD7 0x802a–0x802f are clear-on-read. Source-only
 until the full hardware trial actually passes.
+
+## Stock host-side link synchronization
+
+See [the original-instruction ARM replay](stock-host-replay/README.md).
+The stock independent one-second worker also polls QCA8081 status and
+writes the FIFO level. On same-mode unchanged-parameter link-up the
+stock host skips explicit clock cycling and adapter reset. This is a
+separate source-backed hypothesis, not a demonstrated hardware fix.
