@@ -3,7 +3,8 @@
 # one kernel module and identity metadata only. No router access.
 set -euo pipefail
 umask 077
-[[ $# == 4 ]] || { echo 'usage: build-trial-image.sh PARENT MODULE MODULE_SHA OUTPUT_DIR' >&2; exit 2; }
+[[ $# == 5 ]] || { echo 'usage: build-trial-image.sh trunk|native PARENT MODULE MODULE_SHA OUTPUT_DIR' >&2; exit 2; }
+variant=$1; shift
 parent=$(realpath -e "$1")
 module=$(realpath -e "$2")
 module_sha=$3
@@ -15,7 +16,17 @@ toolchain="$prod/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl/bin"
 parent_sha=3a84923c5c18b1f1354985de975a775e3fbea464fc69dbf8e086267f0b917172
 parent_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard8
 kernel_sha=9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
-patch_commit=895ed9016db597e47be58e4373b986b17bb41fe3
+case "$variant" in
+  trunk)
+    patch_commit=895ed9016db597e47be58e4373b986b17bb41fe3
+    image_kind=trunk-health
+    ;;
+  native)
+    patch_commit=0e69b8931cb9639367b293f825842703c0f39d29
+    image_kind=native-recovery
+    ;;
+  *) echo 'unknown trunk trial variant' >&2; exit 2 ;;
+esac
 new_rev="r0+38346-${patch_commit:0:10}-ap-dhcp-guard8"
 old_module_sha=ef2fd6186279e997be4368e358f6bda9c2f4222150c9704ad6c24c69a1f99ed7
 digest() { sha256sum "$1" | cut -d' ' -f1; }
@@ -57,6 +68,10 @@ imports() { readelf -Ws "$1" | awk '$7=="UND" && $8!="" {print $8}' | LC_ALL=C s
 diff -u <(imports "$root/$rel") <(imports "$work/candidate.ko") || fail 'undefined symbol delta'
 readelf -h "$work/candidate.ko" | rg -q 'Machine:.*AArch64'
 strings "$work/candidate.ko" | rg 'SerDes CPU port %d corrupt-only ingress:' >/dev/null
+if [[ $variant == native ]]; then
+  strings "$work/candidate.ko" | rg -F 'trying stock-derived recovery pulse' >/dev/null
+  strings "$work/candidate.ko" | rg -F 'SerDes recovery pulse completed' >/dev/null
+fi
 stripped_sha=$(digest "$work/candidate.ko")
 cat "$work/candidate.ko" > "$root/$rel"
 # Changing the identity makes the old persistent approval ineligible.
@@ -91,7 +106,7 @@ rsync -aincO --delete --out-format='%n' "$root/" "$work/roundtrip/" > "$work/rou
 [[ ! -s $work/roundtrip-delta ]] || fail 'roundtrip delta'
 (cd "$work/roundtrip/lib/firmware/ath12k"; sha256sum -c --status "$prod/scripts/wave7/firmware.sha256"; sha256sum -c --status "$prod/scripts/wave7/diagnostic-firmware.sha256")
 [[ $(digest "$work/roundtrip/$rel") == "$stripped_sha" ]] || fail 'roundtrip module'
-image="$work/publish/wave7-trunk-health-dhcp-guard8-sysupgrade.bin"
+image="$work/publish/wave7-$image_kind-dhcp-guard8-sysupgrade.bin"
 sh "$repo/scripts/sysupgrade-tar.sh" --board acer_wave7 --kernel "$work/kernel.itb" --rootfs "$work/new.sq" "$image"
 jq --arg rev "$new_rev" --arg parent "$parent_sha" --arg module "$stripped_sha" --arg patch "$patch_commit"   '.version.revision=$rev | .wave7_parent_image_sha256=$parent | .wave7_trial_module_sha256=$module | .wave7_trial_kernel_patch_commit=$patch' "$work/old-metadata.json" > "$work/metadata"
 "$tools/fwtool" -I "$work/metadata" "$image"
