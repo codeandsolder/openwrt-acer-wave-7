@@ -11,14 +11,17 @@ base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/upstream
 unit=wave7-lab-upstream-guard8
 config=$(dirname "$(realpath "$0")")/lab-upstream.conf
 rule=(-i "$iface" -p udp --sport 68 --dport 67 -m comment --comment "$unit" -j ACCEPT)
-preflight() {
+scope_ok() {
   [[ $(cat "/sys/class/net/$iface/address") == "$expected_mac" ]] || return 1
   [[ ! -e /sys/class/net/$iface/master ]] || return 1
-  ip -4 -o addr show dev "$iface" | grep -Fq 'inet 192.168.76.2/24 ' || return 1
   if ip -4 route show default | grep -Eq "dev $iface([[:space:]]|$)" ||
      ip -6 route show default | grep -Eq "dev $iface([[:space:]]|$)"; then
     echo 'test interface is a default route' >&2; return 1
   fi
+}
+preflight() {
+  scope_ok || return 1
+  ip -4 -o addr show dev "$iface" | grep -Fq 'inet 192.168.76.2/24 ' || return 1
   dnsmasq --test --conf-file="$config"
 }
 need_root() { [[ $(id -u) == 0 ]] || { echo 'run as root' >&2; exit 1; }; }
@@ -74,6 +77,20 @@ case "${1:---check}" in
       --user=jan --group="$(id -gn jan)" \
       --dhcp-leasefile="$base/dnsmasq.leases" --pid-file= &
     child=$!
+    # NetworkManager can remove manually added IPv6 addresses when the
+    # router's native upgrade temporarily drops both Ethernet links.
+    # Dnsmasq uses Linux dynamic binding; restore only our owned prefix
+    # after the isolated interface's permanent IPv4 and carrier return.
+    while kill -0 "$child" 2>/dev/null; do
+      scope_ok || { echo 'test interface scope changed' >&2; exit 1; }
+      if [[ $(cat "/sys/class/net/$iface/carrier" 2>/dev/null || :) == 1 ]] &&
+         ip -4 -o addr show dev "$iface" | grep -Fq 'inet 192.168.76.2/24 ' &&
+         ! ip -6 -o addr show dev "$iface" | grep -Fq "inet6 $prefix "; then
+        ip -6 addr add "$prefix" dev "$iface"
+        echo "restored scoped test IPv6 prefix on $iface"
+      fi
+      sleep 3
+    done
     wait "$child"
     ;;
   --stop)
