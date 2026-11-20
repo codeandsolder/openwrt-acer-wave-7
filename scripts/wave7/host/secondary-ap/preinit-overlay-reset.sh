@@ -1,34 +1,61 @@
 #!/bin/sh
-# Called after mount_root's persistent UBIFS pivot but before board config
-# generation or any network/SSH/DHCP/RA service starts.
+# The first hook runs after 75_wave7_overlay_provision and before 80_mount_root.
+# The second verifies the mounted merged view, without editing the raw upper.
+wave7_ap_migration_fail() {
+    echo "<3>wave7-ap: migration failed: $*" > /dev/kmsg 2>/dev/null || :
+    # The original firstboot watchdog remains armed. Never launch services
+    # with an unverified configuration.
+    while :; do sleep 3600; done
+}
+
+wave7_ap_prepare_overlay() (
+    [ -e /etc/wave7-role-profile ] || return 0
+    [ "$(board_name)" = acer,wave7 ] || wave7_ap_migration_fail board
+    [ "$(sed -n 's/^role=//p' /etc/wave7-role-profile)" = secondary-ap ] ||
+        wave7_ap_migration_fail role
+    [ "$(sed -n 's/^revision=//p' /etc/wave7-role-profile)" = "$(cat /etc/openwrt_version)" ] ||
+        wave7_ap_migration_fail revision
+    [ "$(cat /sys/class/ubi/ubi1_1/name 2>/dev/null)" = openwrt_data ] ||
+        wave7_ap_migration_fail volume-name
+    [ "$(cat /sys/class/ubi/ubi1_1/reserved_ebs 2>/dev/null)" = 56 ] ||
+        wave7_ap_migration_fail volume-size
+    [ "$(cat /sys/class/ubi/ubi1/mtd_num 2>/dev/null)" = 23 ] ||
+        wave7_ap_migration_fail partition
+    [ "$(cat /sys/class/mtd/mtd23/name 2>/dev/null)" = rootfs_overlay ] ||
+        wave7_ap_migration_fail partition-name
+    case " $(cat /proc/cmdline) " in
+        *" root=/dev/ubiblock0_2 "*) ;;
+        *) wave7_ap_migration_fail root-device ;;
+    esac
+    # Only migrate this volume before native mount_root uses it.
+    tmp=/tmp/wave7-ap-policy-volume
+    mkdir -m 0700 "$tmp" || wave7_ap_migration_fail temporary-mountpoint
+    mount -t ubifs -o noatime ubi1:openwrt_data "$tmp" ||
+        wave7_ap_migration_fail mount-volume
+    . /lib/wave7/overlay-reset.sh || wave7_ap_migration_fail load-policy
+    if ! result=$(wave7_ap_reset_upper "$tmp" / 2>&1); then
+        umount "$tmp" || :
+        wave7_ap_migration_fail "$result"
+    fi
+    sync
+    umount "$tmp" || wave7_ap_migration_fail unmount-volume
+    rmdir "$tmp" || wave7_ap_migration_fail cleanup-mountpoint
+    touch /tmp/wave7-ap-overlay-prepared || wave7_ap_migration_fail prepared-marker
+    echo '<6>wave7-ap: prepared dedicated UBIFS before overlay mount' > /dev/kmsg
+)
+
 wave7_ap_reset_preinit() (
     [ -e /rom/etc/wave7-role-profile ] || return 0
-    role=$(sed -n 's/^role=//p' /rom/etc/wave7-role-profile)
-    revision=$(sed -n 's/^revision=//p' /rom/etc/wave7-role-profile)
-
-    # Read the role marker and executable helper strictly from the image
-    # lowerdir; inherited overlay files are not trusted to define policy.
-    if [ "$(board_name 2>/dev/null)" = acer,wave7 ] &&
-       [ "$role" = secondary-ap ] &&
-       [ "$revision" = "$(cat /rom/etc/openwrt_version)" ] &&
-       [ -r /rom/lib/wave7/overlay-reset.sh ] &&
-       [ -d /overlay/upper ] &&
-       grep -q ' - ubifs ubi1:openwrt_data ' /proc/self/mountinfo &&
-       grep -q ' root=/dev/ubiblock0_2 ' /proc/cmdline &&
-       . /rom/lib/wave7/overlay-reset.sh &&
-       wave7_ap_reset_upper / &&
-       wave7_ap_policy_matches_lower /; then
-        sync
-        touch /tmp/wave7-ap-overlay-ready
-        echo '<6>wave7-ap: inherited role policy cleared before startup' > /dev/kmsg 2>/dev/null || true
-        return 0
-    fi
-    # The 120s kernel failsafe timer has already been armed. Stop before
-    # procd launches potentially stale lab DHCP/RA/password SSH services.
-    echo '<3>wave7-ap: unsafe persisted role policy; blocking services until recovery' > /dev/kmsg 2>/dev/null || true
-    sleep 130
-    echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
-    echo c > /proc/sysrq-trigger
-    while :; do sleep 3600; done
+    [ -e /tmp/wave7-ap-overlay-prepared ] || wave7_ap_migration_fail not-prepared
+    # Do not depend on one spelling of the UBIFS device source. Match the
+    # mountpoint and filesystem, together with verified UBI identity.
+    awk '$5 == "/overlay" { for(i=7;i<NF;i++) if($i=="-" && $(i+1)=="ubifs" && ($(i+2)=="ubi1:openwrt_data" || $(i+2)=="/dev/ubi1_1")) ok=1 } END {exit !ok}' \
+        /proc/self/mountinfo || wave7_ap_migration_fail overlay-mount
+    . /rom/lib/wave7/overlay-reset.sh || wave7_ap_migration_fail load-lower-helper
+    result=$(wave7_ap_policy_matches_lower / 2>&1) ||
+        wave7_ap_migration_fail "$result"
+    touch /tmp/wave7-ap-overlay-ready || wave7_ap_migration_fail ready-marker
+    echo '<6>wave7-ap: verified image policy in merged filesystem' > /dev/kmsg
 )
+boot_hook_add preinit_main wave7_ap_prepare_overlay
 boot_hook_add preinit_mount_root wave7_ap_reset_preinit

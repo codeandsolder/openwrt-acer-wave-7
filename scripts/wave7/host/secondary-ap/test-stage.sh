@@ -122,15 +122,18 @@ done
 printf 'env-config-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/fw_env.config"
 printf 'host-identity-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/dropbear/dropbear_ed25519_host_key"
 printf 'ubootenv-MUST-SURVIVE\\n' > "$p/overlay/upper/etc/config/ubootenv"
-wave7_ap_reset_upper "$p"
+wave7_ap_reset_upper "$p/overlay" "$p/rom"
 wave7_ap_policy_matches_lower "$p"
-wave7_ap_reset_upper "$p" # idempotent on repeat boot
+wave7_ap_reset_upper "$p/overlay" "$p/rom" # idempotent on repeat boot
 for file in $(wave7_ap_policy_paths); do
   test ! -e "$p/overlay/upper/$file"
 done
 rg -q '^env-config-MUST-SURVIVE' "$p/overlay/upper/etc/fw_env.config"
 rg -q '^host-identity-MUST-SURVIVE' "$p/overlay/upper/etc/dropbear/dropbear_ed25519_host_key"
 rg -q '^ubootenv-MUST-SURVIVE' "$p/overlay/upper/etc/config/ubootenv"
+# A fresh volume (stock OTA reformats it) has no upper yet.
+mkdir "$work/fresh-volume"
+wave7_ap_reset_upper "$work/fresh-volume" "$p/rom"
 # Verify a stale merged policy does not pass the lowerdir check.
 printf 'incorrect-merged-network\\n' > "$p/etc/config/network"
 if wave7_ap_policy_matches_lower "$p"; then
@@ -142,15 +145,15 @@ q="$work/overlay-bad"
 cp -a "$work/static" "$q"
 mkdir -p "$q/rom" "$q/overlay/upper/etc"
 ln -s /tmp/untrusted "$q/overlay/upper/etc/config"
-if wave7_ap_reset_upper "$q"; then
+if wave7_ap_reset_upper "$q/overlay" "$q/rom"; then
   echo 'SYMLINKED_OVERLAY_PARENT_ACCEPTED' >&2
   exit 1
 fi
 # Pure firstboot gate test; no kernel/router calls.
 . "$(dirname -- "$stage")/role-firstboot.sh"
 boot=11111111-2222-3333-4444-555555555555
-rev_static=r0+38346-0fbc2cc77b-ap-static-guard4
-rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard4
+rev_static=r0+38346-0fbc2cc77b-ap-static-guard5
+rev_dhcp=r0+38346-0fbc2cc77b-ap-dhcp-guard5
 profile_static=$'role=secondary-ap\nmode=static\nmanagement_ipv4=192.168.76.1/24'
 profile_dhcp=$'role=secondary-ap\nmode=dhcp'
 ipstatic='3: br-lan    inet 192.168.76.1/24 brd 192.168.76.255 scope global br-lan'

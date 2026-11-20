@@ -1,10 +1,10 @@
 # Acer Wave 7 — secondary-AP firmware role
 
-Current status (2026-11-20): both authenticated AP variants are verified
-offline, and the static-role Asus trial controller has passed live
-accepted-baseline preflight. The router still runs the accepted
-r0+38346-0fbc2cc77b lab image. Physical AP-role trial remains gated
-on target-side sysupgrade -T -n validation and recovery assessment.
+Current status (2026-11-20): guard4 failed after UBIFS mounting and
+recovered to stock through the existing watchdog. Guard5 changes the
+migration to prepare the dedicated UBIFS before OverlayFS mounts it.
+The accepted integrated image is separately recoverable through the
+proven vendor OTA wrapper. Guard5 requires live acceptance.
 
 ## Verified current images
 
@@ -13,15 +13,15 @@ Both derive from accepted source sysupgrade SHA256:
 and preserve the exact accepted kernel FIT (SHA256):
 9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
 
-- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard4
-  SHA256 66274669875d8ae3f648e06bca44a5c0c540117096ec33ec0c49be13ecbe0155
-- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard4
-  SHA256 a0767a8fbf013848bfac929f1c0fde614c32635a5ab60a97cee5a3255d809619
+- Isolated static lab: r0+38346-0fbc2cc77b-ap-static-guard5
+  SHA256: see generated guard5 manifest
+- Upstream DHCP managed: r0+38346-0fbc2cc77b-ap-dhcp-guard5
+  SHA256: see generated guard5 manifest
 
 Build artifacts on Acer:
   /home/jan/firmware/wave7/builds/secondary-ap-20261120/
 Staged copies on Asus:
-  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard4/
+  /home/jan/firmware/wave7/trials/20261120-secondary-ap-guard5/
 
 Both bridge four physical DSA ports, retain EHT MLO and all 46
 SHA-pinned radio/diagnostic files, disable DNS, DHCPv4, DHCPv6, RA
@@ -36,14 +36,15 @@ The accepted lab image is not modified. The current native OTA path
 retains the independent ubi1:openwrt_data overlay EVEN with sysupgrade -n.
 On the live original firmware, old standalone-router network, dhcp, system
 configuration is present in /overlay/upper and shadows /rom defaults.
-The AP role's early preinit_mount_root hook therefore clears just the
-inherited /etc/config/{network,dhcp,dropbear,wireless,firewall,system},
-/etc/shadow and /etc/dropbear/authorized_keys upper entries after the
-UBIFS pivot, before UCI config generation and service startup. It keeps
-fw_env.config, ubootenv, ubihealthd and SSH host keys. It rejects symlinked/opaque overlay parents,
-uses only lowerdir helpers, and checks that
-all resulting live files match the role image's /rom originals and sets
-the ephemeral /tmp/wave7-ap-overlay-ready marker only after success.
+The AP role now mounts only the verified dedicated UBIFS volume in the
+76 preinit_main hook after provisioning and before native mount_root.
+It removes exactly role-owned upperdir overrides while OverlayFS is not
+using that directory, unmounts the temporary UBIFS, then verifies the
+merged files against /rom in the post-mount hook. Fresh volumes with no
+upper directory are valid. Specific failed predicates and policy paths
+are logged to the kernel console without recording secrets. Unrelated
+UBIFS state and persistent SSH host identities are retained. The volatile
+overlay-ready marker is created only after the merged check succeeds.
 If anything fails, it BLOCKS service startup while the already-armed
 hard firstboot watchdog enters recovery; never expose old DHCP/RA/SSH.
 This profile is intentionally image-authoritative for its role-owned

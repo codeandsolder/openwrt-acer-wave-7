@@ -14,27 +14,35 @@ wave7_ap_policy_paths() {
         lib/wave7/overlay-reset.sh lib/wave7/role-firstboot.sh
 }
 
-# Use subshell functions so early preinit state/variables are not modified.
+# Operate only on an unmounted-from-overlayfs writable volume. The caller
+# supplies the temporary UBIFS mount and the immutable root independently.
 wave7_ap_reset_upper() (
-    root=/
-    [ "$#" -eq 0 ] || root=$1
-    case "$root" in /) root='' ;; esac
-    upper="$root/overlay/upper"
-    rom="$root/rom"
-
-    [ -d "$upper" ] && [ ! -L "$upper" ] || return 1
+    [ "$#" -eq 2 ] || return 1
+    upper="$1/upper"
+    rom="$2"
+    # A fresh UBIFS need not have an upper directory yet.
+    [ ! -L "$upper" ] || { echo 'invalid upper symlink' >&2; return 1; }
+    [ -e "$upper" ] || return 0
+    [ -d "$upper" ] || { echo 'invalid upper type' >&2; return 1; }
     for dir in etc etc/config etc/dropbear etc/init.d usr usr/lib \
                lib lib/preinit lib/wave7; do
-        [ ! -L "$upper/$dir" ] || return 1
-        [ ! -e "$upper/$dir" ] || [ -d "$upper/$dir" ] || return 1
+        [ ! -L "$upper/$dir" ] || { echo "symlink parent: $dir" >&2; return 1; }
+        [ ! -e "$upper/$dir" ] || [ -d "$upper/$dir" ] || {
+            echo "non-directory parent: $dir" >&2; return 1;
+        }
     done
     for file in $(wave7_ap_policy_paths); do
-        [ -f "$rom/$file" ] && [ ! -L "$rom/$file" ] || return 1
+        [ -f "$rom/$file" ] && [ ! -L "$rom/$file" ] || {
+            echo "unexpected lower file: $file" >&2; return 1;
+        }
         if [ -d "$upper/$file" ] && [ ! -L "$upper/$file" ]; then
+            echo "upper is directory: $file" >&2
             return 1
         fi
-        rm -f "$upper/$file" || return 1
-        [ ! -e "$upper/$file" ] && [ ! -L "$upper/$file" ] || return 1
+        rm -f "$upper/$file" || { echo "remove failed: $file" >&2; return 1; }
+        [ ! -e "$upper/$file" ] && [ ! -L "$upper/$file" ] || {
+            echo "upper still present: $file" >&2; return 1;
+        }
     done
 )
 
@@ -45,6 +53,8 @@ wave7_ap_policy_matches_lower() (
     [ "$#" -eq 0 ] || root=$1
     case "$root" in /) root='' ;; esac
     for file in $(wave7_ap_policy_paths); do
-        cmp -s "$root/rom/$file" "$root/$file" || return 1
+        cmp -s "$root/rom/$file" "$root/$file" || {
+            echo "merged policy differs: $file" >&2; return 1;
+        }
     done
 )
