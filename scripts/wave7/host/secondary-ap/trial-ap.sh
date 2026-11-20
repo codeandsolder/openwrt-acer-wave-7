@@ -223,7 +223,7 @@ read_state() {
       echo "${name}_rom_sha=$(sha256sum /rom/$p 2>/dev/null | cut -d" " -f1)"
       echo "${name}_live=$(cat /sys/module/$mod/initstate 2>/dev/null || echo absent)"
       echo "${name}_taint=$(cat /sys/module/$mod/taint 2>/dev/null || echo absent)"
-      echo "manifest_${name}_sha=$(sed -n "s/^trial_\${name}_sha256=//p" /rom/etc/wave7-role-profile)"
+      echo "manifest_${name}_sha=$(sed -n "s/^trial_${name}_sha256=//p" /rom/etc/wave7-role-profile)"
     done
     echo "manifest_relink_patch=$(sed -n "s/^trial_relink_patch_commit=//p" /rom/etc/wave7-role-profile)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
