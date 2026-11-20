@@ -20,6 +20,8 @@ valid() {
   wanted=dhcp
   [[ $expected == *-ap-static-auth ]] && wanted=static
   netmode=$(value "$s" netproto)
+  [[ $(value "$s" role) == secondary-ap ]] || return 1
+  [[ $(value "$s" profile_mode) == "$wanted" ]] || return 1
   [[ $netmode == "$wanted" ]] || return 1
   for field in 'kernel=6.18.60' 'root_hash=!' 'rootkey=1' \
     'pass=off' 'rootpass=off' 'rootlogin=on' 'dnsmasq=1' \
@@ -29,13 +31,18 @@ valid() {
   done
   [[ $(value "$s" bridge_ip) =~ ^[0-9]+(\.[0-9]+){3}/[0-9]+$ ]] || return 1
   if [[ $wanted == static ]]; then
-    [[ $(value "$s" bridge_ip) == 192.168.76.1/24 ]] || return 1
+    local profile_ip
+    profile_ip=$(value "$s" management_ipv4)
+    [[ $profile_ip =~ ^[0-9]+(\.[0-9]+){3}/[0-9]+$ ]] || return 1
+    [[ $(value "$s" bridge_ip) == "$profile_ip" ]] || return 1
+  else
+    [[ -z $(value "$s" management_ipv4) ]] || return 1
   fi
 }
 if [[ $mode == --selftest ]]; then
   rev=r0+38346-0fbc2cc77b-ap-static-auth
   boot=11111111-2222-3333-4444-555555555555
-  good=$'rev=r0+38346-0fbc2cc77b-ap-static-auth\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
+  good=$'rev=r0+38346-0fbc2cc77b-ap-static-auth\nboot=11111111-2222-3333-4444-555555555555\nbootfail=5\nkeep=0\nkernel=6.18.60\nroot_hash=!\nrootkey=1\npass=off\nrootpass=off\nrootlogin=on\ndnsmasq=1\ndhcpv4=disabled\ndhcpv6=disabled\nra=disabled\nrole=secondary-ap\nprofile_mode=static\nmanagement_ipv4=192.168.76.1/24\nnetproto=static\nbridge_ip=192.168.76.1/24\nlan=1\nlan1=1\nq6=3\nmlo=2\nping=1\nnoc=0'
   valid "$good" "$rev"
   for change in 'bootfail=0' 'keep=1' 'root_hash=' 'rootkey=0' \
     'pass=on' 'rootpass=on' 'rootlogin=off' 'dnsmasq=0' \
@@ -51,8 +58,24 @@ if [[ $mode == --selftest ]]; then
   dynamic_rev=r0+38346-0fbc2cc77b-ap-dhcp-auth
   dynamic=$(sed -e "s@$rev@$dynamic_rev@" \
     -e 's@netproto=static@netproto=dhcp@' \
+    -e 's@profile_mode=static@profile_mode=dhcp@' \
+    -e 's@management_ipv4=192.168.76.1/24@management_ipv4=@' \
     -e 's@bridge_ip=192.168.76.1/24@bridge_ip=10.22.33.44/24@' <<< "$good")
   valid "$dynamic" "$dynamic_rev"
+  for change in 'role=lab' 'profile_mode=dhcp' 'management_ipv4=192.168.76.99/24'; do
+    field=$(cut -d= -f1 <<< "$change")
+    if valid "$(sed "s@^$field=.*@$change@" <<< "$good")" "$rev"; then
+      echo "ATTESTATION_PROFILE_MISMATCH_ACCEPTED $change" >&2
+      exit 1
+    fi
+  done
+  for change in 'role=lab' 'profile_mode=static' 'management_ipv4=192.168.76.1/24'; do
+    field=$(cut -d= -f1 <<< "$change")
+    if valid "$(sed "s@^$field=.*@$change@" <<< "$dynamic")" "$dynamic_rev"; then
+      echo "DHCP_ATTESTATION_PROFILE_MISMATCH_ACCEPTED $change" >&2
+      exit 1
+    fi
+  done
   echo SECONDARY_AP_ATTESTATION_SELFTEST_PASS
   exit 0
 fi
@@ -91,6 +114,9 @@ state=$(remote '
   echo "dhcpv4=$(uci -q get dhcp.lan.dhcpv4)"
   echo "dhcpv6=$(uci -q get dhcp.lan.dhcpv6)"
   echo "ra=$(uci -q get dhcp.lan.ra)"
+  echo "role=$(sed -n '\''s/^role=//p'\'' /etc/wave7-role-profile | head -1)"
+  echo "profile_mode=$(sed -n '\''s/^mode=//p'\'' /etc/wave7-role-profile | head -1)"
+  echo "management_ipv4=$(sed -n '\''s/^management_ipv4=//p'\'' /etc/wave7-role-profile | head -1)"
   echo "netproto=$(uci -q get network.lan.proto)"
   echo "bridge_ip=$(ip -4 -o addr show dev br-lan | sed -n '\''s/.*inet \([^ ]*\).*/\1/p'\'' | head -1)"
   echo "lan=$(cat /sys/class/net/lan/carrier)"
