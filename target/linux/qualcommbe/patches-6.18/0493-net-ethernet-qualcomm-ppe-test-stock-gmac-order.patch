@@ -1,0 +1,237 @@
+Subject: [PATCH] net: ethernet: qualcomm: ppe: test stock GMAC ordering
+
+Stock SSDK drains the bridge for 10 ms before disabling GMAC RX on
+media-down, keeps TX enabled until the next link-up, and enables TX
+and RX separately before opening the bridge. The 0492 experiment
+retained the Linux MAC ordering and still reproduced the fault.
+
+Test the stock gate ordering on the already scoped Wave7 QCA8081
+SGMII path without changing PHY polling, PCS policy or MAC rates.
+Quiesce on major config, errors, administrative stop and destruction.
+Do not change XGMAC or other boards and ports.
+
+Experimental; hardware efficacy is not established.
+
+diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.c
+@@ -662,6 +662,38 @@
+ 	       phy && phy->phy_id == 0x004dd101 && phy->mdio.addr == 0x18;
+ }
+ 
++/*
++ * The experimental media-down path deliberately retains GMAC TX. A
++ * major configuration, administrative stop or teardown must quiesce
++ * it even when phylink has already reported the link as down.
++ * Call only with phylink callbacks serialized or stopped.
++ */
++int ppe_port_wave7_gmac_quiesce(struct ppe_port *ppe_port)
++{
++	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
++	int port = ppe_port->port_id;
++	int ret, mac_ret;
++	u32 reg;
++
++	if (!ppe_port->wave7_gmac_active)
++		return 0;
++
++	reg = PPE_PORT_BRIDGE_CTRL_ADDR + PPE_PORT_BRIDGE_CTRL_INC * port;
++	ret = regmap_clear_bits(ppe_dev->regmap, reg, PPE_PORT_BRIDGE_TXMAC_EN);
++
++	/* Attempt both operations even if closing the bridge fails. */
++	ppe_port_gmib_work_stop(ppe_port);
++	reg = PPE_PORT_GMAC_ADDR(port) + GMAC_ENABLE_ADDR;
++	mac_ret = regmap_clear_bits(ppe_dev->regmap, reg, GMAC_TRXEN);
++	if (!ret && !mac_ret)
++		ppe_port->wave7_gmac_active = false;
++	else
++		dev_err(ppe_dev->dev, "Wave7 port %d GMAC quiesce fail %d/%d\n",
++			port, ret, mac_ret);
++
++	return ret ?: mac_ret;
++}
++
+ /* PPE port MAC configuration for phylink */
+ static void ppe_port_mac_config(struct phylink_config *config,
+ 				unsigned int mode,
+@@ -679,6 +711,10 @@
+ 	if (ppe_port->wave7_relink)
+ 		ipq_pcs_wave7_relink_invalidate(ppe_port->pcs);
+ 
++	ret = ppe_port_wave7_gmac_quiesce(ppe_port);
++	if (ret)
++		goto err_mac_config;
++
+ 	switch (state->interface) {
+ 	case PHY_INTERFACE_MODE_2500BASEX:
+ 	case PHY_INTERFACE_MODE_USXGMII:
+@@ -827,7 +863,8 @@
+ 
+ /* PPE port GMAC link up configuration */
+ static int ppe_port_gmac_link_up(struct ppe_port *ppe_port, int speed,
+-				 int duplex, bool tx_pause, bool rx_pause)
++				 int duplex, bool tx_pause, bool rx_pause,
++				 bool stock_order)
+ {
+ 	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
+ 	int ret, port = ppe_port->port_id;
+@@ -861,8 +898,8 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Set duplex, flow control and enable GMAC */
+-	val = GMAC_TRXEN;
++	/* Stock ordering programs the parameters before either enable. */
++	val = stock_order ? 0 : GMAC_TRXEN;
+ 	if (duplex == DUPLEX_FULL)
+ 		val |= GMAC_DUPLEX_FULL;
+ 	if (tx_pause)
+@@ -870,8 +907,18 @@
+ 	if (rx_pause)
+ 		val |= GMAC_RXFCEN;
+ 
+-	return regmap_update_bits(ppe_dev->regmap, reg + GMAC_ENABLE_ADDR,
+-				  GMAC_ENABLE_ALL, val);
++	ret = regmap_update_bits(ppe_dev->regmap, reg + GMAC_ENABLE_ADDR,
++				 GMAC_ENABLE_ALL, val);
++	if (ret || !stock_order)
++		return ret;
++
++	ret = regmap_set_bits(ppe_dev->regmap, reg + GMAC_ENABLE_ADDR,
++			      GMAC_TXEN);
++	if (ret)
++		return ret;
++
++	return regmap_set_bits(ppe_dev->regmap, reg + GMAC_ENABLE_ADDR,
++			       GMAC_RXEN);
+ }
+ 
+ /* PPE port XGMAC link up configuration */
+@@ -957,8 +1004,26 @@
+ 	enum ppe_mac_type mac_type = ppe_port->mac_type;
+ 	struct ppe_device *ppe_dev = ppe_port->ppe_dev;
+ 	int ret, port = ppe_port->port_id;
++	bool stock_order;
+ 	u32 reg, val;
+ 
++	stock_order = ppe_port->wave7_relink &&
++		      ppe_port_wave7_phy(ppe_port, phy) &&
++		      ppe_port->mac_configured && mode == MLO_AN_PHY &&
++		      interface == PHY_INTERFACE_MODE_SGMII &&
++		      mac_type == PPE_MAC_TYPE_GMAC;
++
++	if (stock_order) {
++		/* Track even a partial or failed register transaction. */
++		ppe_port->wave7_gmac_active = true;
++		reg = PPE_PORT_GMAC_ADDR(port) + GMAC_ENABLE_ADDR;
++		ret = regmap_clear_bits(ppe_dev->regmap, reg, GMAC_TXEN);
++		if (ret)
++			goto err_port_mac_link_up;
++
++		dev_info(ppe_dev->dev, "wave7-diag: stock-mac TX off before prepare\n");
++	}
++
+ 	if (ppe_port->wave7_relink) {
+ 		ret = ipq_pcs_wave7_mac_prepare(ppe_port->pcs, mode, interface,
+ 						speed, duplex, tx_pause, rx_pause,
+@@ -976,7 +1041,8 @@
+ 	/* Configure PPE MAC according current speed */
+ 	if (mac_type == PPE_MAC_TYPE_GMAC)
+ 		ret = ppe_port_gmac_link_up(ppe_port,
+-					    speed, duplex, tx_pause, rx_pause);
++					    speed, duplex, tx_pause, rx_pause,
++					    stock_order);
+ 	else
+ 		ret = ppe_port_xgmac_link_up(ppe_port, interface,
+ 					     speed, duplex, tx_pause, rx_pause);
+@@ -1004,6 +1070,7 @@
+ 	return;
+ 
+ err_port_mac_link_up:
++	ppe_port_wave7_gmac_quiesce(ppe_port);
+ 	if (ppe_port->wave7_relink)
+ 		ipq_pcs_wave7_mac_finish(ppe_port->pcs, false);
+ 	dev_err(ppe_dev->dev, "PPE port %d link up fail %d\n", port, ret);
+@@ -1060,16 +1127,30 @@
+ 	if (ret)
+ 		goto err_port_mac_link_down;
+ 
+-	if (mac_type == PPE_MAC_TYPE_GMAC)
++	if (ppe_port->wave7_gmac_active &&
++	    mode == MLO_AN_PHY && interface == PHY_INTERFACE_MODE_SGMII &&
++	    mac_type == PPE_MAC_TYPE_GMAC) {
++		/* Stock: drain with TX still enabled, then disable RX only. */
++		fsleep(10000);
++		ppe_port_gmib_work_stop(ppe_port);
++		reg = PPE_PORT_GMAC_ADDR(port) + GMAC_ENABLE_ADDR;
++		ret = regmap_clear_bits(ppe_dev->regmap, reg, GMAC_RXEN);
++		if (!ret)
++			dev_info(ppe_dev->dev, "wave7-diag: stock-mac drained RX off TX retained\n");
++	} else if (ppe_port->wave7_gmac_active) {
++		ret = ppe_port_wave7_gmac_quiesce(ppe_port);
++	} else if (mac_type == PPE_MAC_TYPE_GMAC) {
+ 		ret = ppe_port_gmac_link_down(ppe_port);
+-	else
++	} else {
+ 		ret = ppe_port_xgmac_link_down(ppe_port);
++	}
+ 	if (ret)
+ 		goto err_port_mac_link_down;
+ 
+ 	return;
+ 
+ err_port_mac_link_down:
++	ppe_port_wave7_gmac_quiesce(ppe_port);
+ 	if (ppe_port->wave7_relink)
+ 		ipq_pcs_wave7_relink_invalidate(ppe_port->pcs);
+ 	dev_err(ppe_dev->dev, "PPE port %d link down fail %d\n", port, ret);
+@@ -1246,6 +1327,9 @@
+ 		ppe_port->phylink = NULL;
+ 	}
+ 
++	/* No callbacks remain after phylink destruction. */
++	ppe_port_wave7_gmac_quiesce(ppe_port);
++
+ 	/* Release PCS instance */
+ 	if (ppe_port->pcs) {
+ 		ipq_pcs_put(ppe_port->pcs);
+diff --git a/drivers/net/ethernet/qualcomm/ppe/ppe_port.h b/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+--- a/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
++++ b/drivers/net/ethernet/qualcomm/ppe/ppe_port.h
+@@ -53,6 +53,7 @@
+  * @phylink_config: Linux phylink configurations
+  * @pcs: Linux phylink PCS instance
+  * @wave7_relink: Opt into the direct QCA8081 PCS preservation experiment
++ * @wave7_gmac_active: Stock-order GMAC may require explicit quiesce
+  * @mac_configured: Last major MAC configuration completed successfully
+  * @clks: Port clocks
+  * @rstcs: Port resets
+@@ -70,6 +71,7 @@
+ 	struct phylink_config phylink_config;
+ 	struct phylink_pcs *pcs;
+ 	bool wave7_relink;
++	bool wave7_gmac_active;
+ 	bool mac_configured;
+ 	struct clk *clks[PPE_PORT_CLK_RST_MAX];
+ 	struct reset_control *rstcs[PPE_PORT_CLK_RST_MAX];
+@@ -92,6 +94,7 @@
+ void ppe_port_mac_deinit(struct ppe_device *ppe_dev);
+ int ppe_port_phylink_setup(struct ppe_port *ppe_port,
+ 			   struct net_device *netdev);
++int ppe_port_wave7_gmac_quiesce(struct ppe_port *ppe_port);
+ void ppe_port_phylink_destroy(struct ppe_port *ppe_port);
+ int ppe_port_get_sset_count(struct ppe_port *ppe_port, int sset);
+ void ppe_port_get_strings(struct ppe_port *ppe_port, u32 stringset, u8 *data);
+diff --git a/drivers/net/ethernet/qualcomm/ppe/edma_port.c b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+@@ -146,6 +146,9 @@
+ 	if (ppe_port->phylink)
+ 		phylink_stop(ppe_port->phylink);
+ 
++	/* Media-down may have retained TX even if carrier was already off. */
++	ppe_port_wave7_gmac_quiesce(ppe_port);
++
+ 	return 0;
+ }
+ 
