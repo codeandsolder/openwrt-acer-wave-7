@@ -24,10 +24,13 @@ PROFILES = {
     "0491": ("r0+38346-0418bb7af2-ap-dhcp-guard8", "stock-poll-fifo-dhcp-guard8"),
     "0492": ("r0+38346-fe5568a4fb-ap-dhcp-guard8", "conditional-relink-dhcp-guard8"),
     "0493": ("r0+38346-7aa198ca4c-ap-dhcp-guard8", "stock-mac-order-dhcp-guard8"),
+    "0494": ("r0+38346-e771c4f65a-ap-dhcp-guard8", "nsscc-parent-order-dhcp-guard8"),
 }
 RELINK_REV = PROFILES["0492"][0]
 MAC_ORDER_REV = PROFILES["0493"][0]
 RELINK_REVISIONS = (RELINK_REV, MAC_ORDER_REV)
+CLOCK_REV = PROFILES["0494"][0]
+EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV)
 MAC_ORDER = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-mac (TX off before prepare|drained RX off TX retained)$")
 EDGE = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: phy-path edge=(\d+) link=([01]) ")
 RELINK = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-relink (preserve|prepare|committed)(?: speed=(\d+) duplex=(\d+) pause=([01])/([01]))?$")
@@ -168,6 +171,14 @@ def evaluate(window, prior_speed=None):
                 phy_edge=b["phy"]["edge"],classification="INCONCLUSIVE")
     if elapsed < 30 or min(*mac.values(),*phy.values(),*errors.values()) < 0 or any(errors.values()) or peer_tx is None or peer_tx<=0:
         return result
+    if b.get("revision")==CLOCK_REV:
+        edge=b["phy"]["edge"]
+        starts=[e for e in b["phy_edges"] if e["edge"]==edge and e["link"]==1]
+        if len(starts)!=1 or any(r["host_counters"]["direct"].get("speed")!="1000" for r in window):
+            return result
+        if any(r["snapshot"]["state"]["phy"]["uptime"]<starts[0]["uptime"] for r in window):
+            return result
+        result["clock_trial_edge"]=edge
     if b.get("revision") in RELINK_REVISIONS:
         # Tie the actual policy decision to this PHY edge, not a prior
         # successful mode transition. Require the host to agree on speed.
@@ -234,7 +245,7 @@ def report(rows):
             flush()
             last_good=None
             continue
-        if s.get("revision") in RELINK_REVISIONS:
+        if s.get("revision") in EDGE_REVISIONS:
             # Real kernel edges can occur entirely between snapshots.
             # Use the logged pair without treating pre-capture history
             # as a fresh event or claiming an unobserved healthy baseline.
@@ -266,7 +277,7 @@ def report(rows):
             flush()
             last_good=None
             continue
-        if s.get("revision") in RELINK_REVISIONS:
+        if s.get("revision") in EDGE_REVISIONS:
             # A matched trial requires observed healthy traffic before
             # the edge, with both ends agreeing on the initial speed.
             ready = (row["host_counters"]["direct"].get("speed")==s["speed"]
@@ -308,7 +319,7 @@ def report(rows):
         classes={w["classification"] for w in e["windows"]}-{"INCONCLUSIVE"}
         e["classification"]=next(iter(classes)) if len(classes)==1 else "MIXED" if classes else "INCONCLUSIVE"
         if e["classification"]=="ONE_GIG_RECONNECT_PASS":
-            if e["prior_speed"] is None and any("relink_policy" in w for w in e["windows"]):
+            if e["prior_speed"] is None and any("relink_policy" in w or "clock_trial_edge" in w for w in e["windows"]):
                 e["classification"]="ONE_GIG_UP_WITHOUT_HEALTHY_BASELINE"
             elif e["prior_speed"]!="1000":
                 e["classification"]="ONE_GIG_TRANSITION_PASS"
@@ -441,6 +452,17 @@ def selftest():
     for r in ordered[1:]:
         r["snapshot"]["state"]["mac_order_events"][1]["uptime"]=10.9
     assert report(ordered)["classification"]=="INCONCLUSIVE"
+    # 0494 is based on 0491: require real PHY edges but never require
+    # 0492/0493-only PCS policy markers.
+    clock=copy.deepcopy(rows)
+    for r in clock:
+        st=r["snapshot"]["state"]
+        st["revision"]=CLOCK_REV
+        st["relink_events"]=[]
+    assert report(clock)["classification"]=="ONE_GIG_RECONNECT_PASS",report(clock)
+    assert report(clock[1:])["classification"]=="NO_CARRIER_EDGE_OBSERVED"
+    clock[0]["host_counters"]["direct"]["speed"]="2500"
+    assert report(clock)["classification"]=="ONE_GIG_UP_WITHOUT_HEALTHY_BASELINE"
     print("PHY_RECONNECT_SELFTEST_PASS")
 
 

@@ -38,6 +38,12 @@ echo MAC_END
 echo CLOCK_BEGIN
 awk '$1 ~ /^7a10000[.]ethernet-pcs::(phy_ref_clk|rx_clk|tx_clk)$/ || $1 ~ /^nss_cc_(uniphy_)?port2_(rx|tx)(_div)?_clk(_src)?$/ || $1=="nss_cc_port2_mac_clk" {print $1,$2,$3,$5,$9}' /sys/kernel/debug/clk/clk_summary
 echo CLOCK_END
+echo PARENT_BEGIN
+for clk in nss_cc_port2_rx_clk_src nss_cc_port2_tx_clk_src; do
+  printf '%s=' "$clk"
+  cat "/sys/kernel/debug/clk/$clk/clk_parent"
+done
+echo PARENT_END
 echo PHY_BEGIN
 for reg in 17 31; do
   echo "c22.$reg=$(phytool read lan/0x18/$reg)"
@@ -60,6 +66,7 @@ CLOCKS={"7a10000.ethernet-pcs::"+n for n in ("phy_ref_clk","rx_clk","tx_clk")}
 CLOCKS|={"nss_cc_port2_"+d+s for d in ("rx","tx") for s in ("_clk_src","_div_clk_src","_clk")}
 CLOCKS|={"nss_cc_uniphy_port2_"+d+"_clk" for d in ("rx","tx")}
 CLOCKS.add("nss_cc_port2_mac_clk")
+PARENT_KEYS={"nss_cc_port2_rx_clk_src","nss_cc_port2_tx_clk_src"}
 PHY_KEYS={"c22.17","c22.31","mmd3.0x805a","mmd7.0x8029"}|{"mmd1."+r for r in ("0x0009","0x001e","0x001f","0x006e","0x006f","0x0070","0x007d","0x9072")}
 PCS_KEYS={"interface","calibration","mode_ctrl","misc2","vco_cal_ctrl","pll_reset","clkout_50m_ctrl","link_detect","mii0_control","mii0_status"}
 MAC_KEYS={"port_mux_ctrl","port2_gmac_enable","port2_gmac_speed","port2_gmac_ctrl0","port2_bridge_ctrl"}
@@ -77,7 +84,10 @@ def parse(raw,boot,rev,speed):
             active="CORE"
         else:
             sections[active].append(line)
-    assert active=="CORE" and set(sections)=={"CORE","PCS","MAC","CLOCK","PHY","COUNTERS"}
+    required={"CORE","PCS","MAC","CLOCK","PHY","COUNTERS"}
+    assert active=="CORE" and required<=set(sections)<=required|{"PARENT"}
+    if rev==probe.CLOCK_REV:
+        assert "PARENT" in sections, "clock trial requires logical parent evidence"
     def fields(lines):
         out={}
         for line in lines:
@@ -108,7 +118,13 @@ def parse(raw,boot,rev,speed):
         assert n not in counters
         counters[n]=int(v)
     assert set(counters)==set(probe.MAC_KEYS)
-    return dict(core=core,pcs=pcs,mac=mac,phy=phy,clocks=clocks,counters=counters)
+    result=dict(core=core,pcs=pcs,mac=mac,phy=phy,clocks=clocks,counters=counters)
+    if "PARENT" in sections:
+        parents=fields(sections["PARENT"])
+        assert set(parents)==PARENT_KEYS
+        assert all(re.fullmatch(r"[a-zA-Z0-9_.:-]+",v) for v in parents.values())
+        result["parents"]=parents
+    return result
 
 def capture(out,boot,profile,speed,expected):
     rev,directory=probe.PROFILES[profile]
@@ -170,18 +186,64 @@ def compare(a,b):
     allrows=x+y
     assert len({(r["core"]["boot"],r["core"]["revision"],r["core"]["start_speed"]) for r in allrows})==1
     out={}
-    for category in ("pcs","mac","phy","clocks"):
+    categories=("pcs","mac","phy","clocks")
+    has_parents={"parents" in row for row in allrows}
+    assert len(has_parents)==1,"cannot compare mixed clock-parent coverage"
+    if True in has_parents:
+        categories+=("parents",)
+    for category in categories:
         for k in x[0][category]:
             av={json.dumps(r[category][k]) for r in x}
             bv={json.dumps(r[category][k]) for r in y}
             if av!=bv:
                 out[category+"."+k]={"first":[json.loads(v) for v in sorted(av)],"second":[json.loads(v) for v in sorted(bv)],"stable_difference":len(av)==len(bv)==1}
-    print(json.dumps({"first":{"path":str(a),"state":xstate},"second":{"path":str(b),"state":ystate},"matched_healthy_fault":xstate!=ystate,"differences":out,"fields_compared":sum(len(x[0][n]) for n in ("pcs","mac","phy","clocks"))},indent=2))
+    print(json.dumps({"first":{"path":str(a),"state":xstate},"second":{"path":str(b),"state":ystate},"matched_healthy_fault":xstate!=ystate,"differences":out,"fields_compared":sum(len(x[0][n]) for n in categories)},indent=2))
+def selftest():
+    boot="12345678-1234-1234-1234-123456789abc"
+    rev=probe.CLOCK_REV
+    core=dict(boot=boot,end_boot=boot,revision=rev,peer=trunk.PATHS["switch"][0],
+              start_uptime="100",end_uptime="101",start_speed="1000",end_speed="1000",
+              start_carrier="1",end_carrier="1",switch_carrier="1",bootfail="0")
+    def section(name,lines):
+        return [name+"_BEGIN",*lines,name+"_END"]
+    def fields(values):
+        return [f"{k}={v}" for k,v in values.items()]
+    raw=fields(core)
+    raw+=section("PCS",fields(dict.fromkeys(PCS_KEYS,"0x0001")))
+    raw+=section("MAC",fields(dict.fromkeys(MAC_KEYS,"0x0001")))
+    raw+=section("CLOCK",[f"{name} 1 1 125000000 Y" for name in CLOCKS])
+    raw+=section("PHY",fields(dict.fromkeys(PHY_KEYS,"0x0001")))
+    raw+=section("COUNTERS",[f"{name}: 1" for name in probe.MAC_KEYS])
+    parent_section=section("PARENT",[
+        "nss_cc_port2_rx_clk_src=7a10000.ethernet-pcs::rx_clk",
+        "nss_cc_port2_tx_clk_src=7a10000.ethernet-pcs::tx_clk"])
+    def check(lines,revision=rev):
+        return parse("\n".join(lines),boot,revision,"1000")
+    assert set(check(raw+parent_section)["parents"])==PARENT_KEYS
+    def rejects(lines):
+        try:
+            check(lines)
+        except AssertionError:
+            return
+        raise AssertionError("invalid parent fixture accepted")
+    rejects(raw)
+    rejects(raw+parent_section[:-2]+parent_section[-1:])
+    rejects(raw+parent_section[:2]+parent_section[1:])
+    rejects(raw+[line.replace("::rx_clk","") if "::rx_clk" in line else line for line in
+                 [line.replace("7a10000.ethernet-pcs","") if "::rx_clk" in line else line for line in parent_section]])
+    # Historical sealed captures retain their original schema.
+    old_rev=probe.PROFILES["0493"][0]
+    old=[line.replace(rev,old_rev) for line in raw]
+    assert "parents" not in check(old,old_rev)
+    print("PHY_STATE_SELFTEST_PASS")
+
 if __name__=="__main__":
     p=argparse.ArgumentParser()
     sub=p.add_subparsers(dest="cmd",required=True)
+    sub.add_parser("selftest")
     c=sub.add_parser("capture");c.add_argument("out",type=Path);c.add_argument("boot");c.add_argument("--profile",choices=probe.PROFILES,required=True);c.add_argument("--speed",choices=("1000","2500"),required=True);c.add_argument("--expected",choices=("healthy","fault"),required=True)
     c=sub.add_parser("compare");c.add_argument("first",type=Path);c.add_argument("second",type=Path)
     a=p.parse_args()
     if a.cmd=="capture":capture(a.out,a.boot,a.profile,a.speed,a.expected)
-    else:compare(a.first,a.second)
+    elif a.cmd=="compare":compare(a.first,a.second)
+    else:selftest()
