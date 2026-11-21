@@ -79,6 +79,22 @@ Original executable paths, not a translated pseudocode model:
   GMAC and bridge register-address calculations execute original
   instructions.
 
+* Separate direct original ARM parameter cases confirm GMAC speed
+  register 0x1204 bits1:0 map 10/100/1000/2500 to 0/1/2/2.
+  The 2500 encoding is a GMAC helper case, not evidence of GMAC use
+  on stock Wave7 at 2.5G. GMAC_ENABLE 0x1200 bits6,5,4 are respectively
+  TX pause, RX pause and duplex. Each helper reads and writes the
+  entire word preserving other bits, including when unchanged.
+  BM port9 flow-control register 0x600124 is a stock whole-word
+  write of 0 or 1 (not read-modify-write). The worker's TX pause
+  wrapper at 0x6ddc invokes the BM callback at ops+0x6a8 after MAC
+  TX pause; init 0x241a8 assigns this callback 0x23f50. Linux also
+  addresses BM port9, but programs it after TX/RX enable. These
+  individual differences are distinct from the 0493 gate-order test.
+  The parameter cases execute 0x6210, 0x6298, 0x6320, 0x70b4,
+  0x23f50 and their original register-address routines. The worker
+  matrix uses mocked parameter operations as before.
+
 ## Scope and results
 
 All excluded code is filled with UDF, unknown call relocations
@@ -87,11 +103,11 @@ The fixture includes original locks, status helpers, host transition,
 adapter control, rate selection and MAC/bridge enable helpers; no
 device register accesses. Cache tuples, PHY registers, clock outcomes,
 device type, topology, and time are simulation inputs. Mode-apply,
-MAC speed/duplex/pause internals, kernel scheduling and actual clock
+MAC speed/duplex/pause wrappers in the worker, kernel scheduling and actual clock
 hardware are boundaries; neither electrical behavior nor recovery is
 proved by this experiment.
 
-25 named cases (9 full worker/PHY cases, 10 host cases, 3 phylib cases, 3 original MAC selector cases), plus 2,304
+37 named cases (25 previous cases plus 12 isolated original ARM parameter cases), plus 2,304
 synthetic status combinations (24 negotiated tuples squared times
 four old/new carrier combinations) pass. Half duplex included only
 for 10/100; pause inputs independently varied to exercise decisions.

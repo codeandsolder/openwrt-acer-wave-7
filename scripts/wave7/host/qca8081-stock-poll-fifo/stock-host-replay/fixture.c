@@ -4,7 +4,7 @@ typedef unsigned char u8;
 enum { CASE, POLL, BRIDGE, TX, RX, DELAY, MODE_RECORD, MODE_APPLY,
        GATE, RATE, MAC_SPEED, DUPLEX, TX_PAUSE, RX_PAUSE, REG_READ, REG_WRITE,
        NOTIFY, FDB, MODE_STATUS, END, ERROR, MII_READ, MMD_READ, MMD_WRITE,
-       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE };
+       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE, MAC_PARAM_WRITE };
 struct event { u32 type, a, b, c; };
 static struct event trace[131072];
 static u32 count;
@@ -29,7 +29,7 @@ __attribute__((noreturn)) void mock_unexpected(void) { record(ERROR,0,0,0); fini
 static u32 host_mode, copper_mode, phy_info[160], ctrl, status_error;
 static u32 status[5], ctx[0x600/4];
 static u32 bridge_ctrl, mac_enable;
-static u32 mac_gate_count;
+static u32 mac_gate_count, param_case, mac_speed, bm_fc;
 static u32 full_path, phydev[0x400/4], bus[0x100/4], phy_ops[0x120/4], adpt_ops[0x204/4];
 static u32 fifo, seed, c22_status, ms_fault, bus_locked, work_locked, write_error;
 u32 mock_system_wq=0x12345678;
@@ -110,11 +110,20 @@ u32 mock_hppe_reg_get(u32 dev,u32 reg,u32 *out) {
     CHECK(dev==0);
     if(reg==0x60308) *out=bridge_ctrl;
     else if(reg==0x1200) *out=mac_enable;
+    else if(param_case && reg==0x1204) *out=mac_speed;
     else mock_unexpected();
     return 0;
 }
 u32 mock_hppe_reg_set(u32 dev,u32 reg,u32 value) {
     CHECK(dev==0);
+    if(param_case) {
+        if(reg==0x1200) mac_enable=value;
+        else if(reg==0x1204) mac_speed=value;
+        else if(reg==0x600124) bm_fc=value;
+        else mock_unexpected();
+        record(MAC_PARAM_WRITE,reg,value,0);
+        return 0;
+    }
     if(reg==0x60308) {
         CHECK((value & ~0x10000u)==(bridge_ctrl & ~0x10000u));
         bridge_ctrl=value; record(BRIDGE,(value>>16)&1,0,0);
@@ -282,6 +291,19 @@ static void selector_case(u32 id,u32 wrapper,u32 feature) {
     selector(wrapper);
     record(END,phy_info[102],0,0);
 }
+/* Direct low-level parameter helpers; the worker matrix retains its
+ * original parameter mock boundaries. Execute actual ARM RMW and
+ * register address helpers in these independent cases. */
+static void parameter_case(u32 id,u32 offset,u32 value,u32 expected_reg,u32 expected) {
+    record(CASE,id,offset,value);
+    param_case=1;
+    mac_enable=0xa5a45a5a; mac_speed=0x5a5aa5a5; bm_fc=0xf0f0f0f0;
+    CHECK(((u32 (*)(u32,u32,u32))(0x01000000+offset))(0,expected_reg==0x600124?9:2,value)==0);
+    u32 actual=expected_reg==0x1200?mac_enable:expected_reg==0x1204?mac_speed:bm_fc;
+    CHECK(actual==expected);
+    record(END,actual,0,0);
+    param_case=0;
+}
 void _start(void) {
     run_case(0,0,1000,1,0,0, 0,1000,1,0,0,4,4,0);
     run_case(1,1,1000,1,0,0, 1,1000,1,0,0,4,4,0);
@@ -311,6 +333,18 @@ void _start(void) {
     selector_case(22,15,0);
     selector_case(23,12,0);
     selector_case(24,12,1);
+    parameter_case(25,0x70b4,10,0x1204,0x5a5aa5a4);
+    parameter_case(26,0x70b4,100,0x1204,0x5a5aa5a5);
+    parameter_case(27,0x70b4,1000,0x1204,0x5a5aa5a6);
+    parameter_case(28,0x70b4,2500,0x1204,0x5a5aa5a6);
+    parameter_case(29,0x6210,0,0x1200,0xa5a45a1a);
+    parameter_case(30,0x6210,1,0x1200,0xa5a45a5a);
+    parameter_case(31,0x6298,0,0x1200,0xa5a45a5a);
+    parameter_case(32,0x6298,1,0x1200,0xa5a45a7a);
+    parameter_case(33,0x6320,0,0x1200,0xa5a45a4a);
+    parameter_case(34,0x6320,1,0x1200,0xa5a45a5a);
+    parameter_case(35,0x23f50,0,0x600124,0);
+    parameter_case(36,0x23f50,1,0x600124,1);
     const u32 speeds[]={10,100,1000,2500};
     u32 id=100;
     for(u32 os=0;os<4;os++) for(u32 od=0;od<2;od++) {

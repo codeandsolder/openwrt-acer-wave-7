@@ -34,7 +34,9 @@ RANGES += [(0x6b2c, 0x6b8c), (0x6d954, 0x6d9dc),
            (0x6f7c8, 0x6f818), (0x6f8a8, 0x6f900), (0x6faf8, 0x6fb50),
            (0x6fe7c, 0x700e8), (0x918e8, 0x91950), (0x788d8, 0x7890c), (0x6104, 0x6210), (0x63ec, 0x64ec),
            (0x7c7dc, 0x7c808), (0x69cc4, 0x69ddc)]
-RANGES += [(0x88c4, 0x8990)]
+RANGES += [(0x88c4, 0x8990), (0x6210, 0x63a4),
+           (0x70b4, 0x7164), (0x7c808, 0x7c834),
+           (0x23f50, 0x23fac), (0x7ac90, 0x7aca4)]
 LOCAL_MOCKS = {0x6ddc: "tx_pause", 0x6f38: "rx_pause", 0x8990: "selector_return"}
 FIT_SHA = "a9e7d543e61bdbd91521798875a097733b54393f72d78278eaeac0059241f833"
 KERNEL_SHA = "666960caa4e2f52af4d42f150233aabc4ff8621076c6616c46a15a8e91fd1f9f"
@@ -204,7 +206,7 @@ def execute(module, out, dest, metadata):
     names = ["CASE", "POLL", "BRIDGE", "TX", "RX", "DELAY", "MODE_RECORD", "MODE_APPLY",
              "GATE", "RATE", "MAC_SPEED", "DUPLEX", "TX_PAUSE", "RX_PAUSE", "REG_READ", "REG_WRITE",
              "NOTIFY", "FDB", "MODE_STATUS", "END", "ERROR", "MII_READ", "MMD_READ",
-             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE"]
+             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE"]
     result = [{"event": names[e], "a": a, "b": b, "c": c} for e,a,b,c in events]
     if proc.returncode:
         print(result[-12:])
@@ -231,7 +233,7 @@ def check(events):
         return [e["event"] for e in cases[i]]
     def values(i, name):
         return [(e["a"],e["b"],e["c"]) for e in cases[i] if e["event"] == name]
-    assert set(cases) == set(range(25)) | set(range(100,2404))
+    assert set(cases) == set(range(37)) | set(range(100,2404))
     for i in range(9):
         assert ops(i)[0] == "POLL" and ops(i)[-1] == "END"
     for i in (0, 1, 7):
@@ -303,9 +305,23 @@ def check(events):
         assert values(i,"MAC_TYPE")==[(mac,0,0)]
         assert values(i,"END")==[(mode,0,0)]
         assert ops(i)==["MAC_TYPE","END"]
+    # Independently verify register writes, including unchanged RMW
+    # writes and BM whole-word rather than RMW behavior.
+    expected_params = [
+        (0x1204,0x5a5aa5a4), (0x1204,0x5a5aa5a5),
+        (0x1204,0x5a5aa5a6), (0x1204,0x5a5aa5a6),
+        (0x1200,0xa5a45a1a), (0x1200,0xa5a45a5a),
+        (0x1200,0xa5a45a5a), (0x1200,0xa5a45a7a),
+        (0x1200,0xa5a45a4a), (0x1200,0xa5a45a5a),
+        (0x600124,0), (0x600124,1),
+    ]
+    for i,(reg,val) in enumerate(expected_params,25):
+        assert ops(i)==["MAC_PARAM_WRITE","END"]
+        assert values(i,"MAC_PARAM_WRITE")==[(reg,val,0)]
+        assert values(i,"END")==[(val,0,0)]
     def decode(n):
         return n>>16,(n&0xffff)>>4,(n>>2)&1,(n>>1)&1,n&1
-    summary = dict(named_cases=25,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
+    summary = dict(named_cases=37,parameter_cases=12,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
                    unchanged_up_edge=0,changed_up_edge=0,mode_applies=0,
                    rate_changes=0,adapter_pulses=0)
     tuples = set()
