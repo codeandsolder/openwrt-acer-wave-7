@@ -33,7 +33,7 @@ def normalize(data):
     # mtime fields. Require unique correctly formatted locations.
     out=bytearray(data)
     notes=list(re.finditer(rb"\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00",data))
-    assert len(notes)==1
+    assert len(notes)==1, f"unexpected GNU build-id notes: {[m.start() for m in notes]}, image size={len(data)}"
     start=notes[0].end(); out[start:start+20]=bytes(20)
     names=[]
     for m in re.finditer(rb"070701[0-9a-fA-F]{104}",data):
@@ -118,7 +118,10 @@ def main():
         run([*argv,"Image"])
         verify()
         raw=k/"arch/arm64/boot/Image"
-        assert normalize(raw.read_bytes())==normalize(image.read_bytes()),"baseline payload differs"
+        rebuilt, expected=raw.read_bytes(),image.read_bytes()
+        diffs=[i for i,(a,b) in enumerate(zip(rebuilt,expected)) if a!=b] if len(rebuilt)==len(expected) else []
+        print("BASELINE_DIFF",len(rebuilt),len(expected),len(diffs),[hex(i) for i in diffs[:80]],flush=True)
+        assert normalize(rebuilt)==normalize(expected),"baseline payload differs"
         before=tables(k/"vmlinux")
         assert before==tables(old/"linked/vmlinux")
         assert before["nss_cc_parent_data_1"]==[7,2,4,3,1,0]
