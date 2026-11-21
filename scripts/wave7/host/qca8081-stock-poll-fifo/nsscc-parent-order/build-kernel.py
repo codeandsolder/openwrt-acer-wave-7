@@ -117,7 +117,14 @@ def main():
         run([sys.executable,str(check),str(k),str(fit),"--expect","swapped"])
         run([*argv,"Image"])
         verify()
-        raw=k/"arch/arm64/boot/Image"
+        # Kbuild's generic Image rule retains .notes; OpenWrt NAND
+        # packaging explicitly removes it, along with these sections.
+        raw=work/"nand.Image"
+        def nand_image():
+            run(["aarch64-openwrt-linux-musl-objcopy","-O","binary",
+                 "-R",".reginfo","-R",".notes","-R",".note","-R",".comment",
+                 "-R",".mdebug","-R",".note.gnu.build-id","-S",str(k/"vmlinux"),str(raw)])
+        nand_image()
         rebuilt, expected=raw.read_bytes(),image.read_bytes()
         diffs=[i for i,(a,b) in enumerate(zip(rebuilt,expected)) if a!=b] if len(rebuilt)==len(expected) else []
         print("BASELINE_DIFF",len(rebuilt),len(expected),len(diffs),[hex(i) for i in diffs[:80]],flush=True)
@@ -132,6 +139,7 @@ def main():
         run([sys.executable,str(check),str(k),str(fit),"--expect","correct"])
         run([*argv,"Image"])
         verify()
+        nand_image()
         after=tables(k/"vmlinux")
         assert after["nss_cc_parent_data_1"]==[7,2,3,4,1,0]
         assert after["nss_cc_parent_data_2"]==[7,2,5,6,1,0]
