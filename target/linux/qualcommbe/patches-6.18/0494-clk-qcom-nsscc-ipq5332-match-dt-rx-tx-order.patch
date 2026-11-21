@@ -1,0 +1,29 @@
+Subject: [PATCH] clk: qcom: nsscc-ipq5332: match DT RX/TX input order
+
+The IPQ5332 NSSCC binding and the DTS describe the UNIPHY inputs
+RX first, TX second, but the driver's DT input indices use the
+opposite order. As parent_data uses positional indices, port RX
+RCGs have the TX provider in the common clock framework and vice
+versa.
+
+Match the binding. Do not change the hardware mux selector mapping
+or frequency tables. Both provider rates currently depend on the
+same PCS interface so this correction alone need not change the
+programmed frequency; its impact on observed link flaps is unknown.
+
+diff --git a/drivers/clk/qcom/nsscc-ipq5332.c b/drivers/clk/qcom/nsscc-ipq5332.c
+--- a/drivers/clk/qcom/nsscc-ipq5332.c
++++ b/drivers/clk/qcom/nsscc-ipq5332.c
+@@ -30,10 +30,10 @@
+ 	DT_CMN_PLL_NSS_CLK_200M,
+ 	DT_CMN_PLL_NSS_CLK_300M,
+ 	DT_GCC_GPLL0_OUT_AUX,
++	DT_UNIPHY0_NSS_RX_CLK,
+ 	DT_UNIPHY0_NSS_TX_CLK,
+-	DT_UNIPHY0_NSS_RX_CLK,
++	DT_UNIPHY1_NSS_RX_CLK,
+ 	DT_UNIPHY1_NSS_TX_CLK,
+-	DT_UNIPHY1_NSS_RX_CLK,
+ 	DT_XO,
+ };
+ 
