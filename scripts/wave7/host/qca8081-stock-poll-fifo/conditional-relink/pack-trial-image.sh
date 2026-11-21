@@ -13,7 +13,6 @@ parent_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
 parent_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
 kernel_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
 patch_commit=fe5568a4fbd93516f7cbc3d4f2e6ca622e62accc
-new_rev="r0+38346-${patch_commit:0:10}-ap-dhcp-guard8"
 switch_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
 parent_pcs=74bd3fddd9e35f543100073a4f7a85ebfe7aca503e5c48191dd3c2ee8190b473
 parent_ppe=1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0
@@ -34,12 +33,30 @@ git -C "$repo" merge-base --is-ancestor "$patch_commit" "$module_builder"
 git -C "$repo" merge-base --is-ancestor "$module_builder" HEAD
 patch=target/linux/qualcommbe/patches-6.18/0492-net-pcs-qcom-ipq9574-test-stock-warm-sgmii-preservation.patch
 [[ $(digest "$repo/$patch") == "$(jq -er .patch_sha256 "$report")" ]] || fail 'patch provenance'
+experiment=$(jq -er .experiment "$report")
+case "$experiment" in
+  relink) ;;
+  stock-mac-order)
+    patch_commit=7aa198ca4c876708dcd7731885377fdea41416f7
+    order_patch=target/linux/qualcommbe/patches-6.18/0493-net-ethernet-qualcomm-ppe-test-stock-gmac-order.patch
+    git -C "$repo" merge-base --is-ancestor "$patch_commit" "$module_builder"
+    [[ $(digest "$repo/$order_patch") == "$(jq -er .mac_order_patch_sha256 "$report")" ]] || fail 'MAC order patch provenance'
+    [[ $(jq -er '.relink_module_sha256["pcs-qcom-ipq9574.ko"]' "$report") == 168d278179537c5a463119c4c89fa6642c800ce00a455b4714ebb54d94d11dc1 &&
+       $(jq -er '.relink_module_sha256["qcom-ppe.ko"]' "$report") == eb9083d152f717c3069532ef121107ef5ca3209164e42ef205c964aa64857b49 ]] || fail '0492 baseline parity'
+    ;;
+  *) fail 'unknown experiment' ;;
+esac
+new_rev="r0+38346-${patch_commit:0:10}-ap-dhcp-guard8"
 pcs_sha=$(jq -er '.candidate_module_sha256["pcs-qcom-ipq9574.ko"]' "$report")
 ppe_sha=$(jq -er '.candidate_module_sha256["qcom-ppe.ko"]' "$report")
 [[ $pcs_sha =~ ^[0-9a-f]{64}$ && $ppe_sha =~ ^[0-9a-f]{64}$ ]] || fail 'module digest syntax'
 [[ $(digest "$modules/modules/pcs-qcom-ipq9574.ko") == "$pcs_sha" &&
    $(digest "$modules/modules/qcom-ppe.ko") == "$ppe_sha" ]] || fail 'candidate digest'
 [[ $pcs_sha != "$parent_pcs" && $ppe_sha != "$parent_ppe" ]] || fail 'module not changed'
+if [[ $experiment == stock-mac-order ]]; then
+  [[ $pcs_sha == 168d278179537c5a463119c4c89fa6642c800ce00a455b4714ebb54d94d11dc1 &&
+     $ppe_sha != eb9083d152f717c3069532ef121107ef5ca3209164e42ef205c964aa64857b49 ]] || fail '0493 module delta'
+fi
 [[ $(tar xOf "$parent" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fail 'board'
 work=$(mktemp -d "$(dirname "$out")/.wave7-relink.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -99,7 +116,7 @@ rsync -aincO --delete --out-format='%n' "$root/" "$work/roundtrip/" > "$work/rou
 [[ $(digest "$work/roundtrip/$rel/rtl8365mb.ko") == "$switch_sha" &&
    $(digest "$work/roundtrip/$rel/pcs-qcom-ipq9574.ko") == "$pcs_sha" &&
    $(digest "$work/roundtrip/$rel/qcom-ppe.ko") == "$ppe_sha" ]] || fail 'roundtrip module'
-image="$work/publish/wave7-conditional-relink-dhcp-guard8-sysupgrade.bin"
+image="$work/publish/wave7-${experiment}-dhcp-guard8-sysupgrade.bin"
 sh "$repo/scripts/sysupgrade-tar.sh" --board acer_wave7 --kernel "$work/kernel.itb" --rootfs "$work/new.sq" "$image"
 jq --arg rev "$new_rev" --arg parent "$parent_sha" --arg patch "$patch_commit" --arg pcs "$pcs_sha" --arg ppe "$ppe_sha" \
   '.version.revision=$rev | .wave7_parent_image_sha256=$parent | .wave7_trial_relink_patch_commit=$patch | .wave7_trial_pcs_sha256=$pcs | .wave7_trial_ppe_sha256=$ppe' "$work/old-metadata.json" > "$work/metadata"
@@ -112,6 +129,7 @@ cmp -n "$(stat -c %s "$work/new.sq")" "$work/new.sq" <(tar xOf "$image" sysupgra
 [[ $(stat -c %s "$image") -lt 30000000 ]] || fail 'packed size'
 cat > "$work/publish/report.txt" <<REPORT
 status=OFFLINE_VERIFIED
+experiment=$experiment
 parent_revision=$parent_rev
 parent_sha256=$parent_sha
 revision=$new_rev

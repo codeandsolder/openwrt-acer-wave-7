@@ -48,7 +48,7 @@ b=/home/jan/build/wave7
 p=/home/jan/firmware/wave7/builds/secondary-ap-20261120/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin
 PYTHONDONTWRITEBYTECODE=1 uv run --no-project --offline --python /usr/bin/python3 python \
   "$r/scripts/wave7/host/qca8081-stock-poll-fifo/conditional-relink/build-modules.py" \
-  "$p" "$b/qca8081-stock-poll-fifo" "$b/qca8081-conditional-relink/verified-modules"
+  "$p" "$b/qca8081-stock-poll-fifo" "$b/qca8081-conditional-relink/verified-modules" --experiment relink
 ```
 
 No kernel/FIT changes are needed: both drivers are modules, their
@@ -62,3 +62,5 @@ autonegotiation restart with both endpoints already healthy at 1G.
 Only pass 0492 if a new actual PHY down/up and same-speed reconnect
 are observed with the explicit preservation marker, no new reboot,
 and the strict directional observer passes for at least 30 seconds.
+
+To build 0493, use a new output directory and `--experiment stock-mac-order`. The builder reproduces both exact 0491 and 0492 module hashes before applying 0493; only PPE may change relative to 0492. The packer uses the approved 0491 image, with the same FIT and independently verified 46 radio firmware files, not the failed 0492 image. See ../stock-mac-order/README.md.

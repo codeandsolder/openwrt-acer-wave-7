@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the exact approved 0491 modules, then build only patch0492.
+"""Reproduce the exact approved 0491 modules, then build 0492 or 0492+0493.
 
 The prepared production tree is never modified. Uses the existing managed
 OpenWrt cross-GCC sccache wrapper, exact accepted NAND config and Kbuild
@@ -19,6 +19,10 @@ PARENT_SHA="3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9"
 MODULE_SHA={
     "pcs-qcom-ipq9574.ko":"74bd3fddd9e35f543100073a4f7a85ebfe7aca503e5c48191dd3c2ee8190b473",
     "qcom-ppe.ko":"1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0",
+}
+RELINK_SHA={
+    "pcs-qcom-ipq9574.ko":"168d278179537c5a463119c4c89fa6642c800ce00a455b4714ebb54d94d11dc1",
+    "qcom-ppe.ko":"eb9083d152f717c3069532ef121107ef5ca3209164e42ef205c964aa64857b49",
 }
 ADDED={"ipq_pcs_wave7_relink_invalidate","ipq_pcs_wave7_relink_enable",
        "ipq_pcs_wave7_mac_prepare","ipq_pcs_wave7_mac_finish"}
@@ -45,6 +49,7 @@ def main():
     p.add_argument("parent",type=Path)
     p.add_argument("accepted_build",type=Path)
     p.add_argument("output",type=Path)
+    p.add_argument("--experiment",choices=("relink","stock-mac-order"),required=True)
     a=p.parse_args()
     old=a.accepted_build.resolve()
     out=a.output.resolve()
@@ -55,6 +60,7 @@ def main():
     patches=REPO/"target/linux/qualcommbe/patches-6.18"
     phy_patch=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
     patch=patches/"0492-net-pcs-qcom-ipq9574-test-stock-warm-sgmii-preservation.patch"
+    order_patch=patches/"0493-net-ethernet-qualcomm-ppe-test-stock-gmac-order.patch"
     config=old/"linked/.config"
     kernel_exports=(old/"linked/vmlinux.symvers").read_text().splitlines()
     argv=json.loads((old/"build-argv.json").read_text())
@@ -93,19 +99,30 @@ def main():
         run(["patch","-p1","--fuzz=0","-i",str(patch)],cwd=k)
         run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         candidate=publish/"modules"
-        after=build(candidate)
+        relink=work/"relink" if a.experiment=="stock-mac-order" else candidate
+        after=build(relink)
         assert before<=after
         assert {l.split("\t")[1] for l in after-before}==ADDED
+        if a.experiment=="stock-mac-order":
+            assert {n:sha(relink/n) for n in MODULE_SHA}==RELINK_SHA
+            run(["patch","-p1","--fuzz=0","-i",str(order_patch)],cwd=k)
+            run([sys.executable,str(Path(__file__).parent.parent/"stock-mac-order/test-policy.py"),str(k)])
+            assert build(candidate)==after
+            assert sha(candidate/"pcs-qcom-ipq9574.ko")==RELINK_SHA["pcs-qcom-ipq9574.ko"]
+            assert sha(candidate/"qcom-ppe.ko")!=RELINK_SHA["qcom-ppe.ko"]
         for n in MODULE_SHA:
             def info(f):
                 return subprocess.check_output(["modinfo",str(f)],text=True).splitlines()[1:]
             assert info(base/n)==info(candidate/n)
-        report={"parent_image_sha256":PARENT_SHA,"accepted_module_sha256":MODULE_SHA,
+        report={"experiment":a.experiment,"parent_image_sha256":PARENT_SHA,"accepted_module_sha256":MODULE_SHA,
                 "candidate_module_sha256":{n:sha(candidate/n) for n in MODULE_SHA},
                 "nand_config_sha256":sha(config),"kernel_exports_sha256":sha(old/"linked/vmlinux.symvers"),
                 "kernel_export_count":len(kernel_exports),"additional_exports":sorted(ADDED),
                 "baseline_byte_identical":True,"patch_sha256":sha(patch),
                 "builder_commit":subprocess.check_output(["git","-C",str(REPO),"rev-parse","HEAD"],text=True).strip()}
+        if a.experiment=="stock-mac-order":
+            report.update(mac_order_patch_sha256=sha(order_patch),
+                          relink_module_sha256=RELINK_SHA)
         (publish/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (publish/"SHA256SUMS").write_text("".join(f"{sha(f)}  {f.relative_to(publish)}\n" for f in sorted(publish.rglob("*")) if f.is_file() and f.name!="SHA256SUMS"))
         publish.rename(out)
