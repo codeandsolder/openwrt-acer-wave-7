@@ -67,6 +67,35 @@ CLOCKS|={"nss_cc_port2_"+d+s for d in ("rx","tx") for s in ("_clk_src","_div_clk
 CLOCKS|={"nss_cc_uniphy_port2_"+d+"_clk" for d in ("rx","tx")}
 CLOCKS.add("nss_cc_port2_mac_clk")
 PARENT_KEYS={"nss_cc_port2_rx_clk_src","nss_cc_port2_tx_clk_src"}
+# IPQ5332 nsscc-ipq5332.c: val32, stride4, max0x800. Only these
+# 11 registers are the port2 RCG/secondary divider/CBCR controls.
+NSSCC_OFFSETS={"mac_cbcr":"430","rx_cmd":"468","rx_cfg":"46c","rx_div":"470",
+               "tx_cmd":"474","tx_cfg":"478","tx_div":"47c","rx_cbcr":"490",
+               "tx_cbcr":"498","pcs_rx_cbcr":"4bc","pcs_tx_cbcr":"4c0"}
+NSSCC_REMOTE=r"""echo NSSCC_BEGIN
+regmap=/sys/kernel/debug/regmap/39b00000.clock-controller
+test "$(cat "$regmap/name")" = qcom,ipq5332-nsscc
+# range is a metadata-only file, not a register dump. The exact
+# continuous 0-800 layout establishes fixed 14-byte records.
+test "$(cat "$regmap/range")" = 0-800
+for reg in 430 468 46c 470 474 478 47c 490 498 4bc 4c0; do
+    # regmap debugfs uses default_llseek; only one fixed-width record.
+    line=$(dd if="$regmap/registers" bs=14 skip=$((0x$reg / 4)) count=1 2>/dev/null)
+    case "$line" in "$reg: "????????) printf '%s\n' "$line";; *) exit 1;; esac
+done
+echo NSSCC_END
+"""
+def decode_nsscc(values):
+    def cbcr(v):
+        return dict(enable=bool(v&1),halt=bool(v&(1<<31)))
+    def rcg(d):
+        cmd=values[d+"_cmd"];cfg=values[d+"_cfg"];hid=cfg&31
+        return dict(update=bool(cmd&1),root_off=bool(cmd&(1<<31)),
+                    selector=(cfg>>8)&7,hid=hid,pre_div_twice=hid+1 if hid else 2,
+                    post_div=(values[d+"_div"]&15)+1,
+                    branch=cbcr(values[d+"_cbcr"]),pcs_branch=cbcr(values["pcs_"+d+"_cbcr"]))
+    return dict(rx=rcg("rx"),tx=rcg("tx"),mac=cbcr(values["mac_cbcr"]))
+
 PHY_KEYS={"c22.17","c22.31","mmd3.0x805a","mmd7.0x8029"}|{"mmd1."+r for r in ("0x0009","0x001e","0x001f","0x006e","0x006f","0x0070","0x007d","0x9072")}
 PCS_KEYS={"interface","calibration","mode_ctrl","misc2","vco_cal_ctrl","pll_reset","clkout_50m_ctrl","link_detect","mii0_control","mii0_status"}
 MAC_KEYS={"port_mux_ctrl","port2_gmac_enable","port2_gmac_speed","port2_gmac_ctrl0","port2_bridge_ctrl"}
@@ -85,7 +114,7 @@ def parse(raw,boot,rev,speed):
         else:
             sections[active].append(line)
     required={"CORE","PCS","MAC","CLOCK","PHY","COUNTERS"}
-    assert active=="CORE" and required<=set(sections)<=required|{"PARENT"}
+    assert active=="CORE" and required<=set(sections)<=required|{"PARENT","NSSCC"}
     if rev==probe.CLOCK_REV:
         assert "PARENT" in sections, "clock trial requires logical parent evidence"
     def fields(lines):
@@ -124,15 +153,25 @@ def parse(raw,boot,rev,speed):
         assert set(parents)==PARENT_KEYS
         assert all(re.fullmatch(r"[a-zA-Z0-9_.:-]+",v) for v in parents.values())
         result["parents"]=parents
+    if "NSSCC" in sections:
+        offsets={}
+        for line in sections["NSSCC"]:
+            m=re.fullmatch(r"([0-9a-f]{3}): ([0-9a-f]{8})",line)
+            assert m and m[1] not in offsets
+            offsets[m[1]]=int(m[2],16)
+        assert set(offsets)==set(NSSCC_OFFSETS.values())
+        result["nsscc"]={name:offsets[off] for name,off in NSSCC_OFFSETS.items()}
+        result["nsscc_decoded"]=decode_nsscc(result["nsscc"])
     return result
 
-def capture(out,boot,profile,speed,expected):
+def capture(out,boot,profile,speed,expected,clock_regs=False):
     rev,directory=probe.PROFILES[profile]
     base=trunk.BASE/directory/"observations"
     assert out.parent.resolve()==base.resolve() and trunk.BOOT.fullmatch(boot)
     out.mkdir(mode=0o700)
     ip,dev,_=trunk.PATHS["switch"]
-    ssh=["ssh","-nT","-i","/home/jan/.ssh/wave7-root-rsa","-o",f"BindInterface={dev}","-o",f"BindAddress={ip}","-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes","-o",f"UserKnownHostsFile={trunk.BASE/'known_hosts'}","-o","ConnectTimeout=3","-o","ConnectionAttempts=1",f"root@{trunk.ROUTER}",REMOTE]
+    remote=REMOTE.replace("echo PARENT_END\n","echo PARENT_END\n"+NSSCC_REMOTE) if clock_regs else REMOTE
+    ssh=["ssh","-nT","-i","/home/jan/.ssh/wave7-root-rsa","-o",f"BindInterface={dev}","-o",f"BindAddress={ip}","-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes","-o",f"UserKnownHostsFile={trunk.BASE/'known_hosts'}","-o","ConnectTimeout=3","-o","ConnectionAttempts=1",f"root@{trunk.ROUTER}",remote]
     rows=[]
     with (out/"samples.jsonl").open("x") as f,ThreadPoolExecutor(2) as pool:
         for i in range(3):
@@ -148,7 +187,9 @@ def capture(out,boot,profile,speed,expected):
             assert row["host"]["direct"]["speed"]==speed
             assert p["switch"]["sent"]==p["switch"]["received"]==4
             assert p["direct"]["sent"]==4 and p["direct"]["received"]==(4 if expected=="healthy" else 0)
-            rows.append(parse(r["stdout"],boot,rev,speed))
+            sample=parse(r["stdout"],boot,rev,speed)
+            assert not clock_regs or "nsscc" in sample
+            rows.append(sample)
             if i<2:time.sleep(1)
     (out/"parsed.json").write_text(json.dumps(rows,indent=2)+"\n")
     (out/"SHA256SUMS").write_text("".join(f"{hashlib.sha256((out/n).read_bytes()).hexdigest()}  {n}\n" for n in ("samples.jsonl","parsed.json")))
@@ -191,6 +232,10 @@ def compare(a,b):
     assert len(has_parents)==1,"cannot compare mixed clock-parent coverage"
     if True in has_parents:
         categories+=("parents",)
+    has_regs={"nsscc" in row for row in allrows}
+    assert len(has_regs)==1,"cannot compare mixed physical register coverage"
+    if True in has_regs:
+        categories+=("nsscc",)
     for category in categories:
         for k in x[0][category]:
             av={json.dumps(r[category][k]) for r in x}
@@ -231,6 +276,40 @@ def selftest():
     rejects(raw+parent_section[:2]+parent_section[1:])
     rejects(raw+[line.replace("::rx_clk","") if "::rx_clk" in line else line for line in
                  [line.replace("7a10000.ethernet-pcs","") if "::rx_clk" in line else line for line in parent_section]])
+    # Exact targeted register schema and mask semantics, including
+    # no conflation of the RCG HID divider with the post-divider.
+    registers={v:0 for v in NSSCC_OFFSETS.values()}
+    registers.update({"46c":0x301,"478":0x404,"470":2,"47c":15,
+                      "490":1,"498":0x80000000,"4bc":1,"4c0":1,"430":1})
+    reg_section=section("NSSCC",[f"{k}: {v:08x}" for k,v in registers.items()])
+    sample=check(raw+parent_section+reg_section)
+    assert sample["nsscc_decoded"]["rx"]["selector"]==3
+    assert sample["nsscc_decoded"]["rx"]["pre_div_twice"]==2
+    assert sample["nsscc_decoded"]["rx"]["post_div"]==3
+    assert sample["nsscc_decoded"]["tx"]["selector"]==4
+    assert sample["nsscc_decoded"]["tx"]["pre_div_twice"]==5
+    assert sample["nsscc_decoded"]["tx"]["post_div"]==16
+    assert sample["nsscc_decoded"]["tx"]["branch"]==dict(enable=False,halt=True)
+    rejects(raw+parent_section+reg_section[:-2]+reg_section[-1:])
+    rejects(raw+parent_section+reg_section[:2]+reg_section[1:])
+    rejects(raw+parent_section+[v.replace("430:","434:") for v in reg_section])
+    rejects(raw+parent_section+[v.replace("430: 00000001","430: XXXXXXXX") for v in reg_section])
+    # Exercise actual shell offset arithmetic and fixed-record reads
+    # on a complete synthetic register file with distinct values.
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="wave7-nsscc-fixture-") as tmp:
+        root=Path(tmp)
+        (root/"name").write_text("qcom,ipq5332-nsscc\n")
+        (root/"range").write_text("0-800\n")
+        (root/"registers").write_text("".join(f"{off:03x}: {off+0x10000000:08x}\n" for off in range(0,0x804,4)))
+        fixture=NSSCC_REMOTE.replace("/sys/kernel/debug/regmap/39b00000.clock-controller",str(root))
+        result=subprocess.run(["sh","-eu","-c",fixture],capture_output=True,text=True,check=True)
+        sample=check(raw+parent_section+result.stdout.splitlines())
+        assert sample["nsscc"]=={k:int(v,16)+0x10000000 for k,v in NSSCC_OFFSETS.items()}
+        (root/"range").write_text("0-300\n400-800\n")
+        result=subprocess.run(["sh","-eu","-c",fixture],capture_output=True,text=True)
+        assert result.returncode!=0 and result.stdout=="NSSCC_BEGIN\n"
     # Historical sealed captures retain their original schema.
     old_rev=probe.PROFILES["0493"][0]
     old=[line.replace(rev,old_rev) for line in raw]
@@ -241,9 +320,9 @@ if __name__=="__main__":
     p=argparse.ArgumentParser()
     sub=p.add_subparsers(dest="cmd",required=True)
     sub.add_parser("selftest")
-    c=sub.add_parser("capture");c.add_argument("out",type=Path);c.add_argument("boot");c.add_argument("--profile",choices=probe.PROFILES,required=True);c.add_argument("--speed",choices=("1000","2500"),required=True);c.add_argument("--expected",choices=("healthy","fault"),required=True)
+    c=sub.add_parser("capture");c.add_argument("out",type=Path);c.add_argument("boot");c.add_argument("--profile",choices=probe.PROFILES,required=True);c.add_argument("--speed",choices=("1000","2500"),required=True);c.add_argument("--expected",choices=("healthy","fault"),required=True);c.add_argument("--clock-registers",action="store_true")
     c=sub.add_parser("compare");c.add_argument("first",type=Path);c.add_argument("second",type=Path)
     a=p.parse_args()
-    if a.cmd=="capture":capture(a.out,a.boot,a.profile,a.speed,a.expected)
+    if a.cmd=="capture":capture(a.out,a.boot,a.profile,a.speed,a.expected,a.clock_registers)
     elif a.cmd=="compare":compare(a.first,a.second)
     else:selftest()
