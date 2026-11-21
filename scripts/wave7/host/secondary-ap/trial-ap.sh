@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink --selftest|--check|--check-baseline|--run|--arm-reboot" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -91,7 +91,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  relink)
+  relink|mac-order)
     trunk_trial=1
     phy_trial=1
     relink_trial=1
@@ -119,6 +119,15 @@ case "$profile" in
     accepted_phy_marker=1
     accepted_pcs_sha=74bd3fddd9e35f543100073a4f7a85ebfe7aca503e5c48191dd3c2ee8190b473
     accepted_ppe_sha=1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0
+    if [[ $trial_kind == mac-order ]]; then
+      base="$guard8/stock-mac-order-dhcp-guard8"
+      candidate_artifact=wave7-stock-mac-order-dhcp-guard8-sysupgrade.bin
+      candidate_rev=r0+38346-7aa198ca4c-ap-dhcp-guard8
+      candidate_builder=e2b9f3380f3b1e767cea062419276b790b340786
+      expected_candidate_sha=d2e356f9d2fb2be85dc8c605684f23515255c676dfe918fb058a0924762200fc
+      candidate_relink_patch=7aa198ca4c876708dcd7731885377fdea41416f7
+      candidate_ppe_sha=e93841080d3b66662b02fdae2427d0aa0add1bda5a1684e2559a868ccb16eb19
+    fi
     ;;
   *) echo 'unknown candidate profile'    >&2; exit 2 ;;
 esac
@@ -381,6 +390,16 @@ autonomous_approval_ok() {
 autonomous_healthy() {
   candidate_healthy "$1" && autonomous_approval_ok "$1"
 }
+restore_source_valid() {
+  [[ $trial_kind == relink ]] && healthy "$1" && grep -Fxq approval=0 <<< "$1"
+}
+restore_record_matches() {
+  [[ $2 =~ ^[0-9a-f-]{36}$ ]] &&
+    [[ $1 == $'be5e8dc71ca78591010165da43e4408dfe5c6234a07ec7addc821bda77023972  /overlay/wave7-ap-approved\n'"$2" ]]
+}
+restore_target_valid() {
+  baseline_healthy "$1" && autonomous_approval_ok "$1"
+}
 XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
@@ -503,6 +522,25 @@ if [[ $mode == --selftest ]]; then
     bad=$(sed 's/^cpu_fcs=.*/cpu_fcs=missing/' <<< "$sample")
     if trunk_counter_row "$bad" 123 boot >/dev/null; then fatal 'malformed counter accepted'; fi
   fi
+  if [[ $trial_kind == relink ]]; then
+    restore_source_valid "$s"$'\napproval=0' || fatal 'failed experiment restore source rejected'
+    if restore_source_valid "$s"$'\napproval=1' || restore_source_valid "$baseline"$'\napproval=0'; then
+      fatal 'invalid restore source accepted'
+    fi
+    uuid=12345678-1234-1234-1234-123456789abc
+    record=$'be5e8dc71ca78591010165da43e4408dfe5c6234a07ec7addc821bda77023972  /overlay/wave7-ap-approved\n'"$uuid"
+    restore_record_matches "$record" "$uuid" || fatal 'pinned approval rejected'
+    if restore_record_matches "$record" 00000000-0000-0000-0000-000000000000 ||
+       restore_record_matches "bad$record" "$uuid"; then
+      fatal 'incorrect approval accepted'
+    fi
+    restore_target_valid "$baseline"$'\napproval=1\ntoken=0' || fatal 'autonomous restore rejected'
+    if restore_target_valid "$baseline"$'\napproval=0\ntoken=0' ||
+       restore_target_valid "$baseline"$'\napproval=1\ntoken=1' ||
+       restore_target_valid "$s"$'\napproval=1\ntoken=0'; then
+      fatal 'invalid restored approval accepted'
+    fi
+  fi
   echo "AP_GUARD8_SELFTEST_PASS profile=$trial_kind"
   exit 0
 fi
@@ -515,7 +553,7 @@ test -x "$attestor" ||
 # Serialize observer arming/setup against active upstream wire tests.
 # The persistent systemd observers guard the interval after this caller
 # exits; the wire test also checks their active/activating state.
-if [[ $mode == --run || $mode == --arm-reboot ]]; then
+if [[ $mode == --run || $mode == --arm-reboot || $mode == --restore-baseline ]]; then
   lock="$guard8/.lab-control.lock"
   [[ -f $lock && ! -L $lock && -O $lock ]] ||
     fatal 'missing or invalid lab-control lock (initialize once as Jan)'
@@ -632,7 +670,10 @@ if [[ $mode == --arm-reboot ]]; then
   echo "REBOOT_OBSERVERS_ARMED predecessor=$boot RUN_DIR=$out"
   exit 0
 fi
-if [[ $mode == --watch ]]; then
+if [[ $mode == --watch || $mode == --watch-restore ]]; then
+  if [[ $mode == --watch-restore && $trial_kind != relink ]]; then
+    fatal 'explicit restore restricted to failed 0492'
+  fi
   [[ $# == 2 ]] || fatal 'watch requires old boot and directory'
   old_boot=$1
   out=$2
@@ -698,18 +739,31 @@ if [[ $mode == --watch ]]; then
           restored_boot=$boot; restore_attested=0; last_restore_attest=0
           log "ROLLBACK_BOOT boot=$boot"
         fi
-        if (( !restore_attested && now-last_restore_attest >= 4 )) && [[ $(value "$s" keep) == 0 ]]; then
+        if [[ $mode != --watch-restore ]] &&
+           (( !restore_attested && now-last_restore_attest >= 4 )) && [[ $(value "$s" keep) == 0 ]]; then
           last_restore_attest=$now
           if "$attestor" --run 192.168.76.1 "$accepted_rev" "$management_iface" "$management_ip" "$known" > "$out/restore-attestation.log" 2>&1; then
             restore_attested=1; log "ROLLBACK_MANAGEMENT_ATTESTED boot=$boot"
           fi
         fi
         if baseline_healthy "$s"; then
+          if [[ $mode == --watch-restore ]] &&
+             { ! restore_target_valid "$s" ||
+               ! lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$now"; }; then
+            log WAIT_RESTORED_APPROVAL_OR_LEASE
+            sleep 3
+            continue
+          fi
+          printf '%s\n' "$s" > "$out/restored-state.txt"
           log "ACCEPTED_IMAGE_BOOT_HEALTHY boot=$boot"
           echo RESTORED > "$out/status"
           exit 0
         fi
         (( i % 5 )) || log "WAIT_RESTORED_BASELINE_READY boot=$boot"
+      elif [[ $mode == --watch-restore ]]; then
+        log "WRONG_RESTORE_REVISION rev=$rev boot=$boot"
+        echo WRONG_REVISION > "$out/status"
+        exit 5
       elif [[ $rev == "$candidate_rev" ]]; then
         if [[ $trial_boot != "$boot" ]]; then
           if [[ $trunk_trial == 1 && -n $trial_boot ]]; then
@@ -811,7 +865,11 @@ if [[ $mode == --watch ]]; then
   echo TIMEOUT > "$out/status"
   exit 6
 fi
-[[ $mode == --check || $mode == --check-baseline || $mode == --run ]] || fatal "unknown mode $mode"
+[[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline ]] ||
+  fatal "unknown mode $mode"
+if [[ $mode == --restore-baseline ]]; then
+  [[ $trial_kind == relink && $# == 0 ]] || fatal 'restore is only for failed 0492'
+fi
 [[ -r $accepted ]] || fatal 'missing accepted rollback'
 [[ $(sha256sum "$accepted" | cut -d' ' -f1) == "$accepted_sha" ]] || fatal 'accepted SHA mismatch'
 [[ $(tar xOf "$accepted" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fatal 'wrong accepted board'
@@ -829,9 +887,21 @@ has_permanent_address "$(ip -4 -o addr show dev "$management_iface")" "$manageme
 s=$(read_state) || fatal 'router inaccessible'
 boot=$(value "$s" boot)
 [[ $boot =~ ^[0-9a-f-]{36}$ ]] || fatal 'invalid boot ID'
-baseline_healthy "$s" || fatal "unhealthy source: $s"
+if [[ $mode == --restore-baseline ]]; then
+  restore_source_valid "$s" || fatal "unhealthy or approved failed-experiment source: $s"
+  # 0491 persisted approval record is pinned to the exact parent image
+  # manifest SHA, independently extracted from its verified squashfs.
+  record=$(remote 'set -eu; p=/overlay/wave7-ap-approved; test -f "$p"; test ! -L "$p"; set -- $(ls -ldn "$p"); test "$1" = -rw-------; test "$3" = 0; test "$4" = 0; sha256sum "$p"; cat /proc/sys/kernel/random/boot_id') ||
+    fatal 'missing stored 0491 approval'
+  restore_record_matches "$record" "$boot" ||
+    fatal 'stored 0491 approval identity or source boot mismatch'
+else
+  baseline_healthy "$s" || fatal "unhealthy source: $s"
+  if [[ $profile == dhcp ]]; then
+    grep -Fxq approval=1 <<< "$s" || fatal 'rollback not persistently approved'
+  fi
+fi
 if [[ $profile == dhcp ]]; then
-  grep -Fxq approval=1 <<< "$s" || fatal 'rollback not persistently approved'
   upstream_ready || fatal 'isolated upstream service not ready'
   if [[ $trunk_trial == 1 ]]; then
     lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)" || fatal 'approved DHCP rollback lease absent'
@@ -846,12 +916,24 @@ for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; 
 done
 test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*')" || fatal 'another supervisor active'
 echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
-[[ $mode == --run ]] || exit 0
-tag=secondary-ap-$(date +%Y%m%d-%H%M%S)
+[[ $mode == --run || $mode == --restore-baseline ]] || exit 0
+if [[ $mode == --restore-baseline ]]; then
+  tag=restore-0491-$(date +%Y%m%d-%H%M%S)
+else
+  tag=secondary-ap-$(date +%Y%m%d-%H%M%S)
+fi
 out="$base/runs/$tag"
 mkdir -p "$out"
 printf '%s\n' "$s" > "$out/preflight.txt"
-for pair in "$candidate|/tmp/wave7-secondary-ap-trial.bin|$candidate_sha" "$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha"; do
+watch_mode=--watch
+flash_image=/tmp/wave7-secondary-ap-trial.bin
+pairs=("$candidate|$flash_image|$candidate_sha" "$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha")
+if [[ $mode == --restore-baseline ]]; then
+  watch_mode=--watch-restore
+  flash_image=/tmp/wave7-secondary-ap-restore.bin
+  pairs=("$accepted|$flash_image|$accepted_sha")
+fi
+for pair in "${pairs[@]}"; do
   IFS='|' read -r source dest digest <<< "$pair"
   upload "$source" "$dest"
   check=$(remote "sha256sum '$dest'; /sbin/sysupgrade -T -n '$dest'")
@@ -869,14 +951,16 @@ cleanup() {
 }
 trap cleanup EXIT
 systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=1500 -- \
-  /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$trial_kind" --watch "$boot" "$out"
+  /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$trial_kind" "$watch_mode" "$boot" "$out"
 systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
 await_observers "$guard" "$fallback" "$out"
 echo "GUARDS_ARMED $tag"
+[[ $(remote 'cat /proc/sys/kernel/random/boot_id') == "$boot" ]] ||
+  fatal 'source changed after observer arming'
 flash_started=1
 set +e
-remote_timed '/sbin/sysupgrade -n /tmp/wave7-secondary-ap-trial.bin' > "$out/sysupgrade.log" 2>&1
+remote_timed "/sbin/sysupgrade -n '$flash_image'" > "$out/sysupgrade.log" 2>&1
 rc=$?
 set -e
 echo "FLASH_SSH_RC=$rc" | tee -a "$out/sysupgrade.log"

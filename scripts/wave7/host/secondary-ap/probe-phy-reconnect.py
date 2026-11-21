@@ -23,8 +23,12 @@ spec.loader.exec_module(trunk)
 PROFILES = {
     "0491": ("r0+38346-0418bb7af2-ap-dhcp-guard8", "stock-poll-fifo-dhcp-guard8"),
     "0492": ("r0+38346-fe5568a4fb-ap-dhcp-guard8", "conditional-relink-dhcp-guard8"),
+    "0493": ("r0+38346-7aa198ca4c-ap-dhcp-guard8", "stock-mac-order-dhcp-guard8"),
 }
 RELINK_REV = PROFILES["0492"][0]
+MAC_ORDER_REV = PROFILES["0493"][0]
+RELINK_REVISIONS = (RELINK_REV, MAC_ORDER_REV)
+MAC_ORDER = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-mac (TX off before prepare|drained RX off TX retained)$")
 EDGE = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: phy-path edge=(\d+) link=([01]) ")
 RELINK = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-relink (preserve|prepare|committed)(?: speed=(\d+) duplex=(\d+) pause=([01])/([01]))?$")
 MAC_KEYS = ("rx_frames", "tx_frames", "rx_crc_err", "rx_frag_err", "rx_drop_frames")
@@ -43,14 +47,14 @@ echo "switch_carrier=$(cat /sys/class/net/lan1/carrier 2>/dev/null || echo absen
 echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || echo absent)"
 ethtool -S lan | grep -E '^[[:space:]]*(rx_frames|tx_frames|rx_crc_err|rx_frag_err|rx_drop_frames):'
 ethtool -S switch | grep -E 's00_p06_(dot3StatsFCSErrors|etherStatsFragments|etherStatsDropEvents):'
-dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[)|wave7-diag: stock-relink |NOC ERROR DETECTED' || :
+dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[)|wave7-diag: stock-(relink|mac) |NOC ERROR DETECTED' || :
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 """
 
 
 def parse(output, expected_boot, revision):
     fields, mac, switch, samples = {}, {}, {}, []
-    edges, relinks = [], []
+    edges, relinks, mac_order = [], [], []
     for line in output.splitlines():
         m = re.fullmatch(r"(\w+)=(.*)", line)
         if m:
@@ -72,6 +76,9 @@ def parse(output, expected_boot, revision):
         m = RELINK.match(line)
         if m:
             relinks.append({"uptime":float(m[1]),"action":m[2],"tuple":list(m.groups()[2:])})
+        m = MAC_ORDER.match(line)
+        if m:
+            mac_order.append({"uptime":float(m[1]),"action":m[2]})
         m = PHY.match(line)
         if m:
             samples.append(dict(zip(
@@ -90,7 +97,7 @@ def parse(output, expected_boot, revision):
     sample = max(samples, key=lambda s: s["uptime"], default=None)
     return {**fields, "uptime": uptime, "mac": mac,
             "switch_errors": switch, "phy": sample,
-            "phy_edges": edges, "relink_events": relinks,
+            "phy_edges": edges, "relink_events": relinks, "mac_order_events": mac_order,
             "noc": "NOC ERROR DETECTED" in output}
 
 
@@ -142,7 +149,7 @@ def probe_count(row, name):
     return sent, received
 
 
-def evaluate(window):
+def evaluate(window, prior_speed=None):
     if len(window)<2:
         return {"samples":len(window),"classification":"INCONCLUSIVE"}
     a,b = (r["snapshot"]["state"] for r in (window[0],window[-1]))
@@ -161,7 +168,7 @@ def evaluate(window):
                 phy_edge=b["phy"]["edge"],classification="INCONCLUSIVE")
     if elapsed < 30 or min(*mac.values(),*phy.values(),*errors.values()) < 0 or any(errors.values()) or peer_tx is None or peer_tx<=0:
         return result
-    if b.get("revision") == RELINK_REV:
+    if b.get("revision") in RELINK_REVISIONS:
         # Tie the actual policy decision to this PHY edge, not a prior
         # successful mode transition. Require the host to agree on speed.
         edge=b["phy"]["edge"]
@@ -175,6 +182,23 @@ def evaluate(window):
                 or decisions[0]["tuple"][0]!="1000" or decisions[1]["action"]!="committed"):
             return result
         result["relink_policy"]=decisions[0]["action"]
+        if b.get("revision")==MAC_ORDER_REV:
+            # Exact new up marker before this edge's PCS prepare, not
+            # a stale marker from a preceding episode.
+            up=[e for e in b.get("mac_order_events",[]) if start<=e["uptime"]<=decisions[0]["uptime"] and e["action"]=="TX off before prepare"]
+            if len(up)!=1:
+                return result
+            result["mac_order_up"]=up[0]
+            if prior_speed=="1000":
+                # A same-speed trial must also prove the new down
+                # sequence ran on the immediately preceding PHY edge.
+                down=[e for e in b["phy_edges"] if e["edge"]==edge-1 and e["link"]==0]
+                if len(down)!=1:
+                    return result
+                drains=[e for e in b["mac_order_events"] if down[0]["uptime"]<=e["uptime"]<start and e["action"]=="drained RX off TX retained"]
+                if len(drains)!=1:
+                    return result
+                result["mac_order_down"]=drains[0]
     sent, received=totals["direct"]
     if sent and received == 0 and phy["rx"] > 0 and mac["rx_frames"] == 0:
         # PHY RX is copper ingress. PHY TX is *external MAC ingress*,
@@ -202,7 +226,7 @@ def report(rows):
     def flush():
         nonlocal window
         if episode is not None and window:
-            episode["windows"].append(evaluate(window))
+            episode["windows"].append(evaluate(window, episode["prior_speed"]))
         window=[]
     for row in rows:
         s=row["snapshot"].get("state")
@@ -210,7 +234,7 @@ def report(rows):
             flush()
             last_good=None
             continue
-        if s.get("revision")==RELINK_REV:
+        if s.get("revision") in RELINK_REVISIONS:
             # Real kernel edges can occur entirely between snapshots.
             # Use the logged pair without treating pre-capture history
             # as a fresh event or claiming an unobserved healthy baseline.
@@ -242,7 +266,7 @@ def report(rows):
             flush()
             last_good=None
             continue
-        if s.get("revision") == RELINK_REV:
+        if s.get("revision") in RELINK_REVISIONS:
             # A matched trial requires observed healthy traffic before
             # the edge, with both ends agreeing on the initial speed.
             ready = (row["host_counters"]["direct"].get("speed")==s["speed"]
@@ -396,6 +420,27 @@ def selftest():
     partial["probes"]["direct"]["received"]=2
     assert report([prior,partial]+rows[1:])["classification"]=="ONE_GIG_RECONNECT_PASS"
     assert report(rows[1:])["classification"]=="NO_CARRIER_EDGE_OBSERVED"
+    # 0493 additionally requires a fresh MAC gate marker and, for a
+    # matched same-speed reconnect, the previous edge's drain marker.
+    ordered=copy.deepcopy(rows)
+    for i,r in enumerate(ordered):
+        st=r["snapshot"]["state"]
+        st["revision"]=MAC_ORDER_REV
+        st["mac_order_events"]=[]
+        if i:
+            st["mac_order_events"]=[
+                {"uptime":9.02,"action":"drained RX off TX retained"},
+                {"uptime":11.05,"action":"TX off before prepare"}]
+    assert report(ordered)["classification"]=="ONE_GIG_RECONNECT_PASS"
+    for marker in ("TX off before prepare","drained RX off TX retained"):
+        invalid=copy.deepcopy(ordered)
+        for r in invalid:
+            st=r["snapshot"]["state"]
+            st["mac_order_events"]=[e for e in st["mac_order_events"] if e["action"]!=marker]
+        assert report(invalid)["classification"]=="INCONCLUSIVE"
+    for r in ordered[1:]:
+        r["snapshot"]["state"]["mac_order_events"][1]["uptime"]=10.9
+    assert report(ordered)["classification"]=="INCONCLUSIVE"
     print("PHY_RECONNECT_SELFTEST_PASS")
 
 
