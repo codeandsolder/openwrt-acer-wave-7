@@ -58,8 +58,9 @@ rootcmd nmcli connection clone "$profile" "$tmp" > "$out/clone.txt"
 clone=1
 rootcmd nmcli connection modify "$tmp" connection.autoconnect no ipv4.never-default yes ipv4.ignore-auto-dns yes ipv6.never-default yes ipv6.ignore-auto-dns yes ipv4.may-fail no ipv6.may-fail no ipv4.method auto ipv6.method auto
 rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/association.txt" 2>&1
-v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {sub(/\\/.*/, "", $4); print $4; exit}')
-v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {sub(/\\/.*/, "", $4); print $4; exit}')
+ip -br addr show dev "$iface" > "$out/addresses-at-activation.txt"
+v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {split($4,parts,"/"); print parts[1]; exit}')
+v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
 [[ -n $v4 && -n $v6 ]]
 routes() {
     ip -4 route get 192.168.76.2 from "$v4" oif "$iface"
