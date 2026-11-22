@@ -5,11 +5,12 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
 timing_experiment=0
+nosplit_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -18,6 +19,7 @@ case "${2:-}" in
     --scan-scope) scope_experiment=1; pm_experiment=1 ;;
     --scan-mode) scope_experiment=1; mode_experiment=1; pm_experiment=1 ;;
     --scan-timing) scope_experiment=1; mode_experiment=1; timing_experiment=1; pm_experiment=1 ;;
+    --scan-timing-nosplit) scope_experiment=1; mode_experiment=1; timing_experiment=1; nosplit_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -83,6 +85,10 @@ cleanup() {
     if (( runtime_modified )); then
         printf '1\n' | rootcmd tee "$pm_dir/runtime-pm" > "$out/restore-runtime-pm.txt" || rc=1
     fi
+    if (( nosplit_experiment )) && [[ -f $out/nosplit-start-epoch.txt ]]; then
+        journalctl -k -b --no-pager -o short-unix --since "@$(cat "$out/nosplit-start-epoch.txt")" |
+          grep -F 'wave7-diag: no-split scan' > "$out/nosplit-markers.txt" || rc=1
+    fi
     if (( pm_experiment )); then
         pm_snapshot > "$out/pm-restored.txt" || rc=1
         [[ $(rootcmd cat "$pm_dir/deep-sleep") == 1 &&
@@ -111,8 +117,13 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 if (( pm_experiment )); then
     # Exact test client/module and original controls; never alter active links.
+    expected_srcversion=DB4C3E1671DC2EA009803A0
+    if (( nosplit_experiment )); then
+        expected_srcversion=1FB10711FECFBF21CC8F072
+        [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == bc4b790c90f196eb063b0d9605e3569d137069791fec9d192720962ffbf3c384 ]]
+    fi
     [[ $(uname -r) == 7.4.0-rc1-2-cachyos-rc &&
-       $(cat /sys/module/mt7925_common/srcversion) == DB4C3E1671DC2EA009803A0 &&
+       $(cat /sys/module/mt7925_common/srcversion) == "$expected_srcversion" &&
        $(cat "/sys/class/net/$iface/device/vendor") == 0x14c3 &&
        $(cat "/sys/class/net/$iface/device/device") == 0x7925 ]]
     iw dev "$iface" info | grep -Eq '^[[:space:]]*wiphy 0$'
@@ -135,8 +146,12 @@ fi
 {
     printf 'boot=%s\nkernel=%s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$(uname -r)"
     printf 'mt7925_common=%s\nmt7925e=%s\n' "$(cat /sys/module/mt7925_common/srcversion)" "$(cat /sys/module/mt7925e/srcversion)"
+    sha256sum "$(modinfo -n mt7925_common)"
     journalctl -k -b --no-pager | grep -E 'mt7925e.*(HW/SW Version|WM Firmware Version)'
 } > "$out/firmware.txt"
+if (( nosplit_experiment )); then
+    date +%s > "$out/nosplit-start-epoch.txt"
+fi
 stdbuf -oL iw event -t > "$out/events.txt" 2>&1 &
 event_pid=$!
 sleep .3
