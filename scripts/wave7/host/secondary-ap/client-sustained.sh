@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -14,6 +14,7 @@ nosplit_experiment=0
 trace_window=0
 metadata_experiment=0
 absence_experiment=0
+binding_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -26,6 +27,7 @@ case "${2:-}" in
     --scan-timing-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; pm_experiment=1 ;;
     --scan-timing-metadata) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; metadata_experiment=1; pm_experiment=1 ;;
     --scan-timing-absence) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; absence_experiment=1; pm_experiment=1 ;;
+    --scan-timing-binding) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; binding_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -137,6 +139,10 @@ if (( pm_experiment )); then
         expected_srcversion=5505CE551C04266721B047A
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
     fi
+    if (( binding_experiment )); then
+        expected_srcversion=CF0F5C99109529BD670B11A
+        [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 0f2468ffc7aeb8ef76eaf63c20c5a405b80d0e61320bf1af28d931014b79f12b ]]
+    fi
     if (( absence_experiment )); then
         expected_srcversion=5F394A90BE5C4D0D8C37C46
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 102037a9fdc2571c48426d70087eaa560a7bacb70ee6967a2aa0aa5f274e7f4f ]]
@@ -177,6 +183,7 @@ if (( trace_window )); then
     trace_args=()
     if (( metadata_experiment )); then trace_args+=(--metadata); fi
     if (( absence_experiment )); then trace_args+=(--absence); fi
+    if (( binding_experiment )); then trace_args+=(--binding); fi
     rootcmd bash "$helper" "$tag" "${trace_args[@]}" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0
