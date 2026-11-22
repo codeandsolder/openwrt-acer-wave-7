@@ -274,10 +274,20 @@ validate_routes() {
     ! ip -6 route show default | grep -Fq "dev $iface "
 }
 check_link() {
-    local link
-    link=$(iw dev "$iface" link)
+    local link active valid dormant
+    local path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+    link=$(iw dev "$iface" link) || return 1
     printf '%s\n' "$link"
-    grep -Fq 'SSID: Wave7-MLO-Lab' <<< "$link" &&
+    active=$(rootcmd cat "$path/active_links") || return 1
+    valid=$(rootcmd cat "$path/valid_links") || return 1
+    dormant=$(rootcmd cat "$path/dormant_links") || return 1
+    printf 'link_masks time=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$active" "$valid" "$dormant"
+    [[ $active =~ ^0x[0-9a-fA-F]+$ && $valid =~ ^0x[0-9a-fA-F]+$ &&
+       $dormant =~ ^0x[0-9a-fA-F]+$ ]] || return 1
+    # MLSR can legitimately have only one active link. Both links must
+    # remain negotiated and the active set must be nonempty and valid.
+    (( (valid & 3) == 3 && active && !(active & ~valid) )) &&
+      grep -Fq 'SSID: Wave7-MLO-Lab' <<< "$link" &&
       grep -Eq 'Link 0 BSSID ' <<< "$link" &&
       grep -Eq 'Link 1 BSSID ' <<< "$link"
 }
@@ -437,6 +447,13 @@ validate_routes || failed=1
 check_link > "$out/link-after.txt" || failed=1
 rootcmd iw dev "$iface" station dump > "$out/stations-after.txt"
 ! grep -Eq 'MLO_LINK_LOST|PM_POLICY_CHANGED' "$out/stations-during.txt" || failed=1
+# A fast disconnect/reconnect between station samples must not pass.
+# This evaluates the event stream before our intentional cleanup.
+kill -0 "$event_pid" || failed=1
+connected=$(rg -c ': connected to ' "$out/events.txt" || :)
+disconnected=$(rg -c ': disconnected' "$out/events.txt" || :)
+printf 'connected_events=%s\ndisconnected_events=%s\n' "${connected:-0}" "${disconnected:-0}" > "$out/association-continuity.txt"
+[[ $connected == 1 && -z $disconnected ]] || failed=1
 if (( pm_experiment )); then
     pm_valid || failed=1
     pm_snapshot > "$out/pm-after.txt"
