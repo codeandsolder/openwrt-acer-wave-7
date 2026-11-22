@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Read-only, time-bracketed AP peer statistics for the dedicated Wyse lab client."""
 import argparse
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -85,6 +87,10 @@ def observe(tag,duration):
         raise ValueError("no switch carrier")
     if subprocess.check_output(["timedatectl","show","-p","NTPSynchronized","--value"],text=True).strip()!="yes":
         raise ValueError("observer clock not synchronized")
+    if subprocess.run(["systemctl","is-active","--quiet","wave7-lab-upstream-guard8.service"]).returncode:
+        raise ValueError("upstream lab helper not active")
+    lock=open(BASE/".lab-control.lock","r+")
+    fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     out=BASE/"client-validation"/(tag+"-ap-observer")
     out.mkdir(mode=0o700,parents=False,exist_ok=False)
     cmd=["ssh","-T","-i","/home/jan/.ssh/wave7-root-rsa",
@@ -123,9 +129,12 @@ def observe(tag,duration):
         (out/"ready.txt").write_text(ready+"\n")
         print("AP_OBSERVER_READY",flush=True)
         start=time.monotonic()
+        scheduled=start
         while time.monotonic()-start<duration:
-            scheduled=start+count*.25
             time.sleep(max(0,scheduled-time.monotonic()))
+            if time.monotonic()-start>=duration:
+                break
+            scheduled=time.monotonic()+.25
             seq=str(count)
             t0=time.time_ns()
             proc.stdin.write((seq+"\n").encode())
@@ -148,7 +157,10 @@ def observe(tag,duration):
         (out/"status.txt").write_text(f"complete samples={count}\n")
     finally:
         sel.close()
-        proc.stdin.close()
+        try:
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
         try:
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
@@ -156,6 +168,10 @@ def observe(tag,duration):
             proc.wait(timeout=3)
         raw.close()
         stderr.close()
+        files=sorted(out.iterdir())
+        (out/"SHA256SUMS").write_text("".join(
+            f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n" for f in files if f.is_file()))
+        lock.close()
         print(f"AP_OBSERVATION_DIR={out} samples={count}",flush=True)
 
 if __name__=="__main__":
