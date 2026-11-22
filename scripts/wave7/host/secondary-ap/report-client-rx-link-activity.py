@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Count descriptor-backed per-link RX during common sustained probe coverage.
+
+A successful driver RX parse is not a successful socket delivery. Require
+matching raw/resolved station, connected BSS, associated STA, channel and
+no descriptor errors for the strongest category. Retain mismatches.
+"""
+import argparse
+from collections import Counter
+from decimal import Decimal as D
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location(
+    "roc", Path(__file__).with_name("report-client-roc-wire.py"))
+roc = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(roc)
+rx = roc.rx
+
+
+def frequency(band, channel):
+    if band == 1:
+        return 2484 if channel == 14 else 2407 + 5 * channel
+    if band == 2:
+        return 5000 + 5 * channel
+    if band == 3:
+        return 5935 if channel == 2 else 5950 + 5 * channel
+    raise ValueError("unknown ROC RF band")
+
+
+def analyze(trace, scan):
+    paths = scan["tests"]
+    if len(paths) < 2 or any(not p["replies"] for p in paths):
+        raise ValueError("missing sustained paths")
+    start = max(min(D(r["received"]) for r in p["replies"]) for p in paths)
+    end = min(max(D(r["received"]) for r in p["replies"]) for p in paths)
+    lo, hi = trace["offset_lo"], trace["offset_hi"]
+    if not (trace["first_anchor"] + hi <= start < end <= trace["last_anchor"] + lo):
+        raise ValueError("sustained coverage outside anchored trace")
+    sessions, _ = roc.grant_pairs(trace["events"])
+    assignments = []
+    for session in sessions:
+        if session["complete"] and session.get("bands_applied"):
+            t = max(r["t"] for r in session["assignments"])
+            assignments.append((t, {r["bss"]: frequency(r["band"], r["channel"])
+                                    for r in session["requests"]}))
+    assignments.sort()
+    active_freq, bss, sta = {}, {}, {}
+    next_assignment = 0
+    counts, frame_counts = Counter(), Counter()
+    for t, name, _, payload, _ in trace["events"]:
+        while next_assignment < len(assignments) and assignments[next_assignment][0] < t:
+            active_freq = assignments[next_assignment][1]
+            next_assignment += 1
+        event = name.removeprefix("mt7925_lab_")
+        if event not in {"bss_result", "sta_result", "rxdesc", "rx_frame"}:
+            continue
+        k = rx.fields(payload)
+        if event == "bss_result":
+            if k["result"] == 0:
+                bss[k["bss"]] = k
+        elif event == "sta_result":
+            if k["result"] == 0:
+                sta[k["wcid"]] = k
+        elif start <= t + lo and t + hi <= end:
+            if event == "rx_frame":
+                frame = roc.decode_frame(k)
+                frame_counts[(frame["freq"], frame["wcid"], frame["bss"],
+                              frame["kind"], frame["u2m"], frame["data"])] += 1
+                continue
+            r = rx.decode(k)
+            if k["result"] or not (r["data"] and r["u2m"] and k["sta"]):
+                continue
+            if r["raw_freq"] != k["freq"]:
+                raise ValueError("raw channel and driver frequency disagree")
+            peer = sta.get(k["resolved_wcid"])
+            link = bss.get(peer["bss"]) if peer else None
+            expected = active_freq.get(peer["bss"]) if peer else None
+            if any(r[f] for f in ("fcs_error", "icv_error", "mic_error", "cipher_mismatch")):
+                kind = "descriptor_error"
+            elif not (peer and peer["enabled"] and peer["state"] == 2 and
+                      link and link["enabled"] and link["wcid"] == peer["wcid"]):
+                kind = "no_verified_connected_peer"
+            elif not (k["valid"] and k["link"] == peer["link"] == link["link"]
+                      and r["raw_wcid"] == k["resolved_wcid"]
+                      and r["raw_bss"] == peer["bss"] and expected == r["raw_freq"]):
+                kind = "binding_or_frequency_mismatch"
+            else:
+                kind = "matching_associated_peer"
+            counts[(kind, r["raw_freq"], r["raw_wcid"], k["resolved_wcid"],
+                    k["link"], r["raw_bss"], k["encap"])] += 1
+    if not counts:
+        raise ValueError("no peer data descriptors in sustained window")
+    fields = ("classification", "freq", "raw_wcid", "resolved_wcid",
+              "link", "raw_bss", "encap")
+    frame_fields = ("freq", "wcid", "bss", "kind", "u2m", "data")
+    return dict(start=start, end=end, clock_uncertainty_s=hi-lo,
+                descriptor_counts=[dict(zip(fields, key), count=n)
+                                   for key, n in sorted(counts.items())],
+                accepted_frame_counts=[dict(zip(frame_fields, key), count=n)
+                                       for key, n in sorted(frame_counts.items())],
+                method="RX descriptor evidence, not socket or TX success. "
+                       "Connected BSS and STA state come from acknowledged commands; "
+                       "frequency from matched granted ROC requests.")
+
+
+def selftest():
+    assert frequency(1, 1) == 2412 and frequency(1, 14) == 2484
+    assert frequency(2, 36) == 5180 and frequency(3, 1) == 5955
+    assert frequency(3, 2) == 5935
+    print("RX_LINK_ACTIVITY_SELFTEST_PASS")
+
+
+if __name__ == "__main__":
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("trace", nargs="?", type=Path)
+    p.add_argument("scan", nargs="?", type=Path)
+    p.add_argument("--selftest", action="store_true")
+    a = p.parse_args()
+    if a.selftest:
+        selftest()
+    elif a.trace and a.scan:
+        print(json.dumps(analyze(rx.absence.trace.parse(a.trace.read_text()),
+                                 json.loads(a.scan.read_text())), default=str, indent=2))
+    else:
+        p.error("supply trace and scan report")
