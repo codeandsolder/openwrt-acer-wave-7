@@ -24,6 +24,7 @@ spec = importlib.util.spec_from_file_location("probe", Path(__file__).with_name(
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
 trunk = probe.trunk
+HELPER_SHA = 'bd8436acbc628b8e6fd4dc965d3916f007cfe40755d570d67a75fe23d0270262'
 REMOTE = r'''set -eu
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "revision=$(cat /etc/openwrt_version)"
@@ -31,18 +32,17 @@ echo "peer=${SSH_CONNECTION%% *}"
 echo "bootfail=$(fw_printenv -n bootfail)"
 echo "switch_carrier=$(cat /sys/class/net/lan1/carrier)"
 test "$(cat /sys/class/net/lan1/carrier)" = 1
-reg() { phytool read "lan/0x18/$1" 2>/dev/null || printf error; }
-i=0
-while [ "$i" -lt @COUNT@ ]; do
-    read -r begin rest </proc/uptime
-    a=$(reg 17)
-    m=$(reg 31)
-    b=$(reg 17)
-    read -r end rest </proc/uptime
-    printf 'sample %s %s %s %s %s\n' "$begin" "$a" "$m" "$b" "$end"
-    i=$((i+1))
-    sleep 0.05
-done
+test "$(cat /proc/sys/kernel/random/boot_id)" = '@BOOT@'
+test "$(cat /etc/openwrt_version)" = '@REV@'
+test "$(fw_printenv -n bootfail)" = 0
+umask 077
+tmp=$(mktemp -d /tmp/wave7-mode.XXXXXX)
+trap 'rm -f "$tmp/sampler"; rmdir "$tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+cat >"$tmp/sampler"
+test "$(sha256sum "$tmp/sampler" | cut -d " " -f 1)" = '@SHA@'
+chmod 700 "$tmp/sampler"
+"$tmp/sampler" @COUNT@
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "end_revision=$(cat /etc/openwrt_version)"
 echo "end_switch_carrier=$(cat /sys/class/net/lan1/carrier)"
@@ -125,16 +125,18 @@ def capture(out,boot,profile,count):
     assert all(v["valid"] for v in before.values())
     out.mkdir(mode=0o700)
     ip,dev,_=trunk.PATHS["switch"]
-    argv=["ssh","-nT","-i","/home/jan/.ssh/wave7-root-rsa","-o",f"BindInterface={dev}",
+    helper=Path(__file__).with_name("sample-phy-mode")
+    assert digest(helper)==HELPER_SHA
+    argv=["ssh","-T","-i","/home/jan/.ssh/wave7-root-rsa","-o",f"BindInterface={dev}",
           "-o",f"BindAddress={ip}","-o","BatchMode=yes","-o","IdentitiesOnly=yes",
           "-o","StrictHostKeyChecking=yes","-o",f"UserKnownHostsFile={trunk.BASE/'known_hosts'}",
           "-o","ConnectTimeout=3","-o","ConnectionAttempts=1",f"root@{trunk.ROUTER}",
-          REMOTE.replace("@COUNT@",str(count))]
+          REMOTE.replace("@COUNT@",str(count)).replace("@BOOT@",boot).replace("@REV@",rev).replace("@SHA@",HELPER_SHA)]
     start=time.time()
-    with (out/"raw.txt").open("x") as stdout,(out/"stderr.txt").open("x") as stderr:
-        proc=subprocess.run(argv,stdout=stdout,stderr=stderr,timeout=90)
+    with helper.open("rb") as stdin,(out/"raw.txt").open("x") as stdout,(out/"stderr.txt").open("x") as stderr:
+        proc=subprocess.run(argv,stdin=stdin,stdout=stdout,stderr=stderr,timeout=90)
     after=trunk.routes()
-    metadata=dict(start=start,end=time.time(),before=before,after=after,rc=proc.returncode)
+    metadata=dict(start=start,end=time.time(),before=before,after=after,rc=proc.returncode,helper_sha256=HELPER_SHA,count=count)
     (out/"capture.json").write_text(json.dumps(metadata,indent=2)+"\n")
     assert proc.returncode==0 and all(v["valid"] for v in after.values())
     result=parse((out/"raw.txt").read_text(),boot,rev,count)
