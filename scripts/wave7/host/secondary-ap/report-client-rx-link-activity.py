@@ -7,6 +7,7 @@ no descriptor errors for the strongest category. Retain mismatches.
 """
 import argparse
 from collections import Counter
+from bisect import bisect_right
 from decimal import Decimal as D
 import importlib.util
 import json
@@ -51,6 +52,15 @@ def analyze(trace, scan):
     active_freq, bss, sta = {}, {}, {}
     next_assignment = 0
     counts, frame_counts = Counter(), Counter()
+    mismatches=[]
+    scan_starts=sorted(t for t,name,*_ in trace["events"] if name=="drv_hw_scan")
+    scan_completions=sorted(t for t,name,*_ in trace["events"] if name=="api_scan_completed")
+    def previous_delta(values,t):
+        i=bisect_right(values,t)
+        return t-values[i-1] if i else None
+    def next_delta(values,t):
+        i=bisect_right(values,t)
+        return values[i]-t if i<len(values) else None
     for t, name, _, payload, _ in trace["events"]:
         while next_assignment < len(assignments) and assignments[next_assignment][0] < t:
             active_freq = assignments[next_assignment][1]
@@ -90,6 +100,14 @@ def analyze(trace, scan):
                 kind = "binding_or_frequency_mismatch"
             else:
                 kind = "matching_associated_peer"
+            if kind=="binding_or_frequency_mismatch":
+                mismatches.append(dict(t=t,raw_freq=r["raw_freq"],raw_band=r["raw_band"],
+                    raw_wcid=r["raw_wcid"],resolved_wcid=k["resolved_wcid"],
+                    raw_bss=r["raw_bss"],resolved_link=k["link"],expected_freq=expected,
+                    expected_bss=peer["bss"],length=k.get("length"),
+                    after_scan_completed_s=previous_delta(scan_completions,t),
+                    after_scan_start_s=previous_delta(scan_starts,t),
+                    before_next_scan_start_s=next_delta(scan_starts,t)))
             counts[(kind, r["raw_freq"], r["raw_wcid"], k["resolved_wcid"],
                     k["link"], r["raw_bss"], k["encap"])] += 1
     if not counts:
@@ -100,6 +118,7 @@ def analyze(trace, scan):
     return dict(start=start, end=end, clock_uncertainty_s=hi-lo,
                 descriptor_counts=[dict(zip(fields, key), count=n)
                                    for key, n in sorted(counts.items())],
+                binding_mismatches=mismatches,
                 accepted_frame_counts=[dict(zip(frame_fields, key), count=n)
                                        for key, n in sorted(frame_counts.items())],
                 method="RX descriptor evidence, not socket or TX success. "
@@ -138,7 +157,9 @@ def selftest():
              freq=(5180, 2412)[slot])
     descriptor(11, 0)
     descriptor(12, 1)
+    events.append((D("12.025"),"api_scan_completed","test-1","",0))
     descriptor(13, 1, raw_bss=0)
+    events.append((D("13.5"),"drv_hw_scan","test-1","",0))
     descriptor(14, 0, corrupt=True)
     emit(15, "sta_result", bss=1, link=0, wcid=3,
          enabled=0, state=0, result=0)
@@ -155,6 +176,10 @@ def selftest():
         "descriptor_error": 1, "no_verified_connected_peer": 1})
     assert {r["freq"] for r in result["descriptor_counts"]
             if r["classification"] == "matching_associated_peer"} == {2412,5180}
+    mismatch,=result["binding_mismatches"]
+    assert mismatch["after_scan_completed_s"]==D(".975")
+    assert mismatch["before_next_scan_start_s"]==D(".5")
+    assert mismatch["expected_bss"]==1 and mismatch["raw_bss"]==0
     print("RX_LINK_ACTIVITY_SELFTEST_PASS")
 
 
