@@ -78,7 +78,10 @@ def parse(text):
     hi+=D(".001")
     lo_t=min(t for a,b,t in offsets)
     hi_t=max(t for a,b,t in offsets)
-    return {"events":sorted(events),"offset_lo":lo,"offset_hi":hi,
+    # Trace output retains per-CPU ring order. Equal printed microsecond
+    # timestamps must not be lexically reordered by event name or payload:
+    # consecutive tracepoints in the same NAPI context often tie.
+    return {"events":sorted(events,key=lambda e:e[0]),"offset_lo":lo,"offset_hi":hi,
             "first_anchor":lo_t,"last_anchor":hi_t,"anchors":len(seen),
             "trace_count":int(counters[1]),"zero_loss_stats":stats}
 
@@ -198,6 +201,13 @@ TRACE_END
 TRACE_CLEANUP rc=0
 """
     a=parse(t)
+    tied=t.replace("5/5","7/7").replace(
+        "  test-1 [000] .... 11.001:",
+        "  napi-1 [000] .... 10.800: mt7925_lab_mcu_rx: eid=41 seq=0 option=6 ext_eid=0 length=56\n"
+        "  napi-1 [000] .... 10.800: mt7925_lab_absence: bss=0 tag=0 len=8 absent=0 quota=0\n"
+        "  test-1 [000] .... 11.001:")
+    tied_events=[e[1] for e in parse(tied)["events"] if e[0]==D("10.800")]
+    assert tied_events==["mt7925_lab_mcu_rx","mt7925_lab_absence"]
     assert a["anchors"]==3 and a["offset_hi"]-a["offset_lo"]==D(".004")
     x=phase(a["events"],a["offset_lo"],a["offset_hi"],D("100.4"),D("100.8"))
     assert x["counts"]=={"net_dev_queue":1,"mt7925_scan_work":1}
