@@ -170,6 +170,59 @@ def analyze(trace, timing):
                 method="Hardware-band selector, not RF frequency. TX status records may be unmatched and are not necessarily unique delivered packets. Receive subtype is only decoded for raw 802.11 frames.")
 
 
+def beacon_timing_checks(records):
+    """Correlate accepted beacon commands with the last accepted BSS identity.
+
+    A nonzero interval/DTIM and matching link prove consistent command metadata,
+    not that firmware uses the values or receives beacons on that link.
+    """
+    bsses = {}
+    latest = {}
+    checks = []
+    membership = []
+    for record in records:
+        event = record["event"]
+        if event == "bss_result" and record["result"] == 0:
+            bss = record["bss"]
+            old = bsses.get(bss)
+            if not record["enabled"]:
+                bsses.pop(bss, None)
+                latest.pop(bss, None)
+            else:
+                if old is None or (old["link"], old["wcid"]) != (record["link"], record["wcid"]):
+                    latest.pop(bss, None)
+                bsses[bss] = record
+        elif event == "bss_bcnft":
+            bss = record["bss"]
+            binding = bsses.get(bss)
+            problems = []
+            if record["result"] != 0:
+                problems.append("firmware_rejected")
+            if not binding:
+                problems.append("no_acknowledged_connected_bss")
+            elif binding["link"] != record["link"]:
+                problems.append("link_mismatch")
+            if not record["interval"]:
+                problems.append("zero_beacon_interval")
+            if not record["dtim"]:
+                problems.append("zero_dtim_period")
+            check = dict(t=record["t"], bss=bss, command_link=record["link"],
+                         connected_link=binding["link"] if binding else None,
+                         interval=record["interval"], dtim=record["dtim"],
+                         result=record["result"], problems=problems)
+            checks.append(check)
+            if record["result"] == 0:
+                latest[bss] = check
+        elif event == "sta_mld_update":
+            membership.append(dict(t=record["t"], target_bss=record["bss"],
+                                   target_wcid=record["wcid"], result=record["result"],
+                                   connected_bsses=[
+                                       dict(bss=bss, link=binding["link"],
+                                            beacon=latest.get(bss))
+                                       for bss, binding in sorted(bsses.items())]))
+    return dict(commands=checks, standalone_membership=membership)
+
+
 def association(trace):
     """Report provisioning even when association/handshake failed before probes."""
     sessions, other = grant_pairs(trace["events"])
@@ -196,6 +249,7 @@ def association(trace):
         raise ValueError("missing association trace")
     return dict(trace_events=trace["trace_count"], sessions=sessions,
                 other_roc_events=other, provisioning=records,
+                beacon_timing=beacon_timing_checks(records),
                 firmware_transitions=transitions,
                 clock_offset_lower=trace.get("offset_lo"),
                 clock_offset_upper=trace.get("offset_hi"),
@@ -256,6 +310,24 @@ def selftest():
     assert [r["event"] for r in power["provisioning"]] == ["bss_ps", "bss_bcnft"]
     assert power["provisioning"][0]["state"] == 0
     assert power["provisioning"][1]["interval"] == 100
+    timing = association({"events": [
+        event("1", "bss_result", "bss=0 link=1 wcid=2 enabled=1 result=0"),
+        event("2", "bss_bcnft", "bss=0 link=0 interval=0 dtim=0 result=0"),
+        event("3", "bss_result", "bss=1 link=0 wcid=3 enabled=1 result=0"),
+        event("4", "bss_bcnft", "bss=1 link=0 interval=100 dtim=2 result=0"),
+        event("5", "sta_mld_update", "wcid=2 bss=0 result=0"),
+        event("6", "bss_bcnft", "bss=0 link=1 interval=100 dtim=2 result=0"),
+        event("7", "bss_bcnft", "bss=0 link=0 interval=0 dtim=0 result=1"),
+        event("8", "sta_mld_update", "wcid=2 bss=0 result=0"),
+        event("9", "bss_result", "bss=1 link=0 wcid=3 enabled=0 result=0"),
+        event("10", "sta_mld_update", "wcid=2 bss=0 result=0"),
+    ], "trace_count": 10})["beacon_timing"]
+    assert timing["commands"][0]["problems"] == [
+        "link_mismatch", "zero_beacon_interval", "zero_dtim_period"]
+    first, corrected, removed = timing["standalone_membership"]
+    assert first["connected_bsses"][0]["beacon"]["interval"] == 0
+    assert corrected["connected_bsses"][0]["beacon"]["problems"] == []
+    assert len(removed["connected_bsses"]) == 1
     wake = event("1.199990", "roc_sync", "phase=0 bss=0 token=3 mlo=1 granted=0 pending=1 result=0")
     def wait_return(t):
         return event(t, "roc_sync", "phase=1 bss=0 token=3 mlo=1 granted=1 pending=1 result=0")
