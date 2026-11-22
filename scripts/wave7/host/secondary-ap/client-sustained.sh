@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -19,6 +19,7 @@ quota_experiment=0
 rx_experiment=0
 rocwire_experiment=0
 roccontract_experiment=0
+rocgeometry_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -36,6 +37,7 @@ case "${2:-}" in
     --scan-timing-rx) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rx_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
+    --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -155,6 +157,10 @@ if (( pm_experiment )); then
         bash "$stack_guard" --check-candidate > "$out/module-stack.txt"
         expected_srcversion=E882C202FF34ABD6AFFEC2C
     fi
+    if (( rocgeometry_experiment )); then
+        expected_srcversion=C9E49C46E5D078C60790F76
+        [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 3dc72a52e857e4eb6f103affd04b6df70a443ad532d36a71628c406b10956432 ]]
+    fi
     if (( roccontract_experiment )); then
         expected_srcversion=4612169F0B6A0C2D484A758
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 1c50861dd4a5d390d942e45f78afc30a47bd616b9929e05f550c6a76c4c5d7f8 ]]
@@ -217,6 +223,7 @@ if (( trace_window )); then
     if (( rx_experiment )); then trace_args+=(--rx); fi
     if (( rocwire_experiment )); then trace_args+=(--rocwire); fi
     if (( roccontract_experiment )); then trace_args+=(--roccontract); fi
+    if (( rocgeometry_experiment )); then trace_args+=(--rocgeometry); fi
     rootcmd bash "$helper" "$tag" "${trace_args[@]}" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0

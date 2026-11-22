@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Root-only bounded observation on the isolated Wyse, no global tracer changes.
 set -Eeuo pipefail
-[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire || $2 == --roccontract ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire || $2 == --roccontract || $2 == --rocgeometry ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 expected=DB4C3E1671DC2EA009803A0
 if [[ ${2:-} == --metadata ]]; then
     expected=5505CE551C04266721B047A
@@ -9,6 +9,9 @@ if [[ ${2:-} == --metadata ]]; then
 elif [[ ${2:-} == --quota ]]; then
     expected=E882C202FF34ABD6AFFEC2C
     bash /home/jan/scripts/wave7/client-validation/client-quota-stack.sh --check-candidate
+elif [[ ${2:-} == --rocgeometry ]]; then
+    expected=C9E49C46E5D078C60790F76
+    [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 3dc72a52e857e4eb6f103affd04b6df70a443ad532d36a71628c406b10956432 ]]
 elif [[ ${2:-} == --roccontract ]]; then
     expected=4612169F0B6A0C2D484A758
     [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 1c50861dd4a5d390d942e45f78afc30a47bd616b9929e05f550c6a76c4c5d7f8 ]]
@@ -49,7 +52,7 @@ trap 'exit 130' INT
 trap 'exit 129' HUP
 printf '0\n' > "$inst/tracing_on"
 printf 'mono\n' > "$inst/trace_clock"
-if [[ ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract ]]; then
+if [[ ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     printf '16384\n' > "$inst/buffer_size_kb"
 else
     printf '8192\n' > "$inst/buffer_size_kb"
@@ -89,32 +92,35 @@ events=(mac80211/stop_queue mac80211/wake_queue
     mac80211/api_remain_on_channel_expired mac80211/drv_change_vif_links
     mac80211/drv_change_sta_links mac80211/api_beacon_loss
     mac80211/api_connection_loss cfg80211/cfg80211_scan_done)
-if [[ ${2:-} == --metadata || ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract ]]; then
+if [[ ${2:-} == --metadata || ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     for e in mcu_rx roc mbmc scan_req scan_tlv txfree txs; do
         events+=("mt7925_lab/mt7925_lab_$e")
     done
 fi
-if [[ ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract ]]; then
+if [[ ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     events+=(mt7925_lab/mt7925_lab_absence)
 fi
-if [[ ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract ]]; then
+if [[ ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     events+=(mt7925_lab/mt7925_lab_binding mt7925_lab/mt7925_lab_txdesc)
 fi
 if [[ ${2:-} == --quota ]]; then
     events+=(mt7925_lab/mt7925_lab_credit mt7925_lab/mt7925_lab_credit_refund)
 fi
-if [[ ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract ]]; then
+if [[ ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     for e in rxdesc bss_basic bss_mld bss_rlm sta_mld sta_eht_mld sta_result bss_result mlo_roc_req mlo_roc_result; do
         events+=("mt7925_lab/mt7925_lab_$e")
     done
 fi
-if [[ ${2:-} == --rocwire || ${2:-} == --roccontract ]]; then
+if [[ ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     for e in roc_wire roc_abort txs_wire rx_frame; do
         events+=("mt7925_lab/mt7925_lab_$e")
     done
 fi
 if [[ ${2:-} == --roccontract ]]; then
     events+=(mt7925_lab/mt7925_lab_roc_geometry mt7925_lab/mt7925_lab_roc_band)
+fi
+if [[ ${2:-} == --rocgeometry ]]; then
+    events+=(mt7925_lab/mt7925_lab_roc_geometry mt7925_lab/mt7925_lab_key_result mt7925_lab/mt7925_lab_decap_config)
 fi
 for e in "${events[@]}"; do
     [[ -f $inst/events/$e/enable ]]
