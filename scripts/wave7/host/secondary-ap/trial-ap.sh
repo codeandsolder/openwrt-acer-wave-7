@@ -196,11 +196,11 @@ case "$profile" in
       base="$guard8/serial-speed-dhcp-guard8"
       candidate_artifact=wave7-serial-speed-dhcp-guard8-sysupgrade.bin
       candidate_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
-      candidate_builder=UNBUILT
-      expected_candidate_sha=UNBUILT
+      candidate_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
+      expected_candidate_sha=ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516
       candidate_fit_sha=$accepted_fit_sha
       candidate_relink_patch=''
-      candidate_pcs_sha=UNBUILT
+      candidate_pcs_sha=6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf
       candidate_serial_patch=f9aa3e1fa3a541bb52e11223c7297cbd4dbc0ecc
       candidate_ppe_sha=$accepted_ppe_sha
     fi
