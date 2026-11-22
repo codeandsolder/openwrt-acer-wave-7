@@ -5,7 +5,9 @@ set -Eeuo pipefail
 umask 077
 base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 runtime=/home/jan/firmware/wave7/trials/20261115-deferred-regression/iperf-runtime
-[[ $(id -un) == jan && $# == 2 ]] || { echo 'usage: bench-serial.sh RUN_DIR DIRECT_RATE'; exit 2; }
+[[ $(id -un) == jan && ( $# == 2 || ( $# == 3 && $3 == --diagnose ) ) ]] || { echo 'usage: bench-serial.sh RUN_DIR DIRECT_RATE [--diagnose]'; exit 2; }
+diagnose=0
+[[ ${3:-} != --diagnose ]] || diagnose=1
 rate=$2
 case "$rate" in 10|100|1000|2500) ;; *) exit 2 ;; esac
 run=$(realpath -e "$1")
@@ -56,9 +58,11 @@ ready
 mkdir -m 700 "$out"
 made=0
 pid=''
+captures=()
 cleanup() {
   local rc=$?
   trap - EXIT
+  for cp in "${captures[@]}"; do wait "$cp" || :; done
   if [[ -n $pid ]]; then
     kill "$pid" 2>/dev/null || :
     wait "$pid" 2>/dev/null || :
@@ -110,7 +114,28 @@ run_case() {
     sleep .2
   done
   remote 'netstat -lnt | grep -q ":52227 "'
-  timeout "$((duration+15))" iperf3 -4 -c 192.168.76.1 -B "$addr" --bind-dev "$dev" -p 52227 --connect-timeout 4000 -t "$duration" -O 1 -J "$@" > "$out/$name.json"
+  local rc=0
+  local -a trace=()
+  if (( diagnose )); then
+    for nic in "$direct" "$switch"; do
+      dumpcap -q -i "$nic" -f 'host 192.168.76.1 and tcp port 52227 and (tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0)' -s 80 -a duration:12 -c 100 -w "$out/$name-$nic.pcapng" > "$out/$name-$nic-capture.txt" 2>&1 &
+      captures+=("$!")
+    done
+    sleep 1
+    trace=(strace -qq -f -e "trace=bind,connect,setsockopt,getsockopt" -o "$out/$name-sockets.txt")
+  fi
+  timeout "$((duration+15))" "${trace[@]}" iperf3 -4 -c 192.168.76.1 -B "$addr" --bind-dev "$dev" -p 52227 --connect-timeout 4000 -t "$duration" -O 1 -J "$@" > "$out/$name.json" || rc=$?
+  for cp in "${captures[@]}"; do wait "$cp" || :; done
+  captures=()
+  if (( rc )); then
+    # Server has its own short deadline in diagnosis mode.
+    host_snapshot > "$out/$name-host-after.txt"
+    snapshot > "$out/$name-router-after.txt" || :
+    wait "$pid" || :
+    pid=''
+    echo "CASE_FAILED name=$name rc=$rc" >&2
+    return "$rc"
+  fi
   wait "$pid"
   pid=''
   host_snapshot > "$out/$name-host-after.txt"
@@ -124,6 +149,13 @@ run_case() {
 # is implied when the router itself is the endpoint.
 udp_rate=$((rate/2))
 (( udp_rate <= 150 )) || udp_rate=150
+if (( diagnose )); then
+  run_case direct-tcp-control 192.168.76.2 "$direct" 3 || :
+  run_case switch-tcp-control 192.168.76.250 "$switch" 3 || :
+  (cd "$out"; sha256sum ./*.json ./*.txt ./*.err ./*.tsv ./*.pcapng > SHA256SUMS; sha256sum -c SHA256SUMS)
+  echo SERIAL_BENCH_DIAGNOSIS_COMPLETE
+  exit 0
+fi
 run_case direct-tcp-rx 192.168.76.2 "$direct" 30 -P 4
 run_case direct-tcp-tx 192.168.76.2 "$direct" 30 -P 4 -R
 run_case direct-udp-rx 192.168.76.2 "$direct" 15 -u -b "${udp_rate}M"
