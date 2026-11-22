@@ -12,7 +12,7 @@ import subprocess
 import time
 
 BASE=Path("/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8")
-BOOT="195982f4-b227-4cd1-85e7-31f843cacd49"
+BOOT_RE=re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 REVISION="r0+38346-f9aa3e1fa3-ap-dhcp-guard8"
 PEER="28:2e:89:bb:b9:8a"
 # The remote observer does not change any control, capture traffic, or read keys.
@@ -78,8 +78,8 @@ def selftest():
     assert decode(["\trx packets: 10"])["incomplete"]
     print("AP_CLIENT_OBSERVER_SELFTEST_PASS")
 
-def observe(tag,duration):
-    if os.getuid()==0 or not re.fullmatch(r"0498-\d{8}-\d{6}",tag) or not 10<=duration<=240:
+def observe(tag,duration,boot):
+    if os.getuid()==0 or not re.fullmatch(r"0498-\d{8}-\d{6}",tag) or not 10<=duration<=240 or not BOOT_RE.fullmatch(boot):
         raise ValueError("invalid user, tag or duration")
     if Path("/sys/class/net/enp4s0f4u2u2u4/address").read_text().strip()!="00:e0:4c:68:01:45":
         raise ValueError("wrong Asus switch device")
@@ -124,7 +124,7 @@ def observe(tag,duration):
     count=0
     try:
         ready=line(time.monotonic()+8)
-        if ready!=f"READY {BOOT} {REVISION}":
+        if ready!=f"READY {boot} {REVISION}":
             raise ValueError(f"wrong firmware: {ready}")
         (out/"ready.txt").write_text(ready+"\n")
         print("AP_OBSERVER_READY",flush=True)
@@ -177,10 +177,13 @@ def observe(tag,duration):
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("tag",nargs="?")
+    parser.add_argument("--boot",help="explicit UUID of the qualified 0498 router boot")
     parser.add_argument("--seconds",type=int,default=220)
     parser.add_argument("--selftest",action="store_true")
     args=parser.parse_args()
     if args.selftest:
         selftest()
     else:
-        observe(args.tag,args.seconds)
+        if args.tag is None or args.boot is None:
+            parser.error("supply tag and explicit expected router --boot")
+        observe(args.tag,args.seconds,args.boot)
