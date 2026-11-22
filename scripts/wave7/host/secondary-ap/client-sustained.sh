@@ -5,7 +5,14 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && $# == 1 && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && $2 == --trace ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+trace=0
+[[ ${2:-} != --trace ]] || trace=1
+tap=/home/jan/scripts/wave7/client-validation/icmp-probe-tap
+if (( trace )); then
+    [[ $(sha256sum "$tap" | cut -d' ' -f1) == d1fa6760fef57a219ba3df1255e7ab5a6f78e8038091b24bd7cc8ab5d9a56558 ]]
+    "$tap" --selftest
+fi
 tag=$1
 out="$base/$tag"
 tmp=Wave7-test-$tag
@@ -21,12 +28,18 @@ rootcmd() { sudo -n "$@"; }
 clone=0
 event_pid=''
 sample_pid=''
+tap_pid=''
 pings=()
 cleanup() {
     local rc=$?
     trap - EXIT
     for pid in "${pings[@]}"; do kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; done
     if [[ -n $sample_pid ]]; then kill "$sample_pid" 2>/dev/null || :; wait "$sample_pid" 2>/dev/null || :; fi
+    if [[ -n $tap_pid ]]; then
+        # The tap has its own 120-second deadline, even on a failed probe.
+        wait "$tap_pid" || rc=1
+        grep -Eq '^END parsed=[0-9]+ rejected=0 recv=[0-9]+ dropped=0 ifdrop=0$' "$out/client-tap.txt" || rc=1
+    fi
     if (( clone )); then
         rootcmd nmcli connection delete "$tmp" > "$out/cleanup.txt" 2>&1 || rc=1
     fi
@@ -86,7 +99,17 @@ check_link() {
 }
 probe() {
     local name=$1 count=$2 ip=$3 target=$4 family=$5 rc=0
-    LC_ALL=C ping "$family" -n -D -O -I "$iface" -I "$ip" -c "$count" -i .25 -W 1 "$target" > "$out/$name.txt" 2>&1 || rc=$?
+    local -a id_args=()
+    if (( trace )); then
+        case "$name" in
+            immediate-v4) id_args=(-e 47601) ;;
+            immediate-v6) id_args=(-e 47602) ;;
+            steady-v4) id_args=(-e 47603) ;;
+            steady-v6) id_args=(-e 47604) ;;
+            *) return 2 ;;
+        esac
+    fi
+    LC_ALL=C ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" -c "$count" -i .25 -W 1 "$target" > "$out/$name.txt" 2>&1 || rc=$?
     [[ $rc == 0 ]] && grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
 }
 failed=0
@@ -94,6 +117,17 @@ routes > "$out/routes-before.txt"
 validate_routes || exit 3
 check_link > "$out/link-before.txt" || exit 3
 rootcmd iw dev "$iface" station dump > "$out/stations-before.txt"
+if (( trace )); then
+    [[ $v4 == 192.168.76.145 && $v6 == fd76:7:* ]]
+    rootcmd "$tap" "$iface" 120 > "$out/client-tap.txt" 2> "$out/client-tap-stderr.txt" &
+    tap_pid=$!
+    for _ in {1..40}; do
+        kill -0 "$tap_pid" || exit 3
+        grep -q '^READY ' "$out/client-tap.txt" && break
+        sleep .05
+    done
+    grep -q '^READY ' "$out/client-tap.txt"
+fi
 date -Is > "$out/immediate-start.txt"
 probe immediate-v4 20 "$v4" 192.168.76.2 -4 || failed=1
 probe immediate-v6 20 "$v6" fd76:7::2 -6 || failed=1
