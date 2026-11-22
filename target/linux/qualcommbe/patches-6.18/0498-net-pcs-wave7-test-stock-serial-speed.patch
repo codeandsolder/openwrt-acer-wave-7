@@ -1,0 +1,214 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: pcs: test stock serial speed resolution on Wave7
+
+The actual stock SGMII wrapper clears the Atheros AN-format selector
+and force-speed bit for the non-forced QCA8081 port before calibration.
+The vendor host worker uses copper PHY status for its link decision
+and does not program the UNIPHY speed field on the later adapter pulse.
+
+Test this coherent serial negotiation policy without making the PCS
+link bit a prerequisite for phylink's media link-up. The earlier
+managed=in-band-status trial failed with PCS carrier zero. Keep cold
+deferral, recalibration and adapter pulse unchanged from approved 0491.
+Only the board's dedicated MPPE PCS1 channel0 is selected; no changes
+to PHY polling, clock policy, PPE, or 2500BASE-X. Post-pulse readback
+qualifies the actual configuration independently of packet delivery.
+
+Experimental; not a claimed fix.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -38,6 +38,7 @@
+ #define PCS_MISC2_MODE_USXGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x7)
+ 
+ #define PCS_MODE_CTRL			0x46c
++#define PCS_MODE_AUTONEG_ATH		BIT(0)
+ #define PCS_MODE_SEL_MASK		GENMASK(12, 8)
+ #define PCS_MODE_SGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x4)
+ #define PCS_MODE_QSGMII			FIELD_PREP(PCS_MODE_SEL_MASK, 0x1)
+@@ -184,6 +185,35 @@
+ #define phylink_pcs_to_qpcs_mii(_pcs)	\
+ 	container_of(_pcs, struct ipq_pcs_mii, pcs)
+ 
++/*
++ * Stock Wave7 uses a PHY-managed link decision, but non-forced SGMII
++ * serial speed resolution on UNIPHY1. Keep phylink OUTBAND: the PCS
++ * carrier bit is not a reliable link authority on this board.
++ */
++static bool ipq_pcs_wave7_serial_speed(struct ipq_pcs *qpcs, int index,
++				       unsigned int neg_mode,
++				       phy_interface_t interface)
++{
++	struct resource *res;
++	int i;
++
++	if (!qpcs->mppe || index != 0 || interface != PHY_INTERFACE_MODE_SGMII ||
++	    neg_mode != PHYLINK_PCS_NEG_OUTBAND ||
++	    !of_machine_is_compatible("acer,wave7"))
++		return false;
++
++	res = platform_get_resource(to_platform_device(qpcs->dev),
++				    IORESOURCE_MEM, 0);
++	if (!res || res->start != 0x7a10000)
++		return false;
++
++	for (i = 1; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			return false;
++
++	return true;
++}
++
+ static void ipq_pcs_get_state_sgmii(struct ipq_pcs *qpcs,
+ 				    int index,
+ 				    struct phylink_link_state *state)
+@@ -361,7 +391,7 @@
+ }
+ 
+ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
+-			       phy_interface_t interface)
++			       phy_interface_t interface, bool serial_speed)
+ {
+ 	unsigned long rate = 125000000;
+ 	unsigned int val, mask, misc2 = 0;
+@@ -389,6 +419,8 @@
+ 	switch (interface) {
+ 	case PHY_INTERFACE_MODE_SGMII:
+ 		mask |= PCS_MODE_SGMII_MODE_MASK;
++		if (serial_speed)
++			mask |= PCS_MODE_AUTONEG_ATH;
+ 		val = PCS_MODE_SGMII | PCS_MODE_SGMII_MODE_MAC;
+ 		misc2 = PCS_MISC2_MODE_SGMII;
+ 		break;
+@@ -464,6 +496,14 @@
+ 		msleep(100);
+ 	}
+ 
++	/* Match the stock non-forced serial mode before calibration. */
++	if (serial_speed) {
++		ret = regmap_clear_bits(qpcs->regmap, PCS_MII_CTRL(0),
++					PCS_MII_FORCE_MODE);
++		if (ret)
++			goto err_clk;
++	}
++
+ 	/* PCS PLL/calibration reset. IPQ5332 is MPPE: for its SGMII
+ 	 * personalities the vendor sequence restarts VCO calibration rather
+ 	 * than toggling the generic analog reset bit.
+@@ -578,6 +618,8 @@
+ 				unsigned int neg_mode,
+ 				phy_interface_t interface)
+ {
++	bool serial_speed = ipq_pcs_wave7_serial_speed(qpcs, index, neg_mode,
++						       interface);
+ 	int ret;
+ 
+ 	/*
+@@ -596,13 +638,13 @@
+ 
+ 	/* Configure the PCS mode if required */
+ 	if (qpcs->interface != interface) {
+-		ret = ipq_pcs_config_mode(qpcs, interface);
++		ret = ipq_pcs_config_mode(qpcs, interface, serial_speed);
+ 		if (ret)
+ 			return ret;
+ 	}
+ 
+ 	/* Set AN mode or force mode */
+-	if (neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
++	if (serial_speed || neg_mode == PHYLINK_PCS_NEG_INBAND_ENABLED)
+ 		return regmap_clear_bits(qpcs->regmap,
+ 					 PCS_MII_CTRL(index), PCS_MII_FORCE_MODE);
+ 	else
+@@ -616,7 +658,7 @@
+ 	if (qpcs->interface == PHY_INTERFACE_MODE_2500BASEX)
+ 		return 0;
+ 
+-	return ipq_pcs_config_mode(qpcs, PHY_INTERFACE_MODE_2500BASEX);
++	return ipq_pcs_config_mode(qpcs, PHY_INTERFACE_MODE_2500BASEX, false);
+ }
+ 
+ static int ipq_pcs_config_usxgmii(struct ipq_pcs *qpcs,
+@@ -628,7 +670,7 @@
+ 
+ 	/* Configure the XPCS for USXGMII mode if required */
+ 	if (qpcs->interface != interface) {
+-		ret = ipq_pcs_config_mode(qpcs, interface);
++		ret = ipq_pcs_config_mode(qpcs, interface, false);
+ 		if (ret)
+ 			return ret;
+ 
+@@ -691,19 +733,19 @@
+ 	if (qpcs->interface == PHY_INTERFACE_MODE_10GBASER)
+ 		return 0;
+ 
+-	return ipq_pcs_config_mode(qpcs, PHY_INTERFACE_MODE_10GBASER);
++	return ipq_pcs_config_mode(qpcs, PHY_INTERFACE_MODE_10GBASER, false);
+ }
+ 
+ static int ipq_pcs_link_up_config_sgmii(struct ipq_pcs *qpcs,
+ 					int index,
+-					unsigned int neg_mode,
++					bool force_speed,
+ 					int speed)
+ {
+ 	unsigned int val;
+ 	int ret;
+ 
+-	/* PCS speed need not be configured if in-band autoneg is enabled */
+-	if (neg_mode != PHYLINK_PCS_NEG_INBAND_ENABLED) {
++	/* Serial-resolved speed must not be overwritten by the host. */
++	if (force_speed) {
+ 		/* PCS speed set for force mode */
+ 		switch (speed) {
+ 		case SPEED_1000:
+@@ -986,6 +1028,10 @@
+ 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+ 	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
+ 	int index = qpcs_mii->index;
++	bool serial_speed = ipq_pcs_wave7_serial_speed(qpcs, index, neg_mode,
++						       interface);
++	bool force_speed = !serial_speed &&
++			   neg_mode != PHYLINK_PCS_NEG_INBAND_ENABLED;
+ 	bool diag_link_up;
+ 	int ret;
+ 
+@@ -1011,7 +1057,7 @@
+ 	    neg_mode == PHYLINK_PCS_NEG_OUTBAND &&
+ 	    interface == PHY_INTERFACE_MODE_SGMII) {
+ 		bool initial = qpcs->interface != interface;
+-		ret = ipq_pcs_config_mode(qpcs, interface);
++		ret = ipq_pcs_config_mode(qpcs, interface, serial_speed);
+ 		if (ret) {
+ 			dev_err(qpcs->dev, "SGMII media-link mode setup failed: %d\n", ret);
+ 			return;
+@@ -1035,7 +1081,7 @@
+ 	case PHY_INTERFACE_MODE_PSGMII:
+ 	case PHY_INTERFACE_MODE_1000BASEX:
+ 		ret = ipq_pcs_link_up_config_sgmii(qpcs, index,
+-						   neg_mode, speed);
++						   force_speed, speed);
+ 		break;
+ 	case PHY_INTERFACE_MODE_2500BASEX:
+ 		ret = ipq_pcs_link_up_config_2500basex(qpcs, speed);
+@@ -1049,6 +1095,18 @@
+ 		return;
+ 	default:
+ 		return;
++	}
++
++	/* Read-only post-pulse qualification, independent of carrier. */
++	if (serial_speed && !ret) {
++		unsigned int mode, ctrl, sts;
++
++		if (!regmap_read(qpcs->regmap, PCS_MODE_CTRL, &mode) &&
++		    !regmap_read(qpcs->regmap, PCS_MII_CTRL(index), &ctrl) &&
++		    !regmap_read(qpcs->regmap, PCS_MII_STS(index), &sts))
++			dev_info(qpcs->dev,
++				 "wave7-diag: serial-speed mode=%#x ctrl=%#x sts=%#x speed=%d\n",
++				 mode, ctrl, sts, speed);
+ 	}
+ 
+ 	if (diag_link_up)
