@@ -174,7 +174,7 @@ def association(trace):
     """Report provisioning even when association/handshake failed before probes."""
     sessions, other = grant_pairs(trace["events"])
     relevant = rx.PROVISION | {"roc_geometry", "roc_band", "roc_sync", "key_result",
-                              "decap_config", "sta_mld_slot", "sta_mld_update"}
+                              "decap_config", "sta_mld_slot", "sta_mld_update", "dev_rebind"}
     transitions = []
     records = []
     for t, name, task, payload, cpu in trace["events"]:
