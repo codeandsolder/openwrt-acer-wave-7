@@ -1,0 +1,289 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: pcs: test Wave7 warm down-edge mode preparation
+
+Native read-only capture shows C22.31 selecting SGMII well before
+phylib reports copper up during failed 2500-to-1000 transitions.
+Stock replay applies the wrapper mode on the down edge. Test the
+timing on the direct PHY only, retaining cold SGMII deferral and the
+ordinary same-mode link-up path.
+
+Publish only a valid raw SGMII report on the falling PHY edge and
+never synthesize carrier. On the exact board and PHY permit phylink
+to configure the new mode while down. The exclusively owned PCS
+does a full warm mode configuration once; consume its one-shot
+preparation state during the following link-up, still programming
+resolved speed and the adapter. Reset/config/disable invalidate it.
+Retry a failed down configuration on real link-up.
+
+Experimental; not a claimed fix.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -752,6 +752,29 @@
+ 	return ret;
+ }
+ 
++/*
++ * Stock checks the reported wrapper mode on the down edge as well as
++ * on link-up. Only publish a known SGMII transition from a previously
++ * running 2500Base-X link. Do not guess from an unresolved speed.
++ */
++static void qca8081_publish_down_mode(struct phy_device *phydev,
++				      bool copper_link)
++{
++	int mode;
++
++	if (phydev->link || copper_link || phydev->state != PHY_RUNNING ||
++	    phydev->interface != PHY_INTERFACE_MODE_2500BASEX)
++		return;
++
++	mode = phy_read(phydev, 31);
++	if (mode < 0 || mode == 0xffff || (mode & GENMASK(14, 13)))
++		return;
++
++	phydev->interface = PHY_INTERFACE_MODE_SGMII;
++	phydev_info(phydev, "wave7-diag: down-mode PHY C22.31=%04x 2500base-x -> sgmii\n",
++		    mode);
++}
++
+ static int qca808x_read_status(struct phy_device *phydev)
+ {
+ 	struct at803x_ss_mask ss_mask = { 0 };
+@@ -798,6 +821,7 @@
+ 			u8 pair = 1 + 2 * phydev->link + copper_link;
+ 
+ 			qca8081_fifo_poll_start(phydev);
++			qca8081_publish_down_mode(phydev, copper_link);
+ 			if (pair != priv->diag_fifo_link_pair) {
+ 				priv->diag_fifo_link_pair = pair;
+ 				phydev_info(phydev,
+--- a/drivers/net/phy/phylink.c
++++ b/drivers/net/phy/phylink.c
+@@ -48,6 +48,7 @@
+ 	struct fwnode_handle *fwnode;
+ 	struct device *dev;
+ 	unsigned int old_link_state:1;
++	bool wave7_down_config_failed;
+ 
+ 	unsigned long phylink_disable_state; /* bitmask of disables */
+ 	struct phy_device *phydev;
+@@ -1319,6 +1320,7 @@
+ 		    phy_modes(state->interface));
+ 
+ 	pl->major_config_failed = false;
++	pl->wave7_down_config_failed = false;
+ 
+ 	if (pl->mac_ops->mac_select_pcs) {
+ 		pcs = pl->mac_ops->mac_select_pcs(pl->config, state->interface);
+@@ -1708,11 +1710,19 @@
+ 	return pl->netdev ? netif_carrier_ok(pl->netdev) : pl->old_link_state;
+ }
+ 
++/* Experimental policy for the Wave7 direct PHY, not fixed/inband links. */
++static bool phylink_wave7_direct_phy(struct phy_device *phy)
++{
++	return phy && phy->phy_id == 0x004dd101 && phy->mdio.addr == 24 &&
++	       of_machine_is_compatible("acer,wave7");
++}
++
+ static void phylink_resolve(struct work_struct *w)
+ {
+ 	struct phylink *pl = container_of(w, struct phylink, resolve);
+ 	struct phylink_link_state link_state;
+ 	bool mac_config = false;
++	bool down_config = false, retry_config = false;
+ 	bool retrigger = false;
+ 	struct phy_device *phy;
+ 	bool cur_link_state;
+@@ -1736,6 +1746,14 @@
+ 	} else if (pl->act_link_an_mode == MLO_AN_PHY) {
+ 		link_state = pl->phy_state;
+ 		mac_config = link_state.link;
++		if (phylink_wave7_direct_phy(phy)) {
++			down_config = !link_state.link &&
++				pl->link_config.interface == PHY_INTERFACE_MODE_2500BASEX &&
++				link_state.interface == PHY_INTERFACE_MODE_SGMII &&
++				!pl->major_config_failed;
++			retry_config = link_state.link && pl->wave7_down_config_failed;
++			mac_config |= down_config;
++		}
+ 	} else {
+ 		phylink_mac_pcs_get_state(pl, &link_state);
+ 
+@@ -1790,8 +1808,8 @@
+ 	if (pl->act_link_an_mode != MLO_AN_FIXED)
+ 		phylink_apply_manual_flow(pl, &link_state);
+ 
+-	if ((mac_config && link_state.interface != pl->link_config.interface) ||
+-	    pl->force_major_config) {
++	if ((mac_config && (link_state.interface != pl->link_config.interface ||
++			    retry_config)) || pl->force_major_config) {
+ 		/* The interface has changed or a forced major configuration
+ 		 * was requested, so force the link down and then reconfigure.
+ 		 */
+@@ -1799,7 +1817,14 @@
+ 			phylink_link_down(pl);
+ 			cur_link_state = false;
+ 		}
++		if (down_config)
++			phylink_info(pl, "wave7-diag: down-mode host prepare sgmii\n");
+ 		phylink_major_config(pl, false, &link_state);
++		if (down_config) {
++			pl->wave7_down_config_failed = pl->major_config_failed;
++			phylink_info(pl, "wave7-diag: down-mode host result=%d\n",
++				     pl->major_config_failed ? -EIO : 0);
++		}
+ 		pl->link_config.interface = link_state.interface;
+ 		pl->force_major_config = false;
+ 	}
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -157,6 +157,8 @@
+ 	u8 diag_configs;
+ 	u8 diag_states;
+ 	u8 diag_link_ups;
++	bool warm_2500;
++	bool prepared_sgmii;
+ };
+ 
+ /* PCS private data */
+@@ -184,6 +186,34 @@
+ #define phylink_pcs_to_qpcs_mii(_pcs)	\
+ 	container_of(_pcs, struct ipq_pcs_mii, pcs)
+ 
++/* The direct PCS is a separate, single-channel MPPE instance. */
++static bool ipq_pcs_wave7_down_mode(struct ipq_pcs_mii *mii)
++{
++	struct ipq_pcs *qpcs = mii->qpcs;
++	struct resource *res;
++	int i;
++
++	if (IS_ENABLED(CONFIG_PM_SLEEP) || !qpcs->mppe || mii->index != 0 ||
++	    !of_machine_is_compatible("acer,wave7"))
++		return false;
++
++	res = platform_get_resource(to_platform_device(qpcs->dev),
++				    IORESOURCE_MEM, 0);
++	if (!res || res->start != 0x7a10000)
++		return false;
++
++	for (i = 1; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			return false;
++	return true;
++}
++
++static void ipq_pcs_clear_prepared(struct ipq_pcs_mii *mii)
++{
++	mii->warm_2500 = false;
++	mii->prepared_sgmii = false;
++}
++
+ static void ipq_pcs_get_state_sgmii(struct ipq_pcs *qpcs,
+ 				    int index,
+ 				    struct phylink_link_state *state)
+@@ -367,7 +397,11 @@
+ 	unsigned int val, mask, misc2 = 0;
+ 	bool xpcs_mode = false;
+ 	bool diag_mode;
+-	int ret;
++	int i, ret;
++
++	for (i = 0; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			ipq_pcs_clear_prepared(qpcs->qpcs_mii[i]);
+ 
+ 	diag_mode = qpcs->mppe && qpcs->diag_mode_reconfigs < 3;
+ 	if (diag_mode) {
+@@ -863,6 +897,7 @@
+ 	int index = qpcs_mii->index;
+ 	int ret;
+ 
++	ipq_pcs_clear_prepared(qpcs_mii);
+ 	ret = clk_prepare_enable(qpcs_mii->rx_clk);
+ 	if (ret) {
+ 		dev_err(qpcs->dev, "Failed to enable MII %d RX clock\n", index);
+@@ -886,6 +921,7 @@
+ {
+ 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+ 
++	ipq_pcs_clear_prepared(qpcs_mii);
+ 	clk_disable_unprepare(qpcs_mii->rx_clk);
+ 	clk_disable_unprepare(qpcs_mii->tx_clk);
+ }
+@@ -946,6 +982,26 @@
+ 	struct ipq_pcs_mii *qpcs_mii = phylink_pcs_to_qpcs_mii(pcs);
+ 	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
+ 	int index = qpcs_mii->index;
++	bool prepare = ipq_pcs_wave7_down_mode(qpcs_mii) &&
++		       qpcs_mii->warm_2500 &&
++		       qpcs->interface == PHY_INTERFACE_MODE_2500BASEX &&
++		       interface == PHY_INTERFACE_MODE_SGMII &&
++		       neg_mode == PHYLINK_PCS_NEG_OUTBAND;
++	int ret;
++
++	ipq_pcs_clear_prepared(qpcs_mii);
++
++	/* Only a warm mode transition can bypass the cold SGMII deferral. */
++	if (prepare) {
++		ret = ipq_pcs_config_mode(qpcs, interface);
++		if (!ret)
++			ret = ipq_pcs_config_sgmii(qpcs, index, neg_mode, interface);
++		if (!ret) {
++			qpcs_mii->prepared_sgmii = true;
++			dev_info(qpcs->dev, "wave7-diag: down-mode PCS prepared sgmii\n");
++		}
++		return ret;
++	}
+ 
+ 	if (qpcs->mppe && index == 0 && qpcs_mii->diag_configs < 4) {
+ 		qpcs_mii->diag_configs++;
+@@ -987,8 +1043,14 @@
+ 	struct ipq_pcs *qpcs = qpcs_mii->qpcs;
+ 	int index = qpcs_mii->index;
+ 	bool diag_link_up;
++	bool prepared = ipq_pcs_wave7_down_mode(qpcs_mii) &&
++			qpcs_mii->prepared_sgmii &&
++			qpcs->interface == PHY_INTERFACE_MODE_SGMII &&
++			interface == PHY_INTERFACE_MODE_SGMII &&
++			neg_mode == PHYLINK_PCS_NEG_OUTBAND;
+ 	int ret;
+ 
++	ipq_pcs_clear_prepared(qpcs_mii);
+ 	diag_link_up = qpcs->mppe && index == 0 &&
+ 		       qpcs_mii->diag_link_ups < 4;
+ 	if (diag_link_up) {
+@@ -1011,7 +1073,7 @@
+ 	    neg_mode == PHYLINK_PCS_NEG_OUTBAND &&
+ 	    interface == PHY_INTERFACE_MODE_SGMII) {
+ 		bool initial = qpcs->interface != interface;
+-		ret = ipq_pcs_config_mode(qpcs, interface);
++		ret = prepared ? 0 : ipq_pcs_config_mode(qpcs, interface);
+ 		if (ret) {
+ 			dev_err(qpcs->dev, "SGMII media-link mode setup failed: %d\n", ret);
+ 			return;
+@@ -1023,7 +1085,9 @@
+ 			return;
+ 		}
+ 
+-		if (initial)
++		if (prepared)
++			dev_info(qpcs->dev, "wave7-diag: down-mode PCS reuse sgmii\n");
++		else if (initial)
+ 			dev_info(qpcs->dev, "wave7-diag: first-media SGMII mode ready\n");
+ 		else
+ 			dev_info(qpcs->dev, "wave7-diag: relink-media SGMII mode ready\n");
+@@ -1050,6 +1114,11 @@
+ 	default:
+ 		return;
+ 	}
++
++	if (!ret && ipq_pcs_wave7_down_mode(qpcs_mii) &&
++	    interface == PHY_INTERFACE_MODE_2500BASEX &&
++	    qpcs->interface == interface && neg_mode == PHYLINK_PCS_NEG_OUTBAND)
++		qpcs_mii->warm_2500 = true;
+ 
+ 	if (diag_link_up)
+ 		dev_info(qpcs->dev,
