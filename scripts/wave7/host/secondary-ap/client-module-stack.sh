@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
 variant=$1
-[[ $variant == quota || $variant == upstream-mlo ]] || exit 2
+[[ $variant == quota || $variant == upstream-base || $variant == upstream-mlo ]] || exit 2
 action=$2
 kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
@@ -60,6 +60,29 @@ declare -A candidate_id=(
     [mt792x_lib]=d55c01c189ab3fbd710539bef960cc317a1cfcfb
     [mt7925_common]=bdf64419ed55f334a370340944db19e6617c85bb
     [mt7925e]=c6db5ad30247861370b10ee8625cc511e8296f99
+)
+;;
+upstream-base)
+declare -A candidate_hash=(
+    [mt76]=01d9c0b93eb61bf2259b005967f6fadd43718822c006df95613893c8e2a16fba
+    [mt76_connac_lib]=f4d820123842237c338f8eafb93b8cf9d340ae38ad06dfe19c83edf8bc3bcb83
+    [mt792x_lib]=cb5e396e3fa260206300ad5b51808aebadc70d0346ef011fcd88be10aba085c2
+    [mt7925_common]=0f622c21070fd494304e10418eed9ca1d294ea06587f0097d9c1b1cee85a4215
+    [mt7925e]=1fb8753ba3b989f722809ec0a7fee4a3afbbc6be724462cc831078466e27a0c8
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=8E0AFCBE21728971D1B12BD
+    [mt792x_lib]=2FFD9248FB2CFA09C140033
+    [mt7925_common]=2133CAC6AEA50398F57A5C6
+    [mt7925e]=64076F735AF69D874943994
+)
+declare -A candidate_id=(
+    [mt76]=72770fced7989400c0314046b03d00fb55fc8aa1
+    [mt76_connac_lib]=748fbf5962be05a2bc223adc9f98899740be0451
+    [mt792x_lib]=279286781fc7a2ef7f77974664c592eb23de9bb0
+    [mt7925_common]=47874e23be3b7c5e71c2c38787df7da9bd054250
+    [mt7925e]=94d57200722a856e04100ff9556a216f7a37ea24
 )
 ;;
 upstream-mlo)
@@ -163,7 +186,7 @@ check_original() {
     disk_original
     loaded_closure original
     local other
-    for other in quota upstream-mlo; do
+    for other in quota upstream-base upstream-mlo; do
         [[ ! -e /run/wave7-$other-stack ]]
         if systemctl is-active --quiet "wave7-$other-rollback.timer"; then return 1; fi
     done

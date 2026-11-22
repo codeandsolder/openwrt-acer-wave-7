@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry || $2 == --scan-timing-upstream-mlo ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry || $2 == --scan-timing-upstream-mlo || $2 == --scan-timing-upstream-base ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -20,7 +20,7 @@ rx_experiment=0
 rocwire_experiment=0
 roccontract_experiment=0
 rocgeometry_experiment=0
-upstream_mlo_experiment=0
+upstream_stack_variant=''
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -39,7 +39,8 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-mlo) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_mlo_experiment=1; pm_experiment=1 ;;
+    --scan-timing-upstream-mlo) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-mlo; pm_experiment=1 ;;
+    --scan-timing-upstream-base) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-base; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -154,10 +155,11 @@ if (( pm_experiment )); then
         expected_srcversion=5505CE551C04266721B047A
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
     fi
-    if (( upstream_mlo_experiment )); then
+    if [[ -n $upstream_stack_variant ]]; then
         [[ -f $stack_guard ]]
-        bash "$stack_guard" upstream-mlo --check-candidate > "$out/module-stack.txt"
-        expected_srcversion=6B2DB0A319E60718A55A35B
+        bash "$stack_guard" "$upstream_stack_variant" --check-candidate > "$out/module-stack.txt"
+        expected_srcversion=$(awk '/^mt7925_common srcversion=/ {sub(/srcversion=/,"",$2); print $2}' "$out/module-stack.txt")
+        [[ $expected_srcversion =~ ^[0-9A-F]{24}$ ]]
     fi
     if (( quota_experiment )); then
         [[ -f $stack_guard ]]
