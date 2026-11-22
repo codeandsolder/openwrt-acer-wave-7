@@ -27,7 +27,9 @@ __attribute__((noreturn)) void mock_unexpected(void) { record(ERROR,0,0,0); fini
 #define CHECK(x) do { if (!(x)) { record(ERROR,__LINE__,0,0); finish(92); } } while (0)
 #define PORT_CHECK CHECK(dev==0 && port==2)
 static u32 real_mode, applying, wrappers[2], mode_fail;
-static u32 real_uniphy, uniphy_forced, uniphy_active, uniphy_read_fail, uniphy_chip=8;
+static u32 real_uniphy, uniphy_active, uniphy_read_fail, uniphy_chip=8;
+static u32 feature_record[160];
+u32 mock_feature_ctx[3];
 static u32 uniphy_mode_word, uniphy_cal_word, uniphy_cal_reads, uniphy_cal_ready, uniphy_misc_word;
 u32 mock_status_global[7];
 static u32 host_mode, copper_mode, phy_info[160], ctrl, status_error;
@@ -51,7 +53,6 @@ static u32 selector_feature;
 u32 mock_hsl_port_feature_get(u32 dev,u32 port,u32 feature) {
     PORT_CHECK;
     if(feature==4) return selector_feature;
-    if(uniphy_active && feature==64) return uniphy_forced;
     CHECK(feature==64 || (applying && feature==128)); return 0;
 }
 u32 mock_hppe_mac_port_valid_check(u32 dev,u32 port) { PORT_CHECK; return 1; }
@@ -146,7 +147,6 @@ u32 mock_ssdk_uniphy_raw_clock_set(u32 instance,u32 direction,u32 rate) {
 void mock_msleep(u32 ms) {
     CHECK(uniphy_active && ms==10);record(MSLEEP,ms,0,0);
 }
-u32 mock_hsl_port_force_speed_get(u32 dev,u32 port) { PORT_CHECK; CHECK(uniphy_active && uniphy_forced); return 100; }
 u32 mock_adpt_ppe_type_get(u32 dev) { CHECK(dev==0); return 3; }
 u32 mock_hsl_port_phyid_get(u32 dev,u32 port) { PORT_CHECK; return 0x004dd101; }
 u32 mock_ssdk_uniphy_valid_check(u32 dev,u32 instance,u32 mask) {
@@ -431,7 +431,13 @@ static void mode_followup(u32 id,u32 link,u32 speed,u32 mode) {
     real_mode=0;
 }
 static void uniphy_init(u32 forced,u32 ready,u32 fail) {
-    uniphy_forced=forced;uniphy_cal_ready=ready;uniphy_read_fail=fail;
+    mock_memset(feature_record,0,sizeof(feature_record));
+    mock_feature_ctx[0]=(u32)feature_record;
+    if(forced)((void (*)(u32,u32,u32))0x0106f218)(0,2,100);
+    CHECK(((u32 (*)(u32,u32,u32))0x0106f280)(0,2,64)==forced);
+    CHECK(((u32 (*)(u32,u32))0x0106f200)(0,2)==(forced?100:0));
+    CHECK(((u32 (*)(u32,u32,u32))0x0106f280)(0,1,64)==0);
+    uniphy_cal_ready=ready;uniphy_read_fail=fail;
     uniphy_cal_reads=0;uniphy_mode_word=0xa5a5f8ff;uniphy_cal_word=0x1234abcd;
     uniphy_misc_word=0;ctrl=0xa5a5884c;
 }
@@ -519,7 +525,7 @@ void _start(void) {
     record(UNIPHY_FINAL,uniphy_mode_word,uniphy_cal_word,ctrl);
     mode_followup(69,1,1000,4);
     record(UNIPHY_FINAL,uniphy_mode_word,uniphy_cal_word,ctrl);
-    real_uniphy=0;uniphy_forced=0;uniphy_read_fail=0;
+    real_uniphy=0;uniphy_read_fail=0;
     uniphy_chip=0;
     uniphy_case(70,0,3,0,0);
     uniphy_chip=8;

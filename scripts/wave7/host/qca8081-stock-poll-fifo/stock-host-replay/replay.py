@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import struct
 import resource
+import re
 import runpy
 import subprocess
 import tempfile
@@ -45,7 +46,8 @@ RANGES += [(0x9c3c, 0xa338), (0x6b8c, 0x6cd4), (0x92fe0, 0x930a4)]
 # Actual SGMII wrapper, force-mode RMW, MPPE restart and calibration.
 RANGES += [(0x293f0,0x29780),(0x29780,0x2a6d8),
            (0x28b14,0x28bfc),(0x29140,0x29228),
-           (0x7e744,0x7e794),(0x7eda0,0x7ee08),(0x7eec8,0x7ef08)]
+           (0x7e744,0x7e794),(0x7eda0,0x7ee08),(0x7eec8,0x7ef08),
+           (0x6f200,0x6f240),(0x6f280,0x6f2a4)]
 CALL_MOCKS = {0xa070: "adpt_hppe_uniphy_mode_set",
               0xa3d4: "_adpt_hppe_port_interface_mode_apply",
               0xa040: "mode_tx_gate", 0xa054: "mode_rx_gate"}
@@ -76,13 +78,23 @@ def provenance(fit, dts):
     text = dts.read_text()
     assert 'compatible = "qcom,ess-switch-ipq53xx";' in text
     assert "switch_mac_mode1 = <0x0c>;" in text
+    # The actual forced-speed and forced-duplex parser references have
+    # been resolved against this pinned stock module. Confirm exact nodes
+    # rather than extrapolate port1's forced setting to PHY24.
+    info=text.split("qcom,port_phyinfo {",1)[1]
+    p0,p1=(re.search(r"port@"+str(i)+r"\s*\{([^}]+)\}",info)[1] for i in (0,1))
+    assert "port_id = <0x01>;" in p0 and "phy_address = <0x1d>;" in p0
+    assert "forced-speed = <0x9c4>;" in p0 and "forced-duplex = <0x01>;" in p0
+    assert "port_id = <0x02>;" in p1 and "phy_address = <0x18>;" in p1
+    assert "forced-speed" not in p1 and "forced-duplex" not in p1
     return {"module_sha256": SHA, "fit_sha256": FIT_SHA,
             "kernel_sha256": KERNEL_SHA, "dts_sha256": DTS_SHA,
             "kernel_hz": 100, "work_delay_jiffies": 100,
             "kernel_nr_cpus": 4, "work_cpu_arg": 4,
             "work_cpu_arg_semantics": "WORK_CPU_UNBOUND",
             "stock_dt_compatible": "qcom,ess-switch-ipq53xx",
-            "stock_dt_initial_wrapper1": 12}
+            "stock_dt_initial_wrapper1": 12,
+            "stock_dt_port2_forced_speed_duplex_properties": False}
 
 
 class Elf:
@@ -187,6 +199,9 @@ def execute(module, out, dest, metadata):
             if off == 0x930a0:
                 assert name == ".bss" and old == 0xa328
                 target = syms["mock_status_global"]
+            elif off in (0x6f214,0x6f23c,0x6f2a0):
+                assert name == ".bss" and old == 0x7ad8
+                target = syms["mock_feature_ctx"]
             elif name == ".text":
                 assert included(old) or old in LOCAL_MOCKS, hex(old)
                 target = BASE + old
@@ -199,6 +214,10 @@ def execute(module, out, dest, metadata):
             assert old & 0xffffff == 0xfffffe, (hex(off), hex(old))
             if off in CALL_MOCKS:
                 target = syms["mock_" + CALL_MOCKS[off]]
+            elif name == "hsl_port_feature_get" and off not in (0x29668,0x2a57c):
+                # Preserve the original older fixture boundaries; only
+                # the two real UNIPHY entry points use the true getter.
+                target = syms["mock_hsl_port_feature_get"]
             elif ndx == stock.names.index(".text") and included(value):
                 target = BASE + value
             elif "mock_" + name in syms:

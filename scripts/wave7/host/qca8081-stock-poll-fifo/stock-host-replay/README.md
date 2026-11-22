@@ -216,3 +216,36 @@ other dependent negotiation setup is still unverified. Do not
 blindly clear it in 0497, which isolates timing. After testing
 0497, investigate the correct phylink SGMII negotiation model
 and PHY-side in-band behavior before a separate intervention.
+
+### Forced-feature provenance and Linux negotiation model
+
+The pinned stock DT parser at 0x981c4–0x9823c reads
+forced-speed (literal at 0x98c78 -> str1.1+0xf620) and
+forced-duplex (0x98c7c -> +0xf62d); only when both succeed
+does it call hsl_port_force_speed_set and hsl_port_force_duplex_set.
+The actual force-speed setter at 0x6f218 sets feature mask64
+in the port record. The pinned DTS asserts port1 has both
+properties (2500/full), direct port2/PHY24 neither. The revised
+fixture now executes the actual force setter 0x6f218 and
+getter 0x6f200 and feature getter 0x6f280 against a separate
+writable fixture context. The non-forced case starts with a
+zero initialized feature record; the forced comparator sets
+speed100 solely to exercise the alternate branch. Runtime
+feature changes from other stock initialization paths remain
+unmeasured. 713 relocations, 35885 events, same 71+2304 cases.
+
+Linux 6.18.60 ipq_pcs_inband_caps advertises both DISABLE and
+ENABLE for SGMII, DISABLE only for 2500BASEX. The QCA8081
+driver has no inband_caps or config_inband callbacks; phylib's
+zero capability means unknown, not unsupported. The Wave7
+port@2 DT has phy-mode="sgmii", no managed="in-band-status".
+phylink_pcs_neg_mode therefore selects OUTBAND. A separate
+managed-in-band experiment would use the standard phylink
+decision path, not raw bit clearing: SGMII caps allow ENABLE
+with unknown PHY caps, 2500BASEX disable-only can fall back
+to PHY-managed OUTBAND. In-band resolve requires both PCS and
+PHY link and takes speed/duplex from PCS (unless rate matching);
+that changes link authority, not just a register bit.
+Review PCS polling and the PHY's actual in-band signaling
+before building it; do not mix with the existing 0497 timing
+experiment, and verify cold-boot deferral in a separate trial.
