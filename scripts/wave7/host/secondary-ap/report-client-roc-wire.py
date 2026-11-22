@@ -60,26 +60,28 @@ def grant_pairs(events):
     requests = []
     active = {}
     other = []
-    for t, name, _, payload, _ in events:
+    for t, name, _, payload, cpu in events:
         event = name.removeprefix("mt7925_lab_")
-        if event not in {"mlo_roc_req", "mlo_roc_result", "roc_wire", "roc_abort", "roc_geometry", "roc_band"}:
+        if event not in {"mlo_roc_req", "mlo_roc_result", "roc_wire", "roc_abort", "roc_geometry", "roc_band", "roc_sync"}:
             continue
         k = rx.fields(payload)
         k["t"] = t
         k["event"] = event
+        k["cpu"] = cpu
         token = k["token"]
         if event == "mlo_roc_req" and k["slot"] == 0:
             session = dict(token=token, requests=[], results=[], grants=[], aborts=[],
-                           geometry=[], assignments=[])
+                           geometry=[], assignments=[], sync=[])
             requests.append(session)
             active[token] = session
         session = active.get(token)
-        if session is None:
+        if session is None or (event == "roc_sync" and not k["mlo"]):
             other.append(k)
             continue
         key = {"mlo_roc_req": "requests", "mlo_roc_result": "results",
                "roc_wire": "grants", "roc_abort": "aborts",
-               "roc_geometry": "geometry", "roc_band": "assignments"}[event]
+               "roc_geometry": "geometry", "roc_band": "assignments",
+               "roc_sync": "sync"}[event]
         session[key].append(k)
     for s in requests:
         rows = s["requests"]
@@ -114,6 +116,21 @@ def grant_pairs(events):
                     a["tag"] == {0:0,3:4}[r["tag"]] and
                     a["new"] == r["granted_hw_bands"][0]
                     for a in s["assignments"]) == 1 for r in rows)
+
+        # roc_band is a trace immediately BEFORE the actual band store.
+        # A strictly earlier return proves the waiter left before that store;
+        # a later return only establishes order relative to the tracepoint.
+        returned = [r for r in s["sync"] if r["phase"] == 1 and r["result"] == 0]
+        primary_wake = [r for r in s["sync"] if r["phase"] == 0]
+        if len(returned) == 1 and len(primary_wake) == 1 and s.get("bands_applied"):
+            last_assignment = max(a["t"] for a in s["assignments"])
+            delta = returned[0]["t"] - last_assignment
+            s["wait_return_minus_last_band_pretrace_s"] = delta
+            s["wait_order"] = (
+                "return_before_last_band_pretrace" if delta < -D("0.000001")
+                else "return_after_last_band_pretrace" if delta > D("0.000001")
+                else "timestamp_ambiguous"
+            )
 
     return requests, other
 
@@ -156,17 +173,34 @@ def analyze(trace, timing):
 def association(trace):
     """Report provisioning even when association/handshake failed before probes."""
     sessions, other = grant_pairs(trace["events"])
-    relevant = rx.PROVISION | {"roc_geometry", "roc_band", "key_result", "decap_config"}
+    relevant = rx.PROVISION | {"roc_geometry", "roc_band", "roc_sync", "key_result",
+                              "decap_config", "sta_mld_slot"}
+    transitions = []
     records = []
     for t, name, task, payload, cpu in trace["events"]:
         event = name.removeprefix("mt7925_lab_")
         if name.startswith("mt7925_lab_") and event in relevant:
-            records.append(dict(t=t, event=event, **rx.fields(payload)))
+            records.append(dict(t=t, event=event, cpu=cpu, **rx.fields(payload)))
+        if event in {"scan_req", "scan_tlv", "beacon_loss", "absence"}:
+            transitions.append(dict(t=t, event=event, cpu=cpu, **rx.fields(payload)))
+        elif event == "mcu_rx":
+            fields = rx.fields(payload)
+            if fields["option"] & 4 and fields["eid"] in {12, 14, 39, 41}:
+                transitions.append(dict(t=t, event=event, cpu=cpu, **fields))
+        elif name in {"api_connection_loss", "api_beacon_loss",
+                      "api_scan_completed", "cfg80211_scan_done",
+                      "drv_change_vif_links", "drv_change_sta_links"}:
+            transitions.append(dict(t=t, event=name, cpu=cpu, payload=payload))
     if not records:
         raise ValueError("missing association trace")
     return dict(trace_events=trace["trace_count"], sessions=sessions,
                 other_roc_events=other, provisioning=records,
-                method="Association metadata only; no payload, key bytes, or traffic success inference.")
+                firmware_transitions=transitions,
+                clock_offset_lower=trace.get("offset_lo"),
+                clock_offset_upper=trace.get("offset_hi"),
+                method="Association metadata only; no frame payload or key bytes. "
+                       "ROC band trace precedes the actual store; report order relative "
+                       "to that trace, not completion of the store.")
 
 
 def selftest():
@@ -210,6 +244,24 @@ def selftest():
     assert report["provisioning"][0]["key_link"] == -1
     assert report["provisioning"][1]["enabled"] == 1
     assert report["sessions"] == []
+    wake = event("1.199990", "roc_sync", "phase=0 bss=0 token=3 mlo=1 granted=0 pending=1 result=0")
+    def wait_return(t):
+        return event(t, "roc_sync", "phase=1 bss=0 token=3 mlo=1 granted=1 pending=1 result=0")
+    for t, expected in (("1.199995", "return_before_last_band_pretrace"),
+                        ("1.200000", "timestamp_ambiguous"),
+                        ("1.200020", "return_after_last_band_pretrace")):
+        ordered = sorted(fixed + [wake, wait_return(t)], key=lambda e: e[0])
+        result, _ = grant_pairs(ordered)
+        assert result[0]["wait_order"] == expected
+    result, _ = grant_pairs(fixed + [wait_return("1.3")])
+    assert "wait_order" not in result[0]
+    firmware = association({"events": [
+        event("1", "key_result", "wcid=2 bss=1 link=0 result=0"),
+        event("2", "mcu_rx", "eid=12 seq=0 option=6 ext_eid=0 length=56"),
+        event("2.000001", "beacon_loss", "bss=0 tag=0 len=8 reason=1 links=1"),
+        event("3", "mcu_rx", "eid=12 seq=1 option=0 ext_eid=0 length=56"),
+    ], "trace_count": 4})
+    assert [r["event"] for r in firmware["firmware_transitions"]] == ["mcu_rx", "beacon_loss"]
     print("CLIENT_ROC_WIRE_SELFTEST_PASS")
 
 
