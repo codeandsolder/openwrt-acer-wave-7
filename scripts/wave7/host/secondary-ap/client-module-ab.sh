@@ -10,6 +10,7 @@ declare -A hashes=(
     [original]=546f70108a29c643d52cb35dfabc87dbaeb78847c57c657e0cf1b749d31920eb
     [baseline]=ef3332a9de5e212e4a79f13b7b8f021b3d15a489132f47884dfad40903c4f343
     [candidate]=bc4b790c90f196eb063b0d9605e3569d137069791fec9d192720962ffbf3c384
+    [rocwire]=50f1fd1cee84ceba1ba62abad2f04ed6d18803bc09fd395c266271297344d2f4
     [rx]=fa786e5d0d56500d2042eb166a73130db97f1b542f5d0fbd174ff973ee382345
     [binding]=0f2468ffc7aeb8ef76eaf63c20c5a405b80d0e61320bf1af28d931014b79f12b
     [absence]=102037a9fdc2571c48426d70087eaa560a7bacb70ee6967a2aa0aa5f274e7f4f
@@ -19,6 +20,7 @@ declare -A versions=(
     [original]=DB4C3E1671DC2EA009803A0
     [baseline]=DB4C3E1671DC2EA009803A0
     [candidate]=1FB10711FECFBF21CC8F072
+    [rocwire]=9527AD69B79607CB0ABD540
     [rx]=C8590CC01B6D6AE3EAAC131
     [binding]=CF0F5C99109529BD670B11A
     [absence]=5F394A90BE5C4D0D8C37C46
@@ -41,14 +43,14 @@ if lsinitcpio -l "/boot/initramfs-linux-cachyos-rc.img" | grep -Eq 'mt7925|mt76'
     echo "Unexpected early-loaded Wi-Fi module" >&2
     exit 3
 fi
-for name in original baseline candidate metadata absence binding rx; do
-    if [[ ( $name == metadata || $name == absence || $name == binding || $name == rx ) && ! -f $bundle/$name.ko ]]; then continue; fi
+for name in original baseline candidate metadata absence binding rx rocwire; do
+    if [[ ( $name == metadata || $name == absence || $name == binding || $name == rx || $name == rocwire ) && ! -f $bundle/$name.ko ]]; then continue; fi
     [[ $(hash "$bundle/$name.ko") == "${hashes[$name]}" &&
        $(modinfo -F srcversion "$bundle/$name.ko") == "${versions[$name]}" &&
        $(modinfo -F vermagic "$bundle/$name.ko") == "$kver SMP preempt mod_unload " ]]
 done
 current=''
-for name in original baseline candidate metadata absence binding rx; do
+for name in original baseline candidate metadata absence binding rx rocwire; do
     if [[ $(hash "$dest") == "${hashes[$name]}" ]]; then current=$name; break; fi
 done
 [[ -n $current ]]
@@ -66,7 +68,8 @@ case "$1" in
     --stage-absence) [[ $current == original && -f $bundle/absence.ko && $loaded == "${versions[original]}" ]]; next=absence ;;
     --stage-binding) [[ $current == original && -f $bundle/binding.ko && $loaded == "${versions[original]}" ]]; next=binding ;;
     --stage-rx) [[ $current == original && -f $bundle/rx.ko && $loaded == "${versions[original]}" ]]; next=rx ;;
-    --restore) [[ $current == baseline || $current == candidate || $current == metadata || $current == absence || $current == binding || $current == rx ]]; next=original ;;
+    --stage-rocwire) [[ $current == original && -f $bundle/rocwire.ko && $loaded == "${versions[original]}" ]]; next=rocwire ;;
+    --restore) [[ $current == baseline || $current == candidate || $current == metadata || $current == absence || $current == binding || $current == rx || $current == rocwire ]]; next=original ;;
     *) exit 2 ;;
 esac
 [[ $loaded == "${versions[$current]}" ]]

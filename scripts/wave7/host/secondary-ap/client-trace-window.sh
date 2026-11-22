@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Root-only bounded observation on the isolated Wyse, no global tracer changes.
 set -Eeuo pipefail
-[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 expected=DB4C3E1671DC2EA009803A0
 if [[ ${2:-} == --metadata ]]; then
     expected=5505CE551C04266721B047A
@@ -9,7 +9,10 @@ if [[ ${2:-} == --metadata ]]; then
 elif [[ ${2:-} == --quota ]]; then
     expected=E882C202FF34ABD6AFFEC2C
     bash /home/jan/scripts/wave7/client-validation/client-quota-stack.sh --check-candidate
-elif [[ ${2:-} == --rx ]]; then
+elif [[ ${2:-} == --rocwire ]]; then
+    expected=9527AD69B79607CB0ABD540
+    [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 50f1fd1cee84ceba1ba62abad2f04ed6d18803bc09fd395c266271297344d2f4 ]]
+elif [[ ${2:-} == --rx || ${2:-} == --rocwire ]]; then
     expected=C8590CC01B6D6AE3EAAC131
     [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == fa786e5d0d56500d2042eb166a73130db97f1b542f5d0fbd174ff973ee382345 ]]
 elif [[ ${2:-} == --binding ]]; then
@@ -43,7 +46,7 @@ trap 'exit 130' INT
 trap 'exit 129' HUP
 printf '0\n' > "$inst/tracing_on"
 printf 'mono\n' > "$inst/trace_clock"
-if [[ ${2:-} == --rx ]]; then
+if [[ ${2:-} == --rx || ${2:-} == --rocwire ]]; then
     printf '16384\n' > "$inst/buffer_size_kb"
 else
     printf '8192\n' > "$inst/buffer_size_kb"
@@ -83,22 +86,27 @@ events=(mac80211/stop_queue mac80211/wake_queue
     mac80211/api_remain_on_channel_expired mac80211/drv_change_vif_links
     mac80211/drv_change_sta_links mac80211/api_beacon_loss
     mac80211/api_connection_loss cfg80211/cfg80211_scan_done)
-if [[ ${2:-} == --metadata || ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx ]]; then
+if [[ ${2:-} == --metadata || ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire ]]; then
     for e in mcu_rx roc mbmc scan_req scan_tlv txfree txs; do
         events+=("mt7925_lab/mt7925_lab_$e")
     done
 fi
-if [[ ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx ]]; then
+if [[ ${2:-} == --absence || ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire ]]; then
     events+=(mt7925_lab/mt7925_lab_absence)
 fi
-if [[ ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx ]]; then
+if [[ ${2:-} == --binding || ${2:-} == --quota || ${2:-} == --rx || ${2:-} == --rocwire ]]; then
     events+=(mt7925_lab/mt7925_lab_binding mt7925_lab/mt7925_lab_txdesc)
 fi
 if [[ ${2:-} == --quota ]]; then
     events+=(mt7925_lab/mt7925_lab_credit mt7925_lab/mt7925_lab_credit_refund)
 fi
-if [[ ${2:-} == --rx ]]; then
+if [[ ${2:-} == --rx || ${2:-} == --rocwire ]]; then
     for e in rxdesc bss_basic bss_mld bss_rlm sta_mld sta_eht_mld sta_result bss_result mlo_roc_req mlo_roc_result; do
+        events+=("mt7925_lab/mt7925_lab_$e")
+    done
+fi
+if [[ ${2:-} == --rocwire ]]; then
+    for e in roc_wire roc_abort txs_wire rx_frame; do
         events+=("mt7925_lab/mt7925_lab_$e")
     done
 fi
