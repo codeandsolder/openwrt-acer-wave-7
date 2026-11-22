@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -20,6 +20,8 @@ kernel_variant_trial=0
 candidate_clock_patch=''
 candidate_instant_patch=''
 candidate_instant_marker=0
+candidate_worker_patch=''
+candidate_worker_marker=0
 accepted_phy_patch=''
 accepted_fit_sha=''
 accepted_phy_marker=0
@@ -95,7 +97,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  relink|mac-order|nsscc|instant)
+  relink|mac-order|nsscc|instant|worker)
     trunk_trial=1
     phy_trial=1
     relink_trial=1
@@ -153,6 +155,21 @@ case "$profile" in
       candidate_fit_sha=c4ae7f047a1dc246c44ec93490015dbe4fa1fe6d847758087921a7dd219ac704
       candidate_instant_patch=44d12aa1f75285c4b5209d227da200227d96588a
       candidate_instant_marker=1
+      candidate_relink_patch=''
+      candidate_pcs_sha=$accepted_pcs_sha
+      candidate_ppe_sha=$accepted_ppe_sha
+    elif [[ $trial_kind == worker ]]; then
+      kernel_variant_trial=1
+      base="$guard8/independent-fifo-dhcp-guard8"
+      candidate_artifact=wave7-independent-fifo-dhcp-guard8-sysupgrade.bin
+      candidate_rev=r0+38346-3688c57cd3-ap-dhcp-guard8
+      candidate_builder=bf2d41b2372be677f91ef78d55852a6595c268b4
+      expected_candidate_sha=1e86a20cc10608fc9c7639980af8723b66cbff2a07fd0a48f930af6c02db34f6
+      candidate_fit_sha=11d60fc94983348d7951a3eb31f9bb6b5de4a77ed4f5262824365c9c761870cb
+      candidate_instant_patch=44d12aa1f75285c4b5209d227da200227d96588a
+      candidate_instant_marker=1
+      candidate_worker_patch=3688c57cd341560fd73365916b68a76465ef2f8a
+      candidate_worker_marker=1
       candidate_relink_patch=''
       candidate_pcs_sha=$accepted_pcs_sha
       candidate_ppe_sha=$accepted_ppe_sha
@@ -266,6 +283,8 @@ read_state() {
     echo "manifest_clock_patch=$(sed -n "s/^trial_clock_kernel_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_instant_patch=$(sed -n "s/^trial_instant_fifo_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "instant_fifo_marker=$(dmesg | grep -q "wave7-diag: fifo-instant ss=" && echo 1 || echo 0)"
+    echo "manifest_worker_patch=$(sed -n "s/^trial_fifo_worker_patch_commit=//p" /rom/etc/wave7-role-profile)"
+    echo "fifo_worker_marker=$(dmesg | grep -Eq "wave7-diag: fifo-worker tick=[0-9]+ edge=[0-9]+ ss=[0-9]+ phylib=[01] result=0$" && echo 1 || echo 0)"
     echo "manifest_relink_patch=$(sed -n "s/^trial_relink_patch_commit=//p" /rom/etc/wave7-role-profile)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
       $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
@@ -310,8 +329,9 @@ phy_matches() {
     grep -Fxq "phy_poll_marker=$marker" <<< "$s"
 }
 kernel_variant_matches() {
-  local s=$1 clock=$2 instant=$3 marker=$4 exp
-  for exp in "manifest_clock_patch=$clock" "manifest_instant_patch=$instant" "instant_fifo_marker=$marker"; do
+  local s=$1 clock=$2 instant=$3 marker=$4 worker=$5 worker_marker=$6 exp
+  for exp in "manifest_clock_patch=$clock" "manifest_instant_patch=$instant" "instant_fifo_marker=$marker" \
+    "manifest_worker_patch=$worker" "fifo_worker_marker=$worker_marker"; do
     grep -Fxq "$exp" <<< "$s" || return 1
   done
 }
@@ -376,7 +396,7 @@ baseline_healthy() {
     relink_matches "$1" "$accepted_pcs_sha" "$accepted_ppe_sha" '' || return 1
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
-    kernel_variant_matches "$1" '' '' 0 || return 1
+    kernel_variant_matches "$1" '' '' 0 '' 0 || return 1
   fi
 }
 rollback_eligible() {
@@ -399,7 +419,7 @@ healthy() {
     relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" || return 1
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
-    kernel_variant_matches "$1" "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" || return 1
+    kernel_variant_matches "$1" "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" "$candidate_worker_patch" "$candidate_worker_marker" || return 1
   fi
 }
 role_healthy() {
@@ -481,8 +501,8 @@ if [[ $mode == --selftest ]]; then
     s+=$(printf '\npcs_sha=%s\npcs_rom_sha=%s\npcs_live=live\npcs_taint=\nppe_sha=%s\nppe_rom_sha=%s\nppe_live=live\nppe_taint=\nmanifest_pcs_sha=%s\nmanifest_ppe_sha=%s\nmanifest_relink_patch=%s' "$candidate_pcs_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_ppe_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch")
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
-    s+=$(printf '\nmanifest_clock_patch=%s\nmanifest_instant_patch=%s\ninstant_fifo_marker=%s' "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker")
-    # Both kernel-only candidates inherit the original 0491 modules.
+    s+=$(printf '\nmanifest_clock_patch=%s\nmanifest_instant_patch=%s\ninstant_fifo_marker=%s\nmanifest_worker_patch=%s\nfifo_worker_marker=%s' "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" "$candidate_worker_patch" "$candidate_worker_marker")
+    # Kernel-only candidates inherit the original 0491 modules.
     s=$(sed -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' <<< "$s")
   fi
   healthy "$s" || fatal 'good state rejected'
@@ -522,7 +542,7 @@ if [[ $mode == --selftest ]]; then
     baseline=$(sed -e "s/^manifest_phy_patch=.*/manifest_phy_patch=$accepted_phy_patch/" -e "s/^manifest_fit_sha=.*/manifest_fit_sha=$accepted_fit_sha/" -e "s/^phy_poll_marker=.*/phy_poll_marker=$accepted_phy_marker/" <<< "$baseline")
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
-    baseline=$(sed -e 's/^manifest_clock_patch=.*/manifest_clock_patch=/' -e 's/^manifest_instant_patch=.*/manifest_instant_patch=/' -e 's/^instant_fifo_marker=.*/instant_fifo_marker=0/' <<< "$baseline")
+    baseline=$(sed -e 's/^manifest_clock_patch=.*/manifest_clock_patch=/' -e 's/^manifest_instant_patch=.*/manifest_instant_patch=/' -e 's/^instant_fifo_marker=.*/instant_fifo_marker=0/' -e 's/^manifest_worker_patch=.*/manifest_worker_patch=/' -e 's/^fifo_worker_marker=.*/fifo_worker_marker=0/' <<< "$baseline")
   fi
   if [[ $relink_trial == 1 ]]; then
     baseline=$(sed -e "s/^pcs_sha=.*/pcs_sha=$accepted_pcs_sha/" -e "s/^pcs_rom_sha=.*/pcs_rom_sha=$accepted_pcs_sha/" -e "s/^ppe_sha=.*/ppe_sha=$accepted_ppe_sha/" -e "s/^ppe_rom_sha=.*/ppe_rom_sha=$accepted_ppe_sha/" -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' -e 's/^manifest_relink_patch=.*/manifest_relink_patch=/' <<< "$baseline")
@@ -540,7 +560,7 @@ if [[ $mode == --selftest ]]; then
     done
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
-    for field in manifest_clock_patch manifest_instant_patch instant_fifo_marker; do
+    for field in manifest_clock_patch manifest_instant_patch instant_fifo_marker manifest_worker_patch fifo_worker_marker; do
       for replacement in wrong MISSING; do
         if [[ $replacement == MISSING ]]; then
           bad=$(sed "/^$field=/d" <<< "$s")
@@ -554,6 +574,8 @@ if [[ $mode == --selftest ]]; then
     done
     bad=$(sed "s/^instant_fifo_marker=.*/instant_fifo_marker=$((1-candidate_instant_marker))/" <<< "$s")
     if healthy "$bad"; then fatal 'wrong instantaneous FIFO marker accepted'; fi
+    bad=$(sed "s/^fifo_worker_marker=.*/fifo_worker_marker=$((1-candidate_worker_marker))/" <<< "$s")
+    if healthy "$bad"; then fatal 'wrong independent FIFO marker accepted'; fi
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   if [[ -n $accepted_module_taint ]]; then
@@ -876,7 +898,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
             continue
           fi
           if [[ $kernel_variant_trial == 1 ]] &&
-             ! kernel_variant_matches "$s" "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker"; then
+             ! kernel_variant_matches "$s" "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" "$candidate_worker_patch" "$candidate_worker_marker"; then
             log KERNEL_VARIANT_ATTESTATION_BLOCKED_IDENTITY
             sleep 3
             continue
