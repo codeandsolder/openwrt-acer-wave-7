@@ -96,9 +96,15 @@ def parse_ping(lines):
                                         "send_estimate":estimate,"send_uncertainty_s":uncertainty}
             elif (m:=OUTSTANDING.match(line)):
                 epoch,seq=D(m[1]),int(m[2])
-                if seq<=0 or seq in current["outstanding"]:
-                    raise ValueError("invalid duplicate outstanding notice")
-                current["outstanding"][seq]=epoch
+                if seq<=0:
+                    raise ValueError("invalid outstanding notice sequence")
+                previous=current["outstanding"].setdefault(seq,[])
+                if previous and epoch<previous[-1]:
+                    raise ValueError("non-monotonic outstanding notices")
+                # iputils prints the previous sequence's unanswered notice
+                # before send_probe(), which may be retried without incrementing
+                # ntransmitted. The same notice can therefore recur.
+                previous.append(epoch)
             elif (m:=SUMMARY.match(line)):
                 sent,received=map(int,m.groups())
                 if not 0<=received<=sent or received!=len(current["replies"]) or any(i>sent for i in (*current["replies"],*current["outstanding"])):
@@ -135,9 +141,10 @@ def missing_clusters(test, scans):
     for seqs in groups:
         prior=test["replies"].get(seqs[0]-1)
         following=test["replies"].get(seqs[-1]+1)
-        notices=[{"seq":i,"epoch":test["outstanding"].get(i)} for i in seqs]
-        first=notices[0]["epoch"]
-        last=notices[-1]["epoch"]
+        notices=[{"seq":i,"epoch":test["outstanding"][i][0] if i in test["outstanding"] else None,
+                  "epochs":test["outstanding"].get(i,[])} for i in seqs]
+        first=min((v for n in notices for v in n["epochs"]),default=None)
+        last=max((v for n in notices for v in n["epochs"]),default=None)
         # A completed scan and at least one observed successful packet
         # after completion distinguish this from ordinary scan dwell.
         scan=max((s for s in scans if s["complete"] and not s["aborted"] and
@@ -178,7 +185,9 @@ def describe(tests, scans, associations, interval):
         nominal_origins=[p["send_estimate"]-(p["seq"]-1)*interval for p in replies]
         nominal_origin=statistics.median(nominal_origins) if nominal_origins else None
         missing=[{"seq":i,"nominal_send_estimate":nominal_origin+(i-1)*interval if nominal_origin is not None else None,
-                  "actual_send_time":None,"observed_unanswered_notice_epoch":t["outstanding"].get(i)}
+                  "actual_send_time":None,
+                  "observed_unanswered_notice_epoch":t["outstanding"][i][0] if i in t["outstanding"] else None,
+                  "observed_unanswered_notice_epochs":t["outstanding"].get(i,[])}
                  for i in range(1,t["sent"]+1) if i not in t["replies"]]
         stats={}
         for category in ("overlap","possible","none_observed"):
@@ -188,6 +197,9 @@ def describe(tests, scans, associations, interval):
                              "max_rtt_ms":max(vals) if vals else None}
         result.append({"target":t["target"],"sent":t["sent"],"received":t["received"],
                        "missing":missing,"missing_clusters":missing_clusters(t,scans),"reply_stats":stats,
+                       "repeated_outstanding_notices":[{"seq":seq,"epochs":epochs,
+                          "eventually_replied":seq in t["replies"]}
+                          for seq,epochs in sorted(t["outstanding"].items()) if len(epochs)>1],
                        "nominal_cadence_residual_range_s":max(nominal_origins)-min(nominal_origins) if nominal_origins else None,
                        "replies":replies})
     assoc_time=sum((a["end"]-a["start"] for a in associations if a["complete"]),D(0))
@@ -331,6 +343,19 @@ def selftest():
     assert cl["first_notice_after_scan_s"]==D(".5")
     assert not cl["successful_reply_after_scan_before_gap"]
     assert cl["actual_missing_send_times_known"] is False
+    repeated=report(ping.replace("[103.500000] no answer yet for icmp_seq=2",
+                    "[103.500000] no answer yet for icmp_seq=2\n[103.600000] no answer yet for icmp_seq=2"),
+                    events,"wlp2s0",D(".25"))["tests"][0]
+    assert repeated["missing_clusters"][0]["sequences"]==[2]
+    assert repeated["missing_clusters"][0]["first_notice_after_scan_s"]==D(".5")
+    assert repeated["missing_clusters"][0]["last_notice_after_scan_s"]==D(".6")
+    assert repeated["repeated_outstanding_notices"]==[
+        {"seq":2,"epochs":[D("103.5"),D("103.6")],"eventually_replied":False}]
+    late=report(ping.replace("[103.500000] no answer yet for icmp_seq=2",
+        "[103.500000] no answer yet for icmp_seq=3\n[103.600000] no answer yet for icmp_seq=3"),
+        events,"wlp2s0",D(".25"))["tests"][0]
+    assert late["repeated_outstanding_notices"][0]["eventually_replied"]
+    assert late["missing_clusters"][0]["sequences"]==[2]
     # If a reply was already received after scan end, the next gap is
     # delayed relative to the observable firmware scan completion.
     moved=report(ping.replace("102.100000","103.100000"),events,"wlp2s0",D(".25"))
