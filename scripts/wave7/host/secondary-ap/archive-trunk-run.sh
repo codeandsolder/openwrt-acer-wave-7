@@ -34,7 +34,7 @@ done
 (
   cd "$run"
   files=(status observer.log trunk-counters.tsv latest-state.txt final-dmesg.txt final-hardware.txt report.json)
-  for f in preflight.txt sysupgrade.log attestation-success.log; do
+  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log; do
     if [[ -f $f ]]; then files+=("$f"); fi
   done
   sha256sum "${files[@]}" > evidence.sha256

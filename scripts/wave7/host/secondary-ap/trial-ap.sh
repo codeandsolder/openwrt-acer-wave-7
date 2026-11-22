@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -17,6 +17,8 @@ trunk_trial=0
 phy_trial=0
 relink_trial=0
 kernel_variant_trial=0
+candidate_direct_speed=2500
+reboot_1g=0
 candidate_clock_patch=''
 candidate_instant_patch=''
 candidate_instant_marker=0
@@ -213,6 +215,17 @@ if [[ ( $trial_kind == down-mode || $trial_kind == serial-speed ) && $mode != --
     [[ $pin =~ ^[0-9a-f]{64}$ ]] || { echo 'candidate digest not pinned by final QA' >&2; exit 2; }
   done
 fi
+case "$mode" in
+  --check-reboot-1g|--reboot-1g|--watch-reboot-1g|--selftest-reboot-1g)
+    [[ $trial_kind == serial-speed ]] || { echo '1G reboot restricted to 0498' >&2; exit 2; }
+    reboot_1g=1
+    candidate_direct_speed=1000
+    case "$mode" in
+      --watch-reboot-1g) mode=--watch ;;
+      --selftest-reboot-1g) mode=--selftest ;;
+    esac
+    ;;
+esac
 candidate="$base/${candidate_artifact:-wave7-secondary-ap-$profile-guard8-sysupgrade.bin}"
 candidate_sha=$(awk -v name="${candidate##*/}" '$2 == name || $2 == "./"name {print $1}' "$base/SHA256SUMS" 2>/dev/null || :)
 leasefile="$guard8/upstream/dnsmasq.leases"
@@ -333,6 +346,9 @@ read_state() {
   ') || return 1
   [[ $(value "$extra" sample_boot) == "$boot" ]] || return 1
   printf '%s\n' "$extra"
+  if [[ $reboot_1g == 1 ]]; then
+    echo "direct_peer_speed=$(cat "/sys/class/net/$direct_iface/speed" 2>/dev/null || echo absent)"
+  fi
   peer=$(ssh -n -T -i "$key" -o "BindInterface=$peer_iface" -o "BindAddress=$peer_ip" \
     -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 -o ConnectionAttempts=1 \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" \
@@ -417,7 +433,7 @@ has_permanent_address() {
 # One definition of the healthy accepted baseline, used before the trial
 # and when checking that the rollback has actually booted successfully.
 baseline_healthy() {
-  role_healthy "$1" "$accepted_rev" "$accepted_mode" || return 1
+  role_healthy "$1" "$accepted_rev" "$accepted_mode" 2500 || return 1
   if [[ -n $accepted_builder ]]; then
     grep -Fxq "builder_commit=$accepted_builder" <<< "$1" || return 1
   fi
@@ -443,7 +459,7 @@ rollback_eligible() {
      $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
 }
 healthy() {
-  role_healthy "$1" "$candidate_rev" "$profile" &&
+  role_healthy "$1" "$candidate_rev" "$profile" "$candidate_direct_speed" &&
     grep -Fxq "builder_commit=$candidate_builder" <<< "$1" || return 1
   if [[ $trunk_trial == 1 ]]; then
     module_matches "$1" "$candidate_module_sha" O &&
@@ -461,14 +477,17 @@ healthy() {
   fi
 }
 role_healthy() {
-  local s=$1 expected_revision=$2 expected_mode=$3
+  local s=$1 expected_revision=$2 expected_mode=$3 expected_direct_speed=$4
   for expect in "rev=$expected_revision" kernel=6.18.60 "management_peer=$management_ip" bootfail=0 keep=1 ap=2 \
-    q6=3 ping=1 noc=0 lan=1 lan_speed=2500 lan1=1 bridge=1 speed=1000 \
+    q6=3 ping=1 noc=0 lan=1 "lan_speed=$expected_direct_speed" lan1=1 bridge=1 speed=1000 \
     role=secondary-ap "mode=$expected_mode" "proto=$expected_mode" bridge_ip=192.168.76.1/24 dnsmasq_disabled=1 \
     dhcpv4=disabled dhcpv6=disabled ra=disabled root_password='!' \
     password_auth=off root_password_auth=off overlay_ready=1; do
     grep -Fxq "$expect" <<< "$s" || return 1
   done
+  if [[ $reboot_1g == 1 ]]; then
+    grep -Fxq "direct_peer_speed=$expected_direct_speed" <<< "$s" || return 1
+  fi
 }
 lease_valid() {
   local records=$1 now=$2
@@ -494,6 +513,10 @@ autonomous_healthy() {
 }
 restore_profile() {
   [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
+}
+reboot_source_valid() {
+  [[ $reboot_1g == 1 && $trial_kind == serial-speed ]] &&
+    healthy "$1" && grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1"
 }
 restore_source_valid() {
   restore_profile && healthy "$1" && grep -Fxq approval=0 <<< "$1"
@@ -529,6 +552,10 @@ if [[ $mode == --selftest ]]; then
   s=$(sed -e "s/^rev=.*/rev=$candidate_rev/" -e "s/^mode=.*/mode=$profile/" -e "s/^proto=.*/proto=$profile/" \
     -e "s/^builder_commit=.*/builder_commit=$candidate_builder/" -e "s/^management_peer=.*/management_peer=$management_ip/" <<< "$s")
   s+=$'\nbridge_ip=192.168.76.1/24'
+  if [[ $reboot_1g == 1 ]]; then
+    s=$(sed "s/^lan_speed=.*/lan_speed=$candidate_direct_speed/" <<< "$s")
+    s+=$'\ndirect_peer_speed=1000'
+  fi
   if [[ $trunk_trial == 1 ]]; then
     s+=$(printf '\nmodule_sha=%s\nmodule_rom_sha=%s\nmanifest_module_sha=%s\nmodule_taint=O\nmodule_live=1\nmodule_upper_clear=1\nswitch_verified=1\ndirect_verified=1\nlocal_ready=1\ncpu_fcs=0\ncpu_fragments=0\ncpu_ucast=1\ncpu_mcast=1\ncpu_bcast=1\ncpu_drops=0' "$candidate_module_sha" "$candidate_module_sha" "$candidate_module_sha")
   fi
@@ -552,7 +579,7 @@ if [[ $mode == --selftest ]]; then
       if healthy "$bad"; then fatal "bad PHY state accepted: $change"; fi
     done
   fi
-  for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 lan_speed=1000 lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=wrong proto=wrong bridge_ip=192.168.76.99/24 dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
+  for change in builder_commit=wrong management_peer=192.168.76.190 q6=2 ap=1 ping=0 noc=1 lan=0 "lan_speed=$((3500-candidate_direct_speed))" lan1=0 bridge=0 speed=2500 bootfail=4 role=lab mode=wrong proto=wrong bridge_ip=192.168.76.99/24 dnsmasq_disabled=0 dhcpv4=server dhcpv6=server ra=server root_password=notlocked password_auth=on root_password_auth=on overlay_ready=0; do
     field=$(cut -d= -f1 <<< "$change")
     bad=$(sed "s|^$field=.*|$change|" <<< "$s")
     if healthy "$bad"; then fatal "bad state accepted: $change"; fi
@@ -570,6 +597,14 @@ if [[ $mode == --selftest ]]; then
   done
   baseline=$(sed -e "s/^rev=.*/rev=$accepted_rev/" -e "s/^mode=.*/mode=$accepted_mode/" -e "s/^proto=.*/proto=$accepted_mode/" \
     -e "s/^builder_commit=.*/builder_commit=$accepted_builder/" <<< "$s")
+  if [[ $reboot_1g == 1 ]]; then
+    baseline=$(sed -e 's/^lan_speed=.*/lan_speed=2500/' -e 's/^direct_peer_speed=.*/direct_peer_speed=2500/' <<< "$baseline")
+    for change in direct_peer_speed=2500 direct_peer_speed=absent; do
+      bad=$(sed "s/^direct_peer_speed=.*/$change/" <<< "$s")
+      if healthy "$bad"; then fatal "wrong peer speed accepted: $change"; fi
+    done
+    if healthy "$(sed '/^direct_peer_speed=/d' <<< "$s")"; then fatal 'missing peer speed accepted'; fi
+  fi
   if [[ $trunk_trial == 1 ]]; then
     baseline=$(sed -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" -e "s/^module_taint=.*/module_taint=$accepted_module_taint/" -e "s/^manifest_module_sha=.*/manifest_module_sha=$accepted_module_sha/" <<< "$baseline")
     for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_live=0 module_upper_clear=0 module_taint= switch_verified=0 direct_verified=0 local_ready=0 cpu_fcs=missing; do
@@ -618,6 +653,14 @@ if [[ $mode == --selftest ]]; then
     if healthy "$bad"; then fatal 'wrong independent FIFO marker accepted'; fi
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
+  if [[ $reboot_1g == 1 ]]; then
+    reboot_source_valid "$s"$'\napproval=0\ntoken=1' || fatal 'valid 1G reboot source rejected'
+    for extra in $'approval=1\ntoken=1' $'approval=0\ntoken=0' approval=0 token=1; do
+      if reboot_source_valid "$s"$'\n'"$extra"; then fatal 'bad 1G reboot source accepted'; fi
+    done
+    if reboot_source_valid "$baseline"$'\napproval=0\ntoken=1'; then fatal 'baseline accepted as 1G reboot source'; fi
+    if baseline_healthy "$(sed 's/^direct_peer_speed=.*/direct_peer_speed=1000/' <<< "$baseline")"; then fatal 'rollback accepted at wrong peer speed'; fi
+  fi
   if [[ -n $accepted_module_taint ]]; then
     for change in module_sha=wrong module_rom_sha=wrong manifest_module_sha=wrong module_taint=; do
       field=${change%%=*}
@@ -686,7 +729,7 @@ test -x "$attestor" ||
 # Serialize observer arming/setup against active upstream wire tests.
 # The persistent systemd observers guard the interval after this caller
 # exits; the wire test also checks their active/activating state.
-if [[ $mode == --run || $mode == --arm-reboot || $mode == --restore-baseline ]]; then
+if [[ $mode == --run || $mode == --arm-reboot || $mode == --restore-baseline || $mode == --reboot-1g ]]; then
   lock="$guard8/.lab-control.lock"
   [[ -f $lock && ! -L $lock && -O $lock ]] ||
     fatal 'missing or invalid lab-control lock (initialize once as Jan)'
@@ -1004,7 +1047,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
   echo TIMEOUT > "$out/status"
   exit 6
 fi
-[[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline ]] ||
+[[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline || $mode == --check-reboot-1g || $mode == --reboot-1g ]] ||
   fatal "unknown mode $mode"
 if [[ $mode == --restore-baseline ]]; then
   restore_profile && [[ $# == 0 ]] || fatal 'restore is only for failed 0492/0493/0494/0495/0496/0497/0498'
@@ -1034,6 +1077,15 @@ if [[ $mode == --restore-baseline ]]; then
     fatal 'missing stored 0491 approval'
   restore_record_matches "$record" "$boot" ||
     fatal 'stored 0491 approval identity or source boot mismatch'
+elif [[ $reboot_1g == 1 ]]; then
+  reboot_source_valid "$s" ||
+    fatal "1G trial reboot requires exact unapproved healthy candidate: $s"
+  /home/jan/scripts/wave7/secondary-ap-guard8/peer-1g-window.sh --check ||
+    fatal 'bounded 1G peer window not ready'
+  record=$(remote 'set -eu; p=/overlay/wave7-ap-approved; test -f "$p"; test ! -L "$p"; set -- $(ls -ldn "$p"); test "$1" = -rw-------; test "$3" = 0; test "$4" = 0; sha256sum "$p"; cat /proc/sys/kernel/random/boot_id') ||
+    fatal 'missing stored 0491 approval'
+  restore_record_matches "$record" "$boot" ||
+    fatal 'stored 0491 approval identity or source boot mismatch'
 else
   baseline_healthy "$s" || fatal "unhealthy source: $s"
   if [[ $profile == dhcp ]]; then
@@ -1055,9 +1107,11 @@ for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; 
 done
 test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*')" || fatal 'another supervisor active'
 echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
-[[ $mode == --run || $mode == --restore-baseline ]] || exit 0
+[[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g ]] || exit 0
 if [[ $mode == --restore-baseline ]]; then
   tag=restore-0491-$(date +%Y%m%d-%H%M%S)
+elif [[ $mode == --reboot-1g ]]; then
+  tag=reboot-1g-$(date +%Y%m%d-%H%M%S)
 else
   tag=secondary-ap-$(date +%Y%m%d-%H%M%S)
 fi
@@ -1071,6 +1125,11 @@ if [[ $mode == --restore-baseline ]]; then
   watch_mode=--watch-restore
   flash_image=/tmp/wave7-secondary-ap-restore.bin
   pairs=("$accepted|$flash_image|$accepted_sha")
+fi
+if [[ $mode == --reboot-1g ]]; then
+  # Reboot the exact already-running candidate; do not rewrite NAND.
+  pairs=("$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha")
+  watch_mode=--watch-reboot-1g
 fi
 for pair in "${pairs[@]}"; do
   IFS='|' read -r source dest digest <<< "$pair"
@@ -1097,7 +1156,22 @@ await_observers "$guard" "$fallback" "$out"
 echo "GUARDS_ARMED $tag"
 [[ $(remote 'cat /proc/sys/kernel/random/boot_id') == "$boot" ]] ||
   fatal 'source changed after observer arming'
+if [[ $mode == --reboot-1g ]]; then
+  /home/jan/scripts/wave7/secondary-ap-guard8/peer-1g-window.sh --check ||
+    fatal 'peer window changed before reboot'
+fi
 flash_started=1
+if [[ $mode == --reboot-1g ]]; then
+  # Until both guards are armed, the only operation is a verified
+  # rollback upload. Observe a new boot, never persist approval.
+  set +e
+  remote_timed 'sync; /sbin/reboot' > "$out/reboot.log" 2>&1
+  rc=$?
+  set -e
+  echo "REBOOT_SSH_RC=$rc" | tee -a "$out/reboot.log"
+  echo "RUN_DIR=$out"
+  exit 0
+fi
 set +e
 remote_timed "/sbin/sysupgrade -n '$flash_image'" > "$out/sysupgrade.log" 2>&1
 rc=$?
