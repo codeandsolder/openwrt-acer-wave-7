@@ -270,3 +270,76 @@ when host GMAC TX frames advance but PHY external-MAC ingress and its
 error counters do not. PHY TX statistics are external-MAC ingress,
 not proof of copper transmission; neither a flat counter nor a
 successful forced carrier flag proves SerDes synchronization.
+
+### MT7925 delayed scan interruption experiment (client-only)
+
+The 50 ms timing probe is a diagnostic, not a relaxation of the existing
+wireless acceptance criteria. The isolated Wyse keeps its Ethernet SSH
+management and original August 2026 firmware. `client-sustained.sh
+0498-YYYYMMDD-HHMMSS --scan-timing` retains both MLO links, the normal
+NetworkManager background-scan policy, and the 250 ms immediate gate. It
+requests active/passive single-channel scans on 2412/5180 MHz and sends
+3000 probes at 50 ms on each of IPv4/IPv6 wired-peer and AP-local IPv4.
+
+The experimental `mt7925-single-channel-nosplit-test.patch` is **not a
+general fix**. It omits Connac `SCAN_FUNC_SPLIT_SCAN` (bit 5) only on the
+MT7925, station-mode, associated, at least two valid MLO links, exactly
+one requested channel. Otherwise the request remains unchanged. It logs
+the actual branch's frequency, scan mode, BSS and valid/active link masks.
+The automatic multi-channel background scans remain internal controls.
+
+Exact baseline: Linux v7.4-rc1
+`6628e7d4c6b25c8d18f1345e3a20d21829aae7e4`, plus the November 6 ROC repair
+tracked in commit `79c2e660a8`. The client headers/config/vmlinux/
+Module.symvers are copied from its installed 7.4.0-rc1-2-cachyos-rc
+header package; Acer's managed clang/sccache then builds baseline and
+candidate from the same tree and compiler (clang23.1.5; original module
+built on clang23.1.4). The baseline source version matches the installed
+one exactly; the binary hashes differ. Compare the rebuilt baseline
+live before the candidate to control for compiler/build environment.
+
+Scoped build workspace on Acer:
+`/home/jan/build/wave7/mt7925-single-channel-split`. Retrieve the exact
+mt76 directory from the official Linux commit, apply the tracked ROC
+repair, and build the common module:
+
+```sh
+make -C "$root/headers" \
+  M="$root/source/drivers/net/wireless/mediatek/mt76/mt7925" \
+  MO="$root/baseline" LLVM=1 CONFIG_MT7925E=n CONFIG_MT7925U=n -j2 modules
+```
+
+Preserve the rebuilt baseline module, apply only the no-split patch and
+rebuild incrementally with the same command. Verify BTF, vermagic,
+imports/exports, modinfo and Module.symvers. Do not override managed
+compiler wrappers or introduce a new sccache instance. The original,
+rebuilt baseline and candidate artifacts are pinned by SHA256 inside
+`client-module-ab.sh` and kept in the explicitly scoped test bundle.
+The script checks the running kernel/module, device, disconnected
+lab profile and wired management. It atomically replaces only the
+existing version-local **already ROC-repaired** common module, not the
+distribution package; it has stage-baseline, stage-nosplit, check and
+restore modes. Each stage needs a normal test-client reboot and
+independent boot/version verification. Restore to the exact original
+module after the A/B; preserve the November ROC crash repair.
+
+Offline reports:
+```sh
+uv run --offline --no-project --python /usr/bin/python3 python report-client-scans.py \
+  steady-v4.txt events.txt --additional-ping steady-v6.txt \
+  --additional-ping steady-ap-v4.txt --interval .05 \
+  --requests scan-requests.txt > shared-scope-report.json
+uv run --offline --no-project --python /usr/bin/python3 python report-postscan-timing.py \
+  shared-scope-report.json > postscan-arrival-timing.json
+# Candidate only: match unique driver diagnostic markers to the actual scans.
+uv run --offline --no-project --python /usr/bin/python3 python report-nosplit.py \
+  shared-scope-report.json postscan-arrival-timing.json nosplit-markers.txt
+```
+
+The immediate streams still use `--interval .25`. The timing report
+merges actual reply epochs, so late/out-of-order replies cannot inflate
+a shared silence. It separates isolated unattributed multi-channel scans.
+Outstanding notices are not packet transmission timestamps. Repeated
+notices are preserved while packet loss is determined by actual final
+reply sequences. A candidate marker attests branch selection before the
+MCU request, not firmware acceptance or internal state.
