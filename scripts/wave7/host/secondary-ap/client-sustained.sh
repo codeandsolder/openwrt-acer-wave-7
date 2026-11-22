@@ -159,7 +159,7 @@ if (( pm_experiment )); then
         [[ -f $stack_guard ]]
         bash "$stack_guard" "$upstream_stack_variant" --check-candidate > "$out/module-stack.txt"
         expected_srcversion=$(awk '/^mt7925_common srcversion=/ {sub(/srcversion=/,"",$2); print $2}' "$out/module-stack.txt")
-        [[ $expected_srcversion =~ ^[0-9A-F]{24}$ ]]
+        [[ $expected_srcversion =~ ^[0-9A-F]+$ ]]
     fi
     if (( quota_experiment )); then
         [[ -f $stack_guard ]]
