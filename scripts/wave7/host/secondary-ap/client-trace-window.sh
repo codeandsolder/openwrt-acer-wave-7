@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Root-only bounded observation on the isolated Wyse, no global tracer changes.
 set -Eeuo pipefail
-[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire || $2 == --roccontract || $2 == --rocgeometry || $2 == --upstream-prefix13 || $2 == --upstream-prefix14 || $2 == --upstream-prefix15 || $2 == --upstream-prefix17 || $2 == --upstream-prefix22-secondary-rx-trace || $2 == --upstream-prefix22-secondary-first-trace || $2 == --upstream-prefix22-secondary-trace || $2 == --upstream-prefix22-assoc-eml-trace || $2 == --upstream-prefix22-primary-trace || $2 == --upstream-prefix22-bss-trace || $2 == --upstream-prefix22-assoc-rx-trace || $2 == --upstream-prefix22-assoc-trace || $2 == --upstream-prefix22-band-trace || $2 == --upstream-prefix22-trace || $2 == --upstream-prefix23-trace ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire || $2 == --roccontract || $2 == --rocgeometry || $2 == --upstream-prefix13 || $2 == --upstream-prefix14 || $2 == --upstream-prefix15 || $2 == --upstream-prefix17 || $2 == --upstream-prefix22-secondary-rxtx-trace || $2 == --upstream-prefix22-secondary-rx-trace || $2 == --upstream-prefix22-compact-mld-trace || $2 == --upstream-prefix22-secondary-first-trace || $2 == --upstream-prefix22-secondary-trace || $2 == --upstream-prefix22-assoc-eml-trace || $2 == --upstream-prefix22-primary-trace || $2 == --upstream-prefix22-bss-trace || $2 == --upstream-prefix22-assoc-rx-trace || $2 == --upstream-prefix22-assoc-trace || $2 == --upstream-prefix22-band-trace || $2 == --upstream-prefix22-trace || $2 == --upstream-prefix23-trace ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 expected=DB4C3E1671DC2EA009803A0
 if [[ ${2:-} == --metadata ]]; then
     expected=5505CE551C04266721B047A
     [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
-elif [[ ${2:-} == --upstream-prefix13 || ${2:-} == --upstream-prefix14 || ${2:-} == --upstream-prefix15 || ${2:-} == --upstream-prefix17 || ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-secondary-first-trace || ${2:-} == --upstream-prefix22-secondary-trace || ${2:-} == --upstream-prefix22-assoc-eml-trace || ${2:-} == --upstream-prefix22-primary-trace || ${2:-} == --upstream-prefix22-bss-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
+elif [[ ${2:-} == --upstream-prefix13 || ${2:-} == --upstream-prefix14 || ${2:-} == --upstream-prefix15 || ${2:-} == --upstream-prefix17 || ${2:-} == --upstream-prefix22-secondary-rxtx-trace || ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-compact-mld-trace || ${2:-} == --upstream-prefix22-secondary-first-trace || ${2:-} == --upstream-prefix22-secondary-trace || ${2:-} == --upstream-prefix22-assoc-eml-trace || ${2:-} == --upstream-prefix22-primary-trace || ${2:-} == --upstream-prefix22-bss-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
     stack_check=$(bash /home/jan/scripts/wave7/client-validation/client-module-stack.sh "${2#--}" --check-candidate)
     printf '%s\n' "$stack_check"
     expected=$(awk '/^mt7925_common srcversion=/ {sub(/srcversion=/,"",$2); print $2}' <<< "$stack_check")
@@ -57,7 +57,7 @@ trap 'exit 130' INT
 trap 'exit 129' HUP
 printf '0\n' > "$inst/tracing_on"
 printf 'mono\n' > "$inst/trace_clock"
-if [[ ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
+if [[ ${2:-} == --upstream-prefix22-secondary-rxtx-trace || ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --rx || ${2:-} == --rocwire || ${2:-} == --roccontract || ${2:-} == --rocgeometry ]]; then
     printf '16384\n' > "$inst/buffer_size_kb"
 else
     printf '8192\n' > "$inst/buffer_size_kb"
@@ -74,7 +74,7 @@ functions=(mt7925_mcu_rx_event mt7925_mcu_hw_scan mt7925_mcu_cancel_hw_scan
     __mt76_set_tx_blocked mt792x_mcu_drv_pmctrl mt792x_mcu_fw_pmctrl
     mt76_connac_pm_queue_skb mt76_connac_pm_dequeue_skbs
     mt7925_mlo_pm_work mt7925_mcu_uni_bss_ps mt7925_mcu_set_dbdc)
-if [[ ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-secondary-first-trace || ${2:-} == --upstream-prefix22-secondary-trace || ${2:-} == --upstream-prefix22-assoc-eml-trace || ${2:-} == --upstream-prefix22-primary-trace || ${2:-} == --upstream-prefix22-bss-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
+if [[ ${2:-} == --upstream-prefix22-secondary-rxtx-trace || ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-compact-mld-trace || ${2:-} == --upstream-prefix22-secondary-first-trace || ${2:-} == --upstream-prefix22-secondary-trace || ${2:-} == --upstream-prefix22-assoc-eml-trace || ${2:-} == --upstream-prefix22-primary-trace || ${2:-} == --upstream-prefix22-bss-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
     # Low-volume control-plane trace: avoid relying on inlined static helpers.
     functions=(mt7925_mcu_rx_event mt7925_mcu_hw_scan mt7925_mcu_cancel_hw_scan
         mt7925_scan_work mt7925_roc_work mt7925_mcu_set_roc
@@ -137,7 +137,7 @@ fi
 if [[ ${2:-} == --rocgeometry ]]; then
     events+=(mt7925_lab/mt7925_lab_roc_geometry mt7925_lab/mt7925_lab_key_result mt7925_lab/mt7925_lab_decap_config)
 fi
-if [[ ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-secondary-first-trace || ${2:-} == --upstream-prefix22-secondary-trace || ${2:-} == --upstream-prefix22-assoc-eml-trace || ${2:-} == --upstream-prefix22-primary-trace || ${2:-} == --upstream-prefix22-bss-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
+if [[ ${2:-} == --upstream-prefix22-secondary-rxtx-trace || ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-compact-mld-trace || ${2:-} == --upstream-prefix22-secondary-first-trace || ${2:-} == --upstream-prefix22-secondary-trace || ${2:-} == --upstream-prefix22-assoc-eml-trace || ${2:-} == --upstream-prefix22-primary-trace || ${2:-} == --upstream-prefix22-bss-trace || ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
     for e in mcu_rx roc_wire mlo_roc_req mlo_roc_result roc_geometry roc_abort \
         scan_req scan_tlv absence bss_basic bss_mld sta_result bss_result \
         key_result decap_config sta_eht_mld roc_band roc_sync beacon_loss sta_mld_slot; do
@@ -154,8 +154,11 @@ if [[ ${2:-} == --upstream-prefix13 || ${2:-} == --upstream-prefix14 || ${2:-} =
         mac80211/drv_change_vif_links mac80211/drv_change_sta_links
         mac80211/api_beacon_loss mac80211/api_connection_loss)
 fi
-if [[ ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-secondary-rx-trace ]]; then
+if [[ ${2:-} == --upstream-prefix22-assoc-rx-trace || ${2:-} == --upstream-prefix22-secondary-rx-trace || ${2:-} == --upstream-prefix22-secondary-rxtx-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_rxdesc mt7925_lab/mt7925_lab_rx_frame)
+fi
+if [[ ${2:-} == --upstream-prefix22-secondary-rxtx-trace ]]; then
+    events+=(mt7925_lab/mt7925_lab_txs_peer_data)
 fi
 for e in "${events[@]}"; do
     [[ -f $inst/events/$e/enable ]]
