@@ -59,7 +59,7 @@ case "$1" in
     --stage-baseline) [[ $current == original && $loaded == "${versions[original]}" ]]; next=baseline ;;
     --stage-nosplit) [[ $current == baseline && $loaded == "${versions[baseline]}" ]]; next=candidate ;;
     --stage-metadata) [[ $current == original && -f $bundle/metadata.ko && $loaded == "${versions[original]}" ]]; next=metadata ;;
-    --stage-absence) [[ $current == metadata && -f $bundle/absence.ko && $loaded == "${versions[metadata]}" ]]; next=absence ;;
+    --stage-absence) [[ $current == original && -f $bundle/absence.ko && $loaded == "${versions[original]}" ]]; next=absence ;;
     --restore) [[ $current == baseline || $current == candidate || $current == metadata || $current == absence ]]; next=original ;;
     *) exit 2 ;;
 esac
