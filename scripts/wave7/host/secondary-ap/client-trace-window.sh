@@ -9,7 +9,7 @@ case "${2:-}" in
     --upstream-*)
         trace_profile=$(bash /home/jan/scripts/wave7/client-validation/client-module-stack.sh "${2#--}" --trace-profile) || exit 2
         case "$trace_profile" in
-            admission|association|association-rx|association-rxtx|association-membership|association-dev-band|association-secondary-ps) ;;
+            admission|association|association-rx|association-rxtx|association-membership|association-dev-band|association-beacon-power) ;;
             *) exit 2 ;;
         esac ;;
     *) exit 2 ;;
@@ -172,10 +172,10 @@ fi
 if [[ $trace_profile == association-rxtx ]]; then
     events+=(mt7925_lab/mt7925_lab_txs_peer_data)
 fi
-if [[ $trace_profile == association-membership || $trace_profile == association-dev-band || $trace_profile == association-secondary-ps ]]; then
+if [[ $trace_profile == association-membership || $trace_profile == association-dev-band || $trace_profile == association-beacon-power ]]; then
     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
 fi
-if [[ $trace_profile == association-secondary-ps ]]; then
+if [[ $trace_profile == association-beacon-power ]]; then
     events+=(mt7925_lab/mt7925_lab_bss_ps mt7925_lab/mt7925_lab_bss_bcnft)
 fi
 if [[ $trace_profile == association-dev-band ]]; then

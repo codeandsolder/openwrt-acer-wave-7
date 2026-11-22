@@ -21,8 +21,9 @@ declare -A trace_profiles=(
     [upstream-prefix22-bss-trace]=association
     [upstream-prefix22-compact-mld-trace]=association
     [upstream-prefix22-membership-only-trace]=association-membership
-    [upstream-prefix22-secondary-ps-trace]=association-secondary-ps
-    [upstream-prefix22-secondary-bcnft-trace]=association-secondary-ps
+    [upstream-prefix22-secondary-ps-trace]=association-beacon-power
+    [upstream-prefix22-secondary-bcnft-trace]=association-beacon-power
+    [upstream-prefix22-both-bcnft-trace]=association-beacon-power
     [upstream-prefix22-dev-band-trace]=association-dev-band
     [upstream-prefix22-secondary-first-trace]=association
     [upstream-prefix22-secondary-trace]=association
@@ -438,6 +439,29 @@ declare -A candidate_id=(
     [mt792x_lib]=657047330665e7afafd4a9cb4de3999267b2b406
     [mt7925_common]=69efd3cbb473cb1dbc59f02b2b9d9ebf49553eac
     [mt7925e]=4a73f6c2039cf25880619a4028e45de6dea09c4c
+)
+;;
+upstream-prefix22-both-bcnft-trace)
+declare -A candidate_hash=(
+    [mt76]=49ca832819194c8fb6f2453a49f0cdfced0f134586441e577987a7258a08cc8f
+    [mt76_connac_lib]=88a646c228675d7a5685b90c71b724ca0fc1d3901090cf5a7cc65e32508c1df8
+    [mt792x_lib]=28fbe90a845c011bbfe12a6990e20f399a56948093727520ef6c07de1d2ce69f
+    [mt7925_common]=32499f662b8e6d905dc7269c17181678688bbd8311986a646b3ebd1343ad2d68
+    [mt7925e]=4d05f9e3996e958e9750a77a972af276aa3adecdfaef0b52e30d2358d2ff2ed9
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=33868CFB754C4904905FF71
+    [mt7925e]=416B52992616E7964206D72
+)
+declare -A candidate_id=(
+    [mt76]=9a06cbf5f838e3c9bfe59a39b83577b56aae8b76
+    [mt76_connac_lib]=8443d229b39de48929d231a62f358b3d38d3d060
+    [mt792x_lib]=0b627bcc8291d39d4a8794309d27832f813245f5
+    [mt7925_common]=8127f9c84d5375f48f515d3ff4f02d3f8f4d065b
+    [mt7925e]=67a3a39adca5ae1c0d9dbb7034931b21ae1d319a
 )
 ;;
 upstream-prefix22-secondary-bcnft-trace)
