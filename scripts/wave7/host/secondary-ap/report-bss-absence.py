@@ -209,6 +209,26 @@ def selftest():
     assert span["duration"]==D(".6") and span["overlap_bounds"]==[D(".6"),D(".6")]
     assert result["completed_absence_intervals"][3][0]["duration"]==D(".6")
     assert result["completed_absence_intervals"][3][0]["counts"]["net_dev_xmit"]==0
+    # Strict monotonic interior, not a wall-clock guess: endpoint events
+    # are excluded; overlapping intervals of other BSSs are separate.
+    def event(t, name):
+        return D(t), name, "task", "", 0
+    spans_fixture = {
+        3: [dict(start=D(10), end=D(11), quota_updates=[], presence_quota=0)],
+        4: [dict(start=D("9.8"), end=D("10.2"), quota_updates=[], presence_quota=0),
+            dict(start=D("10.8"), end=D("12"), quota_updates=[], presence_quota=0)],
+        5: [dict(start=D("10.5"), end=D("10.7"), quota_updates=[], presence_quota=0)],
+    }
+    traffic = [event("10", "net_dev_xmit"), event("10.05", "net_dev_xmit"),
+               event("10.2", "netif_receive_skb"), event("10.4", "mt7925_lab_txfree"),
+               event("10.99", "mt7925_lab_txs"), event("11", "net_dev_xmit")]
+    summary = summarize_spans(traffic, spans_fixture)[3][0]
+    assert summary["counts"] == {
+        "net_dev_xmit": 1, "netif_receive_skb": 1,
+        "mt7925_lab_txfree": 1, "mt7925_lab_txs": 1,
+    }
+    assert summary["other_bss_absent_s"] == {4: D(".4"), 5: D(".2")}
+
     for bad in (events[:-1], [h("10"),f("10.000001",3,1,4,cpu=1)],
                 [h("10"),f("10.1",3,1,4)],
                 [h("10"),f("10.000001",3,2,4)]):
