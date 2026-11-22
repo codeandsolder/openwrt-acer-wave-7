@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Qualify a sealed 0498 cold/late first-link trial, not just boot acceptance."""
 import argparse
+import csv
 import datetime as dt
 import hashlib
 import importlib.util
@@ -98,6 +99,8 @@ def peer_window(log, expected):
         m = re.fullmatch(r"(\d{4}-\d{2}-\d{2}T\S+) (PEER_\S+)(?: mode=(fast|delayed))?", line)
         if m:
             events.append((dt.datetime.fromisoformat(m[1]), m[2], m[3]))
+    assert all(t.tzinfo is not None for t,_,_ in events), "peer timestamps lack offsets"
+    assert all(x[0] <= y[0] for x,y in zip(events,events[1:])), "peer timestamps out of order"
     ready = [e for e in events if e[1] == "PEER_READY"]
     assert len(ready) == 1 and ready[0][2] == expected, "wrong peer window"
     names = [e[1] for e in events]
@@ -109,6 +112,32 @@ def peer_window(log, expected):
         assert names == ["PEER_READY"], "unexpected peer event"
         seconds = 0
     return dict(mode=expected,admin_down_seconds=seconds,events=[(t.isoformat(),n) for t,n,_ in events])
+
+def correlate_peer_boot(counter_log, boot, peer, link):
+    # Both wall_epoch and peer timestamps come from the Asus observer.
+    # Router uptime is integer-truncated, and the SSH observation has
+    # sampling latency; allow a bounded clock envelope, not arbitrary
+    # independent wall/uptime evidence.
+    rows = list(csv.DictReader(counter_log.splitlines(), delimiter="\t"))
+    assert len(rows) >= 2 and all(r["boot"] == boot for r in rows), "wrong boot in counter history"
+    times = [(int(r["wall_epoch"]), int(r["uptime"])) for r in rows]
+    assert all(a < c and b < d for (a,b),(c,d) in zip(times,times[1:])), "counter clock not monotonic"
+    offsets = [wall-uptime for wall,uptime in times]
+    assert max(offsets)-min(offsets) <= 5, "counter clock alignment unstable"
+    lo, hi = min(offsets)-3, max(offsets)+3
+    events = {name: dt.datetime.fromisoformat(t).timestamp() for t,name in peer["events"]}
+    ready = events["PEER_READY"]
+    assert hi-300 <= ready <= lo, "peer ready is not from the observed reboot"
+    if peer["mode"] == "delayed":
+        down = events["PEER_ADMIN_DOWN"]
+        release = events["PEER_RELEASED_1G"]
+        first = link["first_status"]["t"]
+        up = link["first_up"]["t"]
+        assert hi-60 <= events["PEER_CARRIER_FELL"] <= lo+first, "carrier loss not tied to reboot"
+        assert down <= lo+first and release >= hi+first, "first PHY-down observation not inside peer hold"
+        assert release <= hi+up, "first PHY-up preceded peer release"
+    return dict(boot_epoch_bounds=[lo,hi], clock_offset_spread=max(offsets)-min(offsets),
+                peer_ready_before_boot_bounds=[lo-ready,hi-ready])
 
 def traffic(directory, boot, min_uptime):
     sealed(directory, "SHA256SUMS", ("samples.jsonl","report.json"))
@@ -160,10 +189,12 @@ def qualify(run, capture, peer_log, expected):
     assert soak["boot"]==boot and soak["status"]=="SOAK_PASS" and soak["soak_seconds"]>=300
     assert not soak["postcommit_switch_misses"] and not soak["error_deltas"]
     assert soak["classification"]=="CLEAN_BOOT_NO_CORRUPTION_OBSERVED"
+    link=first_link((run/"final-dmesg.txt").read_text(),expected)
+    peer=peer_window(peer_log.read_text(),expected)
+    alignment=correlate_peer_boot((run/"trunk-counters.tsv").read_text(),boot,peer,link)
     return dict(status="COLD_1G_PASS",boot=boot,revision=REV,
                 expected=expected,soak_seconds=soak["soak_seconds"],
-                first_link=first_link((run/"final-dmesg.txt").read_text(),expected),
-                peer=peer_window(peer_log.read_text(),expected),
+                first_link=link, peer=peer, peer_boot_alignment=alignment,
                 traffic=traffic(capture,boot,float(final[1].split()[0])),
                 inputs=dict(run_manifest_sha256=sha(run/"evidence.sha256"),capture_manifest_sha256=sha(capture/"SHA256SUMS"),peer_log_sha256=sha(peer_log)))
 
@@ -195,6 +226,15 @@ def selftest():
     assert peer_window(peer,"delayed")["admin_down_seconds"]==65
     rejects(peer_window,peer.replace("05:01:16","05:00:16"),"delayed")
     rejects(peer_window,peer.replace("PEER_RELEASED_1G","PEER_UNEXPECTED_ADMIN_UP"),"delayed")
+    epoch=int(dt.datetime.fromisoformat("2026-11-22T05:00:15+01:00").timestamp())
+    counters=f"wall_epoch\tboot\tuptime\n{epoch+22}\tb\t22\n{epoch+27}\tb\t27"
+    delayed=peer_window(peer,"delayed")
+    # Release at boot+61; first up at boot+62, with coarse clock uncertainty.
+    assert correlate_peer_boot(counters,"b",delayed,first_link(log(62),"delayed"))["clock_offset_spread"]==0
+    rejects(correlate_peer_boot,counters,"b",delayed,first_link(log(42),"delayed"))
+    rejects(correlate_peer_boot,counters,"b",peer_window(peer.replace("05:00:", "04:00:").replace("05:01:", "04:01:"),"delayed"),first_link(log(62),"delayed"))
+    rejects(correlate_peer_boot,counters.replace(str(epoch+27),str(epoch+37)),"b",delayed,first_link(log(62),"delayed"))
+    rejects(correlate_peer_boot,counters.replace("\tb\t27","\tc\t27"),"b",delayed,first_link(log(62),"delayed"))
     print("COLD_1G_QUALIFIER_SELFTEST_PASS")
 
 if __name__ == "__main__":
