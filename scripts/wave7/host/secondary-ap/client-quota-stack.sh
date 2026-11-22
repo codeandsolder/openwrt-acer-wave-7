@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+# Live matched PCIe stack trial; no changes to installed modules/initramfs.
+set -Eeuo pipefail
+[[ $# == 1 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
+kver=7.4.0-rc1-2-cachyos-rc
+bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/quota
+stage=/run/wave7-quota-stack
+timer=wave7-quota-rollback.timer
+modules=(mt76 mt76_connac_lib mt792x_lib mt7925_common mt7925e)
+declare -A names=(
+    [mt76]=mt76.ko
+    [mt76_connac_lib]=mt76-connac-lib.ko
+    [mt792x_lib]=mt792x-lib.ko
+    [mt7925_common]=mt7925-common.ko
+    [mt7925e]=mt7925e.ko
+)
+declare -A original_hash=(
+    [mt76]=20c31e7c6ace30a613cd00fca9eb480809dc1d15db962d24a4d1ae44980a4e7d
+    [mt76_connac_lib]=b06b4eb13743a352bae0ad9c52e59dee7ad68bd7fc405e34cb67279db00b8d16
+    [mt792x_lib]=f5cc1fb4ad04d82002f817fdecae50dae39d8549b9eb6c50596142a3934ec120
+    [mt7925_common]=546f70108a29c643d52cb35dfabc87dbaeb78847c57c657e0cf1b749d31920eb
+    [mt7925e]=c5efe032e376f65d732a450b834ef4f7c31d679df54df6870ba5db0d040128b1
+)
+declare -A original_version=(
+    [mt76]=D15DCBD555EF496E6A3289C
+    [mt76_connac_lib]=28C58B8C1B27F42E194BA9E
+    [mt792x_lib]=80A4F5B125A334C827CCD89
+    [mt7925_common]=DB4C3E1671DC2EA009803A0
+    [mt7925e]=C1250959DB6A9D56BD392B9
+)
+declare -A original_id=(
+    [mt76]=93f5557bbb5672ab21596f86c86aaaa80d1b0984
+    [mt76_connac_lib]=f1807a546ad9daedeeaba24e47318ec33a11bd17
+    [mt792x_lib]=5645e041ffb7d3509557e24726492edd99c0dffc
+    [mt7925_common]=a21f51d6bfde49340e3d05c4016d0395102caa69
+    [mt7925e]=3322f96eed6473fb1aa3ee4100b9ef46092a0c21
+)
+declare -A candidate_hash=(
+    [mt76]=05af6d762cf36e5109d9cff363ce764ae96b0703737d14022991ac64a0efbf60
+    [mt76_connac_lib]=7bf307b342ec69f027a5fe9b3f6c92cc208f6fc3b09cf7e9a33d9f636c73d641
+    [mt792x_lib]=77854efde3ab7d347d8c2022b23df915d58c9df005362b995d76c10c35891d08
+    [mt7925_common]=4421685b5b07aac716cccf6f43113d324be55eb3427fc06e1c0c1a2e7f62f178
+    [mt7925e]=ccc37f5d558e15b9f8912a0583d00c6bca344955aee53c34c8cfed30a5e48d9e
+)
+declare -A candidate_version=(
+    [mt76]=24FD3CB8BD6EC4F8FF9B294
+    [mt76_connac_lib]=9FEA98BF053467F9FB24EBD
+    [mt792x_lib]=0F773A06E6A47065D1EAF20
+    [mt7925_common]=E882C202FF34ABD6AFFEC2C
+    [mt7925e]=71791C8DAD7FB01A84B3182
+)
+declare -A candidate_id=(
+    [mt76]=5ce11fcdfddf16225e46e501f563d010951a8c03
+    [mt76_connac_lib]=4010329d2479518ade6d7f0fd6aa620cd1ede997
+    [mt792x_lib]=d55c01c189ab3fbd710539bef960cc317a1cfcfb
+    [mt7925_common]=bdf64419ed55f334a370340944db19e6617c85bb
+    [mt7925e]=c6db5ad30247861370b10ee8625cc511e8296f99
+)
+declare -A holders=(
+    [mt76]='mt76_connac_lib,mt7925_common,mt7925e,mt792x_lib'
+    [mt76_connac_lib]='mt7925_common,mt7925e,mt792x_lib'
+    [mt792x_lib]='mt7925_common,mt7925e'
+    [mt7925_common]=mt7925e
+    [mt7925e]=''
+)
+hash() { sha256sum "$1" | cut -d' ' -f1; }
+note_id() {
+    local note
+    note=$(od -An -v -tx1 "/sys/module/$1/notes/.note.gnu.build-id" | tr -d ' \n')
+    [[ $note =~ ^040000001400000003000000474e5500([0-9a-f]{40})$ ]]
+    printf '%s' "${BASH_REMATCH[1]}"
+}
+scope() {
+    [[ $(uname -r) == "$kver" && $(cat /proc/sys/kernel/hostname) == wifi7-lab &&
+       $(cat /sys/bus/pci/devices/0000:02:00.0/vendor) == 0x14c3 &&
+       $(cat /sys/bus/pci/devices/0000:02:00.0/device) == 0x7925 &&
+       $(ip -4 route get 10.1.0.2) == *'dev eno1 src 10.1.0.221 '* &&
+       $(nmcli -g connection.autoconnect connection show Wave7-MLO-Lab) == no ]]
+}
+interface_ready() {
+    [[ $(readlink -f /sys/class/net/wlp2s0/device) == "$(readlink -f /sys/bus/pci/devices/0000:02:00.0)" &&
+       $(basename "$(readlink -f /sys/bus/pci/devices/0000:02:00.0/driver)") == mt7925e &&
+       $(nmcli -g GENERAL.STATE device show wlp2s0) == '30 (disconnected)' ]]
+}
+disk_original() {
+    local name path
+    for name in "${modules[@]}"; do
+        path=$(modinfo -n "$name")
+        [[ $(hash "$path") == "${original_hash[$name]}" &&
+           $(modinfo -F srcversion "$path") == "${original_version[$name]}" ]]
+        if [[ $name == mt7925_common ]]; then
+            [[ $(readlink -f "$path") == /usr/lib/modules/"$kver"/updates/mt7925/mt7925-common.ko ]]
+        else
+            [[ $(readlink -f "$path") == /usr/lib/modules/"$kver"/kernel/drivers/net/wireless/mediatek/mt76/* ]]
+        fi
+    done
+}
+loaded_closure() {
+    local variant=$1 name actual expected_version expected_id
+    actual=$(awk '/^(mt76|mt792)/ {print $1}' /proc/modules | LC_ALL=C sort | paste -sd, -)
+    [[ $actual == "$(printf '%s\n' "${modules[@]}" | LC_ALL=C sort | paste -sd, -)" ]]
+    for name in "${modules[@]}"; do
+        [[ $(find "/sys/module/$name/holders" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+              LC_ALL=C sort | paste -sd, -) == "${holders[$name]}" ]]
+        if [[ $variant == original ]]; then
+            expected_version=${original_version[$name]}
+            expected_id=${original_id[$name]}
+        else
+            expected_version=${candidate_version[$name]}
+            expected_id=${candidate_id[$name]}
+        fi
+        [[ $(cat "/sys/module/$name/srcversion") == "$expected_version" &&
+           $(note_id "$name") == "$expected_id" ]]
+        printf '%s srcversion=%s build_id=%s\n' "$name" "$expected_version" "$expected_id"
+    done
+}
+candidate_files() {
+    local dir=$1 name f
+    for name in "${modules[@]}"; do
+        f="$dir/${names[$name]}"
+        [[ -f $f && ! -L $f &&
+           $(hash "$f") == "${candidate_hash[$name]}" &&
+           $(modinfo -F name "$f") == "$name" &&
+           $(modinfo -F srcversion "$f") == "${candidate_version[$name]}" &&
+           $(modinfo -F vermagic "$f") == "$kver SMP preempt mod_unload " &&
+           $(llvm-readelf -n "$f" | awk '/Build ID:/ {print $3}') == "${candidate_id[$name]}" ]]
+        printf 'candidate %s sha256=%s\n' "$name" "${candidate_hash[$name]}"
+    done
+}
+check_original() {
+    scope
+    interface_ready
+    disk_original
+    loaded_closure original
+    [[ ! -e $stage ]]
+    if systemctl is-active --quiet "$timer"; then return 1; fi
+    printf 'QUOTA_ORIGINAL_PASS boot=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+}
+check_candidate() {
+    scope
+    interface_ready
+    disk_original
+    [[ $(stat -c '%u:%g:%a' "$stage") == 0:0:755 &&
+       $(cat "$stage/boot") == "$(cat /proc/sys/kernel/random/boot_id)" ]]
+    systemctl is-active --quiet "$timer"
+    candidate_files "$stage"
+    loaded_closure candidate
+    printf 'QUOTA_CANDIDATE_PASS boot=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+}
+case "$1" in
+    --check-original) check_original ;;
+    --check-candidate) check_candidate ;;
+    --activate)
+        [[ $EUID == 0 ]]
+        check_original
+        candidate_files "$bundle"
+        [[ -z $(ls /sys/kernel/tracing/instances) &&
+           $(cat /sys/kernel/tracing/current_tracer) == nop &&
+           $(cat /sys/module/mt7925e/refcnt) == 0 ]]
+        changed=0
+        staged=0
+        armed=0
+        cleanup() {
+            local rc=$?
+            trap - EXIT
+            if (( rc != 0 )); then
+                echo QUOTA_ACTIVATION_FAILED >&2
+                if (( changed )); then
+                    systemctl reboot --no-block
+                else
+                    if (( armed )); then systemctl stop "$timer"; fi
+                    if (( staged )); then rm -rf -- "$stage"; fi
+                fi
+            fi
+            exit "$rc"
+        }
+        trap cleanup EXIT
+        mkdir -m 0755 "$stage"
+        staged=1
+        for name in "${modules[@]}"; do
+            install -m 0644 "$bundle/${names[$name]}" "$stage/${names[$name]}"
+        done
+        candidate_files "$stage"
+        cat /proc/sys/kernel/random/boot_id > "$stage/boot"
+        date +%s > "$stage/epoch"
+        chmod 0644 "$stage"/{boot,epoch}
+        systemd-run --quiet --collect --unit=wave7-quota-rollback \
+            --on-active=15min --timer-property=AccuracySec=1s /usr/bin/systemctl reboot
+        armed=1
+        systemctl is-active --quiet "$timer"
+        changed=1
+        for ((i=${#modules[@]}-1; i>=0; i--)); do rmmod "${modules[i]}"; done
+        for name in "${modules[@]}"; do [[ ! -e /sys/module/$name ]]; done
+        for name in "${modules[@]}"; do insmod "$stage/${names[$name]}"; done
+        for _ in {1..60}; do
+            if interface_ready; then break; fi
+            sleep 1
+        done
+        check_candidate
+        firmware=$(journalctl -k -b --no-pager --since "@$(cat "$stage/epoch")" |
+            rg 'mt7925e.*(HW/SW Version|WM Firmware Version)')
+        printf '%s\n' "$firmware"
+        [[ $firmware == *20260813113015a* && $firmware == *20260813113118* ]]
+        trap - EXIT
+        ;;
+    --restore)
+        [[ $EUID == 0 ]]
+        check_candidate
+        systemctl reboot --no-block
+        ;;
+    *) exit 2 ;;
+esac

@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -15,6 +15,7 @@ trace_window=0
 metadata_experiment=0
 absence_experiment=0
 binding_experiment=0
+quota_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -28,6 +29,7 @@ case "${2:-}" in
     --scan-timing-metadata) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; metadata_experiment=1; pm_experiment=1 ;;
     --scan-timing-absence) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; absence_experiment=1; pm_experiment=1 ;;
     --scan-timing-binding) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; binding_experiment=1; pm_experiment=1 ;;
+    --scan-timing-quota) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; quota_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -49,7 +51,10 @@ mkdir -p "$base"
 mkdir -m 700 "$out"
 # Commands requiring root, preserving unprivileged ownership of evidence.
 rootcmd() { sudo -n "$@"; }
-pm_dir=/sys/kernel/debug/ieee80211/phy0/mt76
+phy=$(basename "$(readlink -f "/sys/class/net/$iface/phy80211")")
+[[ $phy =~ ^phy[0-9]+$ ]]
+pm_dir=/sys/kernel/debug/ieee80211/$phy/mt76
+stack_guard=/home/jan/scripts/wave7/client-validation/client-quota-stack.sh
 pm_modified=0
 runtime_modified=0
 pm_snapshot() {
@@ -139,6 +144,11 @@ if (( pm_experiment )); then
         expected_srcversion=5505CE551C04266721B047A
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
     fi
+    if (( quota_experiment )); then
+        [[ -f $stack_guard ]]
+        bash "$stack_guard" --check-candidate > "$out/module-stack.txt"
+        expected_srcversion=E882C202FF34ABD6AFFEC2C
+    fi
     if (( binding_experiment )); then
         expected_srcversion=CF0F5C99109529BD670B11A
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 0f2468ffc7aeb8ef76eaf63c20c5a405b80d0e61320bf1af28d931014b79f12b ]]
@@ -151,7 +161,7 @@ if (( pm_experiment )); then
        $(cat /sys/module/mt7925_common/srcversion) == "$expected_srcversion" &&
        $(cat "/sys/class/net/$iface/device/vendor") == 0x14c3 &&
        $(cat "/sys/class/net/$iface/device/device") == 0x7925 ]]
-    iw dev "$iface" info | grep -Eq '^[[:space:]]*wiphy 0$'
+    iw dev "$iface" info | grep -Eq "^[[:space:]]*wiphy ${phy#phy}$"
     pm_snapshot > "$out/pm-original.txt"
     [[ $(rootcmd cat "$pm_dir/runtime-pm") == 1 &&
        $(rootcmd cat "$pm_dir/deep-sleep") == 1 &&
@@ -171,6 +181,7 @@ fi
 {
     printf 'boot=%s\nkernel=%s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$(uname -r)"
     printf 'mt7925_common=%s\nmt7925e=%s\n' "$(cat /sys/module/mt7925_common/srcversion)" "$(cat /sys/module/mt7925e/srcversion)"
+    printf 'installed_common_file (not the live test override, if active): '
     sha256sum "$(modinfo -n mt7925_common)"
     journalctl -k -b --no-pager | grep -E 'mt7925e.*(HW/SW Version|WM Firmware Version)'
 } > "$out/firmware.txt"
@@ -184,6 +195,7 @@ if (( trace_window )); then
     if (( metadata_experiment )); then trace_args+=(--metadata); fi
     if (( absence_experiment )); then trace_args+=(--absence); fi
     if (( binding_experiment )); then trace_args+=(--binding); fi
+    if (( quota_experiment )); then trace_args+=(--quota); fi
     rootcmd bash "$helper" "$tag" "${trace_args[@]}" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0
