@@ -6,10 +6,9 @@ iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && $2 == --scan-timing-upstream-* && $3 == --primary-24 ) ) &&
+   ( $# == 3 && $2 == --scan-timing-upstream-* && ( $3 == --primary-24 || $3 == --bssid-24 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
-primary24=0
-if [[ ${3:-} == --primary-24 ]]; then primary24=1; fi
+association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
 trace=0
 scope_experiment=0
@@ -47,7 +46,7 @@ case "${2:-}" in
     --scan-timing-upstream-*)
         upstream_stack_variant=${2#--scan-timing-}
         upstream_trace_profile=$(bash "$stack_guard" "$upstream_stack_variant" --trace-profile) || exit 2
-        if (( primary24 )); then
+        if [[ -n $association_preference ]]; then
             # Require firmware association evidence to identify the setup link.
             [[ $upstream_trace_profile == association* ]] || exit 2
         fi
@@ -271,12 +270,18 @@ kill -0 "$event_pid"
 rootcmd nmcli connection clone "$profile" "$tmp" > "$out/clone.txt"
 clone=1
 rootcmd nmcli connection modify "$tmp" connection.autoconnect no ipv4.never-default yes ipv4.ignore-auto-dns yes ipv6.never-default yes ipv6.ignore-auto-dns yes ipv4.may-fail no ipv6.may-fail no ipv4.method auto ipv6.method auto
-if (( primary24 )); then
+if [[ $association_preference == --primary-24 ]]; then
     # Restrict only the disposable clone to the known lab channel. This
     # may affect background scan scope, so do not compare scan latency
     # directly with the unconstrained profile.
     rootcmd nmcli connection modify "$tmp" 802-11-wireless.band bg 802-11-wireless.channel 1
     nmcli -g 802-11-wireless.band,802-11-wireless.channel connection show "$tmp" > "$out/association-preference.txt"
+elif [[ $association_preference == --bssid-24 ]]; then
+    # Pin the observed laboratory link-0 BSSID without removing 5 GHz
+    # from the candidate frequencies. Firmware trace determines the
+    # actual association link; this setting is not proof of role reversal.
+    rootcmd nmcli connection modify "$tmp" 802-11-wireless.bssid 70:5A:6F:5A:BB:16
+    nmcli -g 802-11-wireless.bssid,802-11-wireless.band,802-11-wireless.channel connection show "$tmp" > "$out/association-preference.txt"
 fi
 rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/association.txt" 2>&1
 ip -br addr show dev "$iface" > "$out/addresses-at-activation.txt"
