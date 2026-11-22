@@ -5,7 +5,7 @@ set -Eeuo pipefail
 variant=$1
 variants=(
     quota upstream-base upstream-prefix12 upstream-prefix13 upstream-prefix14 upstream-prefix15 upstream-prefix17 upstream-prefix22
-    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-secondary-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
+    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-secondary-trace upstream-prefix22-secondary-rx-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
 )
 valid=0
 for known in "${variants[@]}"; do
@@ -321,6 +321,29 @@ declare -A candidate_id=(
     [mt792x_lib]=42400ac1ac088a43941a115f2b5125a29421ba90
     [mt7925_common]=10cb7a27c0b2f19be296fa59bcc2aa49a3517006
     [mt7925e]=ea28967cf52c949d793fdcf61f7ba7fab64b6c75
+)
+;;
+upstream-prefix22-secondary-rx-trace)
+declare -A candidate_hash=(
+    [mt76]=361347a1b7fb9c17c95611ca4d3b2f0a0c3d1b9947dc0ee5901154e4ed716724
+    [mt76_connac_lib]=a6e697ca6140d23e4a135c86fa562e6caeba7de4d0c76414faaaaf36c762c20c
+    [mt792x_lib]=f8c7ae61fa61183c910369ab513b8db57fd41b392aee26c98b53715413421619
+    [mt7925_common]=86a666ef1588989db6715743e8f78ea9d8f1ee679fd282bcfe4d4c876b697f91
+    [mt7925e]=828dab8bd74b8860b284a839cbf7302d65ed2f3f2e0710e3cfb03a61f121c5ed
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=9AF7782FF291D3BDAA0FFE0
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=21d183cbe64650453fba19bb2e4041511aed7363
+    [mt76_connac_lib]=f3f68d5693f4f354230df787999587775d9179fe
+    [mt792x_lib]=f30f30f2893f09129d9102aba6fc6bd6383a22a6
+    [mt7925_common]=6c833b5f812616729b59e4be215e6c1077ee270a
+    [mt7925e]=fba443136454fab44c6dde4bc63c783415b6ff86
 )
 ;;
 upstream-prefix22-secondary-trace)
