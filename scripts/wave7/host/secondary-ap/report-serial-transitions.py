@@ -98,12 +98,30 @@ def report(rows):
         episodes.append(dict(prior_speed=prior and prior["speed"],post_speed=speed,down=down["uptime"],up=up["uptime"],qualified=qualified,windows=windows))
     return dict(episodes=episodes,qualified=bool(episodes) and all(e["qualified"] for e in episodes))
 
+def selftest():
+    # Use the actual PCS status definitions for all three SGMII rates;
+    # a marker with a retained forced speed field is legal if force=0.
+    for speed,bits in RATES.items():
+        if bits is None: continue
+        m=dict(speed=int(speed),mode=0x420,ctrl=0x844,status=0xcf|bits)
+        assert decode_marker(m,speed)
+        for k,v in (("mode",0x421),("ctrl",0x84c),("ctrl",0x44),
+                    ("status",bits|0x40),("status",bits|0x80),
+                    ("status",0xc0|((bits+0x10)&0x30)),("speed",2500)):
+            assert not decode_marker({**m,k:v},speed)
+    print("SERIAL_RATE_MARKER_SELFTEST_PASS")
+
 def main():
     assert __debug__
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("capture",type=Path)
-    p.add_argument("boot")
+    p.add_argument("capture",type=Path,nargs="?")
+    p.add_argument("boot",nargs="?")
+    p.add_argument("--selftest",action="store_true")
     a=p.parse_args()
+    if a.selftest:
+        assert a.capture is None and a.boot is None
+        selftest(); return
+    assert a.capture is not None and a.boot is not None
     assert probe.trunk.BOOT.fullmatch(a.boot)
     cold.sealed(a.capture,"SHA256SUMS",("samples.jsonl","report.json"))
     rows=[json.loads(l) for l in (a.capture/"samples.jsonl").read_text().splitlines()]
