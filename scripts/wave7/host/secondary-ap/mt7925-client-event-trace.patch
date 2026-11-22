@@ -63,18 +63,21 @@ diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wirel
  			dev_dbg(dev->mt76.dev,
  				"MBMC event: tag=%u mbmc_en=%u\n",
  				tag, tlv->mbmc_en);
-@@ -729,6 +735,10 @@
+@@ -729,6 +735,13 @@
  
  	if (skb_linearize(skb))
  		return;
 +
-+	if (skb->len >= sizeof(*rxd))
-+		trace_mt7925_lab_mcu_rx(rxd->eid, rxd->seq, rxd->option,
-+				       rxd->ext_eid, skb->len);
++	if (trace_mt7925_lab_mcu_rx_enabled() && skb->len >= sizeof(*rxd)) {
++		const struct mt7925_mcu_rxd *event = (const void *)skb->data;
++
++		trace_mt7925_lab_mcu_rx(event->eid, event->seq, event->option,
++				       event->ext_eid, skb->len);
++	}
  
  	if (rxd->option & MCU_UNI_CMD_UNSOLICITED_EVENT) {
  		mt7925_mcu_uni_rx_unsolicited_event(dev, skb);
-@@ -3379,6 +3389,10 @@
+@@ -3379,6 +3392,10 @@
  		req->scan_func |= SCAN_FUNC_RANDOM_MAC;
  	}
  
