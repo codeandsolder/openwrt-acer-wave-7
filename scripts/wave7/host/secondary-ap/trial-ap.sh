@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -23,6 +23,7 @@ candidate_instant_marker=0
 candidate_worker_patch=''
 candidate_worker_marker=0
 candidate_down_patch=''
+candidate_serial_patch=''
 accepted_phy_patch=''
 accepted_fit_sha=''
 accepted_phy_marker=0
@@ -98,7 +99,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  relink|mac-order|nsscc|instant|worker|down-mode)
+  relink|mac-order|nsscc|instant|worker|down-mode|serial-speed)
     trunk_trial=1
     phy_trial=1
     relink_trial=1
@@ -190,14 +191,26 @@ case "$profile" in
       candidate_pcs_sha=c62c6baff502d1338c34c3e2fa94b7b1c7fe6b765422cda46db96749a28ed4c5
       candidate_down_patch=ef7d41f2b18457e9576d8ee7a2aa4d6f549ec7a8
       candidate_ppe_sha=$accepted_ppe_sha
+    elif [[ $trial_kind == serial-speed ]]; then
+      kernel_variant_trial=1
+      base="$guard8/serial-speed-dhcp-guard8"
+      candidate_artifact=wave7-serial-speed-dhcp-guard8-sysupgrade.bin
+      candidate_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
+      candidate_builder=UNBUILT
+      expected_candidate_sha=UNBUILT
+      candidate_fit_sha=$accepted_fit_sha
+      candidate_relink_patch=''
+      candidate_pcs_sha=UNBUILT
+      candidate_serial_patch=f9aa3e1fa3a541bb52e11223c7297cbd4dbc0ecc
+      candidate_ppe_sha=$accepted_ppe_sha
     fi
     ;;
   *) echo 'unknown candidate profile'    >&2; exit 2 ;;
 esac
-if [[ $trial_kind == down-mode && $mode != --selftest ]]; then
-  [[ $candidate_builder =~ ^[0-9a-f]{40}$ ]] || { echo '0497 builder not pinned' >&2; exit 2; }
+if [[ ( $trial_kind == down-mode || $trial_kind == serial-speed ) && $mode != --selftest ]]; then
+  [[ $candidate_builder =~ ^[0-9a-f]{40}$ ]] || { echo 'candidate builder not pinned' >&2; exit 2; }
   for pin in "$expected_candidate_sha" "$candidate_fit_sha" "$candidate_pcs_sha"; do
-    [[ $pin =~ ^[0-9a-f]{64}$ ]] || { echo '0497 digest not pinned by final QA' >&2; exit 2; }
+    [[ $pin =~ ^[0-9a-f]{64}$ ]] || { echo 'candidate digest not pinned by final QA' >&2; exit 2; }
   done
 fi
 candidate="$base/${candidate_artifact:-wave7-secondary-ap-$profile-guard8-sysupgrade.bin}"
@@ -309,6 +322,7 @@ read_state() {
     echo "manifest_down_patch=$(sed -n "s/^trial_down_mode_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_worker_patch=$(sed -n "s/^trial_fifo_worker_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "fifo_worker_marker=$(dmesg | grep -Eq "wave7-diag: fifo-worker tick=[0-9]+ edge=[0-9]+ ss=[0-9]+ phylib=[01] result=0$" && echo 1 || echo 0)"
+    echo "manifest_serial_patch=$(sed -n "s/^trial_serial_speed_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_relink_patch=$(sed -n "s/^trial_relink_patch_commit=//p" /rom/etc/wave7-role-profile)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
       $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
@@ -338,11 +352,11 @@ module_matches() {
   done
 }
 relink_matches() {
-  local s=$1 pcs=$2 ppe=$3 patch=$4 down=$5 manifest_pcs='' manifest_ppe='' exp
-  if [[ -n $patch || -n $down ]]; then manifest_pcs=$pcs; manifest_ppe=$ppe; fi
+  local s=$1 pcs=$2 ppe=$3 patch=$4 down=$5 serial=$6 manifest_pcs='' manifest_ppe='' exp
+  if [[ -n $patch || -n $down || -n $serial ]]; then manifest_pcs=$pcs; manifest_ppe=$ppe; fi
   for exp in "pcs_sha=$pcs" "pcs_rom_sha=$pcs" pcs_live=live pcs_taint= \
     "ppe_sha=$ppe" "ppe_rom_sha=$ppe" ppe_live=live ppe_taint= \
-    "manifest_relink_patch=$patch" "manifest_pcs_sha=$manifest_pcs" "manifest_ppe_sha=$manifest_ppe" module_upper_clear=1; do
+    "manifest_relink_patch=$patch" "manifest_serial_patch=$serial" "manifest_pcs_sha=$manifest_pcs" "manifest_ppe_sha=$manifest_ppe" module_upper_clear=1; do
     grep -Fxq "$exp" <<< "$s" || return 1
   done
 }
@@ -417,7 +431,7 @@ baseline_healthy() {
     phy_matches "$1" "$accepted_phy_patch" "$accepted_fit_sha" "$accepted_phy_marker" || return 1
   fi
   if [[ $relink_trial == 1 ]]; then
-    relink_matches "$1" "$accepted_pcs_sha" "$accepted_ppe_sha" '' '' || return 1
+    relink_matches "$1" "$accepted_pcs_sha" "$accepted_ppe_sha" '' '' '' || return 1
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
     kernel_variant_matches "$1" '' '' 0 '' 0 '' || return 1
@@ -440,7 +454,7 @@ healthy() {
     phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 || return 1
   fi
   if [[ $relink_trial == 1 ]]; then
-    relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" "$candidate_down_patch" || return 1
+    relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" "$candidate_down_patch" "$candidate_serial_patch" || return 1
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
     kernel_variant_matches "$1" "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" "$candidate_worker_patch" "$candidate_worker_marker" "$candidate_down_patch" || return 1
@@ -479,7 +493,7 @@ autonomous_healthy() {
   candidate_healthy "$1" && autonomous_approval_ok "$1"
 }
 restore_profile() {
-  [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode ]]
+  [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
 }
 restore_source_valid() {
   restore_profile && healthy "$1" && grep -Fxq approval=0 <<< "$1"
@@ -522,12 +536,12 @@ if [[ $mode == --selftest ]]; then
     s+=$(printf '\nmanifest_phy_patch=%s\nmanifest_fit_sha=%s\nphy_poll_marker=1' "$candidate_phy_patch" "$candidate_fit_sha")
   fi
   if [[ $relink_trial == 1 ]]; then
-    s+=$(printf '\npcs_sha=%s\npcs_rom_sha=%s\npcs_live=live\npcs_taint=\nppe_sha=%s\nppe_rom_sha=%s\nppe_live=live\nppe_taint=\nmanifest_pcs_sha=%s\nmanifest_ppe_sha=%s\nmanifest_relink_patch=%s' "$candidate_pcs_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_ppe_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch")
+    s+=$(printf '\npcs_sha=%s\npcs_rom_sha=%s\npcs_live=live\npcs_taint=\nppe_sha=%s\nppe_rom_sha=%s\nppe_live=live\nppe_taint=\nmanifest_pcs_sha=%s\nmanifest_ppe_sha=%s\nmanifest_relink_patch=%s\nmanifest_serial_patch=%s' "$candidate_pcs_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_ppe_sha" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" "$candidate_serial_patch")
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
     s+=$(printf '\nmanifest_clock_patch=%s\nmanifest_instant_patch=%s\ninstant_fifo_marker=%s\nmanifest_worker_patch=%s\nfifo_worker_marker=%s\nmanifest_down_patch=%s' "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" "$candidate_worker_patch" "$candidate_worker_marker" "$candidate_down_patch")
     # Kernel-only candidates inherit the original 0491 modules.
-    if [[ -z $candidate_down_patch ]]; then
+    if [[ -z $candidate_down_patch && -z $candidate_serial_patch ]]; then
       s=$(sed -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' <<< "$s")
     fi
   fi
@@ -571,8 +585,8 @@ if [[ $mode == --selftest ]]; then
     baseline=$(sed -e 's/^manifest_clock_patch=.*/manifest_clock_patch=/' -e 's/^manifest_instant_patch=.*/manifest_instant_patch=/' -e 's/^instant_fifo_marker=.*/instant_fifo_marker=0/' -e 's/^manifest_worker_patch=.*/manifest_worker_patch=/' -e 's/^fifo_worker_marker=.*/fifo_worker_marker=0/' -e 's/^manifest_down_patch=.*/manifest_down_patch=/' <<< "$baseline")
   fi
   if [[ $relink_trial == 1 ]]; then
-    baseline=$(sed -e "s/^pcs_sha=.*/pcs_sha=$accepted_pcs_sha/" -e "s/^pcs_rom_sha=.*/pcs_rom_sha=$accepted_pcs_sha/" -e "s/^ppe_sha=.*/ppe_sha=$accepted_ppe_sha/" -e "s/^ppe_rom_sha=.*/ppe_rom_sha=$accepted_ppe_sha/" -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' -e 's/^manifest_relink_patch=.*/manifest_relink_patch=/' <<< "$baseline")
-    for field in pcs_sha pcs_rom_sha pcs_live pcs_taint ppe_sha ppe_rom_sha ppe_live ppe_taint manifest_pcs_sha manifest_ppe_sha manifest_relink_patch manifest_phy_patch manifest_fit_sha phy_poll_marker; do
+    baseline=$(sed -e "s/^pcs_sha=.*/pcs_sha=$accepted_pcs_sha/" -e "s/^pcs_rom_sha=.*/pcs_rom_sha=$accepted_pcs_sha/" -e "s/^ppe_sha=.*/ppe_sha=$accepted_ppe_sha/" -e "s/^ppe_rom_sha=.*/ppe_rom_sha=$accepted_ppe_sha/" -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' -e 's/^manifest_relink_patch=.*/manifest_relink_patch=/' -e 's/^manifest_serial_patch=.*/manifest_serial_patch=/' <<< "$baseline")
+    for field in pcs_sha pcs_rom_sha pcs_live pcs_taint ppe_sha ppe_rom_sha ppe_live ppe_taint manifest_pcs_sha manifest_ppe_sha manifest_relink_patch manifest_serial_patch manifest_phy_patch manifest_fit_sha phy_poll_marker; do
       for replacement in wrong MISSING; do
         if [[ $replacement == MISSING ]]; then
           bad=$(sed "/^$field=/d" <<< "$s")
@@ -918,7 +932,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
             sleep 3
             continue
           fi
-          if [[ $relink_trial == 1 ]] && ! relink_matches "$s" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" "$candidate_down_patch"; then
+          if [[ $relink_trial == 1 ]] && ! relink_matches "$s" "$candidate_pcs_sha" "$candidate_ppe_sha" "$candidate_relink_patch" "$candidate_down_patch" "$candidate_serial_patch"; then
             log RELINK_ATTESTATION_BLOCKED_IDENTITY
             sleep 3
             continue
@@ -993,7 +1007,7 @@ fi
 [[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline ]] ||
   fatal "unknown mode $mode"
 if [[ $mode == --restore-baseline ]]; then
-  restore_profile && [[ $# == 0 ]] || fatal 'restore is only for failed 0492/0493/0494/0495/0496/0497'
+  restore_profile && [[ $# == 0 ]] || fatal 'restore is only for failed 0492/0493/0494/0495/0496/0497/0498'
 fi
 [[ -r $accepted ]] || fatal 'missing accepted rollback'
 [[ $(sha256sum "$accepted" | cut -d' ' -f1) == "$accepted_sha" ]] || fatal 'accepted SHA mismatch'

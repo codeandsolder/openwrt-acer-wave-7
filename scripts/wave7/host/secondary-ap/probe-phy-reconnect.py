@@ -28,6 +28,7 @@ PROFILES = {
     "0495": ("r0+38346-44d12aa1f7-ap-dhcp-guard8", "instant-fifo-dhcp-guard8"),
     "0496": ("r0+38346-3688c57cd3-ap-dhcp-guard8", "independent-fifo-dhcp-guard8"),
     "0497": ("r0+38346-ef7d41f2b1-ap-dhcp-guard8", "down-mode-dhcp-guard8"),
+    "0498": ("r0+38346-f9aa3e1fa3-ap-dhcp-guard8", "serial-speed-dhcp-guard8"),
 }
 RELINK_REV = PROFILES["0492"][0]
 MAC_ORDER_REV = PROFILES["0493"][0]
@@ -36,8 +37,10 @@ CLOCK_REV = PROFILES["0494"][0]
 INSTANT_REV = PROFILES["0495"][0]
 WORKER_REV = PROFILES["0496"][0]
 DOWN_MODE_REV = PROFILES["0497"][0]
+SERIAL_SPEED_REV = PROFILES["0498"][0]
 WORKER_REVISIONS = (WORKER_REV, DOWN_MODE_REV)
-EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV, INSTANT_REV, *WORKER_REVISIONS)
+EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV, INSTANT_REV, *WORKER_REVISIONS, SERIAL_SPEED_REV)
+SERIAL_SPEED = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: serial-speed mode=((?:0x)?[0-9a-f]+) ctrl=((?:0x)?[0-9a-f]+) sts=((?:0x)?[0-9a-f]+) speed=(\d+)$")
 FIFO_WORKER = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: fifo-worker tick=(\d+) edge=(\d+) ss=(-?\d+) phylib=([01]) result=(-?\d+)$")
 INSTANT_FIFO = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: fifo-instant ss=([0-9a-f]{4}) phylib=([01]) copper=([01])$")
 MAC_ORDER = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-mac (TX off before prepare|drained RX off TX retained)$")
@@ -59,14 +62,14 @@ echo "switch_carrier=$(cat /sys/class/net/lan1/carrier 2>/dev/null || echo absen
 echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || echo absent)"
 ethtool -S lan | grep -E '^[[:space:]]*(rx_frames|tx_frames|rx_crc_err|rx_frag_err|rx_drop_frames):'
 ethtool -S switch | grep -E 's00_p06_(dot3StatsFCSErrors|etherStatsFragments|etherStatsDropEvents):'
-dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[|fifo-instant|fifo-worker)|wave7-diag: stock-(relink|mac) |wave7-diag: down-mode |NOC ERROR DETECTED' || :
+dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[|fifo-instant|fifo-worker)|wave7-diag: stock-(relink|mac) |wave7-diag: down-mode |wave7-diag: serial-speed |NOC ERROR DETECTED' || :
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 """
 
 
 def parse(output, expected_boot, revision):
     fields, mac, switch, samples = {}, {}, {}, []
-    edges, relinks, mac_order, instant, worker = [], [], [], [], []
+    edges, relinks, mac_order, instant, worker, serial = [], [], [], [], [], []
     for line in output.splitlines():
         m = re.fullmatch(r"(\w+)=(.*)", line)
         if m:
@@ -106,6 +109,10 @@ def parse(output, expected_boot, revision):
             assert not worker or (t>worker[-1]["uptime"] and tick>worker[-1]["tick"])
             worker.append(dict(uptime=t,tick=tick,edge=edge,status=ss,phylib=phylib,result=ret,
                                copper=int(bool(ss&0x400)) if 0<=ss<65535 else None))
+        m = SERIAL_SPEED.match(line)
+        if m:
+            serial.append(dict(uptime=float(m[1]),mode=int(m[2],16),ctrl=int(m[3],16),
+                               status=int(m[4],16),speed=int(m[5])))
         m = PHY.match(line)
         if m:
             samples.append(dict(zip(
@@ -125,7 +132,7 @@ def parse(output, expected_boot, revision):
     return {**fields, "uptime": uptime, "mac": mac,
             "switch_errors": switch, "phy": sample,
             "phy_edges": edges, "relink_events": relinks, "mac_order_events": mac_order,
-            "instant_fifo_events": instant, "fifo_worker_events": worker,
+            "instant_fifo_events": instant, "fifo_worker_events": worker, "serial_speed_events": serial,
             "noc": "NOC ERROR DETECTED" in output}
 
 
@@ -244,6 +251,21 @@ def evaluate(window, prior_speed=None):
                 # Preserve the traffic result even if a worker tick was
                 # not observed during this particular down window. Its
                 # experiment coverage remains explicitly separate.
+    if b.get("revision")==SERIAL_SPEED_REV:
+        edge=b["phy"]["edge"]
+        result["serial_speed_trial_edge"]=edge
+        starts=[e for e in b["phy_edges"] if e["edge"]==edge and e["link"]==1]
+        decisions=[e for e in b.get("serial_speed_events",[]) if len(starts)==1 and
+                   starts[0]["uptime"]<=e["uptime"]<=starts[0]["uptime"]+4]
+        result["serial_speed_events"]=decisions
+        result["serial_speed_exercised"]=False
+        if len(decisions)==1:
+            e=decisions[0]
+            result["serial_speed_exercised"]=bool(e["mode"]&0x1f71==0x420 and not e["ctrl"]&8
+                and e["ctrl"]&0x800 and e["speed"]==1000
+                and all(r["host_counters"]["direct"].get("speed")=="1000" for r in window))
+            result["serial_speed_status_matches_phy"]=e["status"]&0x30==0x20
+            result["serial_speed_pcs_carrier"]=bool(e["status"]&0x80)
     if b.get("revision") in RELINK_REVISIONS:
         # Tie the actual policy decision to this PHY edge, not a prior
         # successful mode transition. Require the host to agree on speed.
@@ -392,7 +414,7 @@ def report(rows):
         classes={w["classification"] for w in e["windows"]}-{"INCONCLUSIVE"}
         e["classification"]=next(iter(classes)) if len(classes)==1 else "MIXED" if classes else "INCONCLUSIVE"
         if e["classification"]=="ONE_GIG_RECONNECT_PASS":
-            if e["prior_speed"] is None and any(any(k in w for k in ("relink_policy","clock_trial_edge","instant_fifo_edge")) for w in e["windows"]):
+            if e["prior_speed"] is None and any(any(k in w for k in ("relink_policy","clock_trial_edge","instant_fifo_edge","serial_speed_trial_edge")) for w in e["windows"]):
                 e["classification"]="ONE_GIG_UP_WITHOUT_HEALTHY_BASELINE"
             elif e["prior_speed"]!="1000":
                 e["classification"]="ONE_GIG_TRANSITION_PASS"
@@ -481,6 +503,26 @@ def selftest():
     for r in rows:
         r["snapshot"]["state"]["relink_events"][0]["uptime"]=9
     assert report(rows)["classification"]=="INCONCLUSIVE"
+    # Stock serial speed is a separate intervention qualification,
+    # not a prerequisite to reporting actual delivered/lost traffic.
+    for stall in (False,True):
+        rows=[row(1),row(3,"0")]+[row(t,stall=stall) for t in range(12,58,2)]
+        for r in rows:
+            st=r["snapshot"]["state"]
+            st.update(revision=SERIAL_SPEED_REV,
+                      phy_edges=[{"edge":2,"link":0,"uptime":3},{"edge":3,"link":1,"uptime":11}],
+                      serial_speed_events=[{"uptime":11.1,"mode":0x420,"ctrl":0x846,"status":0x60,"speed":1000}])
+            r["host_counters"]["direct"]["speed"]="1000"
+        w=report(rows)["episodes"][-1]["windows"][-1]
+        assert w["serial_speed_exercised"] and w["serial_speed_status_matches_phy"] and not w["serial_speed_pcs_carrier"]
+        for field,value in (("ctrl",0x84e),("mode",0x421),("speed",100),("uptime",1)):
+            for r in rows:
+                events=r["snapshot"]["state"]["serial_speed_events"]
+                events[0]={"uptime":11.1,"mode":0x420,"ctrl":0x846,"status":0x60,"speed":1000}
+                events[0][field]=value
+            w=report(rows)["episodes"][-1]["windows"][-1]
+            assert not w["serial_speed_exercised"]
+            assert w["classification"]==("COPPER_RX_WITH_GMAC_RX_STALL" if stall else "ONE_GIG_RECONNECT_PASS")
     # A carrier flap between snapshots is still observed when the
     # driver records its complete fresh adjacent edge pair.
     rows=[row(3)]+[row(t) for t in range(12,58,2)]
