@@ -111,6 +111,50 @@ def selftest():
     assert frequency(1, 1) == 2412 and frequency(1, 14) == 2484
     assert frequency(2, 36) == 5180 and frequency(3, 1) == 5955
     assert frequency(3, 2) == 5935
+    # Synthetic two-link grant and acknowledged peer lifecycle. Exercise
+    # both links, deactivation, raw/host mismatch and descriptor corruption.
+    events = []
+    def emit(t, event, **fields):
+        events.append((D(t), "mt7925_lab_" + event, "test-1",
+                       " ".join(f"{k}={v}" for k,v in fields.items()), 0))
+    for slot, band, channel in ((0, 2, 36), (1, 1, 1)):
+        emit(1, "mlo_roc_req", slot=slot, token=3, tag=slot*3,
+             bss=slot, type=10, band=band, channel=channel)
+    emit(2, "mlo_roc_result", token=3, result=0)
+    for slot, band, channel in ((0, 2, 36), (1, 1, 1)):
+        emit(3, "roc_wire", token=3, expected=3, status=0, tag=slot*4,
+             bss=slot, type=10, band=band, channel=channel, dbdc=slot)
+        emit(4, "roc_band", token=3, tag=slot*4, bss=slot, new=slot)
+        emit(5, "bss_result", bss=slot, link=1-slot, wcid=slot+2,
+             enabled=1, result=0)
+        emit(6, "sta_result", bss=slot, link=1-slot, wcid=slot+2,
+             enabled=1, state=2, result=0)
+    def descriptor(t, slot, raw_bss=None, corrupt=False):
+        channel = (36, 1)[slot]
+        emit(t, "rxdesc", word1=slot+2+(int(corrupt)<<25),
+             word2=(slot if raw_bss is None else raw_bss) | 128,
+             word3=(channel<<8) | (1<<16), resolved_wcid=slot+2,
+             result=0, sta=1, valid=1, link=1-slot, encap=1,
+             freq=(5180, 2412)[slot])
+    descriptor(11, 0)
+    descriptor(12, 1)
+    descriptor(13, 1, raw_bss=0)
+    descriptor(14, 0, corrupt=True)
+    emit(15, "sta_result", bss=1, link=0, wcid=3,
+         enabled=0, state=0, result=0)
+    descriptor(16, 1)
+    descriptor(21, 0)  # outside common coverage
+    parsed = dict(events=sorted(events,key=lambda e:e[0]), offset_lo=D(0),
+                  offset_hi=D(0), first_anchor=D(0), last_anchor=D(30))
+    scan = {"tests": [{"replies": [{"received": "10"}, {"received": "20"}]}]*2}
+    result = analyze(parsed, scan)
+    assert Counter({r["classification"]: sum(x["count"] for x in result["descriptor_counts"]
+                    if x["classification"] == r["classification"])
+                    for r in result["descriptor_counts"]}) == Counter({
+        "matching_associated_peer": 2, "binding_or_frequency_mismatch": 1,
+        "descriptor_error": 1, "no_verified_connected_peer": 1})
+    assert {r["freq"] for r in result["descriptor_counts"]
+            if r["classification"] == "matching_associated_peer"} == {2412,5180}
     print("RX_LINK_ACTIVITY_SELFTEST_PASS")
 
 
