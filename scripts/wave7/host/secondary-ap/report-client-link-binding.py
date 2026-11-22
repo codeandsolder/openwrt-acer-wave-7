@@ -43,7 +43,8 @@ def describe(events):
             if k["tag"] != 0 or k["len"] != 8 or k["absent"] not in (0, 1):
                 raise ValueError("unrecognized BSS absence format")
             interval = dict(start=t, bss=k["bss"], absent=k["absent"],
-                            quota=k["quota"], ordinary_descriptors=0)
+                            quota=k["quota"], ordinary_descriptors=0,
+                            group_absent_descriptors=0)
             availability[k["bss"]] = interval
             if k["absent"]:
                 quota_windows[(k["bss"], t)] = interval
@@ -84,6 +85,11 @@ def describe(events):
                 presence_counts[(k["bss"], own_state, alt_state, decoded["mat_enabled"])] += 1
                 if state is not None and state["absent"]:
                     state["ordinary_descriptors"] += 1
+                    # Vendor gen4m nic_tx.c:isNetAbsent considers an MLD
+                    # absent only if every member of its BSS bitmap is absent.
+                    # Unobserved/unknown alternatives are not proof of absence.
+                    if alt_state == "absent":
+                        state["group_absent_descriptors"] += 1
             descriptors.append((t, key, own_state, alt_state, ordinary))
     if not history or not counts:
         raise ValueError("missing binding or mapped MLO descriptor evidence")
@@ -94,7 +100,10 @@ def describe(events):
     presence_rows = [dict(bss=b, target=own, alternate=alt, mat_enabled=mat, count=n)
                      for (b,own,alt,mat),n in sorted(presence_counts.items())]
     quota_rows = [dict(**v, descriptors_beyond_announced_quota=max(
-        0, v["ordinary_descriptors"]-v["quota"])) for _,v in sorted(quota_windows.items())]
+        0, v["ordinary_descriptors"]-v["quota"]),
+        group_absent_beyond_announced_quota=max(
+            0, v["group_absent_descriptors"]-v["quota"]))
+        for _,v in sorted(quota_windows.items())]
     return history, descriptors, rows(counts), [
         dict(wcid=w,bss=b,link=l,count=n) for (w,b,l),n in sorted(unmatched.items())], presence_rows, quota_rows
 
@@ -121,7 +130,7 @@ def analyze(parsed, timing):
                             destinations=[dict(bss=b,link=l,wcid=w,tgid=g,own_mac=o,
                                                mat_enabled=m,encap=e,qid=q,count=n)
                                           for (b,l,w,g,o,m,e,q),n in sorted(selected.items())]))
-    return dict(method="Host provisioning and final TX descriptor fields; a mapped descriptor, including MAT, does not establish the RF transmit link. Unmatched station descriptors are reported, never guessed. Counts beyond an announced quota are host descriptor submissions, not proof of firmware quota consumption or over-air loss.",
+    return dict(method="Host provisioning and final TX descriptor fields; a mapped descriptor, including MAT, does not establish the RF transmit link. Unmatched station descriptors are reported, never guessed. Counts beyond an announced quota are host descriptor submissions, not proof of firmware quota consumption or over-air loss. Group-absent counts require every mapped peer BSS to be declared absent; vendor gen4m isNetAbsent uses the entire MLD BSS bitmap.",
                 bindings=history, descriptors=counts, unmatched=unmatched,
                 ordinary_presence=presence_rows, announced_quota_windows=quota_rows, windows=windows)
 
@@ -143,6 +152,11 @@ def selftest():
     _,_,_,_,states,quotas=describe([binding,alt,absent,present,desc,desc,desc])
     assert states==[dict(bss=0,target="absent",alternate="present",mat_enabled=True,count=3)]
     assert quotas[0]["ordinary_descriptors"]==3 and quotas[0]["descriptors_beyond_announced_quota"]==1
+    assert quotas[0]["group_absent_descriptors"]==0
+    alt_absent=e("10.03","absence","bss=1 tag=0 len=8 absent=1 quota=2")
+    _,_,_,_,_,quotas=describe([binding,alt,absent,alt_absent,desc,desc,desc])
+    assert quotas[0]["group_absent_descriptors"]==3
+    assert quotas[0]["group_absent_beyond_announced_quota"]==1
     # A quota announcement is a fresh budget, not the sum of all earlier quotas.
     _,_,_,_,_,quotas=describe([binding,alt,absent,present,desc,
         e("10.3","absence","bss=0 tag=0 len=8 absent=1 quota=1"),
