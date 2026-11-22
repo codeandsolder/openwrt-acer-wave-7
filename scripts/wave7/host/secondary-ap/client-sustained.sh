@@ -165,7 +165,7 @@ if (( trace_window )); then
     rootcmd bash "$helper" "$tag" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0
-    for _ in {1..40}; do
+    for _ in {1..240}; do
         kill -0 "$trace_pid"
         if grep -Fxq TRACE_READY "$out/client-kernel-trace.txt"; then ready=1; break; fi
         sleep .25

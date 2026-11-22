@@ -99,7 +99,10 @@ def phase(events,lo,hi,start,end):
                      "drv_change_vif_links","drv_change_sta_links","api_beacon_loss",
                      "api_connection_loss","mt7925_scan_work","mt7925_roc_work",
                      "mt7925_mcu_set_roc","mt7925_mcu_abort_roc","mt7925_set_roc",
-                     "mt792x_pm_wake_work","mt792x_pm_power_save_work"}]
+                      "mt792x_pm_wake_work","mt792x_pm_power_save_work",
+                     "__mt76_set_tx_blocked","mt792x_mcu_drv_pmctrl","mt792x_mcu_fw_pmctrl",
+                     "mt76_connac_pm_queue_skb","mt76_connac_pm_dequeue_skbs",
+                     "mt7925_mlo_pm_work","mt7925_mcu_uni_bss_ps","mt7925_mcu_set_dbdc"}]
     return {"start":start,"end":end,"duration_s":end-start,
             "counts":dict(counts),"ping_task_counts":dict(ping),
             "state_events":interesting}

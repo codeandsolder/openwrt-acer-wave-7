@@ -33,13 +33,18 @@ functions=(mt7925_mcu_rx_event mt7925_mcu_hw_scan mt7925_mcu_cancel_hw_scan
     mt7925_mcu_set_roc mt7925_mcu_abort_roc mt7925_mcu_set_mlo_roc
     mt7925_mac_sta_event mt792x_mac_work mt792x_pm_wake_work
     mt792x_pm_power_save_work mt76_dma_tx_queue_skb mt76_dma_tx_cleanup
-    mt76_tx_status_skb_done mt76_txq_schedule mt76_txq_schedule_all)
+    mt76_tx_status_skb_done mt76_txq_schedule mt76_txq_schedule_all
+    mt7925_mac_tx_free mt7925_mac_add_txs mt7925_txwi_free
+    mt76_token_consume mt76_token_release __mt76_tx_complete_skb
+    __mt76_set_tx_blocked mt792x_mcu_drv_pmctrl mt792x_mcu_fw_pmctrl
+    mt76_connac_pm_queue_skb mt76_connac_pm_dequeue_skbs
+    mt7925_mlo_pm_work mt7925_mcu_uni_bss_ps mt7925_mcu_set_dbdc)
 available=$(cat "$root/available_filter_functions")
 for f in "${functions[@]}"; do
     grep -Eq "^$f( |$)" <<< "$available"
 done
 printf '%s\n' "${functions[@]}" > "$inst/set_ftrace_filter"
-events=(mt76/mac_txdone mac80211/stop_queue mac80211/wake_queue
+events=(mac80211/stop_queue mac80211/wake_queue
     mac80211/drv_hw_scan mac80211/api_scan_completed
     mac80211/drv_wake_tx_queue mac80211/drv_remain_on_channel
     mac80211/drv_cancel_remain_on_channel mac80211/api_ready_on_channel
@@ -58,8 +63,8 @@ printf 'function\n' > "$inst/current_tracer"
 printf 'TRACE_BOOT %s\n' "$(cat /proc/sys/kernel/random/boot_id)"
 printf 'TRACE_CLOCK %s\n' "$(cat "$inst/trace_clock")"
 printf 'TRACE_FILTER\n'; cat "$inst/set_ftrace_filter"
-printf 'TRACE_READY\n'
 printf '1\n' > "$inst/tracing_on"
+printf 'TRACE_READY\n'
 # Bracket the marker write with wall clock readings so the offline report
 # can bound epoch conversion, rather than assuming monotonic == realtime.
 end=$((SECONDS + 215))
