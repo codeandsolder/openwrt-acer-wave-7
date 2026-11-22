@@ -1,0 +1,111 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca8081: test instantaneous copper FIFO decision
+
+Stock SSDK get_status uses C22.17 bit 10 to select the adjacent
+SerDes FIFO release level. Linux genphy_update_link uses latched
+BMSR and autonegotiation completion, and can report a different
+value during a short flap. Reuse the vendor status word already
+read by at803x_read_specific_status rather than add a bus access.
+
+Restrict the changed policy to Acer Wave7 direct PHY address 24.
+Keep phylib link decisions, notification and all work cadence
+unchanged. Reject unreadable status before writing and log changes
+of the paired status values. This isolates the FIFO input, not the
+separate SSDK worker.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+
+---
+--- a/drivers/net/phy/qcom/qcom-phy-lib.c
++++ b/drivers/net/phy/qcom/qcom-phy-lib.c
+@@ -227,6 +227,7 @@
+ }
+ EXPORT_SYMBOL_GPL(at803x_handle_interrupt);
+ 
++/* Return the sampled vendor status word on success, or a negative errno. */
+ int at803x_read_specific_status(struct phy_device *phydev,
+ 				struct at803x_ss_mask ss_mask)
+ {
+@@ -287,7 +288,7 @@
+ 		}
+ 	}
+ 
+-	return 0;
++	return ss;
+ }
+ EXPORT_SYMBOL_GPL(at803x_read_specific_status);
+ 
+--- a/drivers/net/phy/qcom/qcom.h
++++ b/drivers/net/phy/qcom/qcom.h
+@@ -18,6 +18,7 @@
+ #define AT803X_SS_SPEED_10			0
+ #define AT803X_SS_DUPLEX			BIT(13)
+ #define AT803X_SS_SPEED_DUPLEX_RESOLVED		BIT(11)
++#define QCA8081_SS_COPPER_LINK			BIT(10)
+ #define AT803X_SS_MDIX				BIT(6)
+ 
+ #define QCA808X_SS_SPEED_MASK			GENMASK(9, 7)
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -183,6 +183,7 @@
+ 	struct phy_device *diag_phydev;
+ 	u8 diag_serdes_events;
+ 	u8 diag_serdes_sample;
++	u8 diag_fifo_link_pair;
+ 	bool diag_serdes_link;
+ 	u8 diag_phy_counter_updates;
+ 	/* Re-arm bounded read-only MMD7 counter tracing on every link edge. */
+@@ -579,7 +580,7 @@
+  * This experimental policy is deliberately different from both the
+  * change-only notify callback and the no-FIFO-notify A/B.
+  */
+-static int qca8081_stock_fifo_level(struct phy_device *phydev)
++static int qca8081_stock_fifo_level(struct phy_device *phydev, bool copper_link)
+ {
+ 	struct mii_bus *bus = phydev->mdio.bus;
+ 	int addr = phydev->mdio.addr + 1;
+@@ -595,7 +596,7 @@
+ 		return -EIO;
+ 
+ 	value &= ~QCA8081_PHY_FIFO_RSTN;
+-	if (phydev->link)
++	if (copper_link)
+ 		value |= QCA8081_PHY_FIFO_RSTN;
+ 
+ 	return __mdiobus_c45_write(bus, addr, MDIO_MMD_PMAPMD,
+@@ -628,9 +629,34 @@
+ 		return ret;
+ 
+ 	if (phydev->phy_id == QCA8081_PHY_ID) {
+-		ret = qca8081_stock_fifo_level(phydev);
++		bool copper_link = phydev->link;
++		bool instant = phydev->mdio.addr == 24 &&
++			       of_machine_is_compatible("acer,wave7");
++		u16 status = ret;
++
++		if (instant) {
++			/* SSDK uses C22.17 bit 10, not latched BMSR or
++			 * phylib's autonegotiation-filtered link state.
++			 */
++			if (status == 0xffff)
++				return -EIO;
++			copper_link = !!(status & QCA8081_SS_COPPER_LINK);
++		}
++
++		ret = qca8081_stock_fifo_level(phydev, copper_link);
+ 		if (ret < 0)
+ 			return ret;
++
++		if (instant) {
++			u8 pair = 1 + 2 * phydev->link + copper_link;
++
++			if (pair != priv->diag_fifo_link_pair) {
++				priv->diag_fifo_link_pair = pair;
++				phydev_info(phydev,
++					    "wave7-diag: fifo-instant ss=%04x phylib=%u copper=%u\n",
++					    status, phydev->link, copper_link);
++			}
++		}
+ 	}
+ 
+ 	if (phydev->link) {
