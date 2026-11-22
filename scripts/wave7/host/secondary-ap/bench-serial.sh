@@ -5,9 +5,12 @@ set -Eeuo pipefail
 umask 077
 base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 runtime=/home/jan/firmware/wave7/trials/20261115-deferred-regression/iperf-runtime
-[[ $(id -un) == jan && ( $# == 2 || ( $# == 3 && $3 == --diagnose ) ) ]] || { echo 'usage: bench-serial.sh RUN_DIR DIRECT_RATE [--diagnose]'; exit 2; }
+[[ $(id -un) == jan && ( $# == 2 || ( $# == 3 && ( $3 == --diagnose || $3 == --localize-udp ) ) ) ]] || { echo 'usage: bench-serial.sh RUN_DIR DIRECT_RATE [--diagnose|--localize-udp]'; exit 2; }
 diagnose=0
 [[ ${3:-} != --diagnose ]] || diagnose=1
+localize_udp=0
+[[ ${3:-} != --localize-udp ]] || localize_udp=1
+if (( localize_udp )); then [[ $rate == 2500 ]]; fi
 rate=$2
 case "$rate" in 10|100|1000|2500) ;; *) exit 2 ;; esac
 run=$(realpath -e "$1")
@@ -59,10 +62,11 @@ mkdir -m 700 "$out"
 made=0
 pid=''
 captures=()
+stack_pids=()
 cleanup() {
   local rc=$?
   trap - EXIT
-  for cp in "${captures[@]}"; do wait "$cp" || :; done
+  for cp in "${captures[@]}" "${stack_pids[@]}"; do wait "$cp" || :; done
   if [[ -n $pid ]]; then
     kill "$pid" 2>/dev/null || :
     wait "$pid" 2>/dev/null || :
@@ -98,6 +102,19 @@ host_snapshot() {
     printf '\n'
   done
 }
+# Read-only UDP stack and exact test-port queue/drop telemetry.
+stack_snapshot='echo uptime
+cat /proc/uptime
+grep "^Udp:" /proc/net/snmp
+echo softnet
+cat /proc/net/softnet_stat
+echo socket_buffers
+for n in rmem_default rmem_max wmem_default wmem_max; do
+ echo "$n=$(cat /proc/sys/net/core/$n)"
+done
+echo sockets
+awk '"'"'NR>1 && ($2 ~ /:CC03$/ || $3 ~ /:CC03$/) {print}'"'"' /proc/net/udp
+'
 echo "RUN_DIR=$out"
 printf 'case\tsender_mbps\treceiver_mbps\tretransmits\tloss_pct\tasus_cpu_pct\trouter_cpu_pct\n' > "$out/results.tsv"
 run_case() {
@@ -117,6 +134,20 @@ run_case() {
   remote 'netstat -lnt | grep -q ":52227 "'
   local rc=0
   local -a trace=()
+  if (( localize_udp )); then
+    bash -c "$stack_snapshot" > "$out/$name-host-stack-before.txt"
+    remote "$stack_snapshot" > "$out/$name-router-stack-before.txt"
+    # Read-only snapshots during the test, including per-socket drops.
+    # The remote process has a finite loop and uses independent management.
+    (for ((sample=0;sample<2*(duration+3);sample++)); do
+       echo SAMPLE "$sample"
+       bash -c "$stack_snapshot"
+       sleep 0.5
+     done) > "$out/$name-host-stack-during.txt" &
+    stack_pids+=("$!")
+    remote "for i in $(seq 1 $((duration+3)) | xargs); do echo SAMPLE \$i; $stack_snapshot; sleep 1; done" > "$out/$name-router-stack-during.txt" &
+    stack_pids+=("$!")
+  fi
   if (( diagnose )); then
     for nic in "$direct" "$switch"; do
       dumpcap -q -i "$nic" -f 'host 192.168.76.1 and tcp port 52227 and (tcp[tcpflags] & (tcp-syn|tcp-fin|tcp-rst) != 0)' -s 80 -a duration:12 -c 100 -w "$out/$name-$nic.pcapng" > "$out/$name-$nic-capture.txt" 2>&1 &
@@ -128,6 +159,12 @@ run_case() {
   timeout "$((duration+15))" "${trace[@]}" iperf3 -4 -c 192.168.76.1 -B "$addr" --bind-dev "$dev" -p 52227 --connect-timeout 4000 -t "$duration" -O 1 -J "$@" > "$out/$name.json" || rc=$?
   for cp in "${captures[@]}"; do wait "$cp" || :; done
   captures=()
+  if (( localize_udp )); then
+    bash -c "$stack_snapshot" > "$out/$name-host-stack-after.txt"
+    remote "$stack_snapshot" > "$out/$name-router-stack-after.txt"
+    for cp in "${stack_pids[@]}"; do wait "$cp"; done
+    stack_pids=()
+  fi
   if (( rc )); then
     # Server has its own short deadline in diagnosis mode.
     host_snapshot > "$out/$name-host-after.txt"
@@ -155,6 +192,26 @@ if (( diagnose )); then
   run_case switch-tcp-control 192.168.76.250 "$switch" 3 || :
   (cd "$out"; sha256sum ./*.json ./*.txt ./*.err ./*.tsv ./*.pcapng > SHA256SUMS; sha256sum -c SHA256SUMS)
   echo SERIAL_BENCH_DIAGNOSIS_COMPLETE
+  exit 0
+fi
+if (( localize_udp )); then
+  run_case direct-udp-tx-default 192.168.76.2 "$direct" 15 -u -b 150M -R
+  run_case switch-udp-rx-default 192.168.76.250 "$switch" 15 -u -b 150M
+  run_case switch-udp-tx-default 192.168.76.250 "$switch" 15 -u -b 150M -R
+  # Socket-local tuning only: no sysctl or persistent system changes.
+  if (( $(cat /proc/sys/net/core/rmem_max) >= 1048576 &&
+        $(cat /proc/sys/net/core/wmem_max) >= 1048576 )); then
+    buffers=$(remote 'cat /proc/sys/net/core/rmem_max /proc/sys/net/core/wmem_max')
+    if awk '$1<1048576{bad=1} END{exit bad || NR!=2}' <<< "$buffers"; then
+      run_case direct-udp-tx-largebuf 192.168.76.2 "$direct" 15 -u -b 150M -R -w 1M
+      run_case switch-udp-rx-largebuf 192.168.76.250 "$switch" 15 -u -b 150M -w 1M
+      run_case switch-udp-tx-largebuf 192.168.76.250 "$switch" 15 -u -b 150M -R -w 1M
+    else
+      printf '%s\n' "$buffers" > "$out/large-buffer-not-supported.txt"
+    fi
+  fi
+  (cd "$out"; sha256sum ./*.json ./*.txt ./*.err ./*.tsv > SHA256SUMS; sha256sum -c SHA256SUMS)
+  echo UDP_LOCALIZATION_CAPTURE_COMPLETE
   exit 0
 fi
 run_case direct-tcp-rx 192.168.76.2 "$direct" 30 -P 4
