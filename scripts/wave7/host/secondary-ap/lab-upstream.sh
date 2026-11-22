@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Root-only explicitly bounded isolated test service. Run via root SSH.
+# Root-only isolated test service. Run via root SSH; stop explicitly.
 # No changes to persistent NetworkManager profiles or unrelated interfaces.
 set -euo pipefail
 iface=enp4s0f4u2u4
@@ -54,20 +54,17 @@ case "${1:---check}" in
   --start)
     need_root
     preflight
-    # A RuntimeMaxSec expiry is an expected end of this isolated lab
-    # service. Older deployments retained the failed transient unit,
-    # causing a fresh systemd-run to collide with its loaded fragment.
-    # Collect future units on failure and retire only this exact legacy
-    # timeout, without hiding any other service failure.
+    # Retire only the exact timeout from older deployments. Keep
+    # the service active until explicit stop or scope/child failure.
     prepare_upstream_unit
-    systemd-run --quiet --collect --unit="$unit" --property=RuntimeMaxSec=3600 \
+    systemd-run --quiet --collect --unit="$unit" --property=RuntimeMaxSec=infinity \
       --property=KillMode=mixed "$(realpath "$0")" --serve
     ;;
   --serve)
     need_root
     preflight
     # Require newly owned address and firewall rule. Only remove our own
-    # changes on completion/failure. The transient unit bounds the lifetime.
+    # changes on explicit stop or failure. The interface guard remains active.
     for lab in "${lab_ifaces[@]}"; do
       if [[ -n $(ip -6 -o addr show dev "$lab" to "$network") ||
             -n $(ip -6 route show dev "$lab" to "$network") ]]; then

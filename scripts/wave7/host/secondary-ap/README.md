@@ -126,7 +126,7 @@ server. The existing vendor fallback collector remains observational.
 - preinit-overlay-reset.sh: pre-service mount_root hook and fail-closed gate.
 - attest-management.sh: external publickey-only SSH attestation.
 - trial-ap.sh: shared guarded static/DHCP-role trial on Asus.
-- lab-upstream.sh and lab-upstream.conf: one-hour-bounded isolated upstream
+- lab-upstream.sh and lab-upstream.conf: explicitly stopped isolated upstream
   DHCP/RA test service; fixed lease by bridge MAC, no default route/DNS,
   scoped changes cleaned up on stop.
 - build-image.sh: deterministic native sysupgrade/SquashFS repacker.
@@ -199,13 +199,15 @@ distinct rollback reasons and preserve the triggering state.
 
 On Asus, as Jan, run the installed `probe-trunk-recovery.py capture OUT EXPECTED_REVISION --duration 60` via `uv run --no-project --offline --python /usr/bin/python3 python`. OUT must be a new directory under the Guard8 `native-recovery-dhcp-guard8/observations/` directory. This observer generates concurrent low-rate source-bound ICMP on both independent paths; checks both policy routes every interval; takes boot-consistent CPU-port MIB/carrier/driver-event snapshots over the direct path. It makes no configuration changes and can span an operator-initiated reboot. The report distinguishes complete directional corrupt-only loss, other switch loss, copper-down, direct-path loss, counter discontinuity and unobserved intervals. It deliberately never claims causal recovery on a pulse log alone. SHA256SUMS covers metadata, raw JSONL and report. `selftest` runs synthetic known-fault and missing-sample cases. This is additional evidence, not a replacement for the guarded acceptance soak.
 
-The independent lab DHCP/RA service retains its one-hour hard runtime
-bound. Start collects the new transient unit even after normal expiry,
-and retires the exact old failed timeout unit if needed; it rejects
-active units, foreign fragments, other failure causes and uncollected
-units. Run test-lab-upstream-lifecycle.sh for the mocked lifecycle
-regression. Inspect expired-service diagnostics in the system journal.
-The service is not a persistent network configuration.
+The independent lab DHCP/RA service has no runtime expiry. It remains
+active until stopped explicitly, the interface scope changes, the child
+exits, or the host shuts down. The service still binds to the isolated
+lab interface and removes its owned address and firewall rule on exit.
+Start collects the transient unit and retires the exact old failed timeout
+unit if needed; it rejects active units, foreign fragments, other failure
+causes and uncollected units. Run test-lab-upstream-lifecycle.sh for the
+mocked lifecycle regression. The service is not enabled at host boot and
+does not change persistent network configuration.
 
 Observer schema 2 records each route lookup before and after probes,
 including failures, instead of terminating when a route disappears.
