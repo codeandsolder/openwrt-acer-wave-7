@@ -23,8 +23,11 @@ the captured stock DT's IPQ53xx compatibility and initial wrapper 1 mode.
 Original executable paths, not a translated pseudocode model:
 
 * SSDK work callback 0x918e8 takes its mutex, calls the registered
-  ops+0x200 host link-sync callback 0xadec, unlocks, queues on CPU 4
-  with delay 100 jiffies (1 second after completion). Registration
+  ops+0x200 host link-sync callback 0xadec, unlocks, queues with CPU argument 4
+  and delay 100 jiffies (1 second after completion). The pinned stock
+  configuration has NR_CPUS=4; Linux v5.4.213 [workqueue.h](https://github.com/gregkh/linux/blob/v5.4.213/include/linux/workqueue.h) defines
+  WORK_CPU_UNBOUND=NR_CPUS, so this is the ordinary unbound CPU selector,
+  not pinning to a nonexistent CPU4. Registration
   is at 0xbd70. Linux PHY read_status at 0x69cc4 also calls the same
   get_status at 0x67640. Replay executes both call paths, including
   unchanged-up, down and unreadable status in phylib. The fixture starts

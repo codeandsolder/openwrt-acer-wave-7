@@ -60,12 +60,15 @@ def provenance(fit, dts):
     end = kernel.index(b"IKCFG_ED", start)
     config = gzip.decompress(kernel[start:end]).decode()
     assert "CONFIG_HZ=100" in config.splitlines()
+    assert "CONFIG_NR_CPUS=4" in config.splitlines()
     text = dts.read_text()
     assert 'compatible = "qcom,ess-switch-ipq53xx";' in text
     assert "switch_mac_mode1 = <0x0c>;" in text
     return {"module_sha256": SHA, "fit_sha256": FIT_SHA,
             "kernel_sha256": KERNEL_SHA, "dts_sha256": DTS_SHA,
             "kernel_hz": 100, "work_delay_jiffies": 100,
+            "kernel_nr_cpus": 4, "work_cpu_arg": 4,
+            "work_cpu_arg_semantics": "WORK_CPU_UNBOUND",
             "stock_dt_compatible": "qcom,ess-switch-ipq53xx",
             "stock_dt_initial_wrapper1": 12}
 
