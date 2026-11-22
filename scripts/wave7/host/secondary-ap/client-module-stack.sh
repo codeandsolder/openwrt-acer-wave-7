@@ -5,7 +5,7 @@ set -Eeuo pipefail
 variant=$1
 variants=(
     quota upstream-base upstream-prefix12 upstream-prefix13 upstream-prefix14 upstream-prefix15 upstream-prefix17 upstream-prefix22
-    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-compact-mld-trace upstream-prefix22-secondary-first-trace upstream-prefix22-secondary-trace upstream-prefix22-secondary-rxtx-trace upstream-prefix22-secondary-rx-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
+    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-compact-mld-trace upstream-prefix22-membership-only-trace upstream-prefix22-secondary-first-trace upstream-prefix22-secondary-trace upstream-prefix22-secondary-rxtx-trace upstream-prefix22-secondary-rx-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
 )
 valid=0
 for known in "${variants[@]}"; do
@@ -390,6 +390,29 @@ declare -A candidate_id=(
     [mt792x_lib]=05b75b2def77b8ea40e8921a782af846ddfd3444
     [mt7925_common]=9b36588b181d72bfa6310e5c65d3d1a4c16f5110
     [mt7925e]=a698009559b5574380eff6d901c80e984229a113
+)
+;;
+upstream-prefix22-membership-only-trace)
+declare -A candidate_hash=(
+    [mt76]=be17480eef998c8cea5d4eda14d645faee478262d76242804b15e0c81df61d2e
+    [mt76_connac_lib]=9945d26d13665a8b79d5977bd0371fe057635b6dd325b482ea4900d7aba57441
+    [mt792x_lib]=dbef79e2bb7a262991690a08cdc6112aab4f65028a030f96480ee476220cf391
+    [mt7925_common]=cac7ff772c3d31278c089a6131379aa98ba578f41269f37b916189f7128b14a4
+    [mt7925e]=0243ab4b4b822b8bb7436b0bae995ec6ae5030041387725acd10a8ebb684cc36
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=5929279DAC1C2C0185C984E
+    [mt7925e]=416B52992616E7964206D72
+)
+declare -A candidate_id=(
+    [mt76]=a0886500d20b3e066ad3d37c08276a1220110b07
+    [mt76_connac_lib]=8224916a477c821e8e168241f74dcfc0f7727b2f
+    [mt792x_lib]=8d95f8b265984f086de579b5aa5943d1803b3a2e
+    [mt7925_common]=f5bb92d53b55556bbb903ed42e1a0cd7c08a392b
+    [mt7925e]=6f5c3a21c5153d8827adea866291232a119bf1ec
 )
 ;;
 upstream-prefix22-secondary-first-trace)
