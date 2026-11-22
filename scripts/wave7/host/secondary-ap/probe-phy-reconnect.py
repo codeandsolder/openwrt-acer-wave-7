@@ -27,6 +27,7 @@ PROFILES = {
     "0494": ("r0+38346-e771c4f65a-ap-dhcp-guard8", "nsscc-parent-order-dhcp-guard8"),
     "0495": ("r0+38346-44d12aa1f7-ap-dhcp-guard8", "instant-fifo-dhcp-guard8"),
     "0496": ("r0+38346-3688c57cd3-ap-dhcp-guard8", "independent-fifo-dhcp-guard8"),
+    "0497": ("r0+38346-ef7d41f2b1-ap-dhcp-guard8", "down-mode-dhcp-guard8"),
 }
 RELINK_REV = PROFILES["0492"][0]
 MAC_ORDER_REV = PROFILES["0493"][0]
@@ -34,7 +35,9 @@ RELINK_REVISIONS = (RELINK_REV, MAC_ORDER_REV)
 CLOCK_REV = PROFILES["0494"][0]
 INSTANT_REV = PROFILES["0495"][0]
 WORKER_REV = PROFILES["0496"][0]
-EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV, INSTANT_REV, WORKER_REV)
+DOWN_MODE_REV = PROFILES["0497"][0]
+WORKER_REVISIONS = (WORKER_REV, DOWN_MODE_REV)
+EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV, INSTANT_REV, *WORKER_REVISIONS)
 FIFO_WORKER = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: fifo-worker tick=(\d+) edge=(\d+) ss=(-?\d+) phylib=([01]) result=(-?\d+)$")
 INSTANT_FIFO = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: fifo-instant ss=([0-9a-f]{4}) phylib=([01]) copper=([01])$")
 MAC_ORDER = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-mac (TX off before prepare|drained RX off TX retained)$")
@@ -56,7 +59,7 @@ echo "switch_carrier=$(cat /sys/class/net/lan1/carrier 2>/dev/null || echo absen
 echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || echo absent)"
 ethtool -S lan | grep -E '^[[:space:]]*(rx_frames|tx_frames|rx_crc_err|rx_frag_err|rx_drop_frames):'
 ethtool -S switch | grep -E 's00_p06_(dot3StatsFCSErrors|etherStatsFragments|etherStatsDropEvents):'
-dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[|fifo-instant|fifo-worker)|wave7-diag: stock-(relink|mac) |NOC ERROR DETECTED' || :
+dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[|fifo-instant|fifo-worker)|wave7-diag: stock-(relink|mac) |wave7-diag: down-mode |NOC ERROR DETECTED' || :
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 """
 
@@ -193,7 +196,7 @@ def evaluate(window, prior_speed=None):
                 phy_edge=b["phy"]["edge"],classification="INCONCLUSIVE")
     if elapsed < 30 or min(*mac.values(),*phy.values(),*errors.values()) < 0 or any(errors.values()) or peer_tx is None or peer_tx<=0:
         return result
-    if b.get("revision") in (CLOCK_REV,INSTANT_REV,WORKER_REV):
+    if b.get("revision") in (CLOCK_REV,INSTANT_REV,*WORKER_REVISIONS):
         edge=b["phy"]["edge"]
         starts=[e for e in b["phy_edges"] if e["edge"]==edge and e["link"]==1]
         if len(starts)!=1 or any(r["host_counters"]["direct"].get("speed")!="1000" for r in window):
@@ -224,7 +227,7 @@ def evaluate(window, prior_speed=None):
             result["instant_fifo_up"]=up_decision
             result["instant_fifo_transitions"]=observed
             result["instant_fifo_disagreements"]=[e for e in observed if e["phylib"]!=e["copper"]]
-            if b["revision"]==WORKER_REV:
+            if b["revision"]in WORKER_REVISIONS:
                 worker=[e for e in b.get("fifo_worker_events",[]) if down-2<=e["uptime"]<=b["uptime"]]
                 successful=[e for e in worker if e["result"]==0]
                 during_down=[e for e in successful if down<=e["uptime"]<up and e["edge"]==edge-1]

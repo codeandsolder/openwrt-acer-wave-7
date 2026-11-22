@@ -145,6 +145,49 @@ def capture(out,boot,profile,count):
     (out/"SHA256SUMS").write_text("".join(f"{digest(out/n)}  {n}\n" for n in files))
     print(json.dumps({k:v for k,v in result.items() if k!="samples"},indent=2))
 
+DOWN_MODE_MARKER = re.compile(
+    r"^\[\s*(\d+\.\d+)\].*wave7-diag: down-mode "
+    r"(PHY C22\.31=[0-9a-f]{4} 2500base-x -> sgmii|host prepare sgmii|"
+    r"PCS prepared sgmii|host result=-?\d+|PCS reuse sgmii)$"
+)
+
+def qualify_preparation(mode, edge, output):
+    # Require whole observed edge window, an actual down bracket after
+    # successful major config, and a matching reuse after raw copper up.
+    # A marker before the first observed up is not sufficient proof.
+    covered=correlate(mode,edge["down"],edge["up"])["covered"]
+    events=sorted({(float(m[1]),m[2]) for raw in output
+                   for line in raw.splitlines() if (m:=DOWN_MODE_MARKER.match(line))})
+    events=[(t,msg) for t,msg in events if edge["down"]-1<=t<=edge["up"]+1]
+    result=dict(qualified=False,events=events,reason="missing or ambiguous early preparation")
+    if not covered:
+        return {**result,"reason":"mode trace does not cover edge"}
+    if (edge["prior_speed"],edge["post_speed"])!=("2500","1000"):
+        return {**result,"reason":"not a 2500-to-1000 transition"}
+    raw=[r for r in mode["samples"] if r["coherent"]]
+    down=[r for r in raw if edge["down"]-1<=r["start"]<=edge["up"] and
+          r["mode"]==0 and r["copper"]==0]
+    if not down:
+        return {**result,"reason":"no coherent SGMII copper-down bracket"}
+    last_down=down[-1]["start"]
+    ups=[r for r in raw if r["start"]>last_down and r["copper"]==1 and r["mode"]==0]
+    if not ups:
+        return {**result,"reason":"no coherent SGMII copper-up bracket"}
+    # The exact log sequence is unique within this single edge.
+    if len(events)!=5:
+        return result
+    phy,prepare,pcs,host,reuse=events
+    if not (phy[1].startswith("PHY C22.31=") and
+            int(phy[1].split("=")[1].split()[0],16)&0x6000==0 and
+            prepare[1]=="host prepare sgmii" and pcs[1]=="PCS prepared sgmii" and
+            host[1]=="host result=0" and reuse[1]=="PCS reuse sgmii"):
+        return result
+    if not (phy[0]<prepare[0]<pcs[0]<host[0]<last_down and
+            ups[0]["end"]<=reuse[0]):
+        return {**result,"reason":"completion not proven before copper-up, or reuse not proven after"}
+    return dict(qualified=True,events=events,reason="early preparation and matching reuse observed",
+                last_confirmed_down=last_down,first_confirmed_up=ups[0]["end"])
+
 def compare(mode_path, traffic_path):
     for p in (mode_path,traffic_path):
         for line in (p/"SHA256SUMS").read_text().splitlines():
@@ -160,6 +203,9 @@ def compare(mode_path, traffic_path):
     result=correlate(mode,e["down"],e["up"])
     result.update(boot=mode["boot"],revision=mode["revision"],classification=report["classification"],
                   prior_speed=e["prior_speed"],post_speed=e["post_speed"])
+    if mode["revision"]==probe.DOWN_MODE_REV:
+        result["down_mode_preparation"]=qualify_preparation(
+            mode,e,[r["snapshot"].get("stdout","") for r in rows])
     print(json.dumps(result,indent=2))
 
 def selftest():
@@ -183,6 +229,22 @@ def selftest():
     try: parse(raw+foot.replace("end_boot="+boot,"end_boot=wrong"),boot,rev,100)
     except AssertionError: pass
     else: raise AssertionError("mixed boot accepted")
+    # All markers must be fresh, ordered and uniquely aligned to the
+    # raw down/up brackets; duplicate samples of dmesg are de-duplicated.
+    edge=dict(down=1,up=3.2,prior_speed="2500",post_speed="1000")
+    trace={**result,"samples":[{**r,"mode":0} for r in result["samples"]]}
+    lines=["[ 1.000001] QCA8081 wave7-diag: down-mode PHY C22.31=8544 2500base-x -> sgmii",
+           "[ 1.100001] lan wave7-diag: down-mode host prepare sgmii",
+           "[ 1.200001] PCS wave7-diag: down-mode PCS prepared sgmii",
+           "[ 1.300001] lan wave7-diag: down-mode host result=0",
+           "[ 3.210001] PCS wave7-diag: down-mode PCS reuse sgmii"]
+    log="\n".join(lines)
+    assert qualify_preparation(trace,edge,[log,log])["qualified"]
+    for i in range(5):
+        assert not qualify_preparation(trace,edge,["\n".join(lines[:i]+lines[i+1:])])["qualified"]
+    assert not qualify_preparation(trace,edge,[log.replace("1.300001","3.010001")])["qualified"]
+    assert not qualify_preparation(trace,edge,[log.replace("host result=0","host result=-5")])["qualified"]
+    assert not qualify_preparation(trace,{**edge,"prior_speed":"1000"},[log])["qualified"]
     print("PHY_MODE_SAMPLER_SELFTEST_PASS")
 
 def main():
