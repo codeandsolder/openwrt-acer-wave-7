@@ -254,6 +254,17 @@ def scan_scope_report(result, request_log):
             continue
         used.add(i)
         req["matched_scan"]=scan
+        # A nearby natural scan can itself cause a delayed gap; retain
+        # such samples, but separate them from isolated causal contrasts.
+        prior=[s["end"] for j,s in enumerate(result["scans"])
+               if j!=i and s["complete"] and s["end"]<=scan["start"]]
+        later=[s["start"] for j,s in enumerate(result["scans"])
+               if j!=i and s["start"]>=scan["end"]]
+        req["previous_scan_end_distance_s"]=scan["start"]-max(prior) if prior else None
+        req["next_scan_start_distance_s"]=min(later)-scan["end"] if later else None
+        req["isolated_postscan_window"]=(
+            (not prior or scan["start"]-max(prior)>=D(3)) and
+            (not later or min(later)-scan["end"]>=D(3)))
         req["tests"]=[]
         for test in result["tests"]:
             replies=sorted(test["replies"],key=lambda p:p["received"])
