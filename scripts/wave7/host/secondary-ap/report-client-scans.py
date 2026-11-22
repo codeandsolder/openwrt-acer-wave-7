@@ -18,6 +18,8 @@ REPLY = re.compile(r"^\[(\d+\.\d+)\].*icmp_seq=(\d+).*?time([=<])([0-9.]+) ms")
 OUTSTANDING = re.compile(r"^\[(\d+\.\d+)\] no answer yet for icmp_seq=(\d+)$")
 SUMMARY = re.compile(r"^(\d+) packets transmitted, (\d+) (?:packets )?received, (?:\+\d+ duplicates, )?.*packet loss")
 PING = re.compile(r"^PING (\S+)")
+SCAN_FREQS = re.compile(r"^scan finished: ([0-9]+(?: [0-9]+)*)(?:,|$)")
+SCOPE_LABEL = re.compile(r"(home|off24|off5|off6|full)-[12]")
 
 
 def parse_events(lines, iface):
@@ -55,8 +57,10 @@ def parse_events(lines, iface):
             if pending is None:
                 warnings.append("scan completion without preceding start")
                 continue
+            freqs=SCAN_FREQS.match(event)
             scans.append({**pending,"end":t,"complete":True,
-                          "aborted":event.startswith("scan aborted")})
+                          "aborted":event.startswith("scan aborted"),
+                          "frequencies_mhz":[int(x) for x in freqs[1].split()] if freqs else None})
             pending=None
     if pending is not None:
         scans.append({**pending,"end":previous,"complete":False})
@@ -204,6 +208,76 @@ def report(ping_log,event_log,iface,interval):
             "method":"receipt epoch minus displayed RTT (estimate); -O notices are observed unanswered-reply notifications, not send timestamps; missing packets have no measured send time; overlap is not causation"}
 
 
+def scan_scope_report(result, request_log):
+    """Correlate accepted requests to actual iw scan events, not intended scopes."""
+    requests={}
+    for line in request_log.splitlines():
+        epoch,label,status,freqs=line.split(",",3)
+        now=D(epoch)
+        frequencies=[int(f) for f in freqs.split()]
+        if (not SCOPE_LABEL.fullmatch(label) or not frequencies or
+                len(frequencies)!=len(set(frequencies)) or not now.is_finite()):
+            raise ValueError("invalid scope request log")
+        if status in ("request","busy-timeout"):
+            if label in requests:
+                raise ValueError("duplicate scope request")
+            requests[label]={"label":label,"requested_epoch":now,
+                             "requested_frequencies_mhz":frequencies,
+                             "status":status,"return_epoch":None}
+        elif status.startswith("return="):
+            req=requests[label]
+            if (req["status"]!="request" or now<req["requested_epoch"] or
+                    req["requested_frequencies_mhz"]!=frequencies):
+                raise ValueError("inconsistent scope return")
+            req["status"]=status
+            req["return_epoch"]=now
+        else:
+            raise ValueError("unknown scope status")
+
+    used=set()
+    for req in requests.values():
+        req["matched_scan"]=None
+        req["candidate_scan_count"]=0
+        if req["status"]!="return=0":
+            continue
+        candidates=[(i,scan) for i,scan in enumerate(result["scans"])
+                    if scan["start"]>=req["requested_epoch"] and
+                    scan["start"]<=req["return_epoch"]+D(2)]
+        req["candidate_scan_count"]=len(candidates)
+        if len(candidates)!=1:
+            continue
+        i,scan=candidates[0]
+        if (i in used or not scan["complete"] or scan["aborted"] or
+                not scan["associated_at_start"] or
+                sorted(scan.get("frequencies_mhz") or [])!=
+                sorted(req["requested_frequencies_mhz"])):
+            continue
+        used.add(i)
+        req["matched_scan"]=scan
+        req["tests"]=[]
+        for test in result["tests"]:
+            replies=sorted(test["replies"],key=lambda p:p["received"])
+            end=scan["end"]
+            covered=bool(replies and replies[0]["received"]<=end and
+                         replies[-1]["received"]>=end+D(3))
+            clusters=[c for c in test["missing_clusters"]
+                      if c["scan_end_epoch"]==end and c["first_notice_after_scan_s"] is not None
+                      and D(0)<=c["first_notice_after_scan_s"]<=D(3)]
+            # Only classify 'no recorded missing notices' inside the
+            # observation window; a missing send timestamp is unavailable.
+            post=[p for p in replies if end<=p["received"]<=end+D(3)]
+            req["tests"].append({"target":test["target"],"covered":covered,
+                                 "missing_clusters":clusters,
+                                 "missing_packets_with_notices":sum(len(c["sequences"]) for c in clusters),
+                                 "postscan_replies":len(post),
+                                 "max_postscan_rtt_ms":max((p["rtt_ms"] for p in post),default=None)})
+    return {"requests":list(requests.values()),
+            "matched_count":len(used),
+            "unmatched_completed_associated_scans":[s for i,s in enumerate(result["scans"])
+               if i not in used and s["complete"] and not s["aborted"] and s["associated_at_start"]],
+            "method":"Accepted iw trigger plus unique scan-start event and exact completed frequency list; natural background scans retained. Missing-probe notices are not TX timestamps."}
+
+
 def selftest():
     events="""100.000000: wlp2s0 (phy #0): connected to abc
 101.000000: wlp2s0 (phy #0): CQM event: RSSI (-60 dBm) went below threshold
@@ -241,6 +315,14 @@ def selftest():
             pass
         else:
             raise AssertionError("malformed ping accepted")
+    assert r["scans"][0]["frequencies_mhz"]==[2412]
+    req="101.005000,home-1,request,2412\n101.020000,home-1,return=0,2412\n"
+    scoped=scan_scope_report(r,req)
+    assert scoped["matched_count"]==1
+    assert scoped["requests"][0]["tests"][0]["missing_packets_with_notices"]==1
+    assert not scoped["requests"][0]["tests"][0]["covered"]
+    assert scan_scope_report(r,req.replace("2412","5180"))["matched_count"]==0
+    assert scan_scope_report(r,req.replace("return=0","return=1"))["matched_count"]==0
     print("CLIENT_SCAN_REPORT_SELFTEST_PASS")
 
 
@@ -250,6 +332,7 @@ if __name__=="__main__":
     p.add_argument("events",type=Path,nargs="?")
     p.add_argument("--iface",default="wlp2s0")
     p.add_argument("--interval",type=D,default=D(".25"))
+    p.add_argument("--requests",type=Path)
     p.add_argument("--selftest",action="store_true")
     args=p.parse_args()
     if args.selftest:
@@ -258,4 +341,6 @@ if __name__=="__main__":
         if args.ping is None or args.events is None or not args.interval.is_finite() or args.interval<=0:
             p.error("provide ping/event logs and a positive probe interval")
         result=report(args.ping.read_text(),args.events.read_text(),args.iface,args.interval)
+        if args.requests is not None:
+            result["scope_report"]=scan_scope_report(result,args.requests.read_text())
         print(json.dumps(result,indent=2,default=str))
