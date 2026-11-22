@@ -99,7 +99,15 @@ diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c b/drivers/net/wirel
  
  bool mt7925_mac_wtbl_update(struct mt792x_dev *dev, int idx, u32 mask)
  {
-@@ -1351,6 +1352,8 @@
+@@ -942,6 +943,7 @@
+ 		goto out_no_skb;
+ 
+ 	txs = le32_to_cpu(txs_data[0]);
++	trace_mt7925_lab_txs(wcid->idx, pid, txs);
+ 	info = IEEE80211_SKB_CB(skb);
+ 	if (!(txs & MT_TXS0_ACK_ERROR_MASK))
+ 		info->flags |= IEEE80211_TX_STAT_ACK;
+@@ -1351,6 +1353,8 @@
  			if (wcid) {
  				u32 count = FIELD_GET(MT_TXFREE_INFO_COUNT, info);
  
@@ -112,7 +120,7 @@ diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net
 new file mode 100644
 --- /dev/null
 +++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,182 @@
 +/* SPDX-License-Identifier: BSD-3-Clause-Clear */
 +#undef TRACE_SYSTEM
 +#define TRACE_SYSTEM mt7925_lab
@@ -265,6 +273,26 @@ new file mode 100644
 +
 +	TP_printk("wcid=%u count=%u status=%u",
 +		  __entry->wcid, __entry->count, __entry->status)
++);
++
++TRACE_EVENT(mt7925_lab_txs,
++	TP_PROTO(u16 wcid, u32 pid, u32 word0),
++	TP_ARGS(wcid, pid, word0),
++
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u32, pid)
++		__field(u32, word0)
++	),
++
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->pid = pid;
++		__entry->word0 = word0;
++	),
++
++	TP_printk("wcid=%u pid=%u word0=%u",
++		  __entry->wcid, __entry->pid, __entry->word0)
 +);
 +
 +#endif
