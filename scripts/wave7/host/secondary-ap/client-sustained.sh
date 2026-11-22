@@ -352,24 +352,27 @@ scan_scope() {
     sleep 4
 }
 scope_matrix() {
-    local round
+    local round failed=0
+    # One collision with an automatic scan does not invalidate later requests.
+    # Keep the strict trial failure while preserving the remaining evidence.
     sleep 2
     if (( mode_experiment )); then
         for round in 1 2; do
-            scan_scope "active24-$round" active 2412 || return 1
-            scan_scope "passive24-$round" passive 2412 || return 1
-            scan_scope "active5-$round" active 5180 || return 1
-            scan_scope "passive5-$round" passive 5180 || return 1
+            scan_scope "active24-$round" active 2412 || failed=1
+            scan_scope "passive24-$round" passive 2412 || failed=1
+            scan_scope "active5-$round" active 5180 || failed=1
+            scan_scope "passive5-$round" passive 5180 || failed=1
         done
-        return
+        return "$failed"
     fi
     for round in 1 2; do
-        scan_scope "home-$round" active 2412 5180 || return 1
-        scan_scope "off24-$round" active 2437 2462 || return 1
-        scan_scope "off5-$round" active 5200 5220 || return 1
-        scan_scope "off6-$round" active 5955 5975 || return 1
-        scan_scope "full-$round" active 2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5745 5765 5785 5805 5825 5955 5975 5995 6015 6035 6055 6075 6095 6115 6135 6155 6175 6195 6215 6235 6255 6275 6295 6315 6335 6355 6375 6395 6415 || return 1
+        scan_scope "home-$round" active 2412 5180 || failed=1
+        scan_scope "off24-$round" active 2437 2462 || failed=1
+        scan_scope "off5-$round" active 5200 5220 || failed=1
+        scan_scope "off6-$round" active 5955 5975 || failed=1
+        scan_scope "full-$round" active 2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5745 5765 5785 5805 5825 5955 5975 5995 6015 6035 6055 6075 6095 6115 6135 6155 6175 6195 6215 6235 6255 6275 6295 6315 6335 6355 6375 6395 6415 || failed=1
     done
+    return "$failed"
 }
 failed=0
 routes > "$out/routes-before.txt"
