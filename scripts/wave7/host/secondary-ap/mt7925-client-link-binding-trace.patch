@@ -1,0 +1,108 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/main.c b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -443,6 +443,12 @@
+ 	if (ret)
+ 		goto out;
+ 
++	trace_mt7925_lab_binding(mconf->mt76.idx, link_conf->link_id,
++				    mlink->wcid.idx, mlink->wcid.idx,
++				    link_conf->chanreq.oper.chan ?
++				    link_conf->chanreq.oper.chan->center_freq : 0,
++				    false, ieee80211_vif_is_mld(vif));
++
+ 	if (vif->txq) {
+ 		mtxq = (struct mt76_txq *)vif->txq->drv_priv;
+ 		mtxq->wcid = idx;
+@@ -1106,6 +1112,11 @@
+ 			goto out_pm;
+ 	}
+ 
++	trace_mt7925_lab_binding(mconf->mt76.idx, link_id, wcid->idx,
++				    mt76_wcid_primary(wcid)->idx,
++				    link_conf->chanreq.oper.chan ?
++				    link_conf->chanreq.oper.chan->center_freq : 0,
++				    true, ieee80211_vif_is_mld(vif));
+ 	mt76_connac_power_save_sched(&dev->mphy, &dev->pm);
+ 
+ 	return 0;
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -865,6 +865,12 @@
+ 
+ 		txwi[3] |= cpu_to_le32(MT_TXD3_BA_DISABLE);
+ 	}
++
++	/* Actual descriptor metadata, not a claim of RF link selection. */
++	trace_mt7925_lab_txdesc(mconf ? mconf->mt76.idx : 0xff,
++				  wcid->link_id, wcid->idx, pid, qid,
++				  le32_to_cpu(txwi[1]), le32_to_cpu(txwi[6]),
++				  is_8023, wcid->sta);
+ }
+ EXPORT_SYMBOL_GPL(mt7925_mac_write_txwi);
+ 
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -194,6 +194,60 @@
+ 		  __entry->absent, __entry->quota)
+ );
+ 
++TRACE_EVENT(mt7925_lab_binding,
++	TP_PROTO(u8 bss, u8 link, u16 wcid, u16 primary, u16 freq, u8 sta, u8 mld),
++	TP_ARGS(bss, link, wcid, primary, freq, sta, mld),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u16, wcid)
++		__field(u16, primary)
++		__field(u16, freq)
++		__field(u8, sta)
++		__field(u8, mld)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->wcid = wcid;
++		__entry->primary = primary;
++		__entry->freq = freq;
++		__entry->sta = sta;
++		__entry->mld = mld;
++	),
++	TP_printk("bss=%u link=%u wcid=%u primary=%u freq=%u sta=%u mld=%u",
++		  __entry->bss, __entry->link, __entry->wcid, __entry->primary, __entry->freq, __entry->sta, __entry->mld)
++);
++
++TRACE_EVENT(mt7925_lab_txdesc,
++	TP_PROTO(u8 bss, u8 link, u16 wcid, u32 pid, u8 qid, u32 word1, u32 word6, u8 encap, u8 sta),
++	TP_ARGS(bss, link, wcid, pid, qid, word1, word6, encap, sta),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u16, wcid)
++		__field(u32, pid)
++		__field(u8, qid)
++		__field(u32, word1)
++		__field(u32, word6)
++		__field(u8, encap)
++		__field(u8, sta)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->wcid = wcid;
++		__entry->pid = pid;
++		__entry->qid = qid;
++		__entry->word1 = word1;
++		__entry->word6 = word6;
++		__entry->encap = encap;
++		__entry->sta = sta;
++	),
++	TP_printk("bss=%u link=%u wcid=%u pid=%u qid=%u word1=%u word6=%u encap=%u sta=%u",
++		  __entry->bss, __entry->link, __entry->wcid, __entry->pid, __entry->qid, __entry->word1, __entry->word6, __entry->encap, __entry->sta)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
