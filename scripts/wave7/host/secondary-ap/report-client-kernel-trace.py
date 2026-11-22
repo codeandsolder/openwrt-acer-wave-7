@@ -82,6 +82,44 @@ def parse(text):
             "first_anchor":lo_t,"last_anchor":hi_t,"anchors":len(seen),
             "trace_count":int(counters[1]),"zero_loss_stats":stats}
 
+# Source-backed Connac3 definitions in mt76_connac_mcu.h and
+# mt76_connac3_mac.h; preserve raw values for unknown event/status codes.
+EIDS={3:"HIF_CTRL",4:"FW_LOG",10:"COREDUMP",12:"BEACON_LOSS",
+      13:"PS_SYNC",14:"SCAN_DONE",39:"ROC",40:"MBMC",45:"TX_DONE",
+      65:"RSSI_MONITOR",86:"NAN"}
+
+def metadata(selection,lo,hi,start):
+    mcu=Counter()
+    frees=Counter()
+    txs=Counter()
+    samples=[]
+    for when,name,task,payload,cpu in selection:
+        if not name.startswith("mt7925_lab_"):
+            continue
+        kv={k:int(v) for k,v in re.findall(r"(\w+)=(\d+)",payload)}
+        if name=="mt7925_lab_mcu_rx":
+            eid,option=kv["eid"],kv["option"]
+            label=EIDS.get(eid,"UNKNOWN") if option&4 else "solicited_or_other"
+            mcu[(eid,option,label)]+=1
+            if option&4 and eid!=45:
+                samples.append({"offset_s":when+(lo+hi)/2-start,"name":name,**kv})
+        elif name=="mt7925_lab_txfree":
+            frees[(kv["wcid"],kv["status"],kv["count"])]+=1
+        elif name=="mt7925_lab_txs":
+            word=kv["word0"]
+            txs[(kv["wcid"],(word>>16)&7,bool(word&(1<<22)),
+                 bool(word&(1<<21)),bool(word&(1<<20)),bool(word&(1<<19)))]+=1
+        else:
+            samples.append({"offset_s":when+(lo+hi)/2-start,"name":name,**kv})
+    return {"mcu":[{"eid":e,"option":o,"kind":k,"n":n}
+                   for (e,o,k),n in sorted(mcu.items())],
+            "txfree":[{"wcid":w,"status":s,"attempt_count_field":c,"n":n}
+                      for (w,s,c),n in sorted(frees.items())],
+            "txs":[{"wcid":w,"ack_error":a,"ba_error":b,"ps_flag":p,
+                     "txop_timeout":t,"bip_error":i,"n":n}
+                    for (w,a,b,p,t,i),n in sorted(txs.items())],
+            "state_metadata":samples}
+
 def phase(events,lo,hi,start,end):
     # Only count events wholly inside the requested interval for every
     # offset consistent with observed clock brackets.
@@ -105,7 +143,8 @@ def phase(events,lo,hi,start,end):
                      "mt7925_mlo_pm_work","mt7925_mcu_uni_bss_ps","mt7925_mcu_set_dbdc"}]
     return {"start":start,"end":end,"duration_s":end-start,
             "counts":dict(counts),"ping_task_counts":dict(ping),
-            "state_events":interesting}
+            "state_events":interesting,
+            "firmware_metadata":metadata(selection,lo,hi,start)}
 
 def analyze(trace,timing):
     lo,hi=trace["offset_lo"],trace["offset_hi"]
@@ -164,6 +203,16 @@ TRACE_CLEANUP rc=0
             pass
         else:
             raise AssertionError("rejected trace accepted")
+    md=metadata([
+        (D(1),"mt7925_lab_mcu_rx","x","mt7925_lab_mcu_rx: eid=13 seq=0 option=4 ext_eid=0 length=44",0),
+        (D(1),"mt7925_lab_mcu_rx","x","mt7925_lab_mcu_rx: eid=13 seq=2 option=0 ext_eid=0 length=44",0),
+        (D(1),"mt7925_lab_txfree","x","mt7925_lab_txfree: wcid=4 count=3 status=2",0),
+        (D(1),"mt7925_lab_txs","x","mt7925_lab_txs: wcid=4 pid=7 word0=4325376",0)
+    ],D(0),D(0),D(0))
+    assert any(x["kind"]=="PS_SYNC" for x in md["mcu"])
+    assert any(x["kind"]!="PS_SYNC" for x in md["mcu"])
+    assert md["txfree"]==[{"wcid":4,"status":2,"attempt_count_field":3,"n":1}]
+    assert md["txs"][0]["ack_error"]==2 and md["txs"][0]["ba_error"]
     print("CLIENT_KERNEL_TRACE_SELFTEST_PASS")
 
 if __name__=="__main__":
