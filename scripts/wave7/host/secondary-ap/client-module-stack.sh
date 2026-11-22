@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
 variant=$1
-[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-prefix22 || $variant == upstream-prefix24 || $variant == upstream-mlo ]] || exit 2
+[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-prefix22 || $variant == upstream-prefix23 || $variant == upstream-prefix23-trace || $variant == upstream-prefix24 || $variant == upstream-mlo ]] || exit 2
 action=$2
 kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
@@ -131,6 +131,52 @@ declare -A candidate_id=(
     [mt7925e]=fa2ef1e5e775fc6ff70fb4e634d8075ba84d8991
 )
 ;;
+upstream-prefix23)
+declare -A candidate_hash=(
+    [mt76]=15e03bce2e5814e2394a2941eb40413433984d9ba02671596a10db5fa5eaff58
+    [mt76_connac_lib]=4eb1571db511039409fb2d3facab29d109046983643af7215a7ab0d4a5a7c75c
+    [mt792x_lib]=4bc0019a94ba540f662f14bf0f6a4840eb8c6ef8a050940461927c9e4885ffe4
+    [mt7925_common]=06444265c225bf04b16401e544f5b8b4640f08645ab6a95f603796e7c3f27839
+    [mt7925e]=184ee86570cf94d2abf9e2b8ce98de20b59a4994e5fb9eafa6421061002126a0
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=100D6C0163D39BCE008410D
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=5341a96d22bf47573992ec0d5b6d3a714b4330ee
+    [mt76_connac_lib]=39c0e201d49740bfbabd443f27a9acaf00788069
+    [mt792x_lib]=aa2dc137e393f33cc380c2a6ed5cc37b4fc20e10
+    [mt7925_common]=403a91903e14bcccbf7d727f8b2027f87b62013b
+    [mt7925e]=94468dc6024a95ac45aa8175bc783bb20b402f4a
+)
+;;
+upstream-prefix23-trace)
+declare -A candidate_hash=(
+    [mt76]=0a2f906db471ff0755fcab452f9b55d7d30c93d8ace4e57e2aa039fdd36970be
+    [mt76_connac_lib]=5301b50cd508553cdc1b7a374e05f13086ba6bbd439c4970157d18c03553857e
+    [mt792x_lib]=6b3d3cf316666dbe62c186d07c5b56907ec2a5fc8ae7f3cf7510907f77d2b211
+    [mt7925_common]=2e881ecca3119685ddd7ab3caa9f258c31319f3308ca53b9f7b0e7a92389ae4d
+    [mt7925e]=61bd44cb2757aa72cc663f47d731284b420ba3fbd3be3b3f8f02591f375114ce
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=12D80BEB68200F12F3BB55A
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=82f4d82c45eae0e2cd9a55dd38d2393300105186
+    [mt76_connac_lib]=7d7e02cef4b91a9de70692a01bc9291ac78ada21
+    [mt792x_lib]=4310c719e214cd87d6a9302f0fd75672bae1b3e0
+    [mt7925_common]=c636f0539525c0531c028af496ce362a15715166
+    [mt7925e]=f1b7d2a93fe56e8968698ce9e4ea883bb5d750e1
+)
+;;
 upstream-prefix24)
 declare -A candidate_hash=(
     [mt76]=f929e473d2eaefaa42beb2060906280f177a21bec22db07aa2079147697ab2ab
@@ -255,7 +301,7 @@ check_original() {
     disk_original
     loaded_closure original
     local other
-    for other in quota upstream-base upstream-prefix12 upstream-prefix22 upstream-prefix24 upstream-mlo; do
+    for other in quota upstream-base upstream-prefix12 upstream-prefix22 upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo; do
         [[ ! -e /run/wave7-$other-stack ]]
         if systemctl is-active --quiet "wave7-$other-rollback.timer"; then return 1; fi
     done
