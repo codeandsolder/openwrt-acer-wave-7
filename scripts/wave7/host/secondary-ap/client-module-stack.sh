@@ -5,7 +5,7 @@ set -Eeuo pipefail
 variant=$1
 variants=(
     quota upstream-base upstream-prefix12 upstream-prefix13 upstream-prefix14 upstream-prefix15 upstream-prefix17 upstream-prefix22
-    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
+    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
 )
 valid=0
 for known in "${variants[@]}"; do
@@ -321,6 +321,29 @@ declare -A candidate_id=(
     [mt792x_lib]=42400ac1ac088a43941a115f2b5125a29421ba90
     [mt7925_common]=10cb7a27c0b2f19be296fa59bcc2aa49a3517006
     [mt7925e]=ea28967cf52c949d793fdcf61f7ba7fab64b6c75
+)
+;;
+upstream-prefix22-primary-trace)
+declare -A candidate_hash=(
+    [mt76]=dd4e8fdb2898310bae91f8ee37843c0fbc0063aaaad9f4fff1cf4eefda542be6
+    [mt76_connac_lib]=c834b247528a87d618ff989df3b8b7abea19489a308e1d86f7e1caf72d63738b
+    [mt792x_lib]=8e841ae376eeb06f2b3972bd190b3ccf6db7893ae16b38ae16fba8c214d3f07b
+    [mt7925_common]=3a925db740974775857a935567d99e962429390bef242d97dd4249fc05cc2de5
+    [mt7925e]=55ed4ecbe2a2088a10aa2f9ea7033888ffe2711ad1b1b6521febd1c85d0a4cc8
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=5874D3F6060311D860907C3
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=d6a4ef31ea67087f50bc3efa1a5d2bab9cc4351a
+    [mt76_connac_lib]=a524279c9c051984b3f02697c1472eae241b3c88
+    [mt792x_lib]=0868bd3741d96ebee25c0bd32a4f67c6eb50f3b3
+    [mt7925_common]=eeaa318c0be995d7b48bb19eb3178818f58f42c8
+    [mt7925e]=41e94948ee0fad810bba2eb8332dee55357fbdd5
 )
 ;;
 upstream-prefix22-bss-trace)
