@@ -5,10 +5,11 @@ from decimal import Decimal as D
 import json
 from pathlib import Path
 import re
+import statistics
 
 MARKER=re.compile(
     r"^(\d+\.\d+) .*wave7-diag: no-split scan seq=(\d+) bss=(\d+) "
-    r"valid=(0x[0-9a-fA-F]+) active=(0x[0-9a-fA-F]+) freq=(\d+) passive=([01])$"
+    r"valid=(0x[0-9a-fA-F]+) active=(0x[0-9a-fA-F]+|0) freq=(\d+) passive=([01])$"
 )
 
 
@@ -70,6 +71,27 @@ def qualify(scope,timing,markers):
             "method":"Driver diagnostic proves branch selection before the MCU request, not firmware compliance. Exact frequency/mode, bounded same-host request timestamp, unique accepted completed scan and isolated covered timing required."}
 
 
+def compare(baseline,candidate_timing,qualified):
+    def summary(windows):
+        gaps=[D(w["common_arrival_silence"]["seconds_without_observed_reply"]) for w in windows]
+        return {"n":len(windows),"any_path_loss":sum(any(p["missing_sequences"] for p in w["paths"]) for w in windows),
+                "all_paths_loss":sum(all(p["missing_sequences"] for p in w["paths"]) for w in windows),
+                "silence_min_s":min(gaps,default=None),"silence_max_s":max(gaps,default=None),
+                "silence_median_s":statistics.median(gaps) if gaps else None}
+    a=baseline["windows"]
+    b=[r["timing"] for r in qualified["requests"] if r["marker"] is not None
+       and r["isolated"] and r["timing"] is not None]
+    modes=sorted({w["label"].rsplit("-",1)[0] for w in a+b})
+    return {"baseline":summary(a),"candidate":summary(b),
+            "by_mode":[{"mode":mode,
+               "baseline":summary([w for w in a if w["label"].rsplit("-",1)[0]==mode]),
+               "candidate":summary([w for w in b if w["label"].rsplit("-",1)[0]==mode])} for mode in modes],
+            "unchanged_multichannel_controls":{
+                "baseline":summary(baseline["isolated_unattributed_multichannel"]),
+                "candidate":summary(candidate_timing["isolated_unattributed_multichannel"])},
+            "method":"Matched workload, same compiler/kernel/firmware/AP. Candidate singles counted only when marker-qualified; multichannel controls retain split flag. Descriptive contrasts, not a substitute for zero-loss acceptance."}
+
+
 def selftest():
     line="100.010000 wifi7-lab kernel: mt7925e 0000:02:00.0: wave7-diag: no-split scan seq=129 bss=0 valid=0x3 active=0x3 freq=2412 passive=1"
     m=parse_markers([line])
@@ -83,6 +105,13 @@ def selftest():
     assert q["qualified_isolated_all_paths_loss"]==0
     assert qualify(r,t,m+m)["matched_marker_count"]==0
     assert qualify(r,t,parse_markers([line.replace("passive=1","passive=0")]))["matched_marker_count"]==0
+    assert parse_markers([line.replace("active=0x3","active=0")])[0]["active"]==0
+    t["windows"][0]["common_arrival_silence"]={"seconds_without_observed_reply":"0.7"}
+    t["isolated_unattributed_multichannel"]=[]
+    q=qualify(r,t,m)
+    c=compare(t,t,q)
+    assert c["candidate"]["n"]==1 and c["candidate"]["silence_median_s"]==D("0.7")
+
     print("NOSPLIT_REPORT_SELFTEST_PASS")
 
 
@@ -91,6 +120,7 @@ if __name__=="__main__":
     p.add_argument("scope",type=Path,nargs="?")
     p.add_argument("timing",type=Path,nargs="?")
     p.add_argument("markers",type=Path,nargs="?")
+    p.add_argument("--baseline",type=Path)
     p.add_argument("--selftest",action="store_true")
     a=p.parse_args()
     if a.selftest:
@@ -98,5 +128,9 @@ if __name__=="__main__":
     else:
         if a.scope is None or a.timing is None or a.markers is None:
             p.error("provide combined scope report, timing and driver markers")
-        print(json.dumps(qualify(json.loads(a.scope.read_text()),json.loads(a.timing.read_text()),
-            parse_markers(a.markers.read_text().splitlines())),indent=2,default=str))
+        timing=json.loads(a.timing.read_text())
+        result=qualify(json.loads(a.scope.read_text()),timing,
+            parse_markers(a.markers.read_text().splitlines()))
+        if a.baseline is not None:
+            result["comparison"]=compare(json.loads(a.baseline.read_text()),timing,result)
+        print(json.dumps(result,indent=2,default=str))
