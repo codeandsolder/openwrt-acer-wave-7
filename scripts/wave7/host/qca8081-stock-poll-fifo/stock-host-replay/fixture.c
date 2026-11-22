@@ -4,7 +4,7 @@ typedef unsigned char u8;
 enum { CASE, POLL, BRIDGE, TX, RX, DELAY, MODE_RECORD, MODE_APPLY,
        GATE, RATE, MAC_SPEED, DUPLEX, TX_PAUSE, RX_PAUSE, REG_READ, REG_WRITE,
        NOTIFY, FDB, MODE_STATUS, END, ERROR, MII_READ, MMD_READ, MMD_WRITE,
-       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE, MAC_PARAM_WRITE, WORK_CANCEL };
+       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE, MAC_PARAM_WRITE, WORK_CANCEL, MODE_WRAPPER, MODE_SYS, MODE_PORT5_CLOCK, MODE_TX, MODE_RX, MODE_UNIPHY, MODE_MUX, MODE_CACHE, MODE_RET };
 struct event { u32 type, a, b, c; };
 static struct event trace[131072];
 static u32 count;
@@ -26,6 +26,8 @@ __attribute__((noreturn)) static void finish(u32 status) {
 __attribute__((noreturn)) void mock_unexpected(void) { record(ERROR,0,0,0); finish(91); }
 #define CHECK(x) do { if (!(x)) { record(ERROR,__LINE__,0,0); finish(92); } } while (0)
 #define PORT_CHECK CHECK(dev==0 && port==2)
+static u32 real_mode, applying, wrappers[2], mode_fail;
+u32 mock_status_global[7];
 static u32 host_mode, copper_mode, phy_info[160], ctrl, status_error;
 static u32 status[5], ctx[0x600/4];
 static u32 bridge_ctrl, mac_enable;
@@ -47,10 +49,13 @@ static u32 selector_feature;
 u32 mock_hsl_port_feature_get(u32 dev,u32 port,u32 feature) {
     PORT_CHECK;
     if(feature==4) return selector_feature;
-    CHECK(feature==64); return 0;
+    CHECK(feature==64 || (applying && feature==128)); return 0;
 }
 u32 mock_hppe_mac_port_valid_check(u32 dev,u32 port) { PORT_CHECK; return 1; }
-u32 mock_hsl_port_prop_check(u32 dev,u32 port,u32 prop) { PORT_CHECK; CHECK(prop==0 || prop==2); return 1; }
+u32 mock_hsl_port_prop_check(u32 dev,u32 port,u32 prop) {
+    if(applying) { CHECK(dev==0 && (port==1 || port==2) && (prop==2 || prop==3)); return prop==2; }
+    PORT_CHECK; CHECK(prop==0 || prop==2); return 1;
+}
 static u32 synthetic_status(u32 dev,u32 phy,u32 *out) {
     CHECK(dev==0 && phy==24);
     for(u32 i=0;i<5;i++) out[i]=status[i]; return status_error;
@@ -75,10 +80,49 @@ u32 mock_adpt_hppe_port_interface_mode_status_get(u32 dev,u32 port,u32 *out) {
 u32 *mock_hsl_phy_info_get(u32 dev) { CHECK(dev==0); return phy_info; }
 u32 mock__adpt_hppe_port_interface_mode_apply(u32 dev,u32 flag) {
     CHECK(dev==0 && flag==0); host_mode=phy_info[102]; record(MODE_RECORD,host_mode,0,0);
-    record(MODE_APPLY,host_mode,0,0); return 0;
+    record(MODE_APPLY,host_mode,0,0);
+    if(!real_mode) return 0;
+    applying=1;
+    u32 ret=((u32 (*)(u32,u32))0x01009c3c)(dev,flag);
+    applying=0;
+    record(MODE_CACHE,ctx[(0x208+8)/4],ctx[(0x248+8)/4],ctx[(0x288+8)/4]);
+    record(MODE_RET,ret,ctx[(0x348+8)/4],ctx[(0x388+8)/4]);
+    return ret;
 }
 u32 mock_ssdk_dt_global_get_mac_mode(u32 dev,u32 instance) {
-    CHECK(dev==0 && instance==1); return 0x0c;
+    CHECK(dev==0);
+    if(real_mode) { CHECK(instance<2); return wrappers[instance]; }
+    CHECK(instance==1); return 0x0c;
+}
+u32 mock_ssdk_dt_global_set_mac_mode(u32 dev,u32 instance,u32 mode) {
+    CHECK(applying && dev==0 && instance<2);
+    wrappers[instance]=mode; record(MODE_WRAPPER,instance,mode,0); return 0;
+}
+void mock_ssdk_gcc_uniphy_sys_set(u32 dev,u32 instance,u32 enable) {
+    CHECK(applying && dev==0 && instance<2);
+    record(MODE_SYS,instance,enable,0);
+}
+void mock_ssdk_uniphy_port5_clock_source_set(void) {
+    CHECK(applying); record(MODE_PORT5_CLOCK,0,0,0);
+}
+u32 mock_mode_tx_gate(u32 dev,u32 port,u32 val) {
+    CHECK(applying && dev==0 && port==2 && val==0);
+    record(MODE_TX,port,val,0); return 0;
+}
+u32 mock_mode_rx_gate(u32 dev,u32 port,u32 val) {
+    CHECK(applying && dev==0 && port==2 && val==0);
+    record(MODE_RX,port,val,0); return 0;
+}
+u32 mock_adpt_hppe_uniphy_mode_set(u32 dev,u32 instance,u32 mode) {
+    CHECK(applying && dev==0 && instance==1 && (mode==12 || mode==15));
+    record(MODE_UNIPHY,instance,mode,0); return mode_fail==1?0xfffffffbu:0;
+}
+u32 mock_adpt_hppe_port_mux_mac_type_set(u32 dev,u32 port,u32 m0,u32 m1,u32 m2) {
+    CHECK(applying && dev==0 && port==2 && m0==12 && m2==255 && (m1==12 || m1==15));
+    record(MODE_MUX,port,m1,0); return mode_fail==2?0xfffffffbu:0;
+}
+int mock_printk(const char *fmt, ...) {
+    (void)fmt; CHECK(applying && mode_fail); return 0;
 }
 u32 mock_adpt_ppe_type_get(u32 dev) { CHECK(dev==0); return 3; }
 u32 mock_hsl_port_phyid_get(u32 dev,u32 port) { PORT_CHECK; return 0x004dd101; }
@@ -320,6 +364,31 @@ static void parameter_case(u32 id,u32 offset,u32 value,u32 expected_reg,u32 expe
     record(END,actual,0,0);
     param_case=0;
 }
+/* New cases execute mode apply in the actual worker, with physical
+ * mode/clock/mux hardware calls as explicit boundaries. Port1 remains
+ * on forced SGMII+; port2's mode is the raw PHY report. */
+static void mode_apply_case(u32 id,u32 old_link,u32 speed,u32 old_speed,u32 old_mode,u32 new_mode,u32 fail) {
+    real_mode=1;mode_fail=fail;
+    wrappers[0]=12;wrappers[1]=old_mode==4?15:12;
+    phy_info[101]=6;phy_info[102]=old_mode;
+    /* Original .bss structure is relocated to writable fixture storage. */
+    static u32 devices[3];
+    devices[0]=(u32)ctx;
+    mock_status_global[6]=(u32)devices;
+    run_case(id,old_link,old_speed,1,0,0,!old_link,speed,1,0,0,old_mode,new_mode,0);
+    real_mode=0;mode_fail=0;
+}
+/* Preserve the actual cache across subsequent worker invocations. */
+static void mode_followup(u32 id,u32 link,u32 speed,u32 mode) {
+    record(CASE,id,0,0);
+    real_mode=1;mode_fail=0;full_path=0;status_error=0;
+    mac_gate_count=0;
+    status[0]=link;status[1]=speed;status[2]=1;status[3]=status[4]=0;
+    copper_mode=mode;
+    ((void (*)(void *))0x0100adec)(ctx);
+    record(END,ctx[(0x208+8)/4],ctx[(0x248+8)/4],ctx[(0x288+8)/4]);
+    real_mode=0;
+}
 void _start(void) {
     run_case(0,0,1000,1,0,0, 0,1000,1,0,0,4,4,0);
     run_case(1,1,1000,1,0,0, 1,1000,1,0,0,4,4,0);
@@ -365,6 +434,20 @@ void _start(void) {
         const u32 chips[]={0x20,0xee,0x15,0x42,0x20};
         lifecycle_case(37+i,chips[i/2],i<8,!(i&1));
     }
+    mode_apply_case(47,0,1000,1000,4,4,0);
+    mode_apply_case(48,0,1000,1000,6,4,0);
+    mode_apply_case(49,0,2500,1000,4,6,0);
+    mode_apply_case(50,0,1000,2500,6,4,0);
+    mode_apply_case(51,1,1000,1000,6,4,0);
+    mode_apply_case(52,0,1000,1000,6,4,1);
+    mode_apply_case(53,0,1000,1000,6,4,2);
+    mode_apply_case(54,1,1000,1000,4,4,0);
+    mode_apply_case(55,0,1000,1000,6,4,0);
+    mode_followup(56,1,1000,4);
+    mode_followup(57,0,1000,4);
+    mode_followup(58,1,1000,4);
+    mode_apply_case(59,1,1000,1000,6,4,0);
+    mode_followup(60,1,1000,4);
     const u32 speeds[]={10,100,1000,2500};
     u32 id=100;
     for(u32 os=0;os<4;os++) for(u32 od=0;od<2;od++) {

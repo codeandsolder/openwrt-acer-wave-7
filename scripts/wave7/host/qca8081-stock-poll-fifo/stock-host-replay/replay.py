@@ -38,6 +38,12 @@ RANGES += [(0x88c4, 0x8990), (0x6210, 0x63a4),
            (0x70b4, 0x7164), (0x7c808, 0x7c834),
            (0x23f50, 0x23fac), (0x7ac90, 0x7aca4)]
 RANGES += [(0x917dc, 0x91840), (0x91dec, 0x91eec)]
+# Real mode-apply decisions and status-cache initialization. The
+# original call site is dispatched through the fixture so the original
+# matrix retains its deliberately mocked mode-apply boundary.
+RANGES += [(0x9c3c, 0xa338), (0x6b8c, 0x6cd4), (0x92fe0, 0x930a4)]
+CALL_MOCKS = {0xa3d4: "_adpt_hppe_port_interface_mode_apply",
+              0xa040: "mode_tx_gate", 0xa054: "mode_rx_gate"}
 LOCAL_MOCKS = {0x6ddc: "tx_pause", 0x6f38: "rx_pause", 0x8990: "selector_return"}
 FIT_SHA = "a9e7d543e61bdbd91521798875a097733b54393f72d78278eaeac0059241f833"
 KERNEL_SHA = "666960caa4e2f52af4d42f150233aabc4ff8621076c6616c46a15a8e91fd1f9f"
@@ -173,7 +179,10 @@ def execute(module, out, dest, metadata):
         typ = info & 255
         old = word(image, off)
         if typ == 2:  # R_ARM_ABS32
-            if name == ".text":
+            if off == 0x930a0:
+                assert name == ".bss" and old == 0xa328
+                target = syms["mock_status_global"]
+            elif name == ".text":
                 assert included(old) or old in LOCAL_MOCKS, hex(old)
                 target = BASE + old
             elif name in data_offsets:
@@ -183,7 +192,9 @@ def execute(module, out, dest, metadata):
             put(image, off, target)
         elif typ in (28, 29):  # R_ARM_CALL/JUMP24
             assert old & 0xffffff == 0xfffffe, (hex(off), hex(old))
-            if ndx == stock.names.index(".text") and included(value):
+            if off in CALL_MOCKS:
+                target = syms["mock_" + CALL_MOCKS[off]]
+            elif ndx == stock.names.index(".text") and included(value):
                 target = BASE + value
             elif "mock_" + name in syms:
                 target = syms["mock_" + name]
@@ -210,7 +221,7 @@ def execute(module, out, dest, metadata):
     names = ["CASE", "POLL", "BRIDGE", "TX", "RX", "DELAY", "MODE_RECORD", "MODE_APPLY",
              "GATE", "RATE", "MAC_SPEED", "DUPLEX", "TX_PAUSE", "RX_PAUSE", "REG_READ", "REG_WRITE",
              "NOTIFY", "FDB", "MODE_STATUS", "END", "ERROR", "MII_READ", "MMD_READ",
-             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE", "WORK_CANCEL"]
+             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE", "WORK_CANCEL", "MODE_WRAPPER", "MODE_SYS", "MODE_PORT5_CLOCK", "MODE_TX", "MODE_RX", "MODE_UNIPHY", "MODE_MUX", "MODE_CACHE", "MODE_RET"]
     result = [{"event": names[e], "a": a, "b": b, "c": c} for e,a,b,c in events]
     if proc.returncode:
         print(result[-12:])
@@ -237,7 +248,7 @@ def check(events):
         return [e["event"] for e in cases[i]]
     def values(i, name):
         return [(e["a"],e["b"],e["c"]) for e in cases[i] if e["event"] == name]
-    assert set(cases) == set(range(47)) | set(range(100,2404))
+    assert set(cases) == set(range(61)) | set(range(100,2404))
     for i in range(9):
         assert ops(i)[0] == "POLL" and ops(i)[-1] == "END"
     for i in (0, 1, 7):
@@ -335,9 +346,51 @@ def check(events):
         else:
             assert ops(i) == ["END"]
             assert values(i,"END") == [(2**32-(19 if i<45 else 21),0,0)]
+    # This boundary executes actual stock mode application, including
+    # its per-device cache initialization; hardware operations are mocks.
+    assert ops(47)==ops(3)
+    assert ops(54)==ops(2)
+    mode_prefix=["MODE_WRAPPER","MODE_SYS","MODE_WRAPPER","MODE_SYS","MODE_PORT5_CLOCK",
+                 "MODE_TX","MODE_RX","MODE_UNIPHY","MODE_MUX","MODE_CACHE","MODE_RET"]
+    def mode_apply(i, wrapper, fail=0):
+        prefix=mode_prefix.copy()
+        if fail==1: prefix.remove("MODE_MUX")
+        o=ops(i)
+        start=o.index("MODE_APPLY")+1
+        assert o[start:start+len(prefix)]==prefix,(i,o)
+        assert values(i,"MODE_WRAPPER")==[(0,12,0),(1,wrapper,0)]
+        assert values(i,"MODE_SYS")==[(0,1,0),(1,1,0)]
+        assert values(i,"MODE_TX")==values(i,"MODE_RX")==[(2,0,0)]
+        assert values(i,"MODE_UNIPHY")==[(1,wrapper,0)]
+        assert values(i,"MODE_MUX")==([] if fail==1 else [(2,wrapper,0)])
+        assert values(i,"MODE_CACHE")==[(0,1000,1) if fail else (0,65535,65535)]
+        assert values(i,"MODE_RET")==[(2**32-5 if fail else 0,0,0)]
+    for i in (48,49,50,51,55,59):
+        mode_apply(i,12 if i==49 else 15)
+    for i in (52,53):
+        mode_apply(i,15,i-51)
+        assert values(i,"END")==[(1,1000,1)]
+        assert ops(i)[-5:]==["TX","RX","BRIDGE","NOTIFY","END"]
+    for i in (48,55):
+        assert values(i,"END")==[(1,65535,65535)]
+        assert not any(values(i,n) for n in ("GATE","RATE","REG_WRITE","MAC_SPEED","DUPLEX"))
+    for i in (51,59):
+        assert values(i,"END")==[(0,65535,65535)]
+        assert not values(i,"RATE")
+    # A steady-up poll does not heal an invalidated tuple. Only the
+    # next actual link-down/up cycle reprograms speed and duplex.
+    assert ops(56)==["POLL","END"] and values(56,"END")==[(1,65535,65535)]
+    assert ops(57)==ops(2) and values(57,"END")==[(0,65535,65535)]
+    for i,speed,rate in ((49,2500,312500000),(50,1000,125000000),(58,1000,125000000),(60,1000,125000000)):
+        assert values(i,"GATE")==[(22,0,0),(23,0,0),(22,1,0),(23,1,0)]
+        assert values(i,"RATE")==[(2,rate,0),(3,rate,0)]
+        assert values(i,"REG_WRITE")==[(1,0x480,0xa5a5804c),(1,0x480,0xa5a5884c)]
+        assert values(i,"MAC_SPEED")==[(speed,0,0)] and values(i,"DUPLEX")==[(1,0,0)]
+        assert values(i,"END")==[(1,speed,1)]
+        if i in (58,60): assert not values(i,"MODE_APPLY")
     def decode(n):
         return n>>16,(n&0xffff)>>4,(n>>2)&1,(n>>1)&1,n&1
-    summary = dict(named_cases=47,parameter_cases=12,lifecycle_cases=10,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
+    summary = dict(named_cases=61,mode_apply_cases=14,parameter_cases=12,lifecycle_cases=10,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
                    unchanged_up_edge=0,changed_up_edge=0,mode_applies=0,
                    rate_changes=0,adapter_pulses=0)
     tuples = set()

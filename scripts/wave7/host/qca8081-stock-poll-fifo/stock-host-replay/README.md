@@ -134,3 +134,45 @@ remains the existing approved 0491 matched 1G reconnect; isolate any
 host-side follow-up so it does not confound that result.
 
 See [Linux relink design](linux-relink-plan.md) for a scoped prospective experiment.
+
+## Actual mode-apply boundary (14 additional cases)
+
+Execute original ARM mode application at 0x9c3c, its instance1
+wrapper derivation at 0x6b8c and status initialization at 0x92fe0.
+The fixture models port1 as forced 2.5G SGMII+ (wrapper12), port2
+as PHY24, and third wrapper absent. Port-property answers are
+explicit simulation inputs; physical UNIPHY, MAC mux, SYS reset,
+port5 clock and mode-apply TX/RX operations remain mock boundaries.
+The cache-init literal at 0x930a0 is relocated to a writable
+fixture structure with the actual device-context pointer at +0x18.
+
+* Raw PHY mode mismatch invokes mode application on either edge.
+  Mode4 => wrapper15 (SGMII); mode6 => wrapper12 (SGMII+).
+  With port1 unchanged, mode apply updates wrapper records and
+  requests SYS enable for both, then port5 clock-source setup.
+  Only changed instance1 executes port2 TX/RX disable, mode set,
+  MAC mux set, and status-cache initialization.
+* Successful mode change clears cached link, sets speed and duplex
+  to 0xffff, leaves non-forced pause cache values intact. Crucially,
+  the worker at 0xb074 computes the tuple-changed boolean BEFORE
+  mode check at 0xb094. An unchanged tuple + mode mismatch on up
+  performs mode apply but skips the explicit clock/rate/adapter
+  block, and ends with cached link1 but speed/duplex invalid.
+  A subsequent steady-up poll does not repair that cache. The next
+  down/up cycle does. A mismatch on down invalidates the cache
+  before the following up's tuple comparison, forcing reprogramming.
+* A genuine speed change through mode apply executes the clock
+  gate/rate/duplex/adapter operations. This is a synthetic control
+  path for 2.5G; MAC-specific 2.5G hardware operations remain mocked.
+* Injected mode-set or mux failure demonstrates the original worker
+  still enables TX/RX/bridge and notifies link up, and the original
+  mode record was already updated. Do not reproduce that behavior.
+
+61 named cases and the unchanged 2304-case transition matrix pass.
+New cases 47–60 include same-mode controls, up/down mismatch,
+both speed transitions, two failures and sequential polls using the
+same actual context. This does NOT establish the real PHY mode during
+a warm 1G flap. Observe raw C22.31 during down/up before choosing
+a new behavioral patch; steady-state 52-field comparisons cannot
+exclude transient mode changes. Do not copy shared SYS reset or
+port5 operations into the direct-path driver.
