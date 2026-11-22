@@ -66,14 +66,28 @@ def first_link(log, expected):
             t, mode, ctrl, sts, speed = m.groups()
             markers.append(dict(t=float(t), mode=int(mode,16), ctrl=int(ctrl,16),
                                 status=int(sts,16), speed=int(speed)))
-    assert status and status[0]["seq"] == 1, "first PHY status not captured"
-    assert all(y["seq"] > x["seq"] and y["t"] > x["t"] for x,y in zip(status,status[1:])), "ambiguous PHY status history"
-    up = next((s for s in status if s["link"]), None)
-    assert up and up["speed"] == 1000 and up["interface"] == "sgmii", "first copper-up not 1G SGMII"
+    # Diagnostic patch 0473 logs exactly the first three status polls.
+    # A genuinely late carrier cannot have an up status in that window.
+    # Patch 0481's uncapped link notifier and the matched PCS marker are
+    # independent, source-backed first-up evidence after those polls.
+    assert [v["seq"] for v in status] == [1, 2, 3], "incomplete initial PHY polls"
+    assert all(y["t"] > x["t"] for x,y in zip(status,status[1:])), "ambiguous PHY poll history"
     ups = [e for e in edges if e["link"]]
     assert len(ups) == 1 and len(edges) == (2 if status[0]["link"] == 0 else 1), "later flap or missing first edge"
+    assert [e["edge"] for e in edges] == list(range(1, len(edges)+1)), "missing initial link history"
+    assert edges[0]["link"] == status[0]["link"] and 0 <= edges[0]["t"]-status[0]["t"] <= 2
     edge = ups[0]
-    assert 0 <= edge["t"]-up["t"] <= 2, "driver edge not matched to first status"
+    up_status = next((v for v in status if v["link"]), None)
+    for v in status:
+        if v["link"]:
+            assert v["speed"] == 1000 and v["interface"] == "sgmii", "initial PHY poll not 1G SGMII"
+        else:
+            assert v["t"] < edge["t"], "down poll after first up edge"
+    if up_status is not None:
+        assert 0 <= edge["t"]-up_status["t"] <= 2, "driver edge not matched to first up poll"
+    else:
+        assert status[-1]["t"] < edge["t"], "first up edge not after initial down polls"
+    up = {"t":edge["t"],"evidence":"phy-link-notifier"}
     assert len(markers) == 1, "missing/ambiguous first-link PCS marker"
     m = markers[0]
     assert 0 <= m["t"]-edge["t"] <= 4 and m["speed"] == 1000
@@ -90,7 +104,7 @@ def first_link(log, expected):
         assert all(y[k] >= x[k] for k in ("rx","tx","rxerr","txerr"))
     delta = {k: points[-1][k]-points[0][k] for k in ("rx","tx","rxerr","txerr")}
     assert delta["rx"] > 0 and delta["tx"] > 0 and not delta["rxerr"] and not delta["txerr"], "first-edge bidirectional PHY traffic not clean"
-    return dict(first_status=status[0],first_up=up,edge=edge,marker=m,
+    return dict(initial_status=status,first_up=up,first_up_status=up_status,edge=edge,marker=m,
                 phy_samples=len(points),phy_delta=delta)
 
 def peer_window(log, expected):
@@ -133,7 +147,7 @@ def correlate_peer_boot(counter_log, boot, peer, link):
     if peer["mode"] == "delayed":
         down = events["PEER_PHY_DOWN"]
         release = events["PEER_PHY_RELEASED_1G"]
-        first = link["first_status"]["t"]
+        first = link["initial_status"][0]["t"]
         up = link["first_up"]["t"]
         assert hi-60 <= events["PEER_CARRIER_FELL"] <= lo+first, "carrier loss not tied to reboot"
         assert down <= lo+first and release >= hi+first, "first PHY-down observation not inside peer hold"
@@ -202,15 +216,25 @@ def qualify(run, capture, peer_log, expected):
 
 def selftest():
     def log(up):
-        return f"""[   15.100000] Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: status[1] state=4 link=0 speed=-1 interface=sgmii master_slave=1
-[   15.110000] Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: phy-path edge=1 link=0 fifo_action=stock_status_poll
-[   {up:.6f}] Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: status[2] state=6 link=1 speed=1000 interface=sgmii master_slave=3
-[   {up+.02:.6f}] Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: phy-path edge=2 link=1 fifo_action=stock_status_poll
-[   {up+.08:.6f}] ipq9574_pcs 7a10000.ethernet-pcs: wave7-diag: serial-speed mode=0x420 ctrl=0x844 sts=0xef speed=1000
-[   {up+1:.6f}] Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: phy-path sample=1 edge=2 link=1 rx=46 drx=27 tx=7 dtx=7 rx_err=0 tx_err=0
-[   {up+40:.6f}] Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: phy-path sample=40 edge=2 link=1 rx=146 drx=27 tx=107 dtx=7 rx_err=0 tx_err=0"""
+        prefix = "Qualcomm QCA8081 90000.mdio-1:18: wave7-diag: "
+        def poll(t, seq, link):
+            return f"[{t:.6f}] {prefix}status[{seq}] state=6 link={link} speed={1000 if link else -1} interface=sgmii master_slave={3 if link else 1}"
+        # Initial three polls can be exhausted long before the up edge.
+        rows = [
+            poll(15.1,1,0),
+            f"[15.110000] {prefix}phy-path edge=1 link=0 fifo_action=stock_status_poll",
+            poll(16,2,int(up <= 16)),
+            poll(17,3,int(up <= 17)),
+            f"[{up+.02:.6f}] {prefix}phy-path edge=2 link=1 fifo_action=stock_status_poll",
+            f"[{up+.08:.6f}] ipq9574_pcs 7a10000.ethernet-pcs: wave7-diag: serial-speed mode=0x420 ctrl=0x844 sts=0xef speed=1000",
+            f"[{up+1:.6f}] {prefix}phy-path sample=1 edge=2 link=1 rx=46 drx=27 tx=7 dtx=7 rx_err=0 tx_err=0",
+            f"[{up+40:.6f}] {prefix}phy-path sample=40 edge=2 link=1 rx=146 drx=27 tx=107 dtx=7 rx_err=0 tx_err=0",
+        ]
+        return "\n".join(sorted(rows,key=lambda x:float(x.split("]")[0][1:])))
     assert first_link(log(16),"fast")["phy_delta"]["tx"]==100
-    assert first_link(log(62),"delayed")["first_up"]["t"]==62
+    assert first_link(log(16),"fast")["first_up_status"]["seq"]==2
+    assert first_link(log(62),"delayed")["first_up"]["t"]==62.02
+    assert first_link(log(62),"delayed")["first_up_status"] is None
     def rejects(fn,*args):
         try: fn(*args)
         except AssertionError: return
@@ -219,8 +243,10 @@ def selftest():
     rejects(first_link,log(62),"fast")
     for a,b in (("ctrl=0x844","ctrl=0x84c"),("mode=0x420","mode=0x421"),
                 ("sts=0xef","sts=0x60"),("tx=107","tx=7"),("status[1]","status[3]"),
-                ("speed=1000 interface=sgmii","speed=2500 interface=2500base-x")):
+                ("phy-path edge=2","phy-path edge=3")):
         rejects(first_link,log(62).replace(a,b),"delayed")
+    rejects(first_link,log(16).replace("speed=1000 interface=sgmii","speed=2500 interface=2500base-x"),"fast")
+    rejects(first_link,log(62).replace("status[3] state=6 link=0","status[3] state=6 link=1"),"delayed")
     peer="""2026-11-22T05:00:00+01:00 PEER_READY mode=delayed
 2026-11-22T05:00:10+01:00 PEER_CARRIER_FELL
 2026-11-22T05:00:11+01:00 PEER_PHY_DOWN
