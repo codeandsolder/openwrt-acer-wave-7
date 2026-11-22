@@ -1,0 +1,229 @@
+From: Code and Solder <codeandsolder@gmail.com>
+Subject: [PATCH] net: phy: qca8081: test independent raw FIFO poll
+
+The stock MAC synchronization worker evaluates the raw vendor PHY
+status in addition to phylib, once per second after completion.
+Test the additional FIFO decision without duplicating MAC/PCS
+configuration or changing phylib's link authority.
+
+Scope to the Acer Wave7 direct PHY. Start on the first successful
+status poll; serialize with the PHY state and suspend; do not access
+MDIO in inactive, suspended, or cable-test states. Removal prevents
+requeue before synchronous cancellation. Preserve unrelated FIFO bits
+and reject unreadable status. Record bounded edge telemetry and a
+periodic heartbeat.
+
+Signed-off-by: Code and Solder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/phy/qcom/qca808x.c
++++ b/drivers/net/phy/qcom/qca808x.c
+@@ -184,6 +184,15 @@
+ 	u8 diag_serdes_events;
+ 	u8 diag_serdes_sample;
+ 	u8 diag_fifo_link_pair;
++	/* Serialize the extra worker with suspend and removal. */
++	struct delayed_work fifo_poll_work;
++	struct mutex fifo_poll_lock; /* worker lifecycle and suspend */
++	bool fifo_poll_running;
++	bool fifo_poll_paused;
++	bool fifo_poll_stopping;
++	u8 fifo_poll_pair;
++	u32 fifo_poll_tick;
++	unsigned long fifo_poll_due;
+ 	bool diag_serdes_link;
+ 	u8 diag_phy_counter_updates;
+ 	/* Re-arm bounded read-only MMD7 counter tracing on every link edge. */
+@@ -479,11 +488,29 @@
+ 	}
+ }
+ 
++static bool qca8081_has_independent_fifo(struct phy_device *phydev)
++{
++	return phydev->phy_id == QCA8081_PHY_ID &&
++	       phydev->mdio.addr == 24 &&
++	       of_machine_is_compatible("acer,wave7");
++}
++
++static void qca8081_fifo_poll_work(struct work_struct *work);
++
+ static void qca808x_remove(struct phy_device *phydev)
+ {
+ 	struct qca808x_priv *priv = phydev->priv;
+ 
+ 	cancel_delayed_work_sync(&priv->diag_serdes_work);
++
++	if (qca8081_has_independent_fifo(phydev)) {
++		mutex_lock(&priv->fifo_poll_lock);
++		priv->fifo_poll_stopping = true;
++		priv->fifo_poll_running = false;
++		mutex_unlock(&priv->fifo_poll_lock);
++		/* phylib removal is outside phydev->lock. */
++		cancel_delayed_work_sync(&priv->fifo_poll_work);
++	}
+ }
+ 
+ static int qca808x_probe(struct phy_device *phydev)
+@@ -510,6 +537,8 @@
+ 	priv->channel_id = ch_id;
+ 	priv->diag_phydev = phydev;
+ 	INIT_DELAYED_WORK(&priv->diag_serdes_work, qca808x_diag_serdes_work);
++	mutex_init(&priv->fifo_poll_lock);
++	INIT_DELAYED_WORK(&priv->fifo_poll_work, qca8081_fifo_poll_work);
+ 	phydev->priv = priv;
+ 
+ 	return 0;
+@@ -604,6 +633,125 @@
+ 				    value);
+ }
+ 
++/*
++ * Stock has a second status evaluator in its MAC sync worker. Isolate
++ * only that extra FIFO evaluation, without touching the negotiated tuple
++ * or duplicating phylink's MAC decisions. Requeue one second after each
++ * completion, as in the original system_wq worker.
++ */
++static void qca8081_fifo_poll_work(struct work_struct *work)
++{
++	struct qca808x_priv *priv =
++		container_of(to_delayed_work(work), struct qca808x_priv,
++			     fifo_poll_work);
++	struct phy_device *phydev = priv->diag_phydev;
++	unsigned long now;
++	int status, ret;
++	u8 pair = 0;
++
++	/* Lock order: phydev -> poll -> MDIO. Suspend takes only poll
++	 * (and MDIO), never waits synchronously for this callback.
++	 */
++	guard(mutex)(&phydev->lock);
++	guard(mutex)(&priv->fifo_poll_lock);
++	if (!priv->fifo_poll_running || priv->fifo_poll_paused ||
++	    priv->fifo_poll_stopping || phydev->suspended ||
++	    phydev->loopback_enabled ||
++	    (phydev->state != PHY_RUNNING && phydev->state != PHY_NOLINK)) {
++		priv->fifo_poll_running = false;
++		return;
++	}
++
++	/* A callback already dispatched before cancel may run after restart.
++	 * Do not let it perform a premature second evaluation.
++	 */
++	now = jiffies;
++	if (time_before(now, priv->fifo_poll_due)) {
++		queue_delayed_work(system_percpu_wq, &priv->fifo_poll_work,
++				   priv->fifo_poll_due - now);
++		return;
++	}
++
++	status = phy_read(phydev, AT803X_SPECIFIC_STATUS);
++	if (status < 0) {
++		ret = status;
++	} else if (status == 0xffff) {
++		ret = -EIO;
++	} else {
++		bool copper = !!(status & QCA8081_SS_COPPER_LINK);
++
++		ret = qca8081_stock_fifo_level(phydev, copper);
++		if (!ret)
++			pair = 1 + 2 * phydev->link + copper;
++	}
++
++	priv->fifo_poll_tick++;
++	if (!pair || pair != priv->fifo_poll_pair ||
++	    priv->diag_phy_path_window || !(priv->fifo_poll_tick % 30))
++		phydev_info(phydev,
++			    "wave7-diag: fifo-worker tick=%u edge=%u ss=%d phylib=%u result=%d\n",
++			    priv->fifo_poll_tick, priv->diag_phy_path_edges,
++			    status, phydev->link, ret);
++	priv->fifo_poll_pair = pair;
++	priv->fifo_poll_due = jiffies + HZ;
++	queue_delayed_work(system_percpu_wq, &priv->fifo_poll_work, HZ);
++}
++
++static void qca8081_fifo_poll_start(struct phy_device *phydev)
++{
++	struct qca808x_priv *priv = phydev->priv;
++
++	/* Called by read_status under phydev->lock on this board. */
++	guard(mutex)(&priv->fifo_poll_lock);
++	if (priv->fifo_poll_running || priv->fifo_poll_paused ||
++	    priv->fifo_poll_stopping || phydev->suspended ||
++	    phydev->loopback_enabled ||
++	    (phydev->state != PHY_UP && phydev->state != PHY_RUNNING &&
++	     phydev->state != PHY_NOLINK))
++		return;
++
++	priv->fifo_poll_running = true;
++	priv->fifo_poll_due = jiffies + HZ;
++	queue_delayed_work(system_percpu_wq, &priv->fifo_poll_work, HZ);
++}
++
++static int qca8081_suspend(struct phy_device *phydev)
++{
++	struct qca808x_priv *priv = phydev->priv;
++	int ret;
++
++	if (!qca8081_has_independent_fifo(phydev))
++		return genphy_suspend(phydev);
++
++	guard(mutex)(&priv->fifo_poll_lock);
++	priv->fifo_poll_paused = true;
++	priv->fifo_poll_running = false;
++	/* A callback waiting for phydev->lock will see the paused flag.
++	 * Do not cancel synchronously under a potentially held PHY lock.
++	 */
++	cancel_delayed_work(&priv->fifo_poll_work);
++	ret = genphy_suspend(phydev);
++	if (ret)
++		priv->fifo_poll_paused = false;
++	return ret;
++}
++
++static int qca8081_resume(struct phy_device *phydev)
++{
++	struct qca808x_priv *priv = phydev->priv;
++	int ret;
++
++	if (!qca8081_has_independent_fifo(phydev))
++		return genphy_resume(phydev);
++
++	guard(mutex)(&priv->fifo_poll_lock);
++	ret = genphy_resume(phydev);
++	if (!ret)
++		priv->fifo_poll_paused = false;
++	/* Restart only on a successful, active phylib status poll. */
++	return ret;
++}
++
+ static int qca808x_read_status(struct phy_device *phydev)
+ {
+ 	struct at803x_ss_mask ss_mask = { 0 };
+@@ -630,8 +778,7 @@
+ 
+ 	if (phydev->phy_id == QCA8081_PHY_ID) {
+ 		bool copper_link = phydev->link;
+-		bool instant = phydev->mdio.addr == 24 &&
+-			       of_machine_is_compatible("acer,wave7");
++		bool instant = qca8081_has_independent_fifo(phydev);
+ 		u16 status = ret;
+ 
+ 		if (instant) {
+@@ -650,6 +797,7 @@
+ 		if (instant) {
+ 			u8 pair = 1 + 2 * phydev->link + copper_link;
+ 
++			qca8081_fifo_poll_start(phydev);
+ 			if (pair != priv->diag_fifo_link_pair) {
+ 				priv->diag_fifo_link_pair = pair;
+ 				phydev_info(phydev,
+@@ -1527,8 +1675,8 @@
+ 	.get_wol		= at803x_get_wol,
+ 	.get_features		= qca808x_get_features,
+ 	.config_aneg		= qca808x_config_aneg,
+-	.suspend		= genphy_suspend,
+-	.resume			= genphy_resume,
++	.suspend		= qca8081_suspend,
++	.resume			= qca8081_resume,
+ 	.read_status		= qca808x_read_status,
+ 	.config_init		= qca808x_config_init,
+ 	.soft_reset		= qca808x_soft_reset,
