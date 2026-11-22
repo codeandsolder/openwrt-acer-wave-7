@@ -8,7 +8,7 @@ if [[ ${2:-} == --metadata ]]; then
     [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
 elif [[ ${2:-} == --quota ]]; then
     expected=E882C202FF34ABD6AFFEC2C
-    bash /home/jan/scripts/wave7/client-validation/client-quota-stack.sh --check-candidate
+    bash /home/jan/scripts/wave7/client-validation/client-module-stack.sh quota --check-candidate
 elif [[ ${2:-} == --rocgeometry ]]; then
     expected=C9E49C46E5D078C60790F76
     [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 3dc72a52e857e4eb6f103affd04b6df70a443ad532d36a71628c406b10956432 ]]

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Live matched PCIe stack trial; no changes to installed modules/initramfs.
+# Live matched PCIe stack trials; no changes to installed modules/initramfs.
 set -Eeuo pipefail
-[[ $# == 1 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
+[[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
+variant=$1
+[[ $variant == quota || $variant == upstream-mlo ]] || exit 2
+action=$2
 kver=7.4.0-rc1-2-cachyos-rc
-bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/quota
-stage=/run/wave7-quota-stack
-timer=wave7-quota-rollback.timer
+bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
+stage=/run/wave7-$variant-stack
+timer=wave7-$variant-rollback.timer
 modules=(mt76 mt76_connac_lib mt792x_lib mt7925_common mt7925e)
 declare -A names=(
     [mt76]=mt76.ko
@@ -35,6 +38,8 @@ declare -A original_id=(
     [mt7925_common]=a21f51d6bfde49340e3d05c4016d0395102caa69
     [mt7925e]=3322f96eed6473fb1aa3ee4100b9ef46092a0c21
 )
+case "$variant" in
+quota)
 declare -A candidate_hash=(
     [mt76]=05af6d762cf36e5109d9cff363ce764ae96b0703737d14022991ac64a0efbf60
     [mt76_connac_lib]=7bf307b342ec69f027a5fe9b3f6c92cc208f6fc3b09cf7e9a33d9f636c73d641
@@ -56,6 +61,31 @@ declare -A candidate_id=(
     [mt7925_common]=bdf64419ed55f334a370340944db19e6617c85bb
     [mt7925e]=c6db5ad30247861370b10ee8625cc511e8296f99
 )
+;;
+upstream-mlo)
+declare -A candidate_hash=(
+    [mt76]=c0c66bbdfeabd774ba2236c69bdec5c8e4bb3b37a4a54c629b41635bfa2baea5
+    [mt76_connac_lib]=dcc942fdc3b0c3e26e25832b20b738e1bb5eed523675286d3e76e50561c073d9
+    [mt792x_lib]=771a6caeabef3cf8b0cf22d2be51e89b51b076bf938895e41e6b129758d23e78
+    [mt7925_common]=0ab5eceb65fade61650a3c32c6dff07af6b211b3283b4864bb89daaf39dc4f45
+    [mt7925e]=7992986999d9cec7be3feb74a31279173a1bd21589a74695e0ee091b8c7d7db6
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=6B2DB0A319E60718A55A35B
+    [mt7925e]=59C609541F7228695F13B8E
+)
+declare -A candidate_id=(
+    [mt76]=a8291ddff22eadbb14b6f44d5200614f4db14b3d
+    [mt76_connac_lib]=23ce263ab674f6005eaae7983db24cc4323f37a4
+    [mt792x_lib]=2eb4ec10063d2f3b94713a2d54b34dfa2f78c633
+    [mt7925_common]=279be35b30cf4b37b0597a22a08e63474e2b1bf2
+    [mt7925e]=5ba0854aa38c909217516106f4f2df8a384a3906
+)
+;;
+esac
 declare -A holders=(
     [mt76]='mt76_connac_lib,mt7925_common,mt7925e,mt792x_lib'
     [mt76_connac_lib]='mt7925_common,mt7925e,mt792x_lib'
@@ -132,9 +162,12 @@ check_original() {
     interface_ready
     disk_original
     loaded_closure original
-    [[ ! -e $stage ]]
-    if systemctl is-active --quiet "$timer"; then return 1; fi
-    printf 'QUOTA_ORIGINAL_PASS boot=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+    local other
+    for other in quota upstream-mlo; do
+        [[ ! -e /run/wave7-$other-stack ]]
+        if systemctl is-active --quiet "wave7-$other-rollback.timer"; then return 1; fi
+    done
+    printf 'STACK_ORIGINAL_PASS boot=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
 }
 check_candidate() {
     scope
@@ -145,9 +178,9 @@ check_candidate() {
     systemctl is-active --quiet "$timer"
     candidate_files "$stage"
     loaded_closure candidate
-    printf 'QUOTA_CANDIDATE_PASS boot=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
+    printf 'STACK_CANDIDATE_PASS variant=%s boot=%s\n' "$variant" "$(cat /proc/sys/kernel/random/boot_id)"
 }
-case "$1" in
+case "$action" in
     --check-original) check_original ;;
     --check-candidate) check_candidate ;;
     --activate)
@@ -164,7 +197,7 @@ case "$1" in
             local rc=$?
             trap - EXIT
             if (( rc != 0 )); then
-                echo QUOTA_ACTIVATION_FAILED >&2
+                echo STACK_ACTIVATION_FAILED >&2
                 if (( changed )); then
                     systemctl reboot --no-block
                 else
@@ -184,7 +217,7 @@ case "$1" in
         cat /proc/sys/kernel/random/boot_id > "$stage/boot"
         date +%s > "$stage/epoch"
         chmod 0644 "$stage"/{boot,epoch}
-        systemd-run --quiet --collect --unit=wave7-quota-rollback \
+        systemd-run --quiet --collect --unit="wave7-$variant-rollback" \
             --on-active=15min --timer-property=AccuracySec=1s /usr/bin/systemctl reboot
         armed=1
         systemctl is-active --quiet "$timer"

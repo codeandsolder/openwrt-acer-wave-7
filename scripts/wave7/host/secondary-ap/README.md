@@ -423,15 +423,15 @@ required standard C headers). Preserve the executable in quota-build.
 admissions from a sealed baseline trace and exercises the same C code;
 this is fixed-arrival replay, not a queue latency simulator.
 
-Use `client-quota-stack.sh --check-original`, then root `--activate`
+Use `client-module-stack.sh quota --check-original`, then root `client-module-stack.sh quota --activate`
 on Wyse. Pin the entire PCI dependency closure (mt76, mt76-connac-lib,
 mt792x-lib, mt7925-common, mt7925e) including file hash, GNU build ID,
 srcversion and module holder sets. There must be no active Wi-Fi or
 trace and wired management must be intact. The guard stages in `/run`,
 arms a 15-minute independent reboot timer before unloading anything,
 and loads exactly the matched modules. No installed kernel module or
-initramfs is replaced. Root `--restore` reboots; verify the original
-stack with `--check-original` afterward. A failed activation also
+initramfs is replaced. Root `client-module-stack.sh quota --restore` reboots; verify the original
+stack with `client-module-stack.sh quota --check-original` afterward. A failed activation also
 reboots if any module has been changed.
 
 Use the same bounded AP observer and client trial as the binding
