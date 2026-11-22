@@ -174,7 +174,7 @@ def association(trace):
     """Report provisioning even when association/handshake failed before probes."""
     sessions, other = grant_pairs(trace["events"])
     relevant = rx.PROVISION | {"roc_geometry", "roc_band", "roc_sync", "key_result",
-                              "decap_config", "sta_mld_slot"}
+                              "decap_config", "sta_mld_slot", "sta_mld_update"}
     transitions = []
     records = []
     for t, name, task, payload, cpu in trace["events"]:
@@ -244,6 +244,10 @@ def selftest():
     assert report["provisioning"][0]["key_link"] == -1
     assert report["provisioning"][1]["enabled"] == 1
     assert report["sessions"] == []
+    report=association({"events":[event("1","sta_mld_update",
+        "wcid=2 bss=0 result=0")],"trace_count":1})
+    assert report["provisioning"][0]["event"]=="sta_mld_update"
+    assert report["provisioning"][0]["result"]==0
     wake = event("1.199990", "roc_sync", "phase=0 bss=0 token=3 mlo=1 granted=0 pending=1 result=0")
     def wait_return(t):
         return event(t, "roc_sync", "phase=1 bss=0 token=3 mlo=1 granted=1 pending=1 result=0")
