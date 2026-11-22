@@ -80,7 +80,40 @@ def analyze(report):
         windows.append({"label":scope["label"],"scan_duration_s":D(scan["duration_s"]),
                         "frequencies_mhz":scan["frequencies_mhz"],
                         "common_arrival_silence":silence,"paths":paths})
-    return {"periods":periods,"windows":windows,
+    multichannel=[]
+    all_scans=report["scans"]
+    for scan in report["scope_report"]["unmatched_completed_associated_scans"]:
+        frequencies=scan.get("frequencies_mhz")
+        if not frequencies or len(frequencies)<2:
+            continue
+        start,end=D(scan["start"]),D(scan["end"])
+        # This covers unrequested full scans in the single-channel matrix,
+        # but is labeled unattributed for generic mixed-scope data.
+        if any(D(other["start"])!=start and
+               D(other["start"])<end+D(3) and D(other["end"])>start-D(3)
+               for other in all_scans):
+            continue
+        if not all(t["replies"] and
+                   min(D(r["received"]) for r in t["replies"])<=end and
+                   max(D(r["received"]) for r in t["replies"])>=end+D(3)
+                   for t in tests):
+            continue
+        silence=longest_silence(all_arrivals,end,end+D(3))
+        if silence is None:
+            continue
+        paths=[]
+        for t in tests:
+            clusters=[c for c in t["missing_clusters"] if c["scan_end_epoch"] is not None
+                      and D(c["scan_end_epoch"])==end and c["first_notice_after_scan_s"] is not None
+                      and D(0)<=D(c["first_notice_after_scan_s"])<=D(3)]
+            paths.append({"target":t["target"],
+                          "missing_sequences":[seq for c in clusters for seq in c["sequences"]],
+                          "first_missing_notice_after_scan_end_s":
+                          min((D(c["first_notice_after_scan_s"]) for c in clusters),default=None)})
+        multichannel.append({"scan_end_epoch":end,"scan_duration_s":D(scan["duration_s"]),
+                             "frequencies_mhz":frequencies,
+                             "common_arrival_silence":silence,"paths":paths})
+    return {"periods":periods,"windows":windows,"isolated_unattributed_multichannel":multichannel,
             "method":"Maximum consecutive observed-reply epoch gap after scan completion across the union of all simultaneous probe replies, bounded by actual replies inside [scan_end,scan_end+3s]. Missing notices correspond only to sequences absent from final replies; no TX timestamps inferred for missing packets."}
 
 
