@@ -5,7 +5,7 @@ set -Eeuo pipefail
 variant=$1
 variants=(
     quota upstream-base upstream-prefix12 upstream-prefix13 upstream-prefix14 upstream-prefix15 upstream-prefix17 upstream-prefix22
-    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-secondary-trace upstream-prefix22-secondary-rx-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
+    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-secondary-first-trace upstream-prefix22-secondary-trace upstream-prefix22-secondary-rx-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
 )
 valid=0
 for known in "${variants[@]}"; do
@@ -344,6 +344,29 @@ declare -A candidate_id=(
     [mt792x_lib]=f30f30f2893f09129d9102aba6fc6bd6383a22a6
     [mt7925_common]=6c833b5f812616729b59e4be215e6c1077ee270a
     [mt7925e]=fba443136454fab44c6dde4bc63c783415b6ff86
+)
+;;
+upstream-prefix22-secondary-first-trace)
+declare -A candidate_hash=(
+    [mt76]=badf6887ea7bbc8ce03ff3485bbacacf22cd5266e8012abb943d353f96ec3c6b
+    [mt76_connac_lib]=eeaddcefc72e5c28b4734be0e1289ef11d3abba37141151d521eb23f8b7bb94c
+    [mt792x_lib]=28f8d32f2f0f2eedc979e9c207cda12b42309de69e2302eb3bb28e71cf6f9645
+    [mt7925_common]=43e26226c4e33bc0679939a7336c43431b4148407750e86e687d2329e7842cf5
+    [mt7925e]=14fc2a0c9079ae8433f4b6afe551bc20660b2cf299183f403d289606dc81894e
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=5B788C20E1E2846E7CBB769
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=35535f9ded87a294a1241de92b97d09def9f8b3e
+    [mt76_connac_lib]=419e748c56f4644d3a5d158fefbbb7e40650215e
+    [mt792x_lib]=c12dd81205eb90a06c8a1a78f6274d6bd1c20d3d
+    [mt7925_common]=c17e7f120c29f61d6a93302d2fbe5b14fa9b1602
+    [mt7925e]=46eda30968d9284a408cfbe70180317814db62a0
 )
 ;;
 upstream-prefix22-secondary-trace)
