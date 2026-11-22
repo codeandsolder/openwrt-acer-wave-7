@@ -5,10 +5,11 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
+timing_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -16,6 +17,7 @@ case "${2:-}" in
     --trace) trace=1 ;;
     --scan-scope) scope_experiment=1; pm_experiment=1 ;;
     --scan-mode) scope_experiment=1; mode_experiment=1; pm_experiment=1 ;;
+    --scan-timing) scope_experiment=1; mode_experiment=1; timing_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -176,7 +178,10 @@ check_link() {
       grep -Eq 'Link 1 BSSID ' <<< "$link"
 }
 probe() {
-    local name=$1 count=$2 ip=$3 target=$4 family=$5 rc=0
+    local name=$1 count=$2 ip=$3 target=$4 family=$5 rc=0 interval=.25
+    if (( timing_experiment )) && [[ $name == steady-* ]]; then
+        interval=.05
+    fi
     local -a id_args=()
     if (( trace )); then
         case "$name" in
@@ -187,7 +192,7 @@ probe() {
             *) return 2 ;;
         esac
     fi
-    LC_ALL=C ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" -c "$count" -i .25 -W 1 "$target" > "$out/$name.txt" 2>&1 || rc=$?
+    LC_ALL=C ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" -c "$count" -i "$interval" -W 1 "$target" > "$out/$name.txt" 2>&1 || rc=$?
     [[ $rc == 0 ]] && grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
 }
 # This is a diagnostic, not a relaxation of the zero-loss acceptance gate.
@@ -276,10 +281,14 @@ sleep 15
 validate_routes || exit 3
 check_link > "$out/link-settled.txt" || exit 3
 date -Is > "$out/steady-start.txt"
+printf 'immediate_interval_s=.25\nsteady_interval_s=%s\n' "$(if (( timing_experiment )); then echo .05; else echo .25; fi)" > "$out/probe-intervals.txt"
 steady_count=300
 sample_count=18
 if (( scope_experiment )); then
     steady_count=600
+    if (( timing_experiment )); then
+        steady_count=3000
+    fi
     sample_count=34
     scope_matrix > "$out/scan-requests.txt" 2> "$out/scan-request-errors.txt" &
     scope_pid=$!
