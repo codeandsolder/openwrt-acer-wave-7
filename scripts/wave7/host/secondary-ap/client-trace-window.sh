@@ -54,12 +54,20 @@ root=/sys/kernel/tracing
 inst="$root/instances/wave7-$1"
 [[ ! -e $inst ]]
 mkdir "$inst"
+probe_group=wave7_scan_${1//-/_}
+probes=()
 cleanup() {
     local rc=$?
     trap - EXIT
     printf '0\n' > "$inst/tracing_on" || rc=1
     printf 'nop\n' > "$inst/current_tracer" || rc=1
+    for event in "${probes[@]}"; do
+        printf '0\n' > "$inst/events/$probe_group/$event/enable" || rc=1
+    done
     rmdir "$inst" || rc=1
+    for event in "${probes[@]}"; do
+        printf '%s\n' "-:$probe_group/$event" >> "$root/dynamic_events" || rc=1
+    done
     echo "TRACE_CLEANUP rc=$rc"
     exit "$rc"
 }
@@ -175,8 +183,20 @@ fi
 # Preserve the existing association evidence and capture where manual
 # nl80211 requests fail before reaching the HW scan callback.
 case "${2:-}" in
-    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace)
-        events+=(cfg80211/rdev_scan cfg80211/rdev_return_int mac80211/drv_return_int) ;;
+    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace|--upstream-prefix22-authorize-links-trace)
+        events+=(cfg80211/rdev_scan cfg80211/rdev_return_int mac80211/drv_return_int)
+        [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/cfg80211 ]]
+        # Only scalar return values: no payload, pointers or keys.
+        # shellcheck disable=SC2016
+        for spec in 'nl_scan_ret nl80211_trigger_scan%return rc=$retval:s32' \
+            'cfg_scan_ret cfg80211_scan%return rc=$retval:s32' \
+            'offchan_ret cfg80211_off_channel_oper_allowed%return allowed=$retval:u8' \
+            'onchan_ret cfg80211_wdev_on_sub_chan%return on_chan=$retval:u8'; do
+            event=${spec%% *}
+            printf '%s\n' "f:$probe_group/$event ${spec#* }" >> "$root/dynamic_events"
+            probes+=("$event")
+            events+=("$probe_group/$event")
+        done ;;
 esac
 if [[ $trace_profile == association-membership || $trace_profile == association-dev-band || $trace_profile == association-beacon-power ]]; then
     events+=(mt7925_lab/mt7925_lab_sta_mld_update)

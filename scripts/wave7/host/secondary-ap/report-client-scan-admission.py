@@ -21,7 +21,8 @@ trace = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trace)
 
 INTEREST = {"rdev_scan", "rdev_return_int", "drv_hw_scan", "drv_return_int",
-            "mt7925_mcu_hw_scan"}
+            "mt7925_mcu_hw_scan", "nl_scan_ret", "cfg_scan_ret",
+            "offchan_ret", "onchan_ret"}
 RETURN = re.compile(r"(?:returned: | - )(-?\d+)$")
 IW = re.compile(r"^iw-\d+$")
 
@@ -59,7 +60,25 @@ def report(parsed, attempts):
         elif len(tasks) > 1 or len(scans) > 1 or len(drvs) > 1:
             kind = "ambiguous"
         elif not scans and not drvs:
-            kind = "before_rdev_scan"
+            # The nl80211 return probes are optional on older captures.
+            # Only classify an exact source branch with a matching return.
+            values = {name: [int(m[1]) for e in candidates if e[1] == name
+                             and (m := re.search(r"=(-?\d+)$", e[3]))]
+                      for name in ("nl_scan_ret", "cfg_scan_ret",
+                                   "offchan_ret", "onchan_ret")}
+            if values["nl_scan_ret"] != [-16]:
+                kind = "before_rdev_scan"
+            elif values["cfg_scan_ret"]:
+                kind = ("cfg_scan_returned_busy_before_rdev"
+                        if values["cfg_scan_ret"] == [-16] else "ambiguous")
+            elif values["offchan_ret"] and values["offchan_ret"][-1] == 0 and values["onchan_ret"] and values["onchan_ret"][-1] == 0:
+                kind = "nl80211_offchannel_denied"
+            elif not values["offchan_ret"] and not values["onchan_ret"]:
+                # Exact v7.4-rc1 nl80211_trigger_scan: busy before
+                # channel validation means scan_req || scan_msg.
+                kind = "nl80211_existing_scan_or_message"
+            else:
+                kind = "ambiguous"
         elif len(scans) == 1 and not drvs and rdev_ret == [-16]:
             kind = "rdev_rejected_before_driver"
         elif len(scans) == 1 and len(drvs) == 1 and -16 in drv_ret and -16 in rdev_ret:
@@ -99,6 +118,21 @@ def selftest():
     assert report(parsed, attempts)["counts"] == {
         "before_rdev_scan": 1, "rdev_rejected_before_driver": 1,
         "driver_returned_busy": 1, "accepted": 1, "outside_anchored_trace": 1}
+    events.extend([
+        e("5.01", "nl_scan_ret", "nl_scan_ret: rc=-16"),
+        e("6.01", "offchan_ret", "offchan_ret: allowed=0"),
+        e("6.02", "onchan_ret", "onchan_ret: on_chan=0"),
+        e("6.03", "nl_scan_ret", "nl_scan_ret: rc=-16"),
+        e("7.01", "offchan_ret", "offchan_ret: allowed=1"),
+        e("7.02", "cfg_scan_ret", "cfg_scan_ret: rc=-16"),
+        e("7.03", "nl_scan_ret", "nl_scan_ret: rc=-16"),
+    ])
+    assert report(parsed, "105,105.1,a,1,240,2412\n"
+                          "106,106.1,b,1,240,2412\n"
+                          "107,107.1,c,1,240,2412\n")["counts"] == {
+        "nl80211_existing_scan_or_message": 1,
+        "nl80211_offchannel_denied": 1,
+        "cfg_scan_returned_busy_before_rdev": 1}
     print("SCAN_ADMISSION_REPORT_SELFTEST_PASS")
 
 
