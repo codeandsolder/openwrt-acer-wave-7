@@ -5,13 +5,15 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
+scope_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
 case "${2:-}" in
     --trace) trace=1 ;;
+    --scan-scope) scope_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -54,11 +56,13 @@ clone=0
 event_pid=''
 sample_pid=''
 tap_pid=''
+scope_pid=''
 pings=()
 cleanup() {
     local rc=$?
     trap - EXIT
     for pid in "${pings[@]}"; do kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; done
+    if [[ -n $scope_pid ]]; then kill "$scope_pid" 2>/dev/null || :; wait "$scope_pid" 2>/dev/null || :; fi
     if [[ -n $sample_pid ]]; then kill "$sample_pid" 2>/dev/null || :; wait "$sample_pid" 2>/dev/null || :; fi
     if [[ -n $tap_pid ]]; then
         # The tap has its own 120-second deadline, even on a failed probe.
@@ -173,6 +177,50 @@ probe() {
     LC_ALL=C ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" -c "$count" -i .25 -W 1 "$target" > "$out/$name.txt" 2>&1 || rc=$?
     [[ $rc == 0 ]] && grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
 }
+# This is a diagnostic, not a relaxation of the zero-loss acceptance gate.
+# Request only the dedicated lab SSID; never change the background scan policy.
+# Logs contain just the requested frequencies/status and existing iw events.
+scan_scope() {
+    local label=$1; shift
+    local started finished before after rc deadline
+    deadline=$((SECONDS+18))
+    while :; do
+        started=$(grep -c 'wlp2s0.*: scan started$' "$out/events.txt" || :)
+        finished=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
+        (( started == finished )) && break
+        if (( SECONDS >= deadline )); then
+            printf '%s,%s,busy-timeout,%s\n' "$(date +%s.%N)" "$label" "$*"
+            return 1
+        fi
+        sleep .2
+    done
+    before=$(date +%s.%N)
+    printf '%s,%s,request,%s\n' "$before" "$label" "$*"
+    rc=0
+    rootcmd iw dev "$iface" scan trigger freq "$@" ssid "$profile" </dev/null >&2 || rc=$?
+    printf '%s,%s,return=%s,%s\n' "$(date +%s.%N)" "$label" "$rc" "$*"
+    (( rc == 0 )) || return 1
+    deadline=$((SECONDS+20))
+    while (( SECONDS < deadline )); do
+        after=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
+        (( after > finished )) && break
+        sleep .2
+    done
+    (( after > finished )) || return 1
+    # Even after the reported completion, preserve a four-second observation window.
+    sleep 4
+}
+scope_matrix() {
+    local round
+    sleep 2
+    for round in 1 2; do
+        scan_scope "home-$round" 2412 5180 || return 1
+        scan_scope "off24-$round" 2437 2462 || return 1
+        scan_scope "off5-$round" 5200 5220 || return 1
+        scan_scope "off6-$round" 5955 5975 || return 1
+        scan_scope "full-$round" 2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5745 5765 5785 5805 5825 5955 5975 5995 6015 6035 6055 6075 6095 6115 6135 6155 6175 6195 6215 6235 6255 6275 6295 6315 6335 6355 6375 6395 6415 || return 1
+    done
+}
 failed=0
 routes > "$out/routes-before.txt"
 validate_routes || exit 3
@@ -200,8 +248,16 @@ sleep 15
 validate_routes || exit 3
 check_link > "$out/link-settled.txt" || exit 3
 date -Is > "$out/steady-start.txt"
+steady_count=300
+sample_count=18
+if (( scope_experiment )); then
+    steady_count=600
+    sample_count=34
+    scope_matrix > "$out/scan-requests.txt" 2> "$out/scan-request-errors.txt" &
+    scope_pid=$!
+fi
 (
-    for ((i=0;i<18;i++)); do
+    for ((i=0;i<sample_count;i++)); do
         date -Is
         check_link || echo MLO_LINK_LOST
         if (( pm_experiment )); then
@@ -213,12 +269,21 @@ date -Is > "$out/steady-start.txt"
     done
 ) > "$out/stations-during.txt" 2>&1 &
 sample_pid=$!
-probe steady-v4 300 "$v4" 192.168.76.2 -4 &
+probe steady-v4 "$steady_count" "$v4" 192.168.76.2 -4 &
 pings+=("$!")
-probe steady-v6 300 "$v6" fd76:7::2 -6 &
+probe steady-v6 "$steady_count" "$v6" fd76:7::2 -6 &
 pings+=("$!")
 for pid in "${pings[@]}"; do wait "$pid" || failed=1; done
 pings=()
+if [[ -n $scope_pid ]]; then
+    # Do not let late scan requests outlive the packet test.
+    if kill -0 "$scope_pid" 2>/dev/null; then
+        kill "$scope_pid" 2>/dev/null || :
+        failed=1
+    fi
+    wait "$scope_pid" || failed=1
+    scope_pid=''
+fi
 kill "$sample_pid" 2>/dev/null || :
 wait "$sample_pid" 2>/dev/null || :
 sample_pid=''
