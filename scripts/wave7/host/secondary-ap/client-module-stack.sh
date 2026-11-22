@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
 variant=$1
-[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-prefix24 || $variant == upstream-mlo ]] || exit 2
+[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-prefix22 || $variant == upstream-prefix24 || $variant == upstream-mlo ]] || exit 2
 action=$2
 kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
@@ -106,6 +106,29 @@ declare -A candidate_id=(
     [mt792x_lib]=66cf4ffdf8bbead0e21bbea22226a9db29994522
     [mt7925_common]=1c16532df29f7bc84d3ec0d936ae7a3ff446f061
     [mt7925e]=f7a07472d7e01e1d3adc7f40a870428e63ae6cfd
+)
+;;
+upstream-prefix22)
+declare -A candidate_hash=(
+    [mt76]=2ef017e23a76f042885ef65a0f31d91dcc2ec7d5c72be742b389177a9fba202f
+    [mt76_connac_lib]=65221babcfa4cbc2bfc327cfa43205cf691d901d536cdd74010795cf2f624cff
+    [mt792x_lib]=5e3de7d06b86fcf440d6ee81cb89eb5343a39cffdae13998f75cb5720fe393e3
+    [mt7925_common]=1a3c85b7c2e8f42bd59b27b32d1ca57fce8367b71b621c936fcf49beae03d8ef
+    [mt7925e]=12970aba3c5cdad9855f2097a4b0d93b149a15aacbdcc0d5da277070789fe8ff
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=02F9A4E5F225A22FE7E645B
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=2be3dc354234f4ab8d8d445ac614b05e73aa5cf7
+    [mt76_connac_lib]=54e94a8a76d2fbd607ba121e3272f7dc4c03d2a1
+    [mt792x_lib]=34fa10d446459c8ea3b625370a601a482b22393a
+    [mt7925_common]=93e3823cf794c4e2a2e3b74e76be62bde20f5eb8
+    [mt7925e]=fa2ef1e5e775fc6ff70fb4e634d8075ba84d8991
 )
 ;;
 upstream-prefix24)
@@ -232,7 +255,7 @@ check_original() {
     disk_original
     loaded_closure original
     local other
-    for other in quota upstream-base upstream-prefix12 upstream-prefix24 upstream-mlo; do
+    for other in quota upstream-base upstream-prefix12 upstream-prefix22 upstream-prefix24 upstream-mlo; do
         [[ ! -e /run/wave7-$other-stack ]]
         if systemctl is-active --quiet "wave7-$other-rollback.timer"; then return 1; fi
     done
