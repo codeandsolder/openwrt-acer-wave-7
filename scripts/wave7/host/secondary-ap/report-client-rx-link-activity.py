@@ -47,11 +47,13 @@ def analyze(trace, scan):
         if session["complete"] and session.get("bands_applied"):
             t = max(r["t"] for r in session["assignments"])
             assignments.append((t, {r["bss"]: frequency(r["band"], r["channel"])
-                                    for r in session["requests"]}))
+                                    for r in session["requests"]},
+                                {r["bss"]: r["granted_hw_bands"][0]
+                                 for r in session["requests"]}))
     assignments.sort()
-    active_freq, bss, sta = {}, {}, {}
+    active_freq, active_band, bss, sta = {}, {}, {}, {}
     next_assignment = 0
-    counts, frame_counts = Counter(), Counter()
+    counts, frame_counts, tx_counts = Counter(), Counter(), Counter()
     mismatches=[]
     scan_starts=sorted(t for t,name,*_ in trace["events"] if name=="drv_hw_scan")
     scan_completions=sorted(t for t,name,*_ in trace["events"] if name=="api_scan_completed")
@@ -63,10 +65,10 @@ def analyze(trace, scan):
         return values[i]-t if i<len(values) else None
     for t, name, _, payload, _ in trace["events"]:
         while next_assignment < len(assignments) and assignments[next_assignment][0] < t:
-            active_freq = assignments[next_assignment][1]
+            _, active_freq, active_band = assignments[next_assignment]
             next_assignment += 1
         event = name.removeprefix("mt7925_lab_")
-        if event not in {"bss_result", "sta_result", "rxdesc", "rx_frame"}:
+        if event not in {"bss_result", "sta_result", "rxdesc", "rx_frame", "txs_peer_data"}:
             continue
         k = rx.fields(payload)
         if event == "bss_result":
@@ -76,6 +78,21 @@ def analyze(trace, scan):
             if k["result"] == 0:
                 sta[k["wcid"]] = k
         elif start <= t + lo and t + hi <= end:
+            if event == "txs_peer_data":
+                peer=sta.get(k["wcid"])
+                link=bss.get(peer["bss"]) if peer else None
+                expected=active_band.get(peer["bss"]) if peer else None
+                if not (peer and peer["enabled"] and peer["state"]==2 and
+                        link and link["enabled"] and link["wcid"]==peer["wcid"]):
+                    kind="no_verified_connected_peer"
+                elif not (k["valid"] and k["link"]==peer["link"]==link["link"]
+                          and k["band"]==expected):
+                    kind="binding_or_band_mismatch"
+                else:
+                    kind="matching_associated_peer"
+                tx_counts[(kind,k["band"],k["wcid"],k["link"],k["format"],
+                           k["ack_error"],k["encap"])]+=1
+                continue
             if event == "rx_frame":
                 frame = roc.decode_frame(k)
                 frame_counts[(frame["freq"], frame["wcid"], frame["bss"],
@@ -119,6 +136,10 @@ def analyze(trace, scan):
                 descriptor_counts=[dict(zip(fields, key), count=n)
                                    for key, n in sorted(counts.items())],
                 binding_mismatches=mismatches,
+                matched_host_data_tx_status_counts=[
+                    dict(zip(("classification","hw_band","wcid","link","format",
+                              "ack_error","encap"),key),count=n)
+                    for key,n in sorted(tx_counts.items())],
                 accepted_frame_counts=[dict(zip(frame_fields, key), count=n)
                                        for key, n in sorted(frame_counts.items())],
                 method="RX descriptor evidence, not socket or TX success. "
@@ -161,6 +182,12 @@ def selftest():
     descriptor(13, 1, raw_bss=0)
     events.append((D("13.5"),"drv_hw_scan","test-1","",0))
     descriptor(14, 0, corrupt=True)
+    emit("12.1","txs_peer_data",wcid=2,link=1,valid=1,band=0,
+         pid=3,format=0,ack_error=0,encap=1,length=100)
+    emit("12.2","txs_peer_data",wcid=3,link=0,valid=1,band=1,
+         pid=4,format=0,ack_error=0,encap=1,length=100)
+    emit("12.3","txs_peer_data",wcid=3,link=0,valid=1,band=0,
+         pid=5,format=0,ack_error=1,encap=1,length=100)
     emit(15, "sta_result", bss=1, link=0, wcid=3,
          enabled=0, state=0, result=0)
     descriptor(16, 1)
@@ -180,6 +207,11 @@ def selftest():
     assert mismatch["after_scan_completed_s"]==D(".975")
     assert mismatch["before_next_scan_start_s"]==D(".5")
     assert mismatch["expected_bss"]==1 and mismatch["raw_bss"]==0
+    tx=result["matched_host_data_tx_status_counts"]
+    assert sum(r["count"] for r in tx)==3
+    assert {r["hw_band"] for r in tx if r["classification"]=="matching_associated_peer"
+            and r["ack_error"]==0}=={0,1}
+    assert sum(r["count"] for r in tx if r["classification"]=="binding_or_band_mismatch")==1
     print("RX_LINK_ACTIVITY_SELFTEST_PASS")
 
 
