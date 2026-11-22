@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
 variant=$1
-[[ $variant == quota || $variant == upstream-base || $variant == upstream-mlo ]] || exit 2
+[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-mlo ]] || exit 2
 action=$2
 kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
@@ -83,6 +83,29 @@ declare -A candidate_id=(
     [mt792x_lib]=279286781fc7a2ef7f77974664c592eb23de9bb0
     [mt7925_common]=47874e23be3b7c5e71c2c38787df7da9bd054250
     [mt7925e]=94d57200722a856e04100ff9556a216f7a37ea24
+)
+;;
+upstream-prefix12)
+declare -A candidate_hash=(
+    [mt76]=02763e1c5dcadd4b124be3532514c3dcb09d4716329e305a8c8e3fab7f700e49
+    [mt76_connac_lib]=501bf569cd0e84c7b365b5629fd32248a842e8cce6f8e976f36aaf94ac677e92
+    [mt792x_lib]=53a6518a24a1658732fd6ffe28eac39995f7e0b184da3e675ca11c491106619e
+    [mt7925_common]=20f02f932eec876d5fe561c95987979263410102d3b3f07343ed9728d0c92e26
+    [mt7925e]=df6b67be5b3a0ef12447ab3bfa43d2274aa39f9f9da670cf95719e1faa1bdb4b
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=1B9080F5C0CBA13F0F80B07
+    [mt7925e]=A4B170554BA46F84100DE24
+)
+declare -A candidate_id=(
+    [mt76]=531cda207c2ba2a03887062cae653e20ff1ae24e
+    [mt76_connac_lib]=59f5ed570f7e6ff9ff70142c861c7193902a82e7
+    [mt792x_lib]=66cf4ffdf8bbead0e21bbea22226a9db29994522
+    [mt7925_common]=1c16532df29f7bc84d3ec0d936ae7a3ff446f061
+    [mt7925e]=f7a07472d7e01e1d3adc7f40a870428e63ae6cfd
 )
 ;;
 upstream-mlo)
@@ -186,7 +209,7 @@ check_original() {
     disk_original
     loaded_closure original
     local other
-    for other in quota upstream-base upstream-mlo; do
+    for other in quota upstream-base upstream-prefix12 upstream-mlo; do
         [[ ! -e /run/wave7-$other-stack ]]
         if systemctl is-active --quiet "wave7-$other-rollback.timer"; then return 1; fi
     done
