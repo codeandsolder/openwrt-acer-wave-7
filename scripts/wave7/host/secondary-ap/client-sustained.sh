@@ -332,24 +332,39 @@ scan_scope() {
         passive) scan_args=(passive) ;;
         *) return 2 ;;
     esac
-    local started finished before after rc deadline
+    local started finished before after rc deadline output attempt=0 returned
     deadline=$((SECONDS+18))
     while :; do
-        started=$(grep -c 'wlp2s0.*: scan started$' "$out/events.txt" || :)
-        finished=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
-        (( started == finished )) && break
         if (( SECONDS >= deadline )); then
             printf '%s,%s,busy-timeout,%s\n' "$(date +%s.%N)" "$label" "$*"
             return 1
         fi
-        sleep .2
+        started=$(grep -c 'wlp2s0.*: scan started$' "$out/events.txt" || :)
+        finished=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
+        if (( started != finished )); then
+            sleep .2
+            continue
+        fi
+        # The kernel may start a background scan between the event check
+        # and the trigger, or before iw has delivered its start event.
+        # Retry EBUSY only, preserving every attempted request separately.
+        (( attempt += 1 ))
+        before=$(date +%s.%N)
+        rc=0
+        output=$(rootcmd iw dev "$iface" scan trigger freq "$@" "${scan_args[@]}" </dev/null 2>&1) || rc=$?
+        returned=$(date +%s.%N)
+        printf '%s,%s,%s,%s,%s,%s\n' "$before" "$returned" "$label" "$attempt" "$rc" "$*" >> "$out/scan-attempts.txt"
+        if [[ -n $output ]]; then printf '%s\n' "$output" >&2; fi
+        if (( rc != 0 )) && [[ $output == 'command failed: Device or resource busy (-16)' ]]; then
+            sleep .2
+            continue
+        fi
+        # The correlation log contains exactly one terminal request per label.
+        printf '%s,%s,request,%s\n' "$before" "$label" "$*"
+        printf '%s,%s,return=%s,%s\n' "$returned" "$label" "$rc" "$*"
+        (( rc == 0 )) || return 1
+        break
     done
-    before=$(date +%s.%N)
-    printf '%s,%s,request,%s\n' "$before" "$label" "$*"
-    rc=0
-    rootcmd iw dev "$iface" scan trigger freq "$@" "${scan_args[@]}" </dev/null >&2 || rc=$?
-    printf '%s,%s,return=%s,%s\n' "$(date +%s.%N)" "$label" "$rc" "$*"
-    (( rc == 0 )) || return 1
     deadline=$((SECONDS+20))
     while (( SECONDS < deadline )); do
         after=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
