@@ -267,22 +267,24 @@ stdbuf -oL iw event -t > "$out/events.txt" 2>&1 &
 event_pid=$!
 sleep .3
 kill -0 "$event_pid"
-rootcmd nmcli connection clone "$profile" "$tmp" > "$out/clone.txt"
+rootcmd nmcli connection clone --temporary "$profile" "$tmp" > "$out/clone.txt"
 clone=1
-rootcmd nmcli connection modify "$tmp" connection.autoconnect no ipv4.never-default yes ipv4.ignore-auto-dns yes ipv6.never-default yes ipv6.ignore-auto-dns yes ipv4.may-fail no ipv6.may-fail no ipv4.method auto ipv6.method auto
+rootcmd nmcli connection modify --temporary "$tmp" connection.autoconnect no ipv4.never-default yes ipv4.ignore-auto-dns yes ipv6.never-default yes ipv6.ignore-auto-dns yes ipv4.may-fail no ipv6.may-fail no ipv4.method auto ipv6.method auto
 if [[ $association_preference == --primary-24 ]]; then
     # Restrict only the disposable clone to the known lab channel. This
     # may affect background scan scope, so do not compare scan latency
     # directly with the unconstrained profile.
-    rootcmd nmcli connection modify "$tmp" 802-11-wireless.band bg 802-11-wireless.channel 1
+    rootcmd nmcli connection modify --temporary "$tmp" 802-11-wireless.band bg 802-11-wireless.channel 1
     nmcli -g 802-11-wireless.band,802-11-wireless.channel connection show "$tmp" > "$out/association-preference.txt"
 elif [[ $association_preference == --bssid-24 ]]; then
     # Pin the observed laboratory link-0 BSSID without removing 5 GHz
     # from the candidate frequencies. Firmware trace determines the
     # actual association link; this setting is not proof of role reversal.
-    rootcmd nmcli connection modify "$tmp" 802-11-wireless.bssid 70:5A:6F:5A:BB:16
+    rootcmd nmcli connection modify --temporary "$tmp" 802-11-wireless.bssid 70:5A:6F:5A:BB:16
     nmcli -g 802-11-wireless.bssid,802-11-wireless.band,802-11-wireless.channel connection show "$tmp" > "$out/association-preference.txt"
 fi
+# Preserve pre-association evidence even if the client hard-locks.
+sync -f "$out"
 rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/association.txt" 2>&1
 ip -br addr show dev "$iface" > "$out/addresses-at-activation.txt"
 v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {split($4,parts,"/"); print parts[1]; exit}')
