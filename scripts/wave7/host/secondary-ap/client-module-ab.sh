@@ -10,11 +10,13 @@ declare -A hashes=(
     [original]=546f70108a29c643d52cb35dfabc87dbaeb78847c57c657e0cf1b749d31920eb
     [baseline]=ef3332a9de5e212e4a79f13b7b8f021b3d15a489132f47884dfad40903c4f343
     [candidate]=bc4b790c90f196eb063b0d9605e3569d137069791fec9d192720962ffbf3c384
+    [metadata]=e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0
 )
 declare -A versions=(
     [original]=DB4C3E1671DC2EA009803A0
     [baseline]=DB4C3E1671DC2EA009803A0
     [candidate]=1FB10711FECFBF21CC8F072
+    [metadata]=5505CE551C04266721B047A
 )
 hash() { sha256sum "$1" | cut -d' ' -f1; }
 [[ $(uname -r) == "$kver" &&
@@ -26,18 +28,21 @@ hash() { sha256sum "$1" | cut -d' ' -f1; }
    $(nmcli -g GENERAL.STATE device show wlp2s0) == '30 (disconnected)' &&
    $(nmcli -g connection.autoconnect connection show Wave7-MLO-Lab) == no ]]
 ip -4 route get 10.1.0.2 | grep -Fq 'dev eno1 '
+instances=$(sudo -n ls /sys/kernel/tracing/instances)
+[[ -z $instances ]]
 [[ ! -e /usr/lib/firmware/updates ]]
 if lsinitcpio -l "/boot/initramfs-linux-cachyos-rc.img" | grep -Eq 'mt7925|mt76'; then
     echo "Unexpected early-loaded Wi-Fi module" >&2
     exit 3
 fi
-for name in original baseline candidate; do
+for name in original baseline candidate metadata; do
+    if [[ $name == metadata && ! -f $bundle/$name.ko ]]; then continue; fi
     [[ $(hash "$bundle/$name.ko") == "${hashes[$name]}" &&
        $(modinfo -F srcversion "$bundle/$name.ko") == "${versions[$name]}" &&
        $(modinfo -F vermagic "$bundle/$name.ko") == "$kver SMP preempt mod_unload " ]]
 done
 current=''
-for name in original baseline candidate; do
+for name in original baseline candidate metadata; do
     if [[ $(hash "$dest") == "${hashes[$name]}" ]]; then current=$name; break; fi
 done
 [[ -n $current ]]
@@ -51,7 +56,8 @@ case "$1" in
         ;;
     --stage-baseline) [[ $current == original && $loaded == "${versions[original]}" ]]; next=baseline ;;
     --stage-nosplit) [[ $current == baseline && $loaded == "${versions[baseline]}" ]]; next=candidate ;;
-    --restore) [[ $current == baseline || $current == candidate ]]; next=original ;;
+    --stage-metadata) [[ $current == original && -f $bundle/metadata.ko && $loaded == "${versions[original]}" ]]; next=metadata ;;
+    --restore) [[ $current == baseline || $current == candidate || $current == metadata ]]; next=original ;;
     *) exit 2 ;;
 esac
 [[ $loaded == "${versions[$current]}" ]]

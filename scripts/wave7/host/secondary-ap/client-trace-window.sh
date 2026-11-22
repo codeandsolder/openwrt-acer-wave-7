@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Root-only bounded observation on the isolated Wyse, no global tracer changes.
 set -Eeuo pipefail
-[[ $EUID == 0 && $# == 1 && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && $2 == --metadata ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+expected=DB4C3E1671DC2EA009803A0
+if [[ ${2:-} == --metadata ]]; then
+    expected=5505CE551C04266721B047A
+    [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
+fi
 [[ $(uname -r) == 7.4.0-rc1-2-cachyos-rc &&
-   $(cat /sys/module/mt7925_common/srcversion) == DB4C3E1671DC2EA009803A0 &&
+   $(cat /sys/module/mt7925_common/srcversion) == "$expected" &&
    $(cat /sys/class/net/wlp2s0/device/device) == 0x7925 &&
    $(cat /sys/class/net/wlp2s0/device/vendor) == 0x14c3 ]]
 ip -4 route get 10.1.0.2 | grep -Fq 'dev eno1 '
@@ -51,6 +56,11 @@ events=(mac80211/stop_queue mac80211/wake_queue
     mac80211/api_remain_on_channel_expired mac80211/drv_change_vif_links
     mac80211/drv_change_sta_links mac80211/api_beacon_loss
     mac80211/api_connection_loss cfg80211/cfg80211_scan_done)
+if [[ ${2:-} == --metadata ]]; then
+    for e in mcu_rx roc mbmc scan_req scan_tlv txfree txs; do
+        events+=("mt7925_lab/mt7925_lab_$e")
+    done
+fi
 for e in "${events[@]}"; do
     [[ -f $inst/events/$e/enable ]]
     printf '1\n' > "$inst/events/$e/enable"
@@ -63,6 +73,7 @@ printf 'function\n' > "$inst/current_tracer"
 printf 'TRACE_BOOT %s\n' "$(cat /proc/sys/kernel/random/boot_id)"
 printf 'TRACE_CLOCK %s\n' "$(cat "$inst/trace_clock")"
 printf 'TRACE_FILTER\n'; cat "$inst/set_ftrace_filter"
+printf 'TRACE_EVENTS\n%s\n' "${events[@]}"
 printf '1\n' > "$inst/tracing_on"
 printf 'TRACE_READY\n'
 # Bracket the marker write with wall clock readings so the offline report
