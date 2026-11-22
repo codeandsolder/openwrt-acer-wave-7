@@ -172,6 +172,12 @@ fi
 if [[ $trace_profile == association-rxtx ]]; then
     events+=(mt7925_lab/mt7925_lab_txs_peer_data)
 fi
+# Preserve the existing association evidence and capture where manual
+# nl80211 requests fail before reaching the HW scan callback.
+case "${2:-}" in
+    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace)
+        events+=(cfg80211/rdev_scan cfg80211/rdev_return_int mac80211/drv_return_int) ;;
+esac
 if [[ $trace_profile == association-membership || $trace_profile == association-dev-band || $trace_profile == association-beacon-power ]]; then
     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
 fi

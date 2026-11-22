@@ -28,6 +28,7 @@ declare -A trace_profiles=(
     [upstream-prefix22-dev-band-trace]=association-dev-band
     [upstream-prefix22-secondary-first-trace]=association
     [upstream-prefix22-secondary-trace]=association
+    [upstream-prefix22-primary-bss-band-trace]=association-rxtx
     [upstream-prefix22-lifecycle-trace]=association-rxtx
     [upstream-prefix22-deferred-roc-trace]=association-rxtx
     [upstream-prefix22-secondary-rxtx-trace]=association-rxtx
@@ -350,6 +351,29 @@ declare -A candidate_id=(
     [mt792x_lib]=42400ac1ac088a43941a115f2b5125a29421ba90
     [mt7925_common]=10cb7a27c0b2f19be296fa59bcc2aa49a3517006
     [mt7925e]=ea28967cf52c949d793fdcf61f7ba7fab64b6c75
+)
+;;
+upstream-prefix22-primary-bss-band-trace)
+declare -A candidate_hash=(
+    [mt76]=6d254d820f1c8a54b73cee36c27fb297fa5a30d84b5f9ff2b675f53ec4697003
+    [mt76_connac_lib]=b51a2de9df0f617f071970ce9420b8f8a110a1c04acebc2ee3e0fe3c0ef37aea
+    [mt792x_lib]=da8f6992b2863f62eeb759a528ae66c69864f9b45970ebb52d369736eac564ed
+    [mt7925_common]=2bf6e8a7efb55ae6f1217e7e917d8232ee74581a9e149a1f87efa72962c00eab
+    [mt7925e]=d17614995e91f48e7e45e376cd8bd9813c89d06a8ed6c3edc7b74ca45bbf2f49
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=749A4015F0F3E1F3C96A6C9
+    [mt792x_lib]=A681310C17DD1275877F354
+    [mt7925_common]=FD8E9521D266830DAE7B7AC
+    [mt7925e]=699B898B8A788927D144FAB
+)
+declare -A candidate_id=(
+    [mt76]=da054466dd9171870abeefac28fb6b59530d6f8d
+    [mt76_connac_lib]=588307a1b961cec1083de8610f4a3872e4186f57
+    [mt792x_lib]=f1aee6ccc9fcafee5a2171f8b5af9a3cceea8999
+    [mt7925_common]=01b3a91d74452bdab5ea18b685eb1715a49b8c55
+    [mt7925e]=419b8e405780f1c257a150e88a5922ba26750b31
 )
 ;;
 upstream-prefix22-lifecycle-trace)
