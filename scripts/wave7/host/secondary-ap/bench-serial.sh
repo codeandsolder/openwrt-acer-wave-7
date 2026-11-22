@@ -89,6 +89,7 @@ snapshot() {
 }
 snapshot > "$out/before.txt"
 host_snapshot() {
+  local dev n
   for dev in "$direct" "$switch"; do
     printf '%s ' "$dev"
     for n in rx_bytes tx_bytes rx_packets tx_packets rx_errors tx_errors rx_dropped tx_dropped; do
