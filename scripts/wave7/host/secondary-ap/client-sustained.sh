@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry || $2 == --scan-timing-upstream-mlo || $2 == --scan-timing-upstream-base || $2 == --scan-timing-upstream-prefix12 ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry || $2 == --scan-timing-upstream-mlo || $2 == --scan-timing-upstream-base || $2 == --scan-timing-upstream-prefix12 || $2 == --scan-timing-upstream-prefix24 ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -42,6 +42,7 @@ case "${2:-}" in
     --scan-timing-upstream-mlo) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-mlo; pm_experiment=1 ;;
     --scan-timing-upstream-base) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-base; pm_experiment=1 ;;
     --scan-timing-upstream-prefix12) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix12; pm_experiment=1 ;;
+    --scan-timing-upstream-prefix24) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix24; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;

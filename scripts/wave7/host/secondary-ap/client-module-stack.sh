@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 [[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
 variant=$1
-[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-mlo ]] || exit 2
+[[ $variant == quota || $variant == upstream-base || $variant == upstream-prefix12 || $variant == upstream-prefix24 || $variant == upstream-mlo ]] || exit 2
 action=$2
 kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
@@ -108,6 +108,29 @@ declare -A candidate_id=(
     [mt7925e]=f7a07472d7e01e1d3adc7f40a870428e63ae6cfd
 )
 ;;
+upstream-prefix24)
+declare -A candidate_hash=(
+    [mt76]=f929e473d2eaefaa42beb2060906280f177a21bec22db07aa2079147697ab2ab
+    [mt76_connac_lib]=3800b47c2e2c088f88bc4eed0dc3f1ccfc4ee07277b3f7caa59db46009b4e0b7
+    [mt792x_lib]=afdb5842b0ba1256e8ad882aaf62a41723bed0dc3cfa3ea5d6a6c32692d6eb50
+    [mt7925_common]=be1821cf31d44b780bcaa98c14b08e09004ae877c8a8b0ecea9ef40889ce78cd
+    [mt7925e]=1b152364a21665c697b6e2f7f7c6582a27aa922ed7ea979ec62fe650aa2771f6
+)
+declare -A candidate_version=(
+    [mt76]=DEF56EC1D966C3C1D7AC35A
+    [mt76_connac_lib]=5BED2D7D2B4E7822BCF126C
+    [mt792x_lib]=E646D7CFCCF4E8A2A319BEA
+    [mt7925_common]=9FAF8F56A5317D3F0883990
+    [mt7925e]=FBA0887DAE5E4E080B4761A
+)
+declare -A candidate_id=(
+    [mt76]=81e0cffb11e04d485c3cca7d0cc98db861c7ddbd
+    [mt76_connac_lib]=af4829695206e00797623d48ebd9288389820eaf
+    [mt792x_lib]=570c3d1d44f134476ca846435477a6355be8a023
+    [mt7925_common]=8761ca32f34a1294aa9e218c1b60242716122786
+    [mt7925e]=0add8d2fa98cbdfaeef6b9522659be449a8fd3a7
+)
+;;
 upstream-mlo)
 declare -A candidate_hash=(
     [mt76]=c0c66bbdfeabd774ba2236c69bdec5c8e4bb3b37a4a54c629b41635bfa2baea5
@@ -209,7 +232,7 @@ check_original() {
     disk_original
     loaded_closure original
     local other
-    for other in quota upstream-base upstream-prefix12 upstream-mlo; do
+    for other in quota upstream-base upstream-prefix12 upstream-prefix24 upstream-mlo; do
         [[ ! -e /run/wave7-$other-stack ]]
         if systemctl is-active --quiet "wave7-$other-rollback.timer"; then return 1; fi
     done
