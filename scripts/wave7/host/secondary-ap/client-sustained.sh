@@ -5,10 +5,11 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-mode-pin5 ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
+pinned_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -16,6 +17,7 @@ case "${2:-}" in
     --trace) trace=1 ;;
     --scan-scope) scope_experiment=1; pm_experiment=1 ;;
     --scan-mode) scope_experiment=1; mode_experiment=1; pm_experiment=1 ;;
+    --scan-mode-pin5) scope_experiment=1; mode_experiment=1; pinned_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -142,6 +144,9 @@ kill -0 "$event_pid"
 rootcmd nmcli connection clone "$profile" "$tmp" > "$out/clone.txt"
 clone=1
 rootcmd nmcli connection modify "$tmp" connection.autoconnect no ipv4.never-default yes ipv4.ignore-auto-dns yes ipv6.never-default yes ipv6.ignore-auto-dns yes ipv4.may-fail no ipv6.may-fail no ipv4.method auto ipv6.method auto
+if (( pinned_experiment )); then
+    rootcmd nmcli connection modify "$tmp" 802-11-wireless.band a 802-11-wireless.bssid 4E:5A:6F:5A:BB:16
+fi
 rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/association.txt" 2>&1
 ip -br addr show dev "$iface" > "$out/addresses-at-activation.txt"
 v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {split($4,parts,"/"); print parts[1]; exit}')
@@ -171,6 +176,14 @@ check_link() {
     local link
     link=$(iw dev "$iface" link)
     printf '%s\n' "$link"
+    if (( pinned_experiment )); then
+        # Do not infer single-link association merely from the requested pin.
+        grep -Fq 'SSID: Wave7-MLO-Lab' <<< "$link" &&
+          grep -Eiq '^Connected to 4e:5a:6f:5a:bb:16 ' <<< "$link" &&
+          grep -Eq '^[[:space:]]*freq: 5180([.]0)?$' <<< "$link" &&
+          ! grep -Eq 'Link [0-9]+ BSSID |^MLD ' <<< "$link"
+        return
+    fi
     grep -Fq 'SSID: Wave7-MLO-Lab' <<< "$link" &&
       grep -Eq 'Link 0 BSSID ' <<< "$link" &&
       grep -Eq 'Link 1 BSSID ' <<< "$link"
