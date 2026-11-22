@@ -6,6 +6,7 @@ separately until a live index/link mapping is established. A presence
 event is a firmware declaration, not proof of RF reception.
 """
 import argparse
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from decimal import Decimal as D
 import importlib.util
@@ -92,6 +93,36 @@ def overlap(span, lo, hi, start, end):
     return min(lengths), max(lengths)
 
 
+def summarize_spans(events, spans):
+    """Monotonic-only comparison of each declared absence, including controls.
+
+    A TXFREE record is not a packet count or RF-delivery attestation.
+    Other-BSS overlap is a lower bound on simultaneous declared absence;
+    intervals without both endpoints are excluded.
+    """
+    names = ("net_dev_xmit", "netif_receive_skb", "mt7925_lab_txfree", "mt7925_lab_txs")
+    timestamps = {name: [] for name in names}
+    for t, name, *_ in events:
+        if name in timestamps:
+            timestamps[name].append(t)
+    output = {}
+    for bss, candidates in sorted(spans.items()):
+        rows = []
+        for span in candidates:
+            start, end = span["start"], span["end"]
+            counts = {n: bisect_left(ts, end)-bisect_right(ts, start)
+                      for n, ts in timestamps.items()}
+            other = {b: sum((max(D(0), min(end, v["end"])-max(start, v["start"]))
+                             for v in vs), D(0))
+                     for b, vs in spans.items() if b != bss}
+            rows.append(dict(start=start, end=end, duration=end-start,
+                             other_bss_absent_s=other, counts=counts,
+                             quota_updates=span["quota_updates"],
+                             presence_quota=span["presence_quota"]))
+        output[bss] = rows
+    return output
+
+
 def classify(parsed, timing, require_fields):
     lo, hi = parsed["offset_lo"], parsed["offset_hi"]
     headers, records = extract(parsed["events"], require_fields)
@@ -147,6 +178,7 @@ def classify(parsed, timing, require_fields):
         field_signatures=[dict(bss=b, absent=a, quota=q, count=n)
                           for (b,a,q),n in sorted(Counter((e["bss"],e["absent"],e["quota"]) for e in records).items())],
         completed_intervals_by_bss={b:len(v) for b,v in spans.items()},
+        completed_absence_intervals=summarize_spans(parsed["events"],spans),
         unpaired_presence_by_bss=dict(unpaired),
         open_absence_by_bss={b:[dict(t=e["t"],quota=e["quota"]) for e in v] for b,v in open_spans.items()},
         windows=windows)
@@ -175,6 +207,8 @@ def selftest():
     assert result["windows"][0]["nearby_header_intervals_s"]==[D(".2"),D(".4")]
     span = result["windows"][0]["completed_absence_by_bss"][3][0]
     assert span["duration"]==D(".6") and span["overlap_bounds"]==[D(".6"),D(".6")]
+    assert result["completed_absence_intervals"][3][0]["duration"]==D(".6")
+    assert result["completed_absence_intervals"][3][0]["counts"]["net_dev_xmit"]==0
     for bad in (events[:-1], [h("10"),f("10.000001",3,1,4,cpu=1)],
                 [h("10"),f("10.1",3,1,4)],
                 [h("10"),f("10.000001",3,2,4)]):
