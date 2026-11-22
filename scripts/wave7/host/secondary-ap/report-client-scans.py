@@ -19,7 +19,7 @@ OUTSTANDING = re.compile(r"^\[(\d+\.\d+)\] no answer yet for icmp_seq=(\d+)$")
 SUMMARY = re.compile(r"^(\d+) packets transmitted, (\d+) (?:packets )?received, (?:\+\d+ duplicates, )?.*packet loss")
 PING = re.compile(r"^PING (\S+)")
 SCAN_FREQS = re.compile(r"^scan finished: ([0-9]+(?: [0-9]+)*)(?:,|$)")
-SCOPE_LABEL = re.compile(r"(home|off24|off5|off6|full)-[12]")
+SCOPE_LABEL = re.compile(r"(home|off24|off5|off6|full|active24|passive24|active5|passive5)-[12]")
 
 
 def parse_events(lines, iface):

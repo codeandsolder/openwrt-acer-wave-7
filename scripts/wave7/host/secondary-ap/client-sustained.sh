@@ -5,15 +5,17 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
+mode_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
 case "${2:-}" in
     --trace) trace=1 ;;
     --scan-scope) scope_experiment=1; pm_experiment=1 ;;
+    --scan-mode) scope_experiment=1; mode_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -141,6 +143,9 @@ v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[
 v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
 [[ -n $v4 && -n $v6 ]]
 routes() {
+    if (( mode_experiment )); then
+        ip -4 route get 192.168.76.1 from "$v4" oif "$iface"
+    fi
     ip -4 route get 192.168.76.2 from "$v4" oif "$iface"
     ip -6 route get fd76:7::2 from "$v6" oif "$iface"
     ip -4 route get 10.1.0.2
@@ -148,6 +153,9 @@ routes() {
     ip -6 route show default
 }
 validate_routes() {
+    if (( mode_experiment )); then
+        ip -4 route get 192.168.76.1 from "$v4" oif "$iface" | grep -Fq "dev $iface " || return 1
+    fi
     ip -4 route get 192.168.76.2 from "$v4" oif "$iface" | grep -Fq "dev $iface " &&
     ip -6 route get fd76:7::2 from "$v6" oif "$iface" | grep -Fq "dev $iface " &&
     ip -4 route get 10.1.0.2 | grep -Fq 'dev eno1 ' &&
@@ -181,7 +189,13 @@ probe() {
 # Request only the dedicated lab SSID; never change the background scan policy.
 # Logs contain just the requested frequencies/status and existing iw events.
 scan_scope() {
-    local label=$1; shift
+    local label=$1 mode=$2; shift 2
+    local -a scan_args
+    case "$mode" in
+        active) scan_args=(ssid "$profile") ;;
+        passive) scan_args=(passive) ;;
+        *) return 2 ;;
+    esac
     local started finished before after rc deadline
     deadline=$((SECONDS+18))
     while :; do
@@ -197,7 +211,7 @@ scan_scope() {
     before=$(date +%s.%N)
     printf '%s,%s,request,%s\n' "$before" "$label" "$*"
     rc=0
-    rootcmd iw dev "$iface" scan trigger freq "$@" ssid "$profile" </dev/null >&2 || rc=$?
+    rootcmd iw dev "$iface" scan trigger freq "$@" "${scan_args[@]}" </dev/null >&2 || rc=$?
     printf '%s,%s,return=%s,%s\n' "$(date +%s.%N)" "$label" "$rc" "$*"
     (( rc == 0 )) || return 1
     deadline=$((SECONDS+20))
@@ -213,12 +227,21 @@ scan_scope() {
 scope_matrix() {
     local round
     sleep 2
+    if (( mode_experiment )); then
+        for round in 1 2; do
+            scan_scope "active24-$round" active 2412 || return 1
+            scan_scope "passive24-$round" passive 2412 || return 1
+            scan_scope "active5-$round" active 5180 || return 1
+            scan_scope "passive5-$round" passive 5180 || return 1
+        done
+        return
+    fi
     for round in 1 2; do
-        scan_scope "home-$round" 2412 5180 || return 1
-        scan_scope "off24-$round" 2437 2462 || return 1
-        scan_scope "off5-$round" 5200 5220 || return 1
-        scan_scope "off6-$round" 5955 5975 || return 1
-        scan_scope "full-$round" 2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5745 5765 5785 5805 5825 5955 5975 5995 6015 6035 6055 6075 6095 6115 6135 6155 6175 6195 6215 6235 6255 6275 6295 6315 6335 6355 6375 6395 6415 || return 1
+        scan_scope "home-$round" active 2412 5180 || return 1
+        scan_scope "off24-$round" active 2437 2462 || return 1
+        scan_scope "off5-$round" active 5200 5220 || return 1
+        scan_scope "off6-$round" active 5955 5975 || return 1
+        scan_scope "full-$round" active 2412 2417 2422 2427 2432 2437 2442 2447 2452 2457 2462 2467 2472 5180 5200 5220 5240 5260 5280 5300 5320 5500 5520 5540 5560 5580 5600 5620 5640 5660 5680 5700 5745 5765 5785 5805 5825 5955 5975 5995 6015 6035 6055 6075 6095 6115 6135 6155 6175 6195 6215 6235 6255 6275 6295 6315 6335 6355 6375 6395 6415 || return 1
     done
 }
 failed=0
@@ -273,6 +296,10 @@ probe steady-v4 "$steady_count" "$v4" 192.168.76.2 -4 &
 pings+=("$!")
 probe steady-v6 "$steady_count" "$v6" fd76:7::2 -6 &
 pings+=("$!")
+if (( mode_experiment )); then
+    probe steady-ap-v4 "$steady_count" "$v4" 192.168.76.1 -4 &
+    pings+=("$!")
+fi
 for pid in "${pings[@]}"; do wait "$pid" || failed=1; done
 pings=()
 if [[ -n $scope_pid ]]; then
@@ -296,7 +323,9 @@ if (( pm_experiment )); then
     pm_valid || failed=1
     pm_snapshot > "$out/pm-after.txt"
 fi
-for name in immediate-v4 immediate-v6 steady-v4 steady-v6; do
+names=(immediate-v4 immediate-v6 steady-v4 steady-v6)
+if (( mode_experiment )); then names+=(steady-ap-v4); fi
+for name in "${names[@]}"; do
     echo "$name"
     grep -E 'packets transmitted|rtt min/avg/max' "$out/$name.txt" || :
 done
