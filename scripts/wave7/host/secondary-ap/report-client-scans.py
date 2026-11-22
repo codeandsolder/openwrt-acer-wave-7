@@ -15,6 +15,7 @@ import statistics
 D = Decimal
 EVENT = re.compile(r"^(\d+\.\d+): (\S+)(?: \(phy #\d+\))?: (.*)$")
 REPLY = re.compile(r"^\[(\d+\.\d+)\].*icmp_seq=(\d+).*?time([=<])([0-9.]+) ms")
+OUTSTANDING = re.compile(r"^\[(\d+\.\d+)\] no answer yet for icmp_seq=(\d+)$")
 SUMMARY = re.compile(r"^(\d+) packets transmitted, (\d+) (?:packets )?received, (?:\+\d+ duplicates, )?.*packet loss")
 PING = re.compile(r"^PING (\S+)")
 
@@ -72,7 +73,7 @@ def parse_ping(lines):
         if m:
             if current is not None:
                 raise ValueError("ping test missing summary")
-            current={"target":m[1],"replies":{}}
+            current={"target":m[1],"replies":{},"outstanding":{}}
         elif current is not None:
             m=REPLY.match(line)
             if m:
@@ -89,9 +90,14 @@ def parse_ping(lines):
                     uncertainty=max(uncertainty,rtt/D(1000))
                 current["replies"][seq]={"seq":seq,"received":epoch,"rtt_ms":rtt,"rtt_is_upper_bound":m[3]=="<",
                                         "send_estimate":estimate,"send_uncertainty_s":uncertainty}
+            elif (m:=OUTSTANDING.match(line)):
+                epoch,seq=D(m[1]),int(m[2])
+                if seq<=0 or seq in current["outstanding"]:
+                    raise ValueError("invalid duplicate outstanding notice")
+                current["outstanding"][seq]=epoch
             elif (m:=SUMMARY.match(line)):
                 sent,received=map(int,m.groups())
-                if not 0<=received<=sent or received!=len(current["replies"]) or any(i>sent for i in current["replies"]):
+                if not 0<=received<=sent or received!=len(current["replies"]) or any(i>sent for i in (*current["replies"],*current["outstanding"])):
                     raise ValueError("reply/summary count mismatch")
                 current.update(sent=sent,received=received)
                 tests.append(current)
@@ -112,6 +118,46 @@ def scan_union(scans, start, end):
     return total
 
 
+def missing_clusters(test, scans):
+    """Observed -O notices bound reply gaps; never claim actual missing send times."""
+    missing=[i for i in range(1,test["sent"]+1) if i not in test["replies"]]
+    groups=[]
+    for seq in missing:
+        if groups and seq==groups[-1][-1]+1:
+            groups[-1].append(seq)
+        else:
+            groups.append([seq])
+    result=[]
+    for seqs in groups:
+        prior=test["replies"].get(seqs[0]-1)
+        following=test["replies"].get(seqs[-1]+1)
+        notices=[{"seq":i,"epoch":test["outstanding"].get(i)} for i in seqs]
+        first=notices[0]["epoch"]
+        last=notices[-1]["epoch"]
+        # A completed scan and at least one observed successful packet
+        # after completion distinguish this from ordinary scan dwell.
+        scan=max((s for s in scans if s["complete"] and not s["aborted"] and
+                   first is not None and s["end"]<=first),
+                  key=lambda s:s["end"],default=None)
+        end=scan["end"] if scan else None
+        after=lambda t: t-end if t is not None and end is not None else None
+        result.append({
+            "sequences":seqs,"observed_unanswered_notices":notices,
+            "prior_reply_epoch":prior["received"] if prior else None,
+            "following_reply_epoch":following["received"] if following else None,
+            "following_reply_rtt_ms":following["rtt_ms"] if following else None,
+            "reply_gap_seconds":following["received"]-prior["received"] if prior and following else None,
+            "scan_end_epoch":end,
+            "prior_reply_after_scan_s":after(prior["received"] if prior else None),
+            "first_notice_after_scan_s":after(first),
+            "last_notice_after_scan_s":after(last),
+            "following_reply_after_scan_s":after(following["received"] if following else None),
+            "successful_reply_after_scan_before_gap":bool(prior and end is not None and prior["received"]>end),
+            "actual_missing_send_times_known":False,
+        })
+    return result
+
+
 def describe(tests, scans, associations, interval):
     result=[]
     for t in tests:
@@ -128,7 +174,8 @@ def describe(tests, scans, associations, interval):
         nominal_origins=[p["send_estimate"]-(p["seq"]-1)*interval for p in replies]
         nominal_origin=statistics.median(nominal_origins) if nominal_origins else None
         missing=[{"seq":i,"nominal_send_estimate":nominal_origin+(i-1)*interval if nominal_origin is not None else None,
-                  "actual_send_time":None} for i in range(1,t["sent"]+1) if i not in t["replies"]]
+                  "actual_send_time":None,"observed_unanswered_notice_epoch":t["outstanding"].get(i)}
+                 for i in range(1,t["sent"]+1) if i not in t["replies"]]
         stats={}
         for category in ("overlap","possible","none_observed"):
             matching=[p for p in replies if p["scan_overlap"]==category]
@@ -136,7 +183,7 @@ def describe(tests, scans, associations, interval):
             stats[category]={"replies":len(matching),"rtt_samples":len(vals),"mean_rtt_ms":statistics.mean(vals) if vals else None,
                              "max_rtt_ms":max(vals) if vals else None}
         result.append({"target":t["target"],"sent":t["sent"],"received":t["received"],
-                       "missing":missing,"reply_stats":stats,
+                       "missing":missing,"missing_clusters":missing_clusters(t,scans),"reply_stats":stats,
                        "nominal_cadence_residual_range_s":max(nominal_origins)-min(nominal_origins) if nominal_origins else None,
                        "replies":replies})
     assoc_time=sum((a["end"]-a["start"] for a in associations if a["complete"]),D(0))
@@ -154,7 +201,7 @@ def report(ping_log,event_log,iface,interval):
         warnings.append("no scan events parsed; absence of observed overlap is not proof of no scans")
     return {**describe(parse_ping(ping_log.splitlines()),scans,associations,interval),
             "event_warnings":warnings,
-            "method":"receipt epoch minus displayed RTT (estimate); missing packets have no measured send time; overlap is not causation"}
+            "method":"receipt epoch minus displayed RTT (estimate); -O notices are observed unanswered-reply notifications, not send timestamps; missing packets have no measured send time; overlap is not causation"}
 
 
 def selftest():
@@ -167,6 +214,7 @@ def selftest():
 """
     ping="""PING 192.168.76.2 (192.168.76.2) from 192.168.76.145
 [102.100000] 64 bytes from 192.168.76.2: icmp_seq=1 ttl=64 time=40.0 ms
+[103.500000] no answer yet for icmp_seq=2
 [104.000000] 64 bytes from 192.168.76.2: icmp_seq=3 ttl=64 time=100 ms
 3 packets transmitted, 2 received, 33.333% packet loss
 """
@@ -177,6 +225,15 @@ def selftest():
     assert t["reply_stats"]["none_observed"]["replies"]==1
     assert report(ping.replace("time=40.0","time<40.0"),events,"wlp2s0",D(".25"))["tests"][0]["replies"][0]["rtt_is_upper_bound"]
     assert t["missing"][0]["seq"]==2 and t["missing"][0]["actual_send_time"] is None
+    assert t["missing"][0]["observed_unanswered_notice_epoch"]==D("103.5")
+    cl=t["missing_clusters"][0]
+    assert cl["first_notice_after_scan_s"]==D(".5")
+    assert not cl["successful_reply_after_scan_before_gap"]
+    assert cl["actual_missing_send_times_known"] is False
+    # If a reply was already received after scan end, the next gap is
+    # delayed relative to the observable firmware scan completion.
+    moved=report(ping.replace("102.100000","103.100000"),events,"wlp2s0",D(".25"))
+    assert moved["tests"][0]["missing_clusters"][0]["successful_reply_after_scan_before_gap"]
     for broken in (ping.replace("2 received","3 received"),ping.replace("icmp_seq=3","icmp_seq=1")):
         try:
             report(broken,events,"wlp2s0",D(".25"))
