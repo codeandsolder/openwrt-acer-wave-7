@@ -5,12 +5,13 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
 timing_experiment=0
 nosplit_experiment=0
+trace_window=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -20,6 +21,7 @@ case "${2:-}" in
     --scan-mode) scope_experiment=1; mode_experiment=1; pm_experiment=1 ;;
     --scan-timing) scope_experiment=1; mode_experiment=1; timing_experiment=1; pm_experiment=1 ;;
     --scan-timing-nosplit) scope_experiment=1; mode_experiment=1; timing_experiment=1; nosplit_experiment=1; pm_experiment=1 ;;
+    --scan-timing-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -63,6 +65,7 @@ event_pid=''
 sample_pid=''
 tap_pid=''
 scope_pid=''
+trace_pid=''
 pings=()
 cleanup() {
     local rc=$?
@@ -106,6 +109,10 @@ cleanup() {
     if [[ $(nmcli -g connection.autoconnect connection show "$profile") != no ||
           $(nmcli -g GENERAL.STATE device show "$iface") != '30 (disconnected)' ]] ||
         nmcli -g NAME connection show | grep -Fxq "$tmp"; then rc=1; fi
+    if [[ -n $trace_pid ]]; then
+        wait "$trace_pid" || rc=1
+        grep -Fxq 'TRACE_CLEANUP rc=0' "$out/client-kernel-trace.txt" || rc=1
+    fi
     printf 'exit=%s\n' "$rc" > "$out/status"
     (cd "$out"; sha256sum ./*.txt status > SHA256SUMS; sha256sum -c SHA256SUMS)
     echo "CLIENT_RUN_DIR=$out"
@@ -151,6 +158,19 @@ fi
 } > "$out/firmware.txt"
 if (( nosplit_experiment )); then
     date +%s > "$out/nosplit-start-epoch.txt"
+fi
+if (( trace_window )); then
+    helper=/home/jan/scripts/wave7/client-validation/client-trace-window.sh
+    [[ -f $helper ]]
+    rootcmd bash "$helper" "$tag" > "$out/client-kernel-trace.txt" 2>&1 &
+    trace_pid=$!
+    ready=0
+    for _ in {1..40}; do
+        kill -0 "$trace_pid"
+        if grep -Fxq TRACE_READY "$out/client-kernel-trace.txt"; then ready=1; break; fi
+        sleep .25
+    done
+    (( ready ))
 fi
 stdbuf -oL iw event -t > "$out/events.txt" 2>&1 &
 event_pid=$!
