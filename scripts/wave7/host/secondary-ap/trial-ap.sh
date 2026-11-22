@@ -415,7 +415,7 @@ autonomous_healthy() {
   candidate_healthy "$1" && autonomous_approval_ok "$1"
 }
 restore_profile() {
-  [[ $trial_kind == relink || $trial_kind == mac-order ]]
+  [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc ]]
 }
 restore_source_valid() {
   restore_profile && healthy "$1" && grep -Fxq approval=0 <<< "$1"
@@ -719,7 +719,7 @@ if [[ $mode == --arm-reboot ]]; then
 fi
 if [[ $mode == --watch || $mode == --watch-restore ]]; then
   if [[ $mode == --watch-restore ]] && ! restore_profile; then
-    fatal 'explicit restore restricted to failed 0492/0493'
+    fatal 'explicit restore restricted to failed 0492/0493/0494'
   fi
   [[ $# == 2 ]] || fatal 'watch requires old boot and directory'
   old_boot=$1
@@ -920,7 +920,7 @@ fi
 [[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline ]] ||
   fatal "unknown mode $mode"
 if [[ $mode == --restore-baseline ]]; then
-  restore_profile && [[ $# == 0 ]] || fatal 'restore is only for failed 0492/0493'
+  restore_profile && [[ $# == 0 ]] || fatal 'restore is only for failed 0492/0493/0494'
 fi
 [[ -r $accepted ]] || fatal 'missing accepted rollback'
 [[ $(sha256sum "$accepted" | cut -d' ' -f1) == "$accepted_sha" ]] || fatal 'accepted SHA mismatch'
