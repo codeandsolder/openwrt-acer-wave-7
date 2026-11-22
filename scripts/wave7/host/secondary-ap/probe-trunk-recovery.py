@@ -91,10 +91,20 @@ def observed_snapshot(revision, route_state):
     return snapshot(revision)
 
 
+def ping_argv(name, count):
+    ip, dev, _ = PATHS[name]
+    # A source address and policy route alone constrain outbound traffic,
+    # not the receiving interface. These two NICs share the subnet.
+    # iputils accepts both -I device and -I source, applying
+    # SO_BINDTODEVICE and bind(2) to the ICMP socket respectively.
+    return ["ping", "-n", "-D", "-O", "-I", dev, "-I", ip,
+            "-c", str(count), "-i", "0.25", "-W", "1", ROUTER]
+
+
 def ping(name, count):
-    ip, _, _ = PATHS[name]
-    result = run(["ping", "-n", "-D", "-O", "-I", ip, "-c", str(count), "-i", "0.25",
-                  "-W", "1", ROUTER], count * .25 + 5)
+    ip, dev, _ = PATHS[name]
+    result = run(ping_argv(name, count), count * .25 + 5)
+    result["binding"] = {"device": dev, "source": ip}
     m = re.search(r"(\d+) packets transmitted, (\d+)(?: packets)? received", result["stdout"])
     result["sent"], result["received"] = tuple(map(int, m.groups())) if m else (None, None)
     return result
@@ -262,6 +272,10 @@ def capture(out, revision, duration, count):
     print(json.dumps({k:v for k,v in summary.items() if k!="intervals"},indent=2))
 
 def selftest():
+    for name, (ip, dev, _) in PATHS.items():
+        assert ping_argv(name, 4) == ["ping", "-n", "-D", "-O",
+                                     "-I", dev, "-I", ip, "-c", "4",
+                                     "-i", "0.25", "-W", "1", ROUTER]
     b = "12345678-1234-1234-1234-123456789abc"
     a = {"boot":b,"uptime":1,"lan1_carrier":"1","counters":dict.fromkeys(COUNTERS.values(),0),"events":[]}
     p = {"direct":{"sent":8,"received":8},"switch":{"sent":8,"received":0}}
