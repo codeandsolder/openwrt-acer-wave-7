@@ -153,6 +153,22 @@ def analyze(trace, timing):
                 method="Hardware-band selector, not RF frequency. TX status records may be unmatched and are not necessarily unique delivered packets. Receive subtype is only decoded for raw 802.11 frames.")
 
 
+def association(trace):
+    """Report provisioning even when association/handshake failed before probes."""
+    sessions, other = grant_pairs(trace["events"])
+    relevant = rx.PROVISION | {"roc_geometry", "roc_band", "key_result", "decap_config"}
+    records = []
+    for t, name, task, payload, cpu in trace["events"]:
+        event = name.removeprefix("mt7925_lab_")
+        if name.startswith("mt7925_lab_") and event in relevant:
+            records.append(dict(t=t, event=event, **rx.fields(payload)))
+    if not records:
+        raise ValueError("missing association trace")
+    return dict(trace_events=trace["trace_count"], sessions=sessions,
+                other_roc_events=other, provisioning=records,
+                method="Association metadata only; no payload, key bytes, or traffic success inference.")
+
+
 def selftest():
     assert decode_frame(dict(fc=128, encap=0, freq=2412, wcid=18,
                              raw_bss=1,u2m=0,data=0))["kind"] == "beacon"
@@ -188,6 +204,12 @@ def selftest():
     assert result[0]["geometry_complete"] and result[0]["bands_applied"]
     result,_=grant_pairs(fixed[:-2]+fixed[-1:])
     assert not result[0]["bands_applied"]
+    report = association({"events": [event("1", "key_result",
+        "wcid=2 bss=1 link=0 key_link=-1 key_index=0 cipher=1027076 pairwise=1 add=1 result=0"),
+        event("2", "decap_config", "wcid=2 link=0 enabled=1")], "trace_count": 2})
+    assert report["provisioning"][0]["key_link"] == -1
+    assert report["provisioning"][1]["enabled"] == 1
+    assert report["sessions"] == []
     print("CLIENT_ROC_WIRE_SELFTEST_PASS")
 
 
@@ -196,9 +218,15 @@ if __name__=="__main__":
     p.add_argument("trace",type=Path,nargs="?")
     p.add_argument("timing",type=Path,nargs="?")
     p.add_argument("--selftest",action="store_true")
+    p.add_argument("--association-only",action="store_true")
     a=p.parse_args()
     if a.selftest:
         selftest()
+    elif a.association_only:
+        if a.trace is None or a.timing is not None:
+            p.error("supply only trace for association metadata")
+        print(json.dumps(association(rx.absence.trace.parse(a.trace.read_text())),
+                         indent=2, default=str))
     else:
         if a.trace is None or a.timing is None:
             p.error("supply trace and timing")
