@@ -5,9 +5,15 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && $2 == --trace ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
-[[ ${2:-} != --trace ]] || trace=1
+pm_experiment=0
+deep_expected=1
+case "${2:-}" in
+    --trace) trace=1 ;;
+    --deep-sleep-on) pm_experiment=1 ;;
+    --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
+esac
 tap=/home/jan/scripts/wave7/client-validation/icmp-probe-tap
 if (( trace )); then
     [[ $(sha256sum "$tap" | cut -d' ' -f1) == d1fa6760fef57a219ba3df1255e7ab5a6f78e8038091b24bd7cc8ab5d9a56558 ]]
@@ -25,6 +31,22 @@ mkdir -p "$base"
 mkdir -m 700 "$out"
 # Commands requiring root, preserving unprivileged ownership of evidence.
 rootcmd() { sudo -n "$@"; }
+pm_dir=/sys/kernel/debug/ieee80211/phy0/mt76
+pm_modified=0
+pm_snapshot() {
+    local f
+    printf 'time=%s\n' "$(date -Is)"
+    for f in runtime-pm deep-sleep idle-timeout; do
+        printf '%s=%s\n' "$f" "$(rootcmd cat "$pm_dir/$f")"
+    done
+    rootcmd cat "$pm_dir/runtime_pm_stats"
+}
+pm_valid() {
+    [[ $(rootcmd cat "$pm_dir/runtime-pm") == 1 &&
+       $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" &&
+       $(rootcmd cat "$pm_dir/idle-timeout") == 83 ]] &&
+       iw dev "$iface" get power_save | grep -Fxq 'Power save: off'
+}
 clone=0
 event_pid=''
 sample_pid=''
@@ -42,6 +64,15 @@ cleanup() {
     fi
     if (( clone )); then
         rootcmd nmcli connection delete "$tmp" > "$out/cleanup.txt" 2>&1 || rc=1
+    fi
+    if (( pm_modified )); then
+        # Restore only the original requested firmware deep-sleep value.
+        printf '1\n' | rootcmd tee "$pm_dir/deep-sleep" > "$out/restore-deep-sleep.txt" || rc=1
+    fi
+    if (( pm_experiment )); then
+        pm_snapshot > "$out/pm-restored.txt" || rc=1
+        [[ $(rootcmd cat "$pm_dir/deep-sleep") == 1 &&
+           $(rootcmd cat "$pm_dir/runtime-pm") == 1 ]] || rc=1
     fi
     sleep 1
     if [[ -n $event_pid ]]; then kill "$event_pid" 2>/dev/null || :; wait "$event_pid" 2>/dev/null || :; fi
@@ -63,6 +94,25 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+trap 'exit 129' HUP
+if (( pm_experiment )); then
+    # Exact test client/module and original controls; never alter active links.
+    [[ $(uname -r) == 7.4.0-rc1-2-cachyos-rc &&
+       $(cat /sys/module/mt7925_common/srcversion) == DB4C3E1671DC2EA009803A0 &&
+       $(cat "/sys/class/net/$iface/device/vendor") == 0x14c3 &&
+       $(cat "/sys/class/net/$iface/device/device") == 0x7925 ]]
+    iw dev "$iface" info | grep -Eq '^[[:space:]]*wiphy 0$'
+    pm_snapshot > "$out/pm-original.txt"
+    [[ $(rootcmd cat "$pm_dir/runtime-pm") == 1 &&
+       $(rootcmd cat "$pm_dir/deep-sleep") == 1 &&
+       $(rootcmd cat "$pm_dir/idle-timeout") == 83 ]]
+    if (( deep_expected == 0 )); then
+        pm_modified=1
+        printf '0\n' | rootcmd tee "$pm_dir/deep-sleep" > "$out/set-deep-sleep.txt"
+    fi
+    pm_snapshot > "$out/pm-selected.txt"
+    [[ $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" ]]
+fi
 stdbuf -oL iw event -t > "$out/events.txt" 2>&1 &
 event_pid=$!
 sleep .3
@@ -116,6 +166,10 @@ failed=0
 routes > "$out/routes-before.txt"
 validate_routes || exit 3
 check_link > "$out/link-before.txt" || exit 3
+if (( pm_experiment )); then
+    pm_valid || exit 3
+    pm_snapshot > "$out/pm-associated.txt"
+fi
 rootcmd iw dev "$iface" station dump > "$out/stations-before.txt"
 if (( trace )); then
     [[ $v4 == 192.168.76.145 && $v6 == fd76:7:* ]]
@@ -139,6 +193,10 @@ date -Is > "$out/steady-start.txt"
     for ((i=0;i<18;i++)); do
         date -Is
         check_link || echo MLO_LINK_LOST
+        if (( pm_experiment )); then
+            pm_valid || echo PM_POLICY_CHANGED
+            pm_snapshot
+        fi
         rootcmd iw dev "$iface" station dump
         sleep 5
     done
@@ -157,7 +215,11 @@ routes > "$out/routes-after.txt"
 validate_routes || failed=1
 check_link > "$out/link-after.txt" || failed=1
 rootcmd iw dev "$iface" station dump > "$out/stations-after.txt"
-! grep -q MLO_LINK_LOST "$out/stations-during.txt" || failed=1
+! grep -Eq 'MLO_LINK_LOST|PM_POLICY_CHANGED' "$out/stations-during.txt" || failed=1
+if (( pm_experiment )); then
+    pm_valid || failed=1
+    pm_snapshot > "$out/pm-after.txt"
+fi
 for name in immediate-v4 immediate-v6 steady-v4 steady-v6; do
     echo "$name"
     grep -E 'packets transmitted|rtt min/avg/max' "$out/$name.txt" || :
