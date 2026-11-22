@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Root-only bounded observation on the isolated Wyse, no global tracer changes.
 set -Eeuo pipefail
-[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire || $2 == --roccontract || $2 == --rocgeometry || $2 == --upstream-prefix22-assoc-trace || $2 == --upstream-prefix22-band-trace || $2 == --upstream-prefix22-trace || $2 == --upstream-prefix23-trace ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $EUID == 0 && ( $# == 1 || ( $# == 2 && ( $2 == --metadata || $2 == --absence || $2 == --binding || $2 == --quota || $2 == --rx || $2 == --rocwire || $2 == --roccontract || $2 == --rocgeometry || $2 == --upstream-prefix13 || $2 == --upstream-prefix22-assoc-trace || $2 == --upstream-prefix22-band-trace || $2 == --upstream-prefix22-trace || $2 == --upstream-prefix23-trace ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 expected=DB4C3E1671DC2EA009803A0
 if [[ ${2:-} == --metadata ]]; then
     expected=5505CE551C04266721B047A
     [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == e423dd7b34d8e038b7b1a229ae1f9d7af08a27ce7370ea55ad09540175e274b0 ]]
-elif [[ ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
+elif [[ ${2:-} == --upstream-prefix13 || ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22-band-trace || ${2:-} == --upstream-prefix22-trace || ${2:-} == --upstream-prefix23-trace ]]; then
     stack_check=$(bash /home/jan/scripts/wave7/client-validation/client-module-stack.sh "${2#--}" --check-candidate)
     printf '%s\n' "$stack_check"
     expected=$(awk '/^mt7925_common srcversion=/ {sub(/srcversion=/,"",$2); print $2}' <<< "$stack_check")
@@ -80,6 +80,10 @@ if [[ ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22
         mt7925_scan_work mt7925_roc_work mt7925_mcu_set_roc
         mt7925_mcu_abort_roc mt7925_mcu_set_mlo_roc mt7925_mac_sta_event)
 fi
+if [[ ${2:-} == --upstream-prefix13 ]]; then
+    functions=(mt7925_mcu_hw_scan mt7925_scan_work mt7925_roc_work
+        mt7925_mcu_set_roc mt7925_mcu_abort_roc mt7925_mcu_set_mlo_roc)
+fi
 # Preserve exact symbol checks while scanning the large list only once.
 awk -v names="${functions[*]}" '
     BEGIN {
@@ -140,14 +144,26 @@ if [[ ${2:-} == --upstream-prefix22-assoc-trace || ${2:-} == --upstream-prefix22
         events+=("mt7925_lab/mt7925_lab_$e")
     done
 fi
+if [[ ${2:-} == --upstream-prefix13 ]]; then
+    # Admission trace only. Return tracepoints disambiguate rejection
+    # before the driver callback versus a firmware/driver busy result.
+    events=(cfg80211/rdev_scan cfg80211/rdev_return_int cfg80211/cfg80211_scan_done
+        mac80211/drv_hw_scan mac80211/drv_return_int mac80211/api_scan_completed
+        mac80211/drv_remain_on_channel mac80211/drv_cancel_remain_on_channel
+        mac80211/api_ready_on_channel mac80211/api_remain_on_channel_expired
+        mac80211/drv_change_vif_links mac80211/drv_change_sta_links
+        mac80211/api_beacon_loss mac80211/api_connection_loss)
+fi
 for e in "${events[@]}"; do
     [[ -f $inst/events/$e/enable ]]
     printf '1\n' > "$inst/events/$e/enable"
 done
-for e in net_dev_queue net_dev_start_xmit net_dev_xmit netif_receive_skb; do
-    printf 'name == "wlp2s0"\n' > "$inst/events/net/$e/filter"
-    printf '1\n' > "$inst/events/net/$e/enable"
-done
+if [[ ${2:-} != --upstream-prefix13 ]]; then
+    for e in net_dev_queue net_dev_start_xmit net_dev_xmit netif_receive_skb; do
+        printf 'name == "wlp2s0"\n' > "$inst/events/net/$e/filter"
+        printf '1\n' > "$inst/events/net/$e/enable"
+    done
+fi
 printf 'function\n' > "$inst/current_tracer"
 printf 'TRACE_BOOT %s\n' "$(cat /proc/sys/kernel/random/boot_id)"
 printf 'TRACE_CLOCK %s\n' "$(cat "$inst/trace_clock")"
