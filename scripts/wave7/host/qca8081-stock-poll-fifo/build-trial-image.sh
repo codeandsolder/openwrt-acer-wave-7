@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Derive from the exact accepted native-recovery secondary AP.
+# Derive 0495 from the exact approved 0491 secondary AP.
 # Replace only the FIT and five root identity files.
 set -euo pipefail
 umask 077
-[[ $# == 5 ]] || { echo 'usage: build-trial-image.sh PARENT FIT FIT_SHA RAW_KERNEL OUTPUT_DIR' >&2; exit 2; }
+[[ $# == 4 ]] || { echo 'usage: build-trial-image.sh PARENT VERIFIED_KERNEL ACCEPTED_BUILD OUTPUT_DIR' >&2; exit 2; }
 parent=$(realpath -e "$1")
-fit=$(realpath -e "$2")
-fit_sha=$3
-raw=$(realpath -e "$4")
-out=$(realpath -m "$5")
+verified=$(realpath -e "$2")
+accepted=$(realpath -e "$3")
+raw="$verified/candidate.Image"
+out=$(realpath -m "$4")
 repo=$(cd "$(dirname "$0")/../../../.." && pwd)
 prod=/home/jan/projects/wave7-prod-integrated
 tools="$prod/staging_dir/host/bin"
-parent_sha=1da743efe01ab63043b314a6d44de52e99d65456259f0dae0c1d53a013918f2c
-parent_rev=r0+38346-0e69b8931c-ap-dhcp-guard8
-kernel_sha=9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
-patch_commit=0418bb7af25d13406bb896696eb78541ccd2aa00
+parent_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
+parent_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
+kernel_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
+phy_commit=0418bb7af25d13406bb896696eb78541ccd2aa00
+patch_commit=44d12aa1f75285c4b5209d227da200227d96588a
 new_rev="r0+38346-${patch_commit:0:10}-ap-dhcp-guard8"
 stripped_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
 digest() { sha256sum "$1" | cut -d' ' -f1; }
@@ -25,11 +26,30 @@ fail() { echo "PHY_IMAGE_FAIL $*" >&2; exit 1; }
 git -C "$repo" merge-base --is-ancestor "$patch_commit" HEAD
 builder=$(git -C "$repo" rev-parse HEAD)
 [[ $(digest "$parent") == "$parent_sha" ]] || fail 'parent digest'
-[[ $fit_sha =~ ^[0-9a-f]{64}$ && $(digest "$fit") == "$fit_sha" ]] || fail 'FIT digest'
+(cd "$verified"; sha256sum -c SHA256SUMS)
+report="$verified/report.json"
+instant_patch="$repo/target/linux/qualcommbe/patches-6.18/0495-net-phy-qca8081-test-instantaneous-fifo-link.patch"
+[[ $(digest "$raw") == "$(jq -er .candidate_raw_sha256 "$report")" &&
+   $(digest "$instant_patch") == "$(jq -er .patch_sha256 "$report")" ]] || fail 'verified kernel digest'
+jq -e '.baseline_normalized == true and .baseline_raw_sha256 == "927351279da9ca3fd29891d8a6a2b1e95fba5a7497a086711d09665985ca0950" and .config_sha256 == "541c909b5c40aeb38d418d0f2b1fbd1e166b2dc2ac357d420b50958df1615987" and .exports_sha256 == "e850879b87726135c25faf20f095a640563b3e5883a67aa2708d0d0aa1ea0c81" and .instant_fifo_fixture_pass == true and .before == .after and .after.nss_cc_parent_data_1 == [7,2,4,3,1,0] and .after.nss_cc_parent_data_2 == [7,2,6,5,1,0]' "$report" >/dev/null
+git -C "$repo" merge-base --is-ancestor "$patch_commit" "$(jq -er .builder_commit "$report")"
+git -C "$repo" merge-base --is-ancestor "$(jq -er .builder_commit "$report")" HEAD
 [[ $(tar xOf "$parent" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fail 'board'
 work=$(mktemp -d "$(dirname "$out")/.wave7-phy.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/publish"
+fit="$work/candidate.itb"
+"$tools/lzma" e "$raw" "$work/candidate.lzma" -lc1 -lp2 -pb2
+# Use the archived exact FIT template, replacing its data paths only.
+sed -e "s|$accepted/fit/candidate.lzma|$work/candidate.lzma|" \
+    -e "s|$accepted/fit/parent.dtb|$work/parent.dtb|" "$accepted/fit/candidate.its" > "$work/candidate.its"
+[[ $(digest "$accepted/fit/parent.dtb") == 5eb62be61f9551eb44bb1b40622f2c77d515192da8fa3efe71430c61e90c6302 ]] || fail 'archived DTB digest'
+cp "$accepted/fit/parent.dtb" "$work/parent.dtb"
+rg -Fq "$work/candidate.lzma" "$work/candidate.its"
+rg -Fq "$work/parent.dtb" "$work/candidate.its"
+PATH="$tools:$PATH" "$tools/mkimage" -f "$work/candidate.its" "$fit" > "$work/mkimage.log"
+fit_sha=$(digest "$fit")
+cp "$report" "$work/publish/kernel-verification.json"
 tar xOf "$parent" sysupgrade-acer_wave7/kernel > "$work/kernel.itb"
 [[ $(digest "$work/kernel.itb") == "$kernel_sha" ]] || fail 'kernel digest'
 uv run --no-project --offline --python /usr/bin/python3 python "$(dirname "$0")/verify-fit.py" "$work/kernel.itb" "$fit" "$raw" > "$work/publish/fit-verification.txt"
@@ -59,7 +79,10 @@ sed -i -e "s/^source_revision=.*/source_revision=$parent_rev/" \
        -e "s/^revision=.*/revision=$new_rev/" \
        -e "s/^builder_commit=.*/builder_commit=$builder/" \
        -e "s/^base_image_sha256=.*/base_image_sha256=$parent_sha/" "$m"
-printf 'trial_phy_kernel_patch_commit=%s\ntrial_fit_sha256=%s\n' "$patch_commit" "$fit_sha" >> "$m"
+rg -Fxq "trial_phy_kernel_patch_commit=$phy_commit" "$m" || fail 'parent PHY patch identity'
+rg -Fxq "trial_fit_sha256=$kernel_sha" "$m" || fail 'parent FIT identity'
+sed -i "s/^trial_fit_sha256=.*/trial_fit_sha256=$fit_sha/" "$m"
+printf 'trial_instant_fifo_patch_commit=%s\n' "$patch_commit" >> "$m"
 chmod --reference="$work/orig/etc/wave7-role-profile" "$m"
 sh -c '. "$1"; wave7_ap_check_image "$2"' sh "$root/lib/wave7/overlay-reset.sh" "$root"
 # The five root identity files are the entire root delta.
@@ -81,9 +104,9 @@ rsync -aincO --delete --out-format='%n' "$root/" "$work/roundtrip/" > "$work/rou
 [[ ! -s $work/roundtrip-delta ]] || fail 'roundtrip delta'
 (cd "$work/roundtrip/lib/firmware/ath12k"; sha256sum -c --status "$prod/scripts/wave7/firmware.sha256"; sha256sum -c --status "$prod/scripts/wave7/diagnostic-firmware.sha256")
 [[ $(digest "$work/roundtrip/$rel") == "$stripped_sha" ]] || fail 'roundtrip module'
-image="$work/publish/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
+image="$work/publish/wave7-instant-fifo-dhcp-guard8-sysupgrade.bin"
 sh "$repo/scripts/sysupgrade-tar.sh" --board acer_wave7 --kernel "$work/kernel.itb" --rootfs "$work/new.sq" "$image"
-jq --arg rev "$new_rev" --arg parent "$parent_sha" --arg fit "$fit_sha" --arg patch "$patch_commit"   '.version.revision=$rev | .wave7_parent_image_sha256=$parent | .wave7_trial_phy_kernel_patch_commit=$patch | .wave7_trial_fit_sha256=$fit' "$work/old-metadata.json" > "$work/metadata"
+jq --arg rev "$new_rev" --arg parent "$parent_sha" --arg fit "$fit_sha" --arg patch "$patch_commit"   '.version.revision=$rev | .wave7_parent_image_sha256=$parent | .wave7_trial_instant_fifo_patch_commit=$patch | .wave7_trial_fit_sha256=$fit' "$work/old-metadata.json" > "$work/metadata"
 "$tools/fwtool" -I "$work/metadata" "$image"
 "$tools/fwtool" -i "$work/verified-metadata" "$image"
 diff -u <(jq -S . "$work/metadata") <(jq -S . "$work/verified-metadata")
@@ -97,7 +120,8 @@ parent_revision=$parent_rev
 parent_sha256=$parent_sha
 revision=$new_rev
 builder_commit=$builder
-phy_kernel_patch_commit=$patch_commit
+phy_kernel_patch_commit=$phy_commit
+instant_fifo_patch_commit=$patch_commit
 parent_kernel_sha256=$kernel_sha
 kernel_sha256=$fit_sha
 kernel_payload_sha256=$(digest "$raw")
@@ -110,5 +134,5 @@ image_sha256=$(digest "$image")
 REPORT
 (cd "$work/publish"; sha256sum ./*sysupgrade.bin > SHA256SUMS)
 mv "$work/publish" "$out"
-echo PHY_IMAGE_OFFLINE_PASS
+echo INSTANT_FIFO_IMAGE_OFFLINE_PASS
 cat "$out/report.txt"
