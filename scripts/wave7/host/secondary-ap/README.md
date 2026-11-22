@@ -430,11 +430,22 @@ on Wyse. Pin the entire PCI dependency closure (mt76, mt76-connac-lib,
 mt792x-lib, mt7925-common, mt7925e) including file hash, GNU build ID,
 srcversion and module holder sets. There must be no active Wi-Fi or
 trace and wired management must be intact. The guard stages in `/run`,
-arms a 15-minute independent reboot timer before unloading anything,
-and loads exactly the matched modules. No installed kernel module or
-initramfs is replaced. Root `client-module-stack.sh quota --restore` reboots; verify the original
+arms a 15-minute independent reboot timer and the Wyse ACPI WDAT hardware
+watchdog (60 seconds through the runtime systemd Manager D-Bus property)
+before unloading anything, and loads exactly the matched modules.
+The original state must have the watchdog inactive; a normal reboot
+restores the original runtime setting. The hardware watchdog protects
+loss of PID 1 feeding, not every partial kernel or networking deadlock.
+No installed kernel module or initramfs is replaced. Root `client-module-stack.sh quota --restore` reboots; verify the original
 stack with `client-module-stack.sh quota --check-original` afterward. A failed activation also
 reboots if any module has been changed.
+
+For a high-risk association experiment, after activating the matched
+association-rxtx stack, run root `client-crash-stream.sh TAG VARIANT BOOT`
+over the existing wired SSH session and save its stdout on Acer. Wait for
+`CRASH_STREAM_READY` before association. Its separate 240-second trace
+instance streams only selected control-plane events and does not consume
+the canonical trace; a partial stream is diagnostic, not acceptance evidence.
 
 Use the same bounded AP observer and client trial as the binding
 experiment, but with `client-sustained.sh TAG --scan-timing-quota`.

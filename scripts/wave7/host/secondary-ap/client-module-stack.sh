@@ -820,6 +820,28 @@ interface_ready() {
        $(basename "$(readlink -f /sys/bus/pci/devices/0000:02:00.0/driver)") == mt7925e &&
        $(nmcli -g GENERAL.STATE device show wlp2s0) == '30 (disconnected)' ]]
 }
+watchdog_bus=(org.freedesktop.systemd1 /org/freedesktop/systemd1
+    org.freedesktop.systemd1.Manager)
+watchdog_path=/sys/class/watchdog/watchdog0
+set_watchdog() {
+    busctl set-property "${watchdog_bus[@]}" RuntimeWatchdogUSec t "$1"
+}
+check_watchdog() {
+    local mode=$1 last_ping
+    [[ $(cat "$watchdog_path/identity") == wdat_wdt &&
+       $(cat "$watchdog_path/nowayout") == 0 ]]
+    if [[ $mode == inactive ]]; then
+        [[ $(busctl get-property "${watchdog_bus[@]}" RuntimeWatchdogUSec) == 't 0' &&
+           $(cat "$watchdog_path/state") == inactive ]]
+    else
+        [[ $(busctl get-property "${watchdog_bus[@]}" RuntimeWatchdogUSec) == 't 60000000' &&
+           $(cat "$watchdog_path/state") == active &&
+           $(cat "$watchdog_path/timeout") == 60 ]]
+        last_ping=$(busctl get-property "${watchdog_bus[@]}" WatchdogLastPingTimestampMonotonic)
+        [[ $last_ping =~ ^t\ [0-9]+$ && $last_ping != 't 18446744073709551615' ]]
+    fi
+    printf 'HARDWARE_WATCHDOG_%s\n' "${mode^^}"
+}
 disk_original() {
     local name path
     for name in "${modules[@]}"; do
@@ -868,6 +890,7 @@ candidate_files() {
 check_original() {
     scope
     interface_ready
+    check_watchdog inactive
     disk_original
     loaded_closure original
     local other
@@ -880,6 +903,7 @@ check_original() {
 check_candidate() {
     scope
     interface_ready
+    check_watchdog active
     disk_original
     [[ $(stat -c '%u:%g:%a' "$stage") == 0:0:755 &&
        $(cat "$stage/boot") == "$(cat /proc/sys/kernel/random/boot_id)" ]]
@@ -901,15 +925,17 @@ case "$action" in
         changed=0
         staged=0
         armed=0
+        watchdog_armed=0
         cleanup() {
             local rc=$?
             trap - EXIT
             if (( rc != 0 )); then
                 echo STACK_ACTIVATION_FAILED >&2
                 if (( changed )); then
-                    systemctl reboot --no-block
+                    systemctl reboot --no-block || rc=1
                 else
-                    if (( armed )); then systemctl stop "$timer"; fi
+                    if (( watchdog_armed )); then set_watchdog 0 || rc=1; fi
+                    if (( armed )); then systemctl stop "$timer" || rc=1; fi
                     if (( staged )); then rm -rf -- "$stage"; fi
                 fi
             fi
@@ -929,6 +955,9 @@ case "$action" in
             --on-active=15min --timer-property=AccuracySec=1s /usr/bin/systemctl reboot
         armed=1
         systemctl is-active --quiet "$timer"
+        watchdog_armed=1
+        set_watchdog 60000000
+        check_watchdog active
         changed=1
         for ((i=${#modules[@]}-1; i>=0; i--)); do rmmod "${modules[i]}"; done
         for name in "${modules[@]}"; do [[ ! -e /sys/module/$name ]]; done
