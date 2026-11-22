@@ -17,11 +17,19 @@ root=/sys/kernel/tracing
 inst="$root/instances/wave7-crash-$tag"
 [[ ! -e $inst ]]
 mkdir "$inst"
+probe_group=wave7_lifecycle_${tag//-/_}
+probes=()
 cleanup() {
     local rc=$?
     trap - EXIT
     printf '0\n' > "$inst/tracing_on" || rc=1
+    for event in "${probes[@]}"; do
+        printf '0\n' > "$inst/events/$probe_group/$event/enable" || rc=1
+    done
     rmdir "$inst" || rc=1
+    for event in "${probes[@]}"; do
+        printf '%s\n' "-:$probe_group/$event" >> "$root/dynamic_events" || rc=1
+    done
     printf 'CRASH_STREAM_END rc=%s\n' "$rc"
     exit "$rc"
 }
@@ -42,6 +50,21 @@ for e in roc_wire mlo_roc_req mlo_roc_result roc_geometry roc_abort roc_band \
     key_result beacon_loss; do
     events+=("mt7925_lab/mt7925_lab_$e")
 done
+if [[ $variant == upstream-prefix22-lifecycle-trace ]]; then
+    # BTF field fetching avoids hard-coded structures/offsets. Register only
+    # these two named probes and remove the exact definitions at cleanup.
+    [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
+       -e /sys/kernel/btf/mt792x_lib ]]
+    printf '%s\n' "f:$probe_group/wcid_cleanup mt76_wcid_cleanup idx=wcid->idx sta=wcid->sta" >> "$root/dynamic_events"
+    probes+=(wcid_cleanup)
+    printf '%s\n' "f:$probe_group/bss_remove mt792x_mac_link_bss_remove bss=mconf->mt76.idx link=mconf->link_id owner=mlink->wcid.idx sta=mlink->wcid.sta" >> "$root/dynamic_events"
+    probes+=(bss_remove)
+    for event in "${probes[@]}"; do
+        events+=("$probe_group/$event")
+        printf 'CRASH_PROBE_FORMAT %s\n' "$event"
+        cat "$root/events/$probe_group/$event/format"
+    done
+fi
 for e in "${events[@]}"; do
     [[ -f $inst/events/$e/enable ]]
     printf '1\n' > "$inst/events/$e/enable"
