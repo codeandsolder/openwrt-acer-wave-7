@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry || $2 == --scan-timing-upstream-mlo || $2 == --scan-timing-upstream-base || $2 == --scan-timing-upstream-prefix12 || $2 == --scan-timing-upstream-prefix13 || $2 == --scan-timing-upstream-prefix14 || $2 == --scan-timing-upstream-prefix17 || $2 == --scan-timing-upstream-prefix22 || $2 == --scan-timing-upstream-prefix22-assoc-trace || $2 == --scan-timing-upstream-prefix22-band-trace || $2 == --scan-timing-upstream-prefix22-trace || $2 == --scan-timing-upstream-prefix23 || $2 == --scan-timing-upstream-prefix23-trace || $2 == --scan-timing-upstream-prefix24 ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx || $2 == --scan-timing-rocwire || $2 == --scan-timing-roccontract || $2 == --scan-timing-rocgeometry || $2 == --scan-timing-upstream-mlo || $2 == --scan-timing-upstream-base || $2 == --scan-timing-upstream-prefix12 || $2 == --scan-timing-upstream-prefix13 || $2 == --scan-timing-upstream-prefix15 || $2 == --scan-timing-upstream-prefix14 || $2 == --scan-timing-upstream-prefix17 || $2 == --scan-timing-upstream-prefix22 || $2 == --scan-timing-upstream-prefix22-bss-trace || $2 == --scan-timing-upstream-prefix22-assoc-trace || $2 == --scan-timing-upstream-prefix22-band-trace || $2 == --scan-timing-upstream-prefix22-trace || $2 == --scan-timing-upstream-prefix23 || $2 == --scan-timing-upstream-prefix23-trace || $2 == --scan-timing-upstream-prefix24 ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -43,9 +43,11 @@ case "${2:-}" in
     --scan-timing-upstream-base) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-base; pm_experiment=1 ;;
     --scan-timing-upstream-prefix12) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix12; pm_experiment=1 ;;
     --scan-timing-upstream-prefix13) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix13; trace_window=1; pm_experiment=1 ;;
+    --scan-timing-upstream-prefix15) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix15; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix14) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix14; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix17) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix17; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22; pm_experiment=1 ;;
+    --scan-timing-upstream-prefix22-bss-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22-bss-trace; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22-assoc-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22-assoc-trace; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22-band-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22-band-trace; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22-trace; trace_window=1; pm_experiment=1 ;;
@@ -244,8 +246,8 @@ if (( trace_window )); then
     if (( rocwire_experiment )); then trace_args+=(--rocwire); fi
     if (( roccontract_experiment )); then trace_args+=(--roccontract); fi
     if (( rocgeometry_experiment )); then trace_args+=(--rocgeometry); fi
-    if [[ $upstream_stack_variant == upstream-prefix22-assoc-trace || $upstream_stack_variant == upstream-prefix22-band-trace || $upstream_stack_variant == upstream-prefix22-trace || $upstream_stack_variant == upstream-prefix23-trace ]]; then trace_args+=("--$upstream_stack_variant"); fi
-    if [[ $upstream_stack_variant == upstream-prefix13 || $upstream_stack_variant == upstream-prefix14 || $upstream_stack_variant == upstream-prefix17 ]]; then trace_args+=("--$upstream_stack_variant"); fi
+    if [[ $upstream_stack_variant == upstream-prefix22-bss-trace || $upstream_stack_variant == upstream-prefix22-assoc-trace || $upstream_stack_variant == upstream-prefix22-band-trace || $upstream_stack_variant == upstream-prefix22-trace || $upstream_stack_variant == upstream-prefix23-trace ]]; then trace_args+=("--$upstream_stack_variant"); fi
+    if [[ $upstream_stack_variant == upstream-prefix13 || $upstream_stack_variant == upstream-prefix14 || $upstream_stack_variant == upstream-prefix15 || $upstream_stack_variant == upstream-prefix17 ]]; then trace_args+=("--$upstream_stack_variant"); fi
     rootcmd bash "$helper" "$tag" "${trace_args[@]}" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0
