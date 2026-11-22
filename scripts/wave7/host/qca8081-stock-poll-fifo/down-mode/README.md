@@ -35,7 +35,12 @@ mocked; this is not hardware validation. See test-policy.py.
 
 ## Reproduce
 
-From this worktree, with the existing exact predecessor builds:
+From this worktree, with the existing exact predecessor builds.
+The 0495/0496 proof JSONs are independently hash-pinned. The actual
+0496 kernel and PCS are rebuilt and compared with exact archived
+artifacts; 0491/0495 need not be relinked again. The previous full
+lineage rebuild reached the 0491 normalized match but timed out
+during 0495 linking under shared build load.
 ```sh
 b=/home/jan/build/wave7
 uv run --no-project --offline --python /usr/bin/python3 \

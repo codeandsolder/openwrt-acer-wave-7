@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce 0491/0495/0496, then build the 0497 NAND kernel and PCS module."""
+"""Reproduce exact 0496 using sealed 0491/0495 proof lineage, then build 0497."""
 import argparse
 import hashlib
 import json
@@ -107,6 +107,26 @@ def main():
     worker=patches/"0496-net-phy-qca8081-test-independent-fifo-poll.patch"
     down=patches/"0497-net-phy-pcs-wave7-test-warm-down-mode-prepare.patch"
     phy=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
+    instant_proof=a.instant_build.resolve()/"report.json"
+    worker_proof=a.worker_build.resolve()/"report.json"
+    proof_hashes={"0495":sha(instant_proof),"0496":sha(worker_proof)}
+    assert proof_hashes=={
+        "0495":"e72b3e51f28bb8807b27cf2fdaed3d8c5421f06838dd71daf078fb8a9eb69129",
+        "0496":"179b7b1a4f04162a097d7a3075b1805e837ca2409557602d0a816a22426a0fa3"}
+    before=json.loads(json.dumps(tables(old/"linked/vmlinux")))
+    for proof,raw_sha in ((instant_proof,instant_sha),(worker_proof,worker_sha)):
+        r=json.loads(proof.read_text())
+        assert r["baseline_raw_sha256"]==OLD_SHA and r["baseline_normalized"] is True
+        assert r["candidate_raw_sha256"]==raw_sha
+        assert r["config_sha256"]==CONFIG_SHA and r["exports_sha256"]==SYMS_SHA
+        assert r["patch_sha256"]==sha(patch) and r["instant_fifo_fixture_pass"] is True
+        assert r["before"]==r["after"]==before
+        subprocess.run(["git","-C",str(REPO),"merge-base","--is-ancestor",
+                        r["builder_commit"],"HEAD"],check=True)
+    r=json.loads(worker_proof.read_text())
+    assert r["instant_baseline_sha256"]==instant_sha and r["instant_baseline_normalized"] is True
+    assert r["worker_patch_sha256"]==sha(worker) and r["worker_fixture_pass"] is True
+    print("SEALED_PREDECESSOR_PROOFS_PASS",proof_hashes,flush=True)
     argv=json.loads((old/"build-argv.json").read_text())
     assert argv[0]=="make" and argv[2]=="-C" and argv[-1]=="Image"
     with tempfile.TemporaryDirectory(prefix=".down-mode-kernel-",dir=out.parent) as tmp:
@@ -125,8 +145,6 @@ def main():
             assert sha(k/".config")==CONFIG_SHA
             assert sha(k/"vmlinux.symvers")==SYMS_SHA
 
-        run([*argv,"Image"])
-        verify()
         # Kbuild's generic Image rule retains .notes; OpenWrt NAND
         # packaging explicitly removes it, along with these sections.
         raw=work/"nand.Image"
@@ -134,31 +152,18 @@ def main():
             run(["aarch64-openwrt-linux-musl-objcopy","-O","binary",
                  "-R",".reginfo","-R",".notes","-R",".note","-R",".comment",
                  "-R",".mdebug","-R",".note.gnu.build-id","-S",str(k/"vmlinux"),str(raw)])
-        nand_image()
-        rebuilt, expected=raw.read_bytes(),image.read_bytes()
-        diffs=[i for i,(a,b) in enumerate(zip(rebuilt,expected)) if a!=b] if len(rebuilt)==len(expected) else []
-        print("BASELINE_DIFF",len(rebuilt),len(expected),len(diffs),[hex(i) for i in diffs[:80]],flush=True)
-        assert normalize(rebuilt)==normalize(expected),"baseline payload differs"
-        before=tables(k/"vmlinux")
-        assert before==tables(old/"linked/vmlinux")
         assert before["nss_cc_parent_data_1"]==[7,2,4,3,1,0]
         assert before["nss_cc_parent_data_2"]==[7,2,6,5,1,0]
-        print("EXACT_BASELINE_NORMALIZED_PASS",before,flush=True)
         assert shutil.disk_usage(work).free>3*1024**3
         run(["patch","-p1","--fuzz=0","-i",str(patch)],cwd=k)
         run([sys.executable,str(Path(__file__).parents[1]/"test-instant-fifo.py"),str(k)])
-        run([*argv,"Image"])
-        verify()
-        nand_image()
-        assert normalize(raw.read_bytes())==normalize(instant.read_bytes()), "0495 baseline differs"
-        print("EXACT_0495_NORMALIZED_PASS",flush=True)
         run(["patch","-p1","--fuzz=0","-i",str(worker)],cwd=k)
         run([sys.executable,str(Path(__file__).parents[1]/"test-independent-fifo.py"),str(k)])
         run([*argv,"Image"])
         verify()
         nand_image()
         after=tables(k/"vmlinux")
-        assert after==before, "unrelated NSSCC tables changed"
+        assert json.loads(json.dumps(after))==before, "unrelated NSSCC tables changed"
         assert b"wave7-diag: fifo-instant ss=%04x phylib=%u copper=%u" in (k/"vmlinux").read_bytes()
         assert b"wave7-diag: fifo-instant" not in (old/"linked/vmlinux").read_bytes()
         assert b"wave7-diag: fifo-worker tick=%u edge=%u ss=%d phylib=%u result=%d" in (k/"vmlinux").read_bytes()
@@ -182,7 +187,7 @@ def main():
         run([*argv,"Image"])
         verify()
         nand_image()
-        assert tables(k/"vmlinux")==before
+        assert json.loads(json.dumps(tables(k/"vmlinux")))==before
         assert normalize(raw.read_bytes())!=normalize(worker_image.read_bytes())
         kernel=(k/"vmlinux").read_bytes()
         for marker in (b"wave7-diag: down-mode PHY",b"wave7-diag: down-mode host prepare",b"wave7-diag: down-mode host result"):
@@ -204,6 +209,7 @@ def main():
                 "instant_baseline_sha256":instant_sha,"instant_baseline_normalized":True,
                 "worker_patch_sha256":sha(worker),"worker_fixture_pass":True,
                 "worker_baseline_sha256":worker_sha,"worker_baseline_normalized":True,
+                "predecessor_proofs_verified":proof_hashes,
                 "down_mode_patch_sha256":sha(down),"down_mode_fixture_pass":True,
                 "pcs_baseline_sha256":pcs_sha,"pcs_baseline_byte_identical":True,
                 "pcs_candidate_sha256":sha(candidate),"pcs_module_metadata_identical":True,

@@ -42,7 +42,7 @@ down_patch="$repo/target/linux/qualcommbe/patches-6.18/0497-net-phy-pcs-wave7-te
 [[ $(digest "$down_patch") == "$(jq -er .down_mode_patch_sha256 "$report")" ]] || fail 'down-mode patch digest'
 pcs_sha=$(jq -er .pcs_candidate_sha256 "$report")
 [[ $pcs_sha =~ ^[0-9a-f]{64}$ && $pcs_sha != "$parent_pcs" && $(digest "$verified/pcs-qcom-ipq9574.ko") == "$pcs_sha" ]] || fail 'candidate PCS digest'
-jq -e --arg pcs "$parent_pcs" '.worker_baseline_normalized == true and .worker_baseline_sha256 == "5489c8ce35ec79a551c58054fd50e691682751893612ed4682c007f56f16d09c" and .down_mode_fixture_pass == true and .pcs_baseline_sha256 == $pcs and .pcs_baseline_byte_identical == true and .pcs_module_metadata_identical == true and .kernel_and_module_exports_identical == true' "$report" >/dev/null
+jq -e --arg pcs "$parent_pcs" '.predecessor_proofs_verified == {"0495":"e72b3e51f28bb8807b27cf2fdaed3d8c5421f06838dd71daf078fb8a9eb69129","0496":"179b7b1a4f04162a097d7a3075b1805e837ca2409557602d0a816a22426a0fa3"} and .worker_baseline_normalized == true and .worker_baseline_sha256 == "5489c8ce35ec79a551c58054fd50e691682751893612ed4682c007f56f16d09c" and .down_mode_fixture_pass == true and .pcs_baseline_sha256 == $pcs and .pcs_baseline_byte_identical == true and .pcs_module_metadata_identical == true and .kernel_and_module_exports_identical == true' "$report" >/dev/null
 git -C "$repo" merge-base --is-ancestor "$patch_commit" "$(jq -er .builder_commit "$report")"
 git -C "$repo" merge-base --is-ancestor "$(jq -er .builder_commit "$report")" HEAD
 [[ $(tar xOf "$parent" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fail 'board'
