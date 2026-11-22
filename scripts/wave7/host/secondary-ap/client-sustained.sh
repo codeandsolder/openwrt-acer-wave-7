@@ -5,6 +5,40 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
+
+# A subscriber can attach during an already-running scan; its first event
+# may be a completion. Determine current state from the last transition,
+# never from equality of cumulative starts and completions. Read one
+# snapshot to avoid comparing counts collected on opposite sides of an event.
+scan_event_state() {
+    awk -v iface="$iface" '
+        index($0, ": " iface " (phy #") == 0 { next }
+        /: scan started$/ { active = 1 }
+        /: scan (finished|aborted)(:|$)/ { active = 0; completed++ }
+        END { print active + 0, completed + 0 }
+    ' "$1"
+}
+
+if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
+    [[ $(scan_event_state - </dev/null) == "0 0" ]]
+    [[ $(printf '%s\n' '1: wlp2s0 (phy #1): scan aborted: 2412' |
+        scan_event_state -) == "0 1" ]]
+    [[ $(printf '%s\n' '1: wlp2s0 (phy #1): scan aborted: 2412' \
+        '2: wlp2s0 (phy #1): scan started' |
+        scan_event_state -) == "1 1" ]]
+    [[ $(printf '%s\n' '1: wlp2s0 (phy #1): scan aborted: 2412' \
+        '2: wlp2s0 (phy #1): scan started' \
+        '3: wlan9 (phy #0): scan finished: 5180' \
+        '4: wlp2s0 (phy #1): scan finished: 2412' |
+        scan_event_state -) == "0 2" ]]
+    [[ $(printf '%s\n' '1: wlp2s0 (phy #1): scan started' \
+        '2: wlp2s0 (phy #1): scan started' \
+        '3: wlp2s0 (phy #1): scan finished: 2412' |
+        scan_event_state -) == "0 1" ]]
+    echo SCAN_EVENT_STATE_SELFTEST_PASS
+    exit 0
+fi
+
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
    ( $# == 3 && $2 == --scan-timing-upstream-* && ( $3 == --primary-24 || $3 == --bssid-24 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
@@ -357,16 +391,15 @@ scan_scope() {
         passive) scan_args=(passive) ;;
         *) return 2 ;;
     esac
-    local started finished before after rc deadline output attempt=0 returned
+    local scanning finished before after rc deadline output attempt=0 returned
     deadline=$((SECONDS+18))
     while :; do
         if (( SECONDS >= deadline )); then
             printf '%s,%s,busy-timeout,%s\n' "$(date +%s.%N)" "$label" "$*"
             return 1
         fi
-        started=$(grep -c 'wlp2s0.*: scan started$' "$out/events.txt" || :)
-        finished=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
-        if (( started != finished )); then
+        read -r scanning finished < <(scan_event_state "$out/events.txt")
+        if (( scanning )); then
             sleep .2
             continue
         fi
@@ -392,7 +425,7 @@ scan_scope() {
     done
     deadline=$((SECONDS+20))
     while (( SECONDS < deadline )); do
-        after=$(grep -Ec 'wlp2s0.*: scan (finished|aborted)' "$out/events.txt" || :)
+        read -r scanning after < <(scan_event_state "$out/events.txt")
         (( after > finished )) && break
         sleep .2
     done
