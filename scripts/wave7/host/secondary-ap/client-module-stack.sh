@@ -3,15 +3,37 @@
 set -Eeuo pipefail
 [[ $# == 2 && ( $(id -un) == jan || $EUID == 0 ) ]] || exit 2
 variant=$1
-variants=(
-    quota upstream-base upstream-prefix12 upstream-prefix13 upstream-prefix14 upstream-prefix15 upstream-prefix17 upstream-prefix22
-    upstream-prefix22-trace upstream-prefix22-band-trace upstream-prefix22-assoc-trace upstream-prefix22-assoc-rx-trace upstream-prefix22-bss-trace upstream-prefix22-compact-mld-trace upstream-prefix22-membership-only-trace upstream-prefix22-secondary-first-trace upstream-prefix22-secondary-trace upstream-prefix22-secondary-rxtx-trace upstream-prefix22-secondary-rx-trace upstream-prefix22-assoc-eml-trace upstream-prefix22-primary-trace upstream-prefix23 upstream-prefix23-trace upstream-prefix24 upstream-mlo
+# One profile registry governs both the module guard and the two harnesses.
+# A registered name still requires all five exact pins in the case below.
+declare -A trace_profiles=(
+    [quota]=quota
+    [upstream-base]=none
+    [upstream-prefix12]=none
+    [upstream-prefix13]=admission
+    [upstream-prefix14]=admission
+    [upstream-prefix15]=admission
+    [upstream-prefix17]=admission
+    [upstream-prefix22]=none
+    [upstream-prefix22-trace]=association
+    [upstream-prefix22-band-trace]=association
+    [upstream-prefix22-assoc-trace]=association
+    [upstream-prefix22-assoc-rx-trace]=association-rx
+    [upstream-prefix22-bss-trace]=association
+    [upstream-prefix22-compact-mld-trace]=association
+    [upstream-prefix22-membership-only-trace]=association-membership
+    [upstream-prefix22-secondary-first-trace]=association
+    [upstream-prefix22-secondary-trace]=association
+    [upstream-prefix22-secondary-rxtx-trace]=association-rxtx
+    [upstream-prefix22-secondary-rx-trace]=association-rx
+    [upstream-prefix22-assoc-eml-trace]=association
+    [upstream-prefix22-primary-trace]=association
+    [upstream-prefix23]=none
+    [upstream-prefix23-trace]=association
+    [upstream-prefix24]=none
+    [upstream-mlo]=none
 )
-valid=0
-for known in "${variants[@]}"; do
-    if [[ $variant == "$known" ]]; then valid=1; break; fi
-done
-(( valid )) || exit 2
+[[ $variant =~ ^[a-z0-9-]+$ && -n ${trace_profiles[$variant]:-} ]] || exit 2
+variants=("${!trace_profiles[@]}")
 action=$2
 kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
@@ -621,8 +643,13 @@ declare -A candidate_id=(
     [mt7925_common]=279be35b30cf4b37b0597a22a08e63474e2b1bf2
     [mt7925e]=5ba0854aa38c909217516106f4f2df8a384a3906
 )
-;;
+        ;;
+    *) exit 2 ;;
 esac
+if [[ $action == --trace-profile ]]; then
+    printf '%s\n' "${trace_profiles[$variant]}"
+    exit 0
+fi
 declare -A holders=(
     [mt76]='mt76_connac_lib,mt7925_common,mt7925e,mt792x_lib'
     [mt76_connac_lib]='mt7925_common,mt7925e,mt792x_lib'
