@@ -69,7 +69,7 @@ state > "$out/router-after.txt"
 [[ $(sed -n '1,2p;4,6p' "$out/router-after.txt") == "$(sed -n '1,2p;4,6p' "$out/router-before.txt")" ]]
 for name in direct switch; do
     tshark -n -r "$out/$name.pcapng" -T fields -E separator=, -E occurrence=f \
-        -e frame.time_epoch -e ip.src -e ip.dst -e ip6.src -e ip6.dst \
+        -e frame.time_epoch -e ip.src -e ip.dst -e ipv6.src -e ipv6.dst \
         -e icmp.type -e icmp.ident -e icmp.seq \
         -e icmpv6.type -e icmpv6.echo.identifier -e icmpv6.echo.sequence_number \
         > "$out/$name-echo.txt" 2> "$out/$name-tshark.txt"
