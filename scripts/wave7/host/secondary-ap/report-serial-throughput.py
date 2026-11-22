@@ -65,7 +65,8 @@ def diff(a,b):
     return {k:b[k]-a[k] for k in a}
 
 def qualify_case(directory,entries,boot,rate,name):
-    path,proto,router_dir=name.split("-")
+    path,proto,router_dir,*variant=name.split("-")
+    assert variant in ([],["default"],["largebuf"])
     reverse=router_dir=="tx"
     assert path in NICS and proto in ("tcp","udp") and router_dir in ("rx","tx")
     def read(suffix):
