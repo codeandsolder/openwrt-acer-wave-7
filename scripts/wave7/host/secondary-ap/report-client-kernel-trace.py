@@ -141,8 +141,16 @@ def phase(events,lo,hi,start,end):
                      "__mt76_set_tx_blocked","mt792x_mcu_drv_pmctrl","mt792x_mcu_fw_pmctrl",
                      "mt76_connac_pm_queue_skb","mt76_connac_pm_dequeue_skbs",
                      "mt7925_mlo_pm_work","mt7925_mcu_uni_bss_ps","mt7925_mcu_set_dbdc"}]
+    xmit_rc=Counter()
+    for e in selection:
+        if e[1]=="net_dev_xmit":
+            match=re.search(r"\brc=(-?\d+)",e[3])
+            if match is None:
+                raise ValueError("missing net_dev_xmit return code")
+            xmit_rc[int(match[1])]+=1
     return {"start":start,"end":end,"duration_s":end-start,
             "counts":dict(counts),"ping_task_counts":dict(ping),
+            "net_dev_xmit_rc":dict(xmit_rc),
             "state_events":interesting,
             "firmware_metadata":metadata(selection,lo,hi,start)}
 
@@ -160,7 +168,7 @@ def analyze(trace,timing):
         span=end-start
         result.append({"label":window.get("label","unattributed-multichannel"),
                        "frequencies_mhz":window["frequencies_mhz"],
-                       "scan_end":scan_end,"last_reply":start,"recovery":end,
+                       "scan_end":scan_end,"last_reply":start,"first_recovery_reply":end,
                        "pre_gap":phase(trace["events"],lo,hi,start-span,start),
                        "inside_gap":phase(trace["events"],lo,hi,start,end),
                        "recovery":phase(trace["events"],lo,hi,end,end+span),
