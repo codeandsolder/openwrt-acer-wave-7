@@ -27,7 +27,12 @@ Original executable paths, not a translated pseudocode model:
   and delay 100 jiffies (1 second after completion). The pinned stock
   configuration has NR_CPUS=4; Linux v5.4.213 [workqueue.h](https://github.com/gregkh/linux/blob/v5.4.213/include/linux/workqueue.h) defines
   WORK_CPU_UNBOUND=NR_CPUS, so this is the ordinary unbound CPU selector,
-  not pinning to a nonexistent CPU4. Registration
+  not pinning to a nonexistent CPU4. The queue is system_wq. Original
+  normal-silicon start 0x91e3c schedules the same work after 100 jiffies;
+  stop 0x91dec synchronously cancels it. The replay covers both paths for
+  supported context chip bytes 0x20/0xee/0x15, rejects unsupported chip
+  bytes (-19) and missing contexts (-21), and excludes emulation.
+  Registration
   is at 0xbd70. Linux PHY read_status at 0x69cc4 also calls the same
   get_status at 0x67640. Replay executes both call paths, including
   unchanged-up, down and unreadable status in phylib. The fixture starts

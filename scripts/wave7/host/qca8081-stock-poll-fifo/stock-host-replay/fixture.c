@@ -4,7 +4,7 @@ typedef unsigned char u8;
 enum { CASE, POLL, BRIDGE, TX, RX, DELAY, MODE_RECORD, MODE_APPLY,
        GATE, RATE, MAC_SPEED, DUPLEX, TX_PAUSE, RX_PAUSE, REG_READ, REG_WRITE,
        NOTIFY, FDB, MODE_STATUS, END, ERROR, MII_READ, MMD_READ, MMD_WRITE,
-       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE, MAC_PARAM_WRITE };
+       DEBUG_READ, DEBUG_WRITE, BUS_LOCK, WORK_LOCK, WORK_QUEUE, MAC_TYPE, MAC_PARAM_WRITE, WORK_CANCEL };
 struct event { u32 type, a, b, c; };
 static struct event trace[131072];
 static u32 count;
@@ -161,6 +161,22 @@ u32 *mock_adpt_api_ptr_get(u32 dev) {
 u32 mock_queue_delayed_work_on(u32 cpu,u32 wq,void *work,u32 delay_jiffies) {
     CHECK(!work_locked && !bus_locked && wq==mock_system_wq);
     CHECK(work==(u8*)ctx+1252); record(WORK_QUEUE,cpu,delay_jiffies,0); return 1;
+}
+static u32 lifecycle_has_context;
+void *mock_ssdk_phy_priv_data_get(u32 dev) {
+    CHECK(dev==0); return lifecycle_has_context ? ctx : (void*)0;
+}
+u32 mock_ssdk_is_emulation(u32 dev) { CHECK(dev==0); return 0; }
+u32 mock_cancel_delayed_work_sync(void *work) {
+    CHECK(work==(u8*)ctx+1252 && !work_locked && !bus_locked);
+    record(WORK_CANCEL,0,0,0); return 1;
+}
+static void lifecycle_case(u32 id,u32 chip,u32 exists,u32 start) {
+    record(CASE,id,chip,(exists<<1)|start);
+    lifecycle_has_context=exists;
+    ((u8*)ctx)[0xf8]=chip; ((u8*)ctx)[0x488]=0;
+    u32 ret=((u32 (*)(u32))(0x01000000+(start?0x91e3c:0x91dec)))(0);
+    record(END,ret,0,0);
 }
 void *mock_ssdk_phy_miibus_get(u32 dev,u32 phy) {
     CHECK(dev==0 && (phy==24 || phy==25)); return bus;
@@ -345,6 +361,10 @@ void _start(void) {
     parameter_case(34,0x6320,1,0x1200,0xa5a45a5a);
     parameter_case(35,0x23f50,0,0x600124,0);
     parameter_case(36,0x23f50,1,0x600124,1);
+    for(u32 i=0;i<10;i++) {
+        const u32 chips[]={0x20,0xee,0x15,0x42,0x20};
+        lifecycle_case(37+i,chips[i/2],i<8,!(i&1));
+    }
     const u32 speeds[]={10,100,1000,2500};
     u32 id=100;
     for(u32 os=0;os<4;os++) for(u32 od=0;od<2;od++) {

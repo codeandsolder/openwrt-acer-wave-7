@@ -37,6 +37,7 @@ RANGES += [(0x6b2c, 0x6b8c), (0x6d954, 0x6d9dc),
 RANGES += [(0x88c4, 0x8990), (0x6210, 0x63a4),
            (0x70b4, 0x7164), (0x7c808, 0x7c834),
            (0x23f50, 0x23fac), (0x7ac90, 0x7aca4)]
+RANGES += [(0x917dc, 0x91840), (0x91dec, 0x91eec)]
 LOCAL_MOCKS = {0x6ddc: "tx_pause", 0x6f38: "rx_pause", 0x8990: "selector_return"}
 FIT_SHA = "a9e7d543e61bdbd91521798875a097733b54393f72d78278eaeac0059241f833"
 KERNEL_SHA = "666960caa4e2f52af4d42f150233aabc4ff8621076c6616c46a15a8e91fd1f9f"
@@ -209,7 +210,7 @@ def execute(module, out, dest, metadata):
     names = ["CASE", "POLL", "BRIDGE", "TX", "RX", "DELAY", "MODE_RECORD", "MODE_APPLY",
              "GATE", "RATE", "MAC_SPEED", "DUPLEX", "TX_PAUSE", "RX_PAUSE", "REG_READ", "REG_WRITE",
              "NOTIFY", "FDB", "MODE_STATUS", "END", "ERROR", "MII_READ", "MMD_READ",
-             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE"]
+             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE", "WORK_CANCEL"]
     result = [{"event": names[e], "a": a, "b": b, "c": c} for e,a,b,c in events]
     if proc.returncode:
         print(result[-12:])
@@ -236,7 +237,7 @@ def check(events):
         return [e["event"] for e in cases[i]]
     def values(i, name):
         return [(e["a"],e["b"],e["c"]) for e in cases[i] if e["event"] == name]
-    assert set(cases) == set(range(37)) | set(range(100,2404))
+    assert set(cases) == set(range(47)) | set(range(100,2404))
     for i in range(9):
         assert ops(i)[0] == "POLL" and ops(i)[-1] == "END"
     for i in (0, 1, 7):
@@ -322,9 +323,21 @@ def check(events):
         assert ops(i)==["MAC_PARAM_WRITE","END"]
         assert values(i,"MAC_PARAM_WRITE")==[(reg,val,0)]
         assert values(i,"END")==[(val,0,0)]
+    # Replay normal silicon start/stop, all three supported IDs,
+    # unsupported chip and absent device context. Emulation is excluded.
+    for i in range(37,47):
+        start = (i-37)%2 == 0
+        if i < 43:
+            action = "WORK_QUEUE" if start else "WORK_CANCEL"
+            assert ops(i) == [action,"END"], (i,ops(i))
+            assert values(i,action) == [(4,100,0) if start else (0,0,0)]
+            assert values(i,"END") == [(0,0,0)]
+        else:
+            assert ops(i) == ["END"]
+            assert values(i,"END") == [(2**32-(19 if i<45 else 21),0,0)]
     def decode(n):
         return n>>16,(n&0xffff)>>4,(n>>2)&1,(n>>1)&1,n&1
-    summary = dict(named_cases=37,parameter_cases=12,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
+    summary = dict(named_cases=47,parameter_cases=12,lifecycle_cases=10,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
                    unchanged_up_edge=0,changed_up_edge=0,mode_applies=0,
                    rate_changes=0,adapter_pulses=0)
     tuples = set()
