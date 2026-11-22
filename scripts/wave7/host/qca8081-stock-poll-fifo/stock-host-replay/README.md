@@ -176,3 +176,43 @@ a warm 1G flap. Observe raw C22.31 during down/up before choosing
 a new behavioral patch; steady-state 52-field comparisons cannot
 exclude transient mode changes. Do not copy shared SYS reset or
 port5 operations into the direct-path driver.
+
+## Actual wrapper-15 UNIPHY sequence and force-mode persistence
+
+Ten more original ARM cases execute the wrapper dispatcher at
+0x29780, SGMII helper 0x293f0, real register accessors and force
+mode RMW 0x7eda0, MPPE calibration restart 0x28b14 and status
+poll 0x29140. The device is simulated as MPPE type3, instance1,
+port2, non-SFP, QCA8081 ID; force feature and calibration reads
+are explicit mock inputs, not measurements of live stock.
+The captured stock DTS specifies forced-speed/duplex for port1,
+but neither for port2. Chip-enum alternate control produces
+identical instance1 result.
+
+The real wrapper-15 instruction sequence writes 0x218=0x30,
+requests reset id3 with argument1, gates clocks22/23, programs
+0x46c, then RMWs **0x480 bit3** according to feature mask64.
+For non-forced port2 it clears bit3; forced control sets it.
+It RMWs 0xb4 bit14 high, sleeps10ms, low, sleeps10ms, then
+polls 0x1e0 bit7 and restores clocks22/23. Successful result
+sets both raw direction clocks to 125MHz. The read-error case
+exits with gates still off; timeout case performs 100 status
+reads/101 delays, restores gates, returns -23, skips rates.
+These failure behaviors are not proposed for Linux.
+
+Cases 66–69 preserve actual emulated register/cache state across
+a 2500→1000 down/up and a same-speed down/up. The original stock
+worker's later adapter pulse clears/sets bit11 without touching
+bit3; ordinary same-tuple reconnect writes neither. The GMAC
+speed/duplex helper boundaries remain mocked here, but the
+separate original GMAC parameter cases and dispatcher disassembly
+confirm their accesses target PPE 0x1204/0x1200, not UNIPHY.
+71 named + 2304 matrix cases pass with 710 relocations.
+
+This establishes a concrete stock-vs-Linux policy difference:
+the current Linux out-of-band PCS path sets 0x480 bit3, while
+stock non-forced SGMII uses it clear. Whether live stock has any
+other dependent negotiation setup is still unverified. Do not
+blindly clear it in 0497, which isolates timing. After testing
+0497, investigate the correct phylink SGMII negotiation model
+and PHY-side in-band behavior before a separate intervention.

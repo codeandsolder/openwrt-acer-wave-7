@@ -42,7 +42,12 @@ RANGES += [(0x917dc, 0x91840), (0x91dec, 0x91eec)]
 # original call site is dispatched through the fixture so the original
 # matrix retains its deliberately mocked mode-apply boundary.
 RANGES += [(0x9c3c, 0xa338), (0x6b8c, 0x6cd4), (0x92fe0, 0x930a4)]
-CALL_MOCKS = {0xa3d4: "_adpt_hppe_port_interface_mode_apply",
+# Actual SGMII wrapper, force-mode RMW, MPPE restart and calibration.
+RANGES += [(0x293f0,0x29780),(0x29780,0x2a6d8),
+           (0x28b14,0x28bfc),(0x29140,0x29228),
+           (0x7e744,0x7e794),(0x7eda0,0x7ee08),(0x7eec8,0x7ef08)]
+CALL_MOCKS = {0xa070: "adpt_hppe_uniphy_mode_set",
+              0xa3d4: "_adpt_hppe_port_interface_mode_apply",
               0xa040: "mode_tx_gate", 0xa054: "mode_rx_gate"}
 LOCAL_MOCKS = {0x6ddc: "tx_pause", 0x6f38: "rx_pause", 0x8990: "selector_return"}
 FIT_SHA = "a9e7d543e61bdbd91521798875a097733b54393f72d78278eaeac0059241f833"
@@ -221,7 +226,7 @@ def execute(module, out, dest, metadata):
     names = ["CASE", "POLL", "BRIDGE", "TX", "RX", "DELAY", "MODE_RECORD", "MODE_APPLY",
              "GATE", "RATE", "MAC_SPEED", "DUPLEX", "TX_PAUSE", "RX_PAUSE", "REG_READ", "REG_WRITE",
              "NOTIFY", "FDB", "MODE_STATUS", "END", "ERROR", "MII_READ", "MMD_READ",
-             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE", "WORK_CANCEL", "MODE_WRAPPER", "MODE_SYS", "MODE_PORT5_CLOCK", "MODE_TX", "MODE_RX", "MODE_UNIPHY", "MODE_MUX", "MODE_CACHE", "MODE_RET"]
+             "MMD_WRITE", "DEBUG_READ", "DEBUG_WRITE", "BUS_LOCK", "WORK_LOCK", "WORK_QUEUE", "MAC_TYPE", "MAC_PARAM_WRITE", "WORK_CANCEL", "MODE_WRAPPER", "MODE_SYS", "MODE_PORT5_CLOCK", "MODE_TX", "MODE_RX", "MODE_UNIPHY", "MODE_MUX", "MODE_CACHE", "MODE_RET", "UNIPHY_RESET", "UNIPHY_RAW_RATE", "MSLEEP", "UNIPHY_FINAL"]
     result = [{"event": names[e], "a": a, "b": b, "c": c} for e,a,b,c in events]
     if proc.returncode:
         print(result[-12:])
@@ -248,7 +253,7 @@ def check(events):
         return [e["event"] for e in cases[i]]
     def values(i, name):
         return [(e["a"],e["b"],e["c"]) for e in cases[i] if e["event"] == name]
-    assert set(cases) == set(range(61)) | set(range(100,2404))
+    assert set(cases) == set(range(71)) | set(range(100,2404))
     for i in range(9):
         assert ops(i)[0] == "POLL" and ops(i)[-1] == "END"
     for i in (0, 1, 7):
@@ -388,9 +393,59 @@ def check(events):
         assert values(i,"MAC_SPEED")==[(speed,0,0)] and values(i,"DUPLEX")==[(1,0,0)]
         assert values(i,"END")==[(1,speed,1)]
         if i in (58,60): assert not values(i,"MODE_APPLY")
+    # Actual wrapper 15 and nested register helpers. MPPE type 3,
+    # direct non-SFP port2 and forced feature as fixture inputs.
+    assert cases[61]==cases[70], "instance1 policy varies with chip enum"
+    prefix=["REG_WRITE","UNIPHY_RESET","GATE","GATE","REG_READ","REG_WRITE"]
+    def uniphy_writes(forced):
+        return [(1,0x218,0x30),(1,0x46c,0xa5a5e4ae),
+                (1,0x480,0xa5a58844 | (8 if forced else 0)),
+                (1,0xb4,0x1234ebcd),(1,0xb4,0x1234abcd)]
+    def uniphy_success(i, forced, ready, initial):
+        expected=prefix+["REG_READ","REG_WRITE","REG_READ","REG_WRITE","MSLEEP",
+                         "REG_WRITE","MSLEEP"]+["DELAY","REG_READ"]*ready+[
+                             "GATE","GATE","UNIPHY_RAW_RATE","UNIPHY_RAW_RATE","END","UNIPHY_FINAL"]
+        assert ops(i)==expected,(i,ops(i))
+        assert values(i,"REG_WRITE")==uniphy_writes(forced)
+        assert values(i,"REG_READ")==[(1,0x46c,0xa5a5f8ff),(1,0x480,initial),
+                                      (1,0xb4,0x1234abcd)]+[(1,0x1e0,0)]*(ready-1)+[(1,0x1e0,0x80)]
+        assert values(i,"UNIPHY_RESET")==[(3,1,0)]
+        assert values(i,"GATE")==[(22,0,0),(23,0,0),(22,1,0),(23,1,0)]
+        assert values(i,"MSLEEP")==[(10,0,0),(10,0,0)]
+        assert values(i,"UNIPHY_RAW_RATE")==[(1,0,125000000),(1,1,125000000)]
+        assert values(i,"END")==[(0,ready,0xa5a58844 | (8 if forced else 0))]
+        assert values(i,"UNIPHY_FINAL")==[(0xa5a5e4ae,0x1234abcd,0x30)]
+    for case,forced,ready,initial in ((61,False,3,0xa5a5884c),(62,True,3,0xa5a58844),
+                                      (63,False,1,0xa5a58844),(70,False,3,0xa5a5884c)):
+        uniphy_success(case,forced,ready,initial)
+    # Force-mode register read failure escapes before clock restoration;
+    # calibration timeout restores gates but skips raw-clock rates.
+    assert ops(64)==prefix+["END","UNIPHY_FINAL"]
+    assert values(64,"REG_WRITE")==uniphy_writes(False)[:2]
+    assert values(64,"END")==[(2**32-5,0,0xa5a5884c)]
+    assert values(64,"GATE")==[(22,0,0),(23,0,0)]
+    assert values(65,"REG_WRITE")==uniphy_writes(False)
+    assert values(65,"REG_READ")[-100:]==[(1,0x1e0,0)]*100
+    assert len(values(65,"DELAY"))==101
+    assert values(65,"GATE")==[(22,0,0),(23,0,0),(22,1,0),(23,1,0)]
+    assert not values(65,"UNIPHY_RAW_RATE")
+    assert values(65,"END")==[(2**32-23,100,0xa5a58844)]
+    # Actual mode application on down followed by a changed-tuple up,
+    # then same-mode down/up without losing the emulated register state.
+    assert values(66,"MODE_CACHE")==[(0,65535,65535)]
+    assert values(66,"REG_WRITE")==uniphy_writes(False)
+    assert values(66,"UNIPHY_RAW_RATE")==[(1,0,125000000),(1,1,125000000)]
+    assert values(66,"END")==[(0,65535,65535)]
+    assert values(67,"REG_WRITE")==[(1,0x480,0xa5a58044),(1,0x480,0xa5a58844)]
+    assert values(67,"RATE")==[(2,125000000,0),(3,125000000,0)]
+    assert values(67,"END")==[(1,1000,1)]
+    assert ops(68)==ops(2)+["UNIPHY_FINAL"]
+    assert ops(69)==ops(3)+["UNIPHY_FINAL"]
+    for i in (66,67,68,69):
+        assert values(i,"UNIPHY_FINAL")==[(0xa5a5e4ae,0x1234abcd,0xa5a58844)]
     def decode(n):
         return n>>16,(n&0xffff)>>4,(n>>2)&1,(n>>1)&1,n&1
-    summary = dict(named_cases=61,mode_apply_cases=14,parameter_cases=12,lifecycle_cases=10,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
+    summary = dict(named_cases=71,uniphy_cases=10,mode_apply_cases=14,parameter_cases=12,lifecycle_cases=10,matrix_cases=0,steady_down=0,steady_up=0,down_edge=0,
                    unchanged_up_edge=0,changed_up_edge=0,mode_applies=0,
                    rate_changes=0,adapter_pulses=0)
     tuples = set()
