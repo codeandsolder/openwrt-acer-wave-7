@@ -316,9 +316,17 @@ def report(rows):
             newest=max(ups,key=lambda e:e["edge"],default=None)
             if newest is not None:
                 n=newest["edge"]
-                if seen_up_edge is not None and n>seen_up_edge:
+                if seen_up_edge is None:
+                    # Already-present history at the first snapshot is
+                    # not evidence of a fresh observed transition.
+                    seen_up_edge=n
+                elif n>seen_up_edge and s["carrier"]=="1" and newest["uptime"]<=s["uptime"]:
+                    # Uptime/carrier are sampled before dmesg. A later
+                    # log can contain the up edge even if the earlier
+                    # sampled carrier is down. Consume it only on a
+                    # coherent later snapshot, not on that mixed row.
                     downs=[e for e in events if e["link"]==0 and e["edge"]==n-1 and e["uptime"]<newest["uptime"]]
-                    if len(downs)==1 and n==seen_up_edge+2 and s["carrier"]=="1":
+                    if len(downs)==1 and n==seen_up_edge+2:
                         flush()
                         down=downs[0]["uptime"]
                         if episode is None or episode["up"] is not None:
@@ -326,7 +334,7 @@ def report(rows):
                             episode={"down":down,"up":None,"prior_speed":prior and prior["speed"],"windows":[]}
                             episodes.append(episode)
                         episode.update(down=down,up=newest["uptime"],post_speed=s["speed"],edge_source="kernel_log")
-                seen_up_edge=n
+                    seen_up_edge=n
         if s["carrier"]=="0":
             flush()
             if episode is None or episode["up"] is not None:
@@ -493,6 +501,15 @@ def selftest():
     partial["probes"]["direct"]["received"]=2
     assert report([prior,partial]+rows[1:])["classification"]=="ONE_GIG_RECONNECT_PASS"
     assert report(rows[1:])["classification"]=="NO_CARRIER_EDGE_OBSERVED"
+    mixed=copy.deepcopy(rows[1])
+    mixed["snapshot"]["state"].update(carrier="0",uptime=10.5)
+    mixed["probes"]["direct"]["received"]=0
+    mixed["host_counters"]["direct"]["speed"]="-1"
+    result=report([rows[0],mixed]+rows[1:])
+    assert result["classification"]=="ONE_GIG_RECONNECT_PASS",result
+    assert len(result["episodes"])==1
+    e=result["episodes"][0]
+    assert (e["down"],e["up"],e["edge_source"])==(9,11,"kernel_log"),e
     # 0493 additionally requires a fresh MAC gate marker and, for a
     # matched same-speed reconnect, the previous edge's drain marker.
     ordered=copy.deepcopy(rows)
