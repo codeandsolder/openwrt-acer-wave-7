@@ -53,7 +53,7 @@ case "${2:-}" in
         fi
         case "$upstream_trace_profile" in
             none) ;;
-            admission|association|association-rx|association-rxtx|association-membership|association-dev-band)
+            admission|association|association-rx|association-rxtx|association-membership|association-dev-band|association-secondary-ps)
                 trace_window=1 ;;
             *) exit 2 ;;
         esac
