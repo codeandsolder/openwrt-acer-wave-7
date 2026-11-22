@@ -5,14 +5,16 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 pm_experiment=0
 deep_expected=1
+runtime_expected=1
 case "${2:-}" in
     --trace) trace=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
+    --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
 esac
 tap=/home/jan/scripts/wave7/client-validation/icmp-probe-tap
 if (( trace )); then
@@ -33,6 +35,7 @@ mkdir -m 700 "$out"
 rootcmd() { sudo -n "$@"; }
 pm_dir=/sys/kernel/debug/ieee80211/phy0/mt76
 pm_modified=0
+runtime_modified=0
 pm_snapshot() {
     local f
     printf 'time=%s\n' "$(date -Is)"
@@ -42,7 +45,7 @@ pm_snapshot() {
     rootcmd cat "$pm_dir/runtime_pm_stats"
 }
 pm_valid() {
-    [[ $(rootcmd cat "$pm_dir/runtime-pm") == 1 &&
+    [[ $(rootcmd cat "$pm_dir/runtime-pm") == "$runtime_expected" &&
        $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" &&
        $(rootcmd cat "$pm_dir/idle-timeout") == 83 ]] &&
        iw dev "$iface" get power_save | grep -Fxq 'Power save: off'
@@ -68,6 +71,9 @@ cleanup() {
     if (( pm_modified )); then
         # Restore only the original requested firmware deep-sleep value.
         printf '1\n' | rootcmd tee "$pm_dir/deep-sleep" > "$out/restore-deep-sleep.txt" || rc=1
+    fi
+    if (( runtime_modified )); then
+        printf '1\n' | rootcmd tee "$pm_dir/runtime-pm" > "$out/restore-runtime-pm.txt" || rc=1
     fi
     if (( pm_experiment )); then
         pm_snapshot > "$out/pm-restored.txt" || rc=1
@@ -110,8 +116,13 @@ if (( pm_experiment )); then
         pm_modified=1
         printf '0\n' | rootcmd tee "$pm_dir/deep-sleep" > "$out/set-deep-sleep.txt"
     fi
+    if (( runtime_expected == 0 )); then
+        runtime_modified=1
+        printf '0\n' | rootcmd tee "$pm_dir/runtime-pm" > "$out/set-runtime-pm.txt"
+    fi
     pm_snapshot > "$out/pm-selected.txt"
-    [[ $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" ]]
+    [[ $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" &&
+       $(rootcmd cat "$pm_dir/runtime-pm") == "$runtime_expected" ]]
 fi
 stdbuf -oL iw event -t > "$out/events.txt" 2>&1 &
 event_pid=$!
