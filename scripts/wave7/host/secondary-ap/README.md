@@ -385,3 +385,61 @@ Outstanding notices are not packet transmission timestamps. Repeated
 notices are preserved while packet loss is determined by actual final
 reply sequences. A candidate marker attests branch selection before the
 MCU request, not firmware acceptance or internal state.
+
+### MT7925 MLD-wide absence credits (experimental full-stack ABI)
+
+The vendor absence event 0x29 declares BSS availability and a quota.
+MediaTek gen4m `isNetAbsent()` tests the complete active MLD's BSS
+bitmap, not just the primary WCID's BSS. Keep ordinary MLD data
+admission unrestricted while another active member is present. This
+policy does not claim that the other member can actually deliver RF
+traffic; the long scan-related outage is a separate failure to test.
+
+Apply `mt7925-client-mld-absence-quota.patch` on top of the ROC repair,
+event, absence, and binding trace patches (the `trace-source` tree).
+The new hooks change common mt76 data structures and the shared ABI:
+**never install just the candidate common module**. Make a separate
+source copy `quota-source` and build the complete dependency closure
+from the original Wyse headers, using the existing managed LLVM and
+sccache configuration:
+
+```sh
+make -C "$root/headers" \
+  M="$root/quota-source/drivers/net/wireless/mediatek/mt76" \
+  MO="$root/quota-build" LLVM=1 CONFIG_MT76_CORE=m CONFIG_MT76_USB=m \
+  CONFIG_MT76_SDIO=n CONFIG_MT76x02_LIB=n CONFIG_MT76x02_USB=n \
+  CONFIG_MT76x0_COMMON=n CONFIG_MT76x2_COMMON=n CONFIG_MT7603E=n \
+  CONFIG_MT7615_COMMON=n CONFIG_MT7915E=n CONFIG_MT7921_COMMON=n \
+  CONFIG_MT7996E=n CONFIG_MT76_CONNAC_LIB=m CONFIG_MT792x_LIB=m \
+  CONFIG_MT792x_USB=m CONFIG_MT7925_COMMON=m CONFIG_MT7925E=m \
+  CONFIG_MT7925U=m -j2 modules
+```
+
+`test-mld-absence.c` compiles against the actual new inline policy
+with the managed C compiler, `-Wall -Wextra -Werror`, and include path
+`$root/quota-source/drivers/net/wireless/mediatek/mt76` (see source for
+required standard C headers). Preserve the executable in quota-build.
+`replay-mld-absence.py` independently reconstructs uncapped descriptor
+admissions from a sealed baseline trace and exercises the same C code;
+this is fixed-arrival replay, not a queue latency simulator.
+
+Use `client-quota-stack.sh --check-original`, then root `--activate`
+on Wyse. Pin the entire PCI dependency closure (mt76, mt76-connac-lib,
+mt792x-lib, mt7925-common, mt7925e) including file hash, GNU build ID,
+srcversion and module holder sets. There must be no active Wi-Fi or
+trace and wired management must be intact. The guard stages in `/run`,
+arms a 15-minute independent reboot timer before unloading anything,
+and loads exactly the matched modules. No installed kernel module or
+initramfs is replaced. Root `--restore` reboots; verify the original
+stack with `--check-original` afterward. A failed activation also
+reboots if any module has been changed.
+
+Use the same bounded AP observer and client trial as the binding
+experiment, but with `client-sustained.sh TAG --scan-timing-quota`.
+The wiphy index is discovered afresh after the live reload. Seal both
+manifests and run the usual scan, timing, absence, binding and kernel
+trace reports, plus `report-client-credit.py TRACE TIMING`. The latter
+checks the per-epoch ledger and bounds timestamp ties. The raw absence
+tracepoint precedes the handler lock, so quota accounting may only use
+a uniform observed budget, not an assumed cross-CPU event ordering.
+Denied admission attempts and refunds are not unique packet counts.
