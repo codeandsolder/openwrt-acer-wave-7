@@ -50,7 +50,7 @@ def analyze(trace, scan):
                                     for r in session["requests"]},
                                 {r["bss"]: r["granted_hw_bands"][0]
                                  for r in session["requests"]}))
-    assignments.sort()
+    assignments.sort(key=lambda row: row[0])
     active_freq, active_band, bss, sta = {}, {}, {}, {}
     next_assignment = 0
     counts, frame_counts, tx_counts = Counter(), Counter(), Counter()
@@ -142,7 +142,9 @@ def analyze(trace, scan):
                     for key,n in sorted(tx_counts.items())],
                 accepted_frame_counts=[dict(zip(frame_fields, key), count=n)
                                        for key, n in sorted(frame_counts.items())],
-                method="RX descriptor evidence, not socket or TX success. "
+                method="RX descriptor evidence, not socket delivery. "
+                       "TX status is sampled matched host data, not all transmissions; "
+                       "zero ACK error is the driver acknowledgement predicate. "
                        "Connected BSS and STA state come from acknowledged commands; "
                        "frequency from matched granted ROC requests.")
 
