@@ -443,3 +443,44 @@ checks the per-epoch ledger and bounds timestamp ties. The raw absence
 tracepoint precedes the handler lock, so quota accounting may only use
 a uniform observed budget, not an assumed cross-CPU event ordering.
 Denied admission attempts and refunds are not unique packet counts.
+
+### Exact upstream MediaTek MLO series / prefix regression isolation
+
+Use the exact advertised base commit
+`8739e5b44b23bbf6dc6568c3fefcbd22413dc117` (mt76 tree
+`495cf61b68e8e7f03daf896c21464e609f5f2e6f`), not the installed
+CachyOS mt76 snapshot. The verified 239-blob base is retained in
+`$root/exact-upstream-base`; the 2026-11-10 28-patch Emery Hsin series
+is archived under `/home/jan/build/wave7/mt7925-scan-source/upstream-20261110`
+with the original mail Message-IDs, SHA256 manifest and base-tree blob
+verification. Mail 1 is the cover, mails 2–29 are patches 1–28.
+For a prefix, copy the original base into a fresh scoped source directory,
+verify the archived mail manifest, then apply mails 2 through N+1 in
+numeric order using `git apply --check` followed by `git apply`.
+Build the full eight-module closure using the Kbuild configuration above
+and its own `MO` directory. Never mix common/core/PCI modules across
+prefixes. Pin all five PCI files, srcversions and live build IDs in
+`client-module-stack.sh` before running, and use the same guarded
+activation, independent reboot timer and original-stack verification.
+
+The exact-base control is `upstream-base` and the complete series is
+`upstream-mlo`. Use `client-sustained.sh TAG --scan-timing-upstream-base`
+or `--scan-timing-upstream-mlo`, respectively, with the unchanged AP
+observer. The continuity gate records valid/active/dormant masks and
+rejects unexpected disconnect/reassociation; both negotiated links must
+remain valid. It does not confuse legitimate single-active-link MLSR
+with deletion of a negotiated link.
+
+2026-11-22 direct comparison: exact base (tag 123420) maintained both
+links, with eight 661–747ms post-scan all-path gaps and stationary AP
+RX/TX counters. Full series (tag 121900) had a 26.641s first associated
+full scan, disconnected ~0.97s after completion, re-associated on
+5GHz alone, and emitted mac80211 `!rx->link` warning after reconnect.
+The full-series steady packet count is not a valid dual-link result.
+A single matched comparison narrows the regression to the series but
+is not sufficient to attribute it to a particular patch. Prefix12
+ends before multi-link ROC changes; later boundaries 22/24 precede
+authorization-driven link activation and FW-driven link-state handling,
+respectively. Preserve the raw/derived manifests and AP observer; do
+not infer missing keys solely from RX silence or assume the second
+link carried data merely because its firmware STA_REC was accepted.
