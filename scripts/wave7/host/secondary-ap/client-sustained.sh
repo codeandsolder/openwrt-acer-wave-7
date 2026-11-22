@@ -43,8 +43,8 @@ case "${2:-}" in
     --scan-timing-upstream-base) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-base; pm_experiment=1 ;;
     --scan-timing-upstream-prefix12) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix12; pm_experiment=1 ;;
     --scan-timing-upstream-prefix13) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix13; trace_window=1; pm_experiment=1 ;;
-    --scan-timing-upstream-prefix14) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix14; pm_experiment=1 ;;
-    --scan-timing-upstream-prefix17) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix17; pm_experiment=1 ;;
+    --scan-timing-upstream-prefix14) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix14; trace_window=1; pm_experiment=1 ;;
+    --scan-timing-upstream-prefix17) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix17; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22-assoc-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22-assoc-trace; trace_window=1; pm_experiment=1 ;;
     --scan-timing-upstream-prefix22-band-trace) scope_experiment=1; mode_experiment=1; timing_experiment=1; upstream_stack_variant=upstream-prefix22-band-trace; trace_window=1; pm_experiment=1 ;;
@@ -245,7 +245,7 @@ if (( trace_window )); then
     if (( roccontract_experiment )); then trace_args+=(--roccontract); fi
     if (( rocgeometry_experiment )); then trace_args+=(--rocgeometry); fi
     if [[ $upstream_stack_variant == upstream-prefix22-assoc-trace || $upstream_stack_variant == upstream-prefix22-band-trace || $upstream_stack_variant == upstream-prefix22-trace || $upstream_stack_variant == upstream-prefix23-trace ]]; then trace_args+=("--$upstream_stack_variant"); fi
-    if [[ $upstream_stack_variant == upstream-prefix13 ]]; then trace_args+=(--upstream-prefix13); fi
+    if [[ $upstream_stack_variant == upstream-prefix13 || $upstream_stack_variant == upstream-prefix14 || $upstream_stack_variant == upstream-prefix17 ]]; then trace_args+=("--$upstream_stack_variant"); fi
     rootcmd bash "$helper" "$tag" "${trace_args[@]}" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0
