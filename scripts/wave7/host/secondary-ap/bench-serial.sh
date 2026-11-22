@@ -10,8 +10,8 @@ diagnose=0
 [[ ${3:-} != --diagnose ]] || diagnose=1
 localize_udp=0
 [[ ${3:-} != --localize-udp ]] || localize_udp=1
-if (( localize_udp )); then [[ $rate == 2500 ]]; fi
 rate=$2
+if (( localize_udp )); then [[ $rate == 2500 ]]; fi
 case "$rate" in 10|100|1000|2500) ;; *) exit 2 ;; esac
 run=$(realpath -e "$1")
 case "$run" in
@@ -145,7 +145,7 @@ run_case() {
        sleep 0.5
      done) > "$out/$name-host-stack-during.txt" &
     stack_pids+=("$!")
-    remote "for i in $(seq 1 $((duration+3)) | xargs); do echo SAMPLE \$i; $stack_snapshot; sleep 1; done" > "$out/$name-router-stack-during.txt" &
+    remote "for i in $(seq 1 $((duration+3)) | xargs); do echo SAMPLE \$i; $stack_snapshot sleep 1; done" > "$out/$name-router-stack-during.txt" &
     stack_pids+=("$!")
   fi
   if (( diagnose )); then
