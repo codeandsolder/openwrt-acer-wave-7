@@ -45,7 +45,7 @@ if [[ $1 == --restore ]]; then
         [[ -f $dest/$n && ! -L $dest/$n && $(hash "$dest/$n") == "${newsha[$i]}" ]]
     done
     sudo -n rm -- "$dest/${names[0]}" "$dest/${names[1]}"
-    sudo -n rmdir "$dest" "$dest/.." "$dest/../.." /usr/lib/firmware/updates
+    sudo -n rmdir "$dest" "/usr/lib/firmware/updates/$kver/mediatek" "/usr/lib/firmware/updates/$kver" /usr/lib/firmware/updates
     echo "MT7925_AUGUST_RESTORED_ON_DISK reboot_required"
     exit
 fi
@@ -69,7 +69,7 @@ cleanup() {
                 sudo -n rm -- "$dest/$n"
             fi
         done
-        sudo -n rmdir "$dest" "$dest/.." "$dest/../.." /usr/lib/firmware/updates || :
+        sudo -n rmdir "$dest" "/usr/lib/firmware/updates/$kver/mediatek" "/usr/lib/firmware/updates/$kver" /usr/lib/firmware/updates || :
     fi
     exit "$rc"
 }
