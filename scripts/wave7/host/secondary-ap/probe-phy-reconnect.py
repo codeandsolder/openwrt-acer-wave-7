@@ -26,13 +26,16 @@ PROFILES = {
     "0493": ("r0+38346-7aa198ca4c-ap-dhcp-guard8", "stock-mac-order-dhcp-guard8"),
     "0494": ("r0+38346-e771c4f65a-ap-dhcp-guard8", "nsscc-parent-order-dhcp-guard8"),
     "0495": ("r0+38346-44d12aa1f7-ap-dhcp-guard8", "instant-fifo-dhcp-guard8"),
+    "0496": ("r0+38346-3688c57cd3-ap-dhcp-guard8", "independent-fifo-dhcp-guard8"),
 }
 RELINK_REV = PROFILES["0492"][0]
 MAC_ORDER_REV = PROFILES["0493"][0]
 RELINK_REVISIONS = (RELINK_REV, MAC_ORDER_REV)
 CLOCK_REV = PROFILES["0494"][0]
 INSTANT_REV = PROFILES["0495"][0]
-EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV, INSTANT_REV)
+WORKER_REV = PROFILES["0496"][0]
+EDGE_REVISIONS = (*RELINK_REVISIONS, CLOCK_REV, INSTANT_REV, WORKER_REV)
+FIFO_WORKER = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: fifo-worker tick=(\d+) edge=(\d+) ss=(-?\d+) phylib=([01]) result=(-?\d+)$")
 INSTANT_FIFO = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: fifo-instant ss=([0-9a-f]{4}) phylib=([01]) copper=([01])$")
 MAC_ORDER = re.compile(r"^\[\s*(\d+\.\d+)\].*wave7-diag: stock-mac (TX off before prepare|drained RX off TX retained)$")
 EDGE = re.compile(r"^\[\s*(\d+\.\d+)\].*QCA8081.*wave7-diag: phy-path edge=(\d+) link=([01]) ")
@@ -53,14 +56,14 @@ echo "switch_carrier=$(cat /sys/class/net/lan1/carrier 2>/dev/null || echo absen
 echo "bootfail=$(fw_printenv -n bootfail 2>/dev/null || echo absent)"
 ethtool -S lan | grep -E '^[[:space:]]*(rx_frames|tx_frames|rx_crc_err|rx_frag_err|rx_drop_frames):'
 ethtool -S switch | grep -E 's00_p06_(dot3StatsFCSErrors|etherStatsFragments|etherStatsDropEvents):'
-dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[|fifo-instant)|wave7-diag: stock-(relink|mac) |NOC ERROR DETECTED' || :
+dmesg | grep -E 'QCA8081.*wave7-diag: (phy-path|fifo\[|fifo-instant|fifo-worker)|wave7-diag: stock-(relink|mac) |NOC ERROR DETECTED' || :
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 """
 
 
 def parse(output, expected_boot, revision):
     fields, mac, switch, samples = {}, {}, {}, []
-    edges, relinks, mac_order, instant = [], [], [], []
+    edges, relinks, mac_order, instant, worker = [], [], [], [], []
     for line in output.splitlines():
         m = re.fullmatch(r"(\w+)=(.*)", line)
         if m:
@@ -91,6 +94,15 @@ def parse(output, expected_boot, revision):
             phylib,copper=int(m[3]),int(m[4])
             assert ss!=0xffff and copper==int(bool(ss&0x400))
             instant.append(dict(uptime=float(m[1]),status=ss,phylib=phylib,copper=copper))
+        m = FIFO_WORKER.match(line)
+        if m:
+            t=float(m[1])
+            tick,edge,ss,phylib,ret=map(int,m.groups()[1:])
+            assert -4095<=ss<=65535 and ret<=0
+            assert ret<0 or 0<=ss<65535
+            assert not worker or (t>worker[-1]["uptime"] and tick>worker[-1]["tick"])
+            worker.append(dict(uptime=t,tick=tick,edge=edge,status=ss,phylib=phylib,result=ret,
+                               copper=int(bool(ss&0x400)) if 0<=ss<65535 else None))
         m = PHY.match(line)
         if m:
             samples.append(dict(zip(
@@ -110,7 +122,7 @@ def parse(output, expected_boot, revision):
     return {**fields, "uptime": uptime, "mac": mac,
             "switch_errors": switch, "phy": sample,
             "phy_edges": edges, "relink_events": relinks, "mac_order_events": mac_order,
-            "instant_fifo_events": instant,
+            "instant_fifo_events": instant, "fifo_worker_events": worker,
             "noc": "NOC ERROR DETECTED" in output}
 
 
@@ -181,7 +193,7 @@ def evaluate(window, prior_speed=None):
                 phy_edge=b["phy"]["edge"],classification="INCONCLUSIVE")
     if elapsed < 30 or min(*mac.values(),*phy.values(),*errors.values()) < 0 or any(errors.values()) or peer_tx is None or peer_tx<=0:
         return result
-    if b.get("revision") in (CLOCK_REV,INSTANT_REV):
+    if b.get("revision") in (CLOCK_REV,INSTANT_REV,WORKER_REV):
         edge=b["phy"]["edge"]
         starts=[e for e in b["phy_edges"] if e["edge"]==edge and e["link"]==1]
         if len(starts)!=1 or any(r["host_counters"]["direct"].get("speed")!="1000" for r in window):
@@ -212,6 +224,23 @@ def evaluate(window, prior_speed=None):
             result["instant_fifo_up"]=up_decision
             result["instant_fifo_transitions"]=observed
             result["instant_fifo_disagreements"]=[e for e in observed if e["phylib"]!=e["copper"]]
+            if b["revision"]==WORKER_REV:
+                worker=[e for e in b.get("fifo_worker_events",[]) if down-2<=e["uptime"]<=b["uptime"]]
+                successful=[e for e in worker if e["result"]==0]
+                during_down=[e for e in successful if down<=e["uptime"]<up and e["edge"]==edge-1]
+                after_up=[e for e in successful if up<=e["uptime"] and e["edge"]==edge]
+                result["worker_trial_edge"]=edge
+                result["worker_down_ticks"]=during_down
+                result["worker_up_ticks"]=len(after_up)
+                result["worker_successful_ticks"]=len(successful)
+                result["worker_errors"]=[e for e in worker if e["result"]!=0]
+                result["worker_disagreements"]=[e for e in successful if e["phylib"]!=e["copper"]]
+                result["worker_adjacent_gaps"]=[round(y["uptime"]-x["uptime"],6)
+                    for x,y in zip(worker,worker[1:]) if y["tick"]==x["tick"]+1]
+                result["worker_exercised"]=bool(during_down and len(after_up)>=3 and after_up[0]["uptime"]-up<=2.5)
+                # Preserve the traffic result even if a worker tick was
+                # not observed during this particular down window. Its
+                # experiment coverage remains explicitly separate.
     if b.get("revision") in RELINK_REVISIONS:
         # Tie the actual policy decision to this PHY edge, not a prior
         # successful mode transition. Require the host to agree on speed.
@@ -523,6 +552,24 @@ def selftest():
         r["snapshot"]["state"]["instant_fifo_events"][1]["copper"]=0
     # The actual input bit is verified; malformed events cannot prove policy.
     assert report(instant)["classification"]=="INCONCLUSIVE"
+    worker=copy.deepcopy(instant)
+    for i,r in enumerate(worker):
+        st=r["snapshot"]["state"]
+        st["revision"]=WORKER_REV
+        st["instant_fifo_events"][1 if i else 0]["copper"]=1
+        st["fifo_worker_events"]=[]
+        if i:
+            st["fifo_worker_events"]=[dict(uptime=float(t)+0.2,tick=t,edge=2 if t<11 else 3,
+                status=0 if t<11 else 0x400,phylib=int(t>=11),copper=int(t>=11),result=0)
+                for t in range(9,int(st["uptime"]))]
+    result=report(worker)
+    assert result["classification"]=="ONE_GIG_RECONNECT_PASS",result
+    assert result["episodes"][0]["windows"][-1]["worker_exercised"]
+    for r in worker:
+        st=r["snapshot"]["state"]
+        st["fifo_worker_events"]=[e for e in st["fifo_worker_events"] if e["edge"]!=2]
+    result=report(worker)
+    assert result["classification"]=="ONE_GIG_RECONNECT_PASS" and not result["episodes"][0]["windows"][-1]["worker_exercised"]
     print("PHY_RECONNECT_SELFTEST_PASS")
 
 
