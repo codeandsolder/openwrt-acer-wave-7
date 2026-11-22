@@ -40,7 +40,7 @@
 +
 +	mt7925_mcu_sta_mld_tlv(skb, vif, sta, mlink);
 +	ret = mt76_mcu_skb_send_msg(&dev->mt76, skb,
-+				    MCU_WMWA_UNI_CMD(STA_REC_UPDATE), true);
++				    MCU_UNI_CMD(STA_REC_UPDATE), true);
 +	trace_mt7925_lab_sta_mld_update(mlink->wcid.idx, mconf->mt76.idx, ret);
 +	return ret;
 +}
