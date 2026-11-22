@@ -155,6 +155,13 @@ def observe(tag,duration,boot):
                 "router_uptime_s":head[2],"data":decode(lines)},separators=(",",":"))+"\n")
             count+=1
         (out/"status.txt").write_text(f"complete samples={count}\n")
+    except Exception as exc:
+        # Retain the exact outcome beside the sealed complete samples.
+        # A failed final query cannot invalidate prior bounded observations,
+        # but must never be represented as a completed observer run.
+        (out/"status.txt").write_text(
+            f"partial samples={count} error={type(exc).__name__}: {exc}\n")
+        raise
     finally:
         sel.close()
         try:
@@ -165,7 +172,11 @@ def observe(tag,duration,boot):
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             proc.terminate()
-            proc.wait(timeout=3)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         raw.close()
         stderr.close()
         files=sorted(out.iterdir())

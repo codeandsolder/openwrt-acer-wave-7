@@ -62,14 +62,15 @@ def grant_pairs(events):
     other = []
     for t, name, _, payload, _ in events:
         event = name.removeprefix("mt7925_lab_")
-        if event not in {"mlo_roc_req", "mlo_roc_result", "roc_wire", "roc_abort"}:
+        if event not in {"mlo_roc_req", "mlo_roc_result", "roc_wire", "roc_abort", "roc_geometry", "roc_band"}:
             continue
         k = rx.fields(payload)
         k["t"] = t
         k["event"] = event
         token = k["token"]
         if event == "mlo_roc_req" and k["slot"] == 0:
-            session = dict(token=token, requests=[], results=[], grants=[], aborts=[])
+            session = dict(token=token, requests=[], results=[], grants=[], aborts=[],
+                           geometry=[], assignments=[])
             requests.append(session)
             active[token] = session
         session = active.get(token)
@@ -77,7 +78,8 @@ def grant_pairs(events):
             other.append(k)
             continue
         key = {"mlo_roc_req": "requests", "mlo_roc_result": "results",
-               "roc_wire": "grants", "roc_abort": "aborts"}[event]
+               "roc_wire": "grants", "roc_abort": "aborts",
+               "roc_geometry": "geometry", "roc_band": "assignments"}[event]
         session[key].append(k)
     for s in requests:
         rows = s["requests"]
@@ -95,6 +97,24 @@ def grant_pairs(events):
                          {r["tag"] for r in rows} == {0, 3} and
                          all(r["matched_grants"] == 1 for r in rows) and
                          len(s["results"]) == 1 and s["results"][0]["result"] == 0)
+        if s["geometry"]:
+            # Each selected BSS must have the exact geometry record,
+            # including marker and matching channel/AP width.
+            s["geometry_complete"] = (
+                len(s["geometry"]) == len(rows)
+                and all(sum(g["slot"] == r["slot"] and
+                            g["bss"] == r["bss"] and
+                            g["channel"] == r["channel"] and
+                            g["bw"] == g["bw_ap"] and g["extra"] & 1
+                            for g in s["geometry"]) == 1 for r in rows))
+        if s["assignments"]:
+            s["bands_applied"] = all(
+                len(r["granted_hw_bands"]) == 1 and
+                sum(a["bss"] == r["bss"] and
+                    a["tag"] == {0:0,3:4}[r["tag"]] and
+                    a["new"] == r["granted_hw_bands"][0]
+                    for a in s["assignments"]) == 1 for r in rows)
+
     return requests, other
 
 
@@ -157,6 +177,17 @@ def selftest():
     assert not result[0]["complete"]
     result,_=grant_pairs(events[:4]+[event("1.2","roc_wire",events[4][3].replace("expected=3","expected=4"))])
     assert not result[0]["complete"]
+    fixed=events[:2]+[
+        event("1.01","roc_geometry","slot=0 token=3 bss=0 bw=1 bw_ap=1 channel=36 center=42 center2=0 sco=1 extra=1"),
+        event("1.01","roc_geometry","slot=1 token=3 bss=1 bw=0 bw_ap=0 channel=1 center=1 center2=0 sco=0 extra=1"),
+    ]+events[2:5]+[
+        event("1.2","roc_band","bss=0 link=1 old=255 new=0 token=3 tag=0"),
+        event("1.2","roc_band","bss=1 link=0 old=255 new=1 token=3 tag=4"),
+    ]+events[5:]
+    result,_=grant_pairs(fixed)
+    assert result[0]["geometry_complete"] and result[0]["bands_applied"]
+    result,_=grant_pairs(fixed[:-2]+fixed[-1:])
+    assert not result[0]["bands_applied"]
     print("CLIENT_ROC_WIRE_SELFTEST_PASS")
 
 
