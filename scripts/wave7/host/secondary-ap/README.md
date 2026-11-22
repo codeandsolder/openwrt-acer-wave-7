@@ -271,6 +271,48 @@ error counters do not. PHY TX statistics are external-MAC ingress,
 not proof of copper transmission; neither a flat counter nor a
 successful forced carrier flag proves SerDes synchronization.
 
+### Deliberately delayed first copper link — 0498
+
+On Asus the dedicated RTL8156B direct peer is `enp4s0f4u2u4`
+(MAC 00:e0:4c:68:00:6d, USB 6-2.4:1.0). An administratively down
+netdev is not a powered-down PHY: the 09:04 trial observed early
+router carrier and later relink despite a 69-second admin-down hold.
+The root-only `peer-phy-power.py` uses the driver's Clause 22
+MII ioctl, BMCR.PDOWN, and readback, leaving the USB device and
+netdev present. An independent short warm test confirmed actual
+router carrier-down/up. Do not use the USB hub port controls.
+
+Renew the scoped lab DHCP service before a long trial if needed.
+From cold-storage as the ordinary user, use the configured root
+SSH alias, with no local sudo:
+
+```sh
+ssh -o BatchMode=yes -o ConnectTimeout=5 root@asus '/home/jan/scripts/wave7/secondary-ap-guard8/peer-1g-window.sh --start delayed'
+```
+
+Then on Asus as jan run the normal 1G guard:
+`trial-ap.sh serial-speed --reboot-1g`, after
+`peer-1g-window.sh --check` passes. The transient peer unit verifies
+a healthy initial 1G link, waits for reboot carrier loss, powers
+down the PHY and checks BMCR and BMSR repeatedly for 65 seconds,
+then powers up and returns the advertisement to 1G. Its independent
+15-minute deadline and ExecStopPost restore the original 2500
+advertisement, including on failure.
+
+After SOAK_PASS, archive the run and capture at least 35 seconds
+of both independently route-bound probe paths with
+`probe-phy-reconnect.py capture OUT BOOT --duration 40 --profile 0498`.
+Save only the matching invocation's PEER journal records, then run
+`report-cold-1g.py qualify RUN CAPTURE PEER_LOG --expect delayed`.
+The qualifier requires the first router PHY observation to be
+down during the verified power hold, a first 1G SGMII up at least
+35 seconds after boot and at least 20 seconds after the first poll,
+exactly one up edge and one serial-speed marker, valid clock
+alignment, advancing PHY/GMAC counters, clean two-path traffic and
+a minimum 300-second healthy soak. The old admin-down logs are
+not sufficient evidence for this qualification. Stop the completed
+fallback observer and peer service only after sealing the evidence.
+
 ### MT7925 delayed scan interruption experiment (client-only)
 
 The 50 ms timing probe is a diagnostic, not a relaxation of the existing

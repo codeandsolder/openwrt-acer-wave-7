@@ -105,13 +105,15 @@ def peer_window(log, expected):
     assert len(ready) == 1 and ready[0][2] == expected, "wrong peer window"
     names = [e[1] for e in events]
     if expected == "delayed":
-        assert names == ["PEER_READY","PEER_CARRIER_FELL","PEER_ADMIN_DOWN","PEER_RELEASED_1G"], "missing/failed delay hold proof"
-        seconds = (events[-1][0]-events[-2][0]).total_seconds()
+        assert names == ["PEER_READY","PEER_CARRIER_FELL","PEER_PHY_DOWN","PEER_PHY_HOLD_VERIFIED","PEER_PHY_RELEASED_1G"], "missing/failed delay hold proof"
+        seconds = (events[-1][0]-events[2][0]).total_seconds()
+        verified = (events[-2][0]-events[2][0]).total_seconds()
+        assert 64 <= verified <= seconds, "PHY hold not continuously verified"
         assert 64 <= seconds <= 90, "unexpected hold duration"
     else:
         assert names == ["PEER_READY"], "unexpected peer event"
         seconds = 0
-    return dict(mode=expected,admin_down_seconds=seconds,events=[(t.isoformat(),n) for t,n,_ in events])
+    return dict(mode=expected,phy_down_seconds=seconds,events=[(t.isoformat(),n) for t,n,_ in events])
 
 def correlate_peer_boot(counter_log, boot, peer, link):
     # Both wall_epoch and peer timestamps come from the Asus observer.
@@ -129,8 +131,8 @@ def correlate_peer_boot(counter_log, boot, peer, link):
     ready = events["PEER_READY"]
     assert hi-300 <= ready <= lo, "peer ready is not from the observed reboot"
     if peer["mode"] == "delayed":
-        down = events["PEER_ADMIN_DOWN"]
-        release = events["PEER_RELEASED_1G"]
+        down = events["PEER_PHY_DOWN"]
+        release = events["PEER_PHY_RELEASED_1G"]
         first = link["first_status"]["t"]
         up = link["first_up"]["t"]
         assert hi-60 <= events["PEER_CARRIER_FELL"] <= lo+first, "carrier loss not tied to reboot"
@@ -221,11 +223,12 @@ def selftest():
         rejects(first_link,log(62).replace(a,b),"delayed")
     peer="""2026-11-22T05:00:00+01:00 PEER_READY mode=delayed
 2026-11-22T05:00:10+01:00 PEER_CARRIER_FELL
-2026-11-22T05:00:11+01:00 PEER_ADMIN_DOWN
-2026-11-22T05:01:16+01:00 PEER_RELEASED_1G"""
-    assert peer_window(peer,"delayed")["admin_down_seconds"]==65
+2026-11-22T05:00:11+01:00 PEER_PHY_DOWN
+2026-11-22T05:01:16+01:00 PEER_PHY_HOLD_VERIFIED
+2026-11-22T05:01:16+01:00 PEER_PHY_RELEASED_1G"""
+    assert peer_window(peer,"delayed")["phy_down_seconds"]==65
     rejects(peer_window,peer.replace("05:01:16","05:00:16"),"delayed")
-    rejects(peer_window,peer.replace("PEER_RELEASED_1G","PEER_UNEXPECTED_ADMIN_UP"),"delayed")
+    rejects(peer_window,peer.replace("PEER_PHY_RELEASED_1G","PEER_PHY_HOLD_LOST"),"delayed")
     epoch=int(dt.datetime.fromisoformat("2026-11-22T05:00:15+01:00").timestamp())
     counters=f"wall_epoch\tboot\tuptime\n{epoch+22}\tb\t22\n{epoch+27}\tb\t27"
     delayed=peer_window(peer,"delayed")

@@ -6,6 +6,8 @@ iface=enp4s0f4u2u4
 sys=/sys/class/net/$iface
 unit=wave7-peer-1g-window
 self=$(realpath "$0")
+phyctl="$(dirname "$self")/peer-phy-power.py"
+phy() { uv run --no-project --offline --python /usr/bin/python3 python "$phyctl" "$@"; }
 scope_ok() {
     [[ $(cat "$sys/address") == 00:e0:4c:68:00:6d && ! -e $sys/master ]] || return 1
     ! ip -4 route show default | rg -q "dev $iface([[:space:]]|$)" || return 1
@@ -23,6 +25,7 @@ restore() {
     # Never modify a renamed/replaced interface or a newly routed uplink.
     scope_ok || { log RESTORE_SCOPE_CHANGED; return 1; }
     ip link set dev "$iface" up
+    phy up
     ethtool -s "$iface" autoneg on advertise 0x800000000000
     log PEER_RESTORED_ADVERTISE_2500
 }
@@ -42,6 +45,7 @@ case "${1:-}" in
         need_root
         [[ $# == 2 && ( $2 == fast || $2 == delayed ) ]]
         scope_ok
+        [[ $(phy status) == *"pdown=0"* ]]
         [[ $(cat "$sys/carrier") == 1 && $(cat "$sys/speed") == 2500 ]]
         ip -4 -o addr show dev "$iface" | rg -q 'inet 192\.168\.76\.2/24 .*valid_lft forever preferred_lft forever'
         [[ $(systemctl show "$unit.service" -p LoadState --value) == not-found ]]
@@ -86,19 +90,25 @@ case "${1:-}" in
             done
             (( i < 2400 )) || { log NO_CARRIER_LOSS; exit 1; }
             log PEER_CARRIER_FELL
-            ip link set dev "$iface" down
-            log PEER_ADMIN_DOWN
-            # A NetworkManager re-enable invalidates coverage. Do not
-            # repeatedly fight the network manager or extend the window.
-            for ((i=0;i<260;i++)); do
+            # Administrative down leaves the Realtek copper PHY
+            # negotiating. Use BMCR power-down without closing the netdev.
+            result=$(phy down)
+            [[ $result == *"pdown=1"* ]] || exit 1
+            log PEER_PHY_DOWN
+            deadline=$((SECONDS+65))
+            while (( SECONDS < deadline )); do
                 scope_ok
-                flags=$(cat "$sys/flags")
-                (( !(flags & 1) )) || { log PEER_UNEXPECTED_ADMIN_UP; exit 1; }
-                sleep 0.25
+                result=$(phy status)
+                if [[ $result != *"pdown=1"* || $result != *"link=0" ]]; then
+                    log PEER_PHY_HOLD_LOST
+                    exit 1
+                fi
+                sleep 0.5
             done
-            ip link set dev "$iface" up
+            log PEER_PHY_HOLD_VERIFIED
+            phy up
             ethtool -s "$iface" autoneg on advertise 0x20
-            log PEER_RELEASED_1G
+            log PEER_PHY_RELEASED_1G
         fi
         # systemd enforces the independent deadline even if the caller is gone.
         while :; do scope_ok; sleep 2; done
