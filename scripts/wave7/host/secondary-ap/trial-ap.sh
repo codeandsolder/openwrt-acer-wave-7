@@ -179,15 +179,15 @@ case "$profile" in
       base="$guard8/down-mode-dhcp-guard8"
       candidate_artifact=wave7-down-mode-dhcp-guard8-sysupgrade.bin
       candidate_rev=r0+38346-ef7d41f2b1-ap-dhcp-guard8
-      candidate_builder=UNBUILT
-      expected_candidate_sha=UNBUILT
-      candidate_fit_sha=UNBUILT
+      candidate_builder=fae9cfe596c54e65b491963dec82b024dbdff6d8
+      expected_candidate_sha=6737fe3c8969b83802eaafcac9fa7ba8d65700ce20b145cd2ecb54718e9fc431
+      candidate_fit_sha=fab4ba3fc1c282f92f95f0274295c6af8832a97ea4c3767d4b197bd76dbd66a4
       candidate_instant_patch=44d12aa1f75285c4b5209d227da200227d96588a
       candidate_instant_marker=1
       candidate_worker_patch=3688c57cd341560fd73365916b68a76465ef2f8a
       candidate_worker_marker=1
       candidate_relink_patch=''
-      candidate_pcs_sha=UNBUILT
+      candidate_pcs_sha=c62c6baff502d1338c34c3e2fa94b7b1c7fe6b765422cda46db96749a28ed4c5
       candidate_down_patch=ef7d41f2b18457e9576d8ee7a2aa4d6f549ec7a8
       candidate_ppe_sha=$accepted_ppe_sha
     fi
@@ -195,8 +195,9 @@ case "$profile" in
   *) echo 'unknown candidate profile'    >&2; exit 2 ;;
 esac
 if [[ $trial_kind == down-mode && $mode != --selftest ]]; then
-  for pin in "$candidate_builder" "$expected_candidate_sha" "$candidate_fit_sha" "$candidate_pcs_sha"; do
-    [[ $pin != UNBUILT ]] || { echo '0497 image not yet pinned by final QA' >&2; exit 2; }
+  [[ $candidate_builder =~ ^[0-9a-f]{40}$ ]] || { echo '0497 builder not pinned' >&2; exit 2; }
+  for pin in "$expected_candidate_sha" "$candidate_fit_sha" "$candidate_pcs_sha"; do
+    [[ $pin =~ ^[0-9a-f]{64}$ ]] || { echo '0497 digest not pinned by final QA' >&2; exit 2; }
   done
 fi
 candidate="$base/${candidate_artifact:-wave7-secondary-ap-$profile-guard8-sysupgrade.bin}"
