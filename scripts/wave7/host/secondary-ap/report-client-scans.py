@@ -282,8 +282,24 @@ def scan_scope_report(result, request_log):
                                  "missing_packets_with_notices":sum(len(c["sequences"]) for c in clusters),
                                  "postscan_replies":len(post),
                                  "max_postscan_rtt_ms":max((p["rtt_ms"] for p in post),default=None)})
+    isolated=[q for q in requests.values() if q["matched_scan"] is not None
+              and q["isolated_postscan_window"]]
+    fully_covered=[q for q in isolated if q["tests"] and
+                   all(t["covered"] for t in q["tests"])]
+    # A shared delayed interruption is observable only when all tested
+    # paths show a missing cluster with notices in the same scan window.
+    shared=[]
+    for q in fully_covered:
+        firsts=[min((c["first_notice_after_scan_s"] for c in t["missing_clusters"]),
+                    default=None) for t in q["tests"]]
+        if all(t is not None for t in firsts):
+            shared.append({"label":q["label"],"first_notice_offsets_s":firsts,
+                           "spread_s":max(firsts)-min(firsts)})
     return {"requests":list(requests.values()),
             "matched_count":len(used),
+            "isolated_matched_count":len(isolated),
+            "fully_covered_isolated_count":len(fully_covered),
+            "shared_loss_windows":shared,
             "unmatched_completed_associated_scans":[s for i,s in enumerate(result["scans"])
                if i not in used and s["complete"] and not s["aborted"] and s["associated_at_start"]],
             "method":"Accepted iw trigger plus unique scan-start event and exact completed frequency list; natural background scans retained. Missing-probe notices are not TX timestamps."}
@@ -332,6 +348,7 @@ def selftest():
     assert scoped["matched_count"]==1
     assert scoped["requests"][0]["tests"][0]["missing_packets_with_notices"]==1
     assert not scoped["requests"][0]["tests"][0]["covered"]
+    assert scoped["fully_covered_isolated_count"]==0 and not scoped["shared_loss_windows"]
     assert scan_scope_report(r,req.replace("2412","5180"))["matched_count"]==0
     assert scan_scope_report(r,req.replace("return=0","return=1"))["matched_count"]==0
     print("CLIENT_SCAN_REPORT_SELFTEST_PASS")
@@ -343,6 +360,7 @@ if __name__=="__main__":
     p.add_argument("events",type=Path,nargs="?")
     p.add_argument("--iface",default="wlp2s0")
     p.add_argument("--interval",type=D,default=D(".25"))
+    p.add_argument("--additional-ping",type=Path,action="append",default=[])
     p.add_argument("--requests",type=Path)
     p.add_argument("--selftest",action="store_true")
     args=p.parse_args()
@@ -351,7 +369,8 @@ if __name__=="__main__":
     else:
         if args.ping is None or args.events is None or not args.interval.is_finite() or args.interval<=0:
             p.error("provide ping/event logs and a positive probe interval")
-        result=report(args.ping.read_text(),args.events.read_text(),args.iface,args.interval)
+        ping_text="\n".join(p.read_text() for p in [args.ping,*args.additional_ping])
+        result=report(ping_text,args.events.read_text(),args.iface,args.interval)
         if args.requests is not None:
             result["scope_report"]=scan_scope_report(result,args.requests.read_text())
         print(json.dumps(result,indent=2,default=str))

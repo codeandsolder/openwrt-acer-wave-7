@@ -130,6 +130,11 @@ if (( pm_experiment )); then
     [[ $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" &&
        $(rootcmd cat "$pm_dir/runtime-pm") == "$runtime_expected" ]]
 fi
+{
+    printf 'boot=%s\nkernel=%s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$(uname -r)"
+    printf 'mt7925_common=%s\nmt7925e=%s\n' "$(cat /sys/module/mt7925_common/srcversion)" "$(cat /sys/module/mt7925e/srcversion)"
+    journalctl -k -b --no-pager | grep -E 'mt7925e.*(HW/SW Version|WM Firmware Version)'
+} > "$out/firmware.txt"
 stdbuf -oL iw event -t > "$out/events.txt" 2>&1 &
 event_pid=$!
 sleep .3
