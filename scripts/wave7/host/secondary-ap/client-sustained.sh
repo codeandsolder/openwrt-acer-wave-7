@@ -5,7 +5,7 @@ umask 077
 iface=wlp2s0
 profile=Wave7-MLO-Lab
 base=/home/jan/firmware/wave7/client-validation
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && ( $2 == --trace || $2 == --deep-sleep-on || $2 == --deep-sleep-off || $2 == --runtime-pm-off || $2 == --scan-scope || $2 == --scan-mode || $2 == --scan-timing || $2 == --scan-timing-nosplit || $2 == --scan-timing-trace || $2 == --scan-timing-metadata || $2 == --scan-timing-absence || $2 == --scan-timing-binding || $2 == --scan-timing-quota || $2 == --scan-timing-rx ) ) ) && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 trace=0
 scope_experiment=0
 mode_experiment=0
@@ -16,6 +16,7 @@ metadata_experiment=0
 absence_experiment=0
 binding_experiment=0
 quota_experiment=0
+rx_experiment=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -30,6 +31,7 @@ case "${2:-}" in
     --scan-timing-absence) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; absence_experiment=1; pm_experiment=1 ;;
     --scan-timing-binding) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; binding_experiment=1; pm_experiment=1 ;;
     --scan-timing-quota) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; quota_experiment=1; pm_experiment=1 ;;
+    --scan-timing-rx) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rx_experiment=1; pm_experiment=1 ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
@@ -149,6 +151,10 @@ if (( pm_experiment )); then
         bash "$stack_guard" --check-candidate > "$out/module-stack.txt"
         expected_srcversion=E882C202FF34ABD6AFFEC2C
     fi
+    if (( rx_experiment )); then
+        expected_srcversion=C8590CC01B6D6AE3EAAC131
+        [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == fa786e5d0d56500d2042eb166a73130db97f1b542f5d0fbd174ff973ee382345 ]]
+    fi
     if (( binding_experiment )); then
         expected_srcversion=CF0F5C99109529BD670B11A
         [[ $(sha256sum "$(modinfo -n mt7925_common)" | cut -d' ' -f1) == 0f2468ffc7aeb8ef76eaf63c20c5a405b80d0e61320bf1af28d931014b79f12b ]]
@@ -196,6 +202,7 @@ if (( trace_window )); then
     if (( absence_experiment )); then trace_args+=(--absence); fi
     if (( binding_experiment )); then trace_args+=(--binding); fi
     if (( quota_experiment )); then trace_args+=(--quota); fi
+    if (( rx_experiment )); then trace_args+=(--rx); fi
     rootcmd bash "$helper" "$tag" "${trace_args[@]}" > "$out/client-kernel-trace.txt" 2>&1 &
     trace_pid=$!
     ready=0
