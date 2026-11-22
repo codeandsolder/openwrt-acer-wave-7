@@ -114,6 +114,30 @@ def correlate(samples,report):
     return {"windows":windows,
             "method":"Associated station cumulative counters; sample command brackets on Asus nominal NTP-aligned to Wyse. Common gap bounded by last successful and next successful replies, not exact missing TX instants; counters include all peer data and may be firmware-polled. Host PS buffers do not describe all firmware buffering."}
 
+def correlate_arrivals(samples,timing,margin=D(0)):
+    if margin<0 or margin>D(".25"):
+        raise ValueError("invalid clock sensitivity margin")
+    windows=[]
+    for w in timing["windows"]+timing.get("isolated_unattributed_multichannel",[]):
+        if not all(p["missing_sequences"] for p in w["paths"]):
+            continue
+        silence=w["common_arrival_silence"]
+        start,end=D(silence["last_reply"]),D(silence["next_reply"])
+        span=end-start
+        if span<D(".25"):
+            continue
+        def interior(a,b):
+            return summarize([s for s in samples
+                              if s["start"]>=a+margin and s["end"]<=b-margin])
+        windows.append({"label":w.get("label","unattributed-multichannel"),
+                        "common_reply_gap_start":start,"common_reply_gap_end":end,
+                        "common_reply_gap_s":span,
+                        "before_gap":interior(start-span,start),
+                        "inside_observed_gap":interior(start,end),
+                        "after_gap":interior(end,end+span)})
+    return {"windows":windows,"clock_margin_s":margin,
+            "method":"Actual union of observed client replies, identical phase edges as kernel trace. AP sample brackets conservatively exclude a chosen margin from each edge; cross-host NTP margin is a sensitivity check, not a proven residual offset bound. Counters can be firmware-polled."}
+
 def selftest():
     def row(i,received,failed):
         return json.dumps({"seq":i,"before_ns":(i+1)*250_000_000,
@@ -132,12 +156,20 @@ def selftest():
     window=correlate(samples,r)["windows"][0]
     assert window["inside_observed_gap"]["counter_deltas"]["tx failed"]==1
     assert window["bracketing_samples"]["counter_deltas"]["tx failed"]==3
+    timing={"windows":[{"label":"a","common_arrival_silence":{"last_reply":"0.2","next_reply":"1.0"},
+                  "paths":[{"missing_sequences":[1]}]}]}
+    q=correlate_arrivals(samples,timing,D(".075"))["windows"][0]
+    assert q["inside_observed_gap"]["sample_count"]==2
+    assert q["inside_observed_gap"]["counter_deltas"]["rx packets"]==0
+    assert correlate_arrivals(samples,timing,D(0))["windows"][0]["inside_observed_gap"]["sample_count"]==3
     print("AP_CLIENT_REPORT_SELFTEST_PASS")
 
 if __name__=="__main__":
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("samples",type=Path,nargs="?")
     p.add_argument("client_report",type=Path,nargs="?")
+    p.add_argument("--arrival-timing",action="store_true")
+    p.add_argument("--clock-margin",type=D,default=D(0))
     p.add_argument("--selftest",action="store_true")
     a=p.parse_args()
     if a.selftest:
@@ -145,5 +177,12 @@ if __name__=="__main__":
     else:
         if a.samples is None or a.client_report is None:
             p.error("provide samples and combined client report")
-        print(json.dumps(correlate(read_samples(a.samples.read_text().splitlines()),
-            json.loads(a.client_report.read_text())),indent=2,default=str))
+        samples=read_samples(a.samples.read_text().splitlines())
+        report=json.loads(a.client_report.read_text())
+        if a.arrival_timing:
+            result=correlate_arrivals(samples,report,a.clock_margin)
+        else:
+            if a.clock_margin:
+                p.error("--clock-margin requires --arrival-timing")
+            result=correlate(samples,report)
+        print(json.dumps(result,indent=2,default=str))
