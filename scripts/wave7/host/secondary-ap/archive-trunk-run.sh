@@ -8,7 +8,7 @@ run=$(realpath -e "$1")
 case "$run" in
   "$base"/trunk-health-dhcp-guard8/runs/*|"$base"/native-recovery-dhcp-guard8/runs/*)
     iface=enp4s0f4u2u4; addr=192.168.76.2 ;;
-  "$base"/stock-poll-fifo-dhcp-guard8/runs/*|"$base"/conditional-relink-dhcp-guard8/runs/*|"$base"/stock-mac-order-dhcp-guard8/runs/*|"$base"/nsscc-parent-order-dhcp-guard8/runs/*)
+  "$base"/stock-poll-fifo-dhcp-guard8/runs/*|"$base"/conditional-relink-dhcp-guard8/runs/*|"$base"/stock-mac-order-dhcp-guard8/runs/*|"$base"/nsscc-parent-order-dhcp-guard8/runs/*|"$base"/instant-fifo-dhcp-guard8/runs/*)
     iface=enp4s0f4u2u2u4; addr=192.168.76.250 ;;
   *) exit 2 ;;
 esac
