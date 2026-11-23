@@ -30,7 +30,61 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  select-image:
+    name: Reuse toolchain only with matching source provenance
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      use_cache: ${{ steps.match.outputs.use_cache }}
+    steps:
+      - name: Checkout source trees needed for toolchain identity
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          filter: blob:none
+
+      - name: Verify published image input digest
+        id: match
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$(bash .github/workflows/scripts/wave7-toolchain-key.sh)"
+          # Both images must have been built from these exact toolchain
+          # inputs. Never use a compiler paired with unrelated host tools.
+          image_key() {
+            local image="$1" registry scope response token accept manifest child config config_json
+            registry="https://ghcr.io/v2/codeandsolder/$image"
+            scope="repository:codeandsolder/$image:pull"
+            # Upstream reusable jobs do not specify container credentials.
+            # Only select publicly pullable images, never private packages.
+            response="$(curl -fsSL "https://ghcr.io/token?service=ghcr.io&scope=$scope")" || return 1
+            token="$(jq -r '.token // .access_token // empty' <<< "$response")"
+            [[ -n "$token" ]] || return 1
+            accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
+            manifest="$(curl -fsSL -H "Authorization: Bearer $token" -H "Accept: $accept" "$registry/manifests/latest")" || return 1
+            if jq -e '.manifests' >/dev/null 2>&1 <<< "$manifest"; then
+              child="$(jq -r '[.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest][0] // empty' <<< "$manifest")"
+              [[ "$child" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+              manifest="$(curl -fsSL -H "Authorization: Bearer $token" -H "Accept: $accept" "$registry/manifests/$child")" || return 1
+            fi
+            config="$(jq -r '.config.digest // empty' <<< "$manifest")"
+            [[ "$config" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+            config_json="$(curl -fsSL -H "Authorization: Bearer $token" "$registry/blobs/$config")" || return 1
+            jq -r '.config.Labels["org.codeandsolder.wave7.toolchain-inputs"] // empty' <<< "$config_json"
+          }
+          use_cache=false
+          tools_key="$(image_key tools)" || tools_key=''
+          toolchain_key="$(image_key wave7-tools)" || toolchain_key=''
+          if [[ "$tools_key" == "$key" && "$toolchain_key" == "$key" ]]; then
+            use_cache=true
+          fi
+          echo "use_cache=$use_cache" >> "$GITHUB_OUTPUT"
+          echo "Wave 7 external toolchain provenance match: $use_cache"
+
   wave7-kernel:
+    needs: select-image
     name: Build Wave 7 kernel and kmods
     if: github.event_name != 'workflow_dispatch'
     permissions:
@@ -39,7 +93,8 @@ jobs:
       actions: write
     uses: openwrt/actions-shared-workflows/.github/workflows/reusable_build.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
     with:
-      container_name: toolchain
+      container_name: ${{ needs.select-image.outputs.use_cache == 'true' && 'wave7-tools' || 'tools' }}
+      use_openwrt_container: ${{ needs.select-image.outputs.use_cache != 'true' }}
       target: qualcommbe
       subtarget: ipq53xx
       build_kernel: true
@@ -47,6 +102,7 @@ jobs:
       build_dtb: true
 
   wave7-patches:
+    needs: select-image
     name: Check Wave 7 kernel patches
     if: github.event_name != 'workflow_dispatch'
     permissions:
@@ -54,6 +110,7 @@ jobs:
       packages: read
     uses: openwrt/actions-shared-workflows/.github/workflows/reusable_check-kernel-patches.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
     with:
+      use_openwrt_container: ${{ needs.select-image.outputs.use_cache != 'true' }}
       target: qualcommbe
       subtarget: ipq53xx
 

@@ -1,0 +1,200 @@
+name: Publish Wave 7 prebuilt toolchain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/wave7-toolchain-image.yml'
+      - '.github/workflows/scripts/wave7-toolchain-key.sh'
+      - 'Makefile'
+      - 'rules.mk'
+      - 'Config.in'
+      - 'feeds.conf.default'
+      - 'include/**'
+      - 'tools/**'
+      - 'toolchain/**'
+      - 'config/**'
+      - 'scripts/**'
+      - 'package/Makefile'
+      - 'package/libs/toolchain/**'
+      - 'target/linux/qualcommbe/Makefile'
+      - 'target/linux/qualcommbe/ipq53xx/target.mk'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wave7-prebuilt-toolchain-main
+  cancel-in-progress: true
+
+jobs:
+  build-host-tools:
+    name: Build source-matched host tools
+    uses: openwrt/actions-shared-workflows/.github/workflows/reusable_build-tools.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+    with:
+      generate_prebuilt_artifacts: true
+
+  publish-host-tools:
+    name: Publish provenance-labelled host tools
+    needs: build-host-tools
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - name: Checkout Wave 7 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          filter: blob:none
+
+      - name: Checkout pinned upstream tools recipe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: openwrt/actions-shared-workflows
+          ref: 146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+          path: .upstream-image
+          persist-credentials: false
+          sparse-checkout: .github/dockerfiles/Dockerfile.tools
+          sparse-checkout-cone-mode: false
+
+      - name: Download compiled host tools
+        uses: actions/download-artifact@v8
+        with:
+          name: linux-buildbot-prebuilt-tools
+          path: image
+
+      - name: Unpack tools and compute source identity
+        id: input
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$(bash .github/workflows/scripts/wave7-toolchain-key.sh)"
+          [[ "$key" =~ ^[0-9a-f]{64}$ ]]
+          tar -xf image/tools.tar -C image
+          rm -- image/tools.tar
+          test -d image/staging_dir/host
+          test -d image/build_dir/host
+          cp .upstream-image/.github/dockerfiles/Dockerfile.tools image/Dockerfile
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish compiled host tools
+        uses: docker/build-push-action@v7
+        with:
+          context: image
+          file: image/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/codeandsolder/tools:latest
+            ghcr.io/codeandsolder/tools:inputs-${{ steps.input.outputs.key }}
+          labels: |
+            org.codeandsolder.wave7.toolchain-inputs=${{ steps.input.outputs.key }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/codeandsolder/openwrt-acer-wave-7
+
+  build:
+    needs: publish-host-tools
+    name: Compile target toolchain once
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    uses: openwrt/actions-shared-workflows/.github/workflows/reusable_build.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+    with:
+      container_name: tools
+      use_openwrt_container: true
+      target: qualcommbe
+      subtarget: ipq53xx
+      build_toolchain: true
+      build_external_toolchain: true
+      upload_external_toolchain: true
+      check: false
+
+  publish:
+    name: Package immutable-input toolchain image
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      actions: read
+    steps:
+      - name: Checkout Wave 7 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          filter: blob:none
+
+      - name: Checkout pinned upstream image recipe
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: openwrt/actions-shared-workflows
+          ref: 146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+          path: .upstream-image
+          persist-credentials: false
+          sparse-checkout: .github/dockerfiles/Dockerfile.toolchain
+          sparse-checkout-cone-mode: false
+
+      - name: Download upstream external toolchain
+        uses: actions/download-artifact@v8
+        with:
+          name: qualcommbe-ipq53xx-external-toolchain
+          path: image
+
+      - name: Validate archive, derive input identity, and prepare context
+        id: input
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$(bash .github/workflows/scripts/wave7-toolchain-key.sh)"
+          [[ "$key" =~ ^[0-9a-f]{64}$ ]]
+          mapfile -d '' -t archives < <(find image -maxdepth 1 -type f -name 'openwrt-toolchain*.tar.*' -print0)
+          (("${#archives[@]}" == 1))
+          tar -xf "${archives[0]}" -C image
+          rm -- "${archives[0]}"
+          mapfile -d '' -t roots < <(find image -mindepth 1 -maxdepth 1 -type d -name 'openwrt-toolchain*' -print0)
+          (("${#roots[@]}" == 1))
+          cp .upstream-image/.github/dockerfiles/Dockerfile.toolchain image/Dockerfile
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          echo "toolchain_name=$(basename "${roots[0]}")" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pin upstream OpenWrt tools image digest
+        id: base
+        shell: bash
+        run: |
+          set -euo pipefail
+          digest="$(docker buildx imagetools inspect ghcr.io/codeandsolder/tools:latest --format '{{.Digest}}')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "base_tag=latest@$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Publish self-contained Wave 7 toolchain image
+        uses: docker/build-push-action@v7
+        with:
+          context: image
+          file: image/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/codeandsolder/wave7-tools:latest
+            ghcr.io/codeandsolder/wave7-tools:inputs-${{ steps.input.outputs.key }}
+          labels: |
+            org.codeandsolder.wave7.toolchain-inputs=${{ steps.input.outputs.key }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/codeandsolder/openwrt-acer-wave-7
+          build-args: |
+            OWNER_LC=codeandsolder
+            CONTAINER_TAG=${{ steps.base.outputs.base_tag }}
+            TOOLCHAIN_NAME=${{ steps.input.outputs.toolchain_name }}
