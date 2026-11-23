@@ -211,7 +211,7 @@ early_ipv4_probe() {
             printf 'probe_started_epoch=%s target=%s source=%s\n' \
                 "$(date +%s.%N)" "$target" "$ipaddr"
             rc=0
-            LC_ALL=C rootcmd arping -f -I "$iface" -s "$ipaddr" -i .12 \
+            LC_ALL=C rootcmd arping -f -I "$iface" -s "$ipaddr" -i 0.12 \
                 -c 10 -w 2 "$target" || rc=$?
             printf 'probe_finished_epoch=%s exit=%s\n' "$(date +%s.%N)" "$rc"
         ) > "$out/early-$label-arp.txt" 2>&1 &
