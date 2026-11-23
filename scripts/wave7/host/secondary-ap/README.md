@@ -649,3 +649,25 @@ the independent passive AP observer. It modifies nothing on the AP
 and creates no persistent AP-side files or services. Raw output
 and checksums are kept off-router in TAG-ap-link-stats. Inspect
 whether per-link RX counters are supported before relying on them.
+
+### Diagnostic experiment: reassert existing MLO ROC link selection after scan
+
+Patch mt7925-client-prefix22-postscan-roc-reacquire.patch applies on
+top of exact-upstream-prefix22-postscan-txroute-trace source.
+It is NOT a production fix. Firmware sometimes reports TXS band1
+for primary-link host TXD TGID0 around 0.95s after completed
+connected-state scans, with eleven lost IPv4 probe requests.
+The experiment invokes the existing MLO ROC acquisition for the
+UNCHANGED currently active two-or-more-link mask before calling
+mac80211 ieee80211_scan_completed. It skips inactive/legacy
+or disconnected interfaces, invalid link selection, and an in-flight
+ROC (never cancels a different ROC). It does not reprogram station,
+keys, BSS or AP, nor alter scan channels. Existing MLO ROC
+timeout/rollback and experimental tracepoint mt7925_lab_postscan_roc
+record results. Successful grant uses existing firmware band mapping.
+Strict validation remains guarded: same AP boot, full five-module
+SHA/version/build-id attestation, independent WDAT watchdog, finite
+trace and off-host AP/Asus packet observers.
+Use variant upstream-prefix22-postscan-roc-reacquire-trace and
+early-tap profile, not installed modules. Compare to the exact
+unmodified postscan-txroute-trace reference before any upstream PR.
