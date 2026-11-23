@@ -601,3 +601,11 @@ Optional third arg --bssid-5 pins only the disposable client profile
 for an otherwise identical MLO dual-link control, while unpinned
 runs exercise post-association background scanning. Neither early
 scope is a complete production dual-stack scan acceptance test.
+
+Scan/PM ftrace now also captures the existing optional
+mt7925_lab_txs_peer_data trace event (matched host skb only):
+WCID, MLO link, firmware hardware band, transmit PID, ACK error,
+encapsulation and skb length. It does not include packet payload,
+addresses or ICMP sequence; TX status is not guaranteed for every
+packet, so correlate aggregates/timing rather than assert a 1:1
+packet correspondence.

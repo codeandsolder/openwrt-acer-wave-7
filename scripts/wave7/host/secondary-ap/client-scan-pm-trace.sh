@@ -30,6 +30,7 @@ events=(
     cfg80211/cfg80211_scan_done
     mt7925_lab/mt7925_lab_scan_req
     mt7925_lab/mt7925_lab_scan_tlv
+    mt7925_lab/mt7925_lab_txs_peer_data
     mt7925_lab/mt7925_lab_beacon_loss
 )
 awk -v functions="${functions[*]}" '
