@@ -2,13 +2,15 @@
 # Independent, bounded control-plane stream for a potentially fatal lab association.
 # Run over the wired SSH session and save stdout on the observer, not on Wyse.
 set -Eeuo pipefail
-[[ $EUID == 0 && $# == 3 &&
+[[ $EUID == 0 && ( $# == 3 || $# == 4 ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ &&
    $2 =~ ^[a-z0-9-]+$ &&
    $3 =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || exit 2
 tag=$1
 variant=$2
 boot=$3
+seconds=${4:-240}
+[[ $seconds =~ ^[0-9]{2,3}$ && $seconds -ge 30 && $seconds -le 300 ]] || exit 2
 [[ $(cat /proc/sys/kernel/random/boot_id) == "$boot" ]]
 guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
 [[ $(bash "$guard" "$variant" --trace-profile) == association-rxtx ]]
@@ -83,7 +85,7 @@ printf 'CRASH_STREAM_READY boot=%s time=%s\n' "$boot" "$(date +%s.%N)"
 # A separate ring prevents consuming the canonical trial trace. This stream
 # may be partial if the host locks; it is diagnostic, not acceptance evidence.
 rc=0
-timeout 240s cat "$inst/trace_pipe" || rc=$?
+timeout "${seconds}s" cat "$inst/trace_pipe" || rc=$?
 [[ $rc == 124 ]]
 printf 'CRASH_STREAM_STATS\n'
 for stats in "$inst"/per_cpu/cpu*/stats; do

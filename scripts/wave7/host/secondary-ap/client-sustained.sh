@@ -117,7 +117,13 @@ case "${2:-}" in
                 trace_window=1 ;;
             *) exit 2 ;;
         esac
-        scope_experiment=1; mode_experiment=1; timing_experiment=1; pm_experiment=1 ;;
+        scope_experiment=1; mode_experiment=1; timing_experiment=1; pm_experiment=1
+        if (( early_only )); then
+            # Independent wired crash stream records this short diagnostic.
+            # Avoid waiting for the full-duration internal trace/scan matrix.
+            trace_window=0
+            scope_experiment=0
+        fi ;;
     --deep-sleep-on) pm_experiment=1 ;;
     --deep-sleep-off) pm_experiment=1; deep_expected=0 ;;
     --runtime-pm-off) pm_experiment=1; runtime_expected=0 ;;
