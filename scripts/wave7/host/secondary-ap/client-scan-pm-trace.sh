@@ -7,7 +7,8 @@ set -Eeuo pipefail
      $2 == upstream-prefix22-postscan-txroute-trace ||
      $2 == upstream-prefix22-postscan-txroute-fw20261016 ||
      $2 == upstream-prefix22-postscan-roc-reacquire-trace ||
-     $2 == upstream-prefix22-postscan-link-park-trace ) &&
+     $2 == upstream-prefix22-postscan-link-park-trace ||
+     $2 == upstream-prefix22-force-secondary-data-trace ) &&
    $3 =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ &&
    $4 =~ ^[0-9]{2,3}$ && $4 -ge 40 && $4 -le 180 ]] || exit 2
 tag=$1 variant=$2 boot=$3 duration=$4
@@ -41,7 +42,8 @@ events=(
 if [[ $variant == upstream-prefix22-postscan-txroute-trace ||
       $variant == upstream-prefix22-postscan-txroute-fw20261016 ||
       $variant == upstream-prefix22-postscan-roc-reacquire-trace ||
-      $variant == upstream-prefix22-postscan-link-park-trace ]]; then
+      $variant == upstream-prefix22-postscan-link-park-trace ||
+      $variant == upstream-prefix22-force-secondary-data-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_route)
 fi
 if [[ $variant == upstream-prefix22-postscan-link-park-trace ]]; then

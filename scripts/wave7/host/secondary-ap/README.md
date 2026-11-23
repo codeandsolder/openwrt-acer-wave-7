@@ -754,3 +754,42 @@ Host TXD and firmware TXS tracepoints remain. This experiment is
 NOT production-qualified, especially for 2.4GHz-primary (independent
 AP Q6 crashes on secondary activation). Test only 5GHz-primary
 behind the independent WDAT hardware watchdog plus 15min rollback.
+
+### Experimental secondary unicast Ethernet TX selection (WCID lifetime discriminator)
+
+The stable MT7925 MLO association has two valid+active links but routine
+application data selects primary WCID2/link1/5GHz. Following broad scans,
+firmware transiently reports physically sending that primary WCID on
+secondary RF band1, with 11 consecutive missing frames. A separate control
+with only the primary link active (valid0x3, active0x2) had normal background
+scans and 440/440 delivery, but did not demonstrate a usable secondary path.
+
+mt7925-client-prefix22-wcid-parent.patch fixes source correctness:
+four callers in mt7925/mac.c and mt76_connac_mac.c had directly treated
+each WCID as the start of ieee80211_sta.drv_priv, which is only valid for
+the embedded primary WCID, NOT separately allocated secondary link WCIDs.
+The existing shared wcid_to_sta() helper follows def_wcid to the
+embedded primary and is now used instead. This fix is independent of any
+particular MLO link-selection policy and merits separate upstream review.
+
+mt7925-client-prefix22-force-secondary-data.patch is an ISOLATED LAB
+discriminator atop the exact postscan TXD/TXS trace source, further atop
+the WCID parent correction. It selects an existing associated secondary
+WCID/link0 for ordinary unicast hw-encapsulated Ethernet packets only
+when both links are already active+valid, primary link is 1, and the
+secondary WCID is registered. It excludes EAPOL by both skb protocol and
+Ethernet ethertype, 802.11 native/management and group-addressed traffic.
+It leaves both mac80211 links active, does not rewrite firmware STA/BSS
+membership or ROC, and retains full TXD/TXS trace to verify the actual
+chosen WCID. This is not production-quality link selection: purpose is
+to determine whether link0 can carry user data, confirmed by packet
+reception and AP per-link counters.
+
+Source: /home/jan/build/wave7/mt7925-single-channel-split/exact-upstream-prefix22-force-secondary-data-trace/
+Kbuild MO: sibling directory with -build suffix.
+Full eight-module managed Clang/sccache+BTF PASS. Five PCIe exact driver
+SHA/srcversion/Build ID pins in guarded variant
+upstream-prefix22-force-secondary-data-trace.
+Use WDAT+15m reboot, primary 5GHz only, offhost traces, Asus wired
+capture and independent read-only AP station counters.
+A positive result is not Wave7 wireless approval.

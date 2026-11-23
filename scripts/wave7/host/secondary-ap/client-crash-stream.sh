@@ -57,6 +57,7 @@ if [[ $variant == upstream-prefix22-authorize-primary-mld-trace ||
       $variant == upstream-prefix22-postscan-txroute-fw20261016 ||
       $variant == upstream-prefix22-postscan-roc-reacquire-trace ||
       $variant == upstream-prefix22-postscan-link-park-trace ||
+      $variant == upstream-prefix22-force-secondary-data-trace ||
       $variant == upstream-prefix22-authorize-single-link-trace ||
       $variant == upstream-prefix22-authorize-delayed-links-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
@@ -70,6 +71,7 @@ if [[ $variant == upstream-prefix22-lifecycle-trace ||
       $variant == upstream-prefix22-postscan-txroute-fw20261016 ||
       $variant == upstream-prefix22-postscan-roc-reacquire-trace ||
       $variant == upstream-prefix22-postscan-link-park-trace ||
+      $variant == upstream-prefix22-force-secondary-data-trace ||
       $variant == upstream-prefix22-authorize-single-link-trace ||
       $variant == upstream-prefix22-authorize-delayed-links-trace ]]; then
     # BTF field fetching avoids hard-coded structures/offsets. Register only
