@@ -183,7 +183,7 @@ fi
 # Preserve the existing association evidence and capture where manual
 # nl80211 requests fail before reaching the HW scan callback.
 case "${2:-}" in
-    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace|--upstream-prefix22-authorize-links-trace|--upstream-prefix22-authorize-bss-band-trace|--upstream-prefix22-authorize-primary-mld-trace|--upstream-prefix22-postscan-txroute-trace|--upstream-prefix22-postscan-txroute-fw20261016|--upstream-prefix22-postscan-roc-reacquire-trace|--upstream-prefix22-authorize-single-link-trace|--upstream-prefix22-authorize-delayed-links-trace)
+    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace|--upstream-prefix22-authorize-links-trace|--upstream-prefix22-authorize-bss-band-trace|--upstream-prefix22-authorize-primary-mld-trace|--upstream-prefix22-postscan-txroute-trace|--upstream-prefix22-postscan-txroute-fw20261016|--upstream-prefix22-postscan-roc-reacquire-trace|--upstream-prefix22-postscan-link-park-trace|--upstream-prefix22-authorize-single-link-trace|--upstream-prefix22-authorize-delayed-links-trace)
         events+=(cfg80211/rdev_scan cfg80211/rdev_return_int mac80211/drv_return_int)
         [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/cfg80211 ]]
         # Only scalar return values: no payload, pointers or keys.

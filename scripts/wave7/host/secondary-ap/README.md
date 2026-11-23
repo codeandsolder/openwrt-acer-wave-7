@@ -729,3 +729,28 @@ handling, but only apply a minimal form if the EID and its
 link-state TLV are physically observed and event parsing is
 verified; do not blindly change active links or assume every
 MCU RX is an unsolicited event.
+
+### Experiment: scan-aware primary-only active-link parking
+
+5GHz-primary MLD with two valid MLO links but only its primary link
+active (mask 0x2) completed a full 61-channel connected background
+scan DURING the packet hold, without losing any of 440 probes to
+either AP or Asus. This differs from the repeatable eleven losses
+with active 0x3. Evidence and raw source references:
+  /home/jan/firmware/wave7/analysis/20261123-single-active-postscan/
+
+The isolated source-only experiment
+mt7925-client-prefix22-postscan-link-park.patch applies ON TOP of
+exact-upstream-prefix22-postscan-txroute-trace. At hardware-scan
+entry under mac80211 wiphy lock, it synchronously parks an associated
+multi-active MLD station on its existing primary link, BEFORE taking
+mt76.mutex. It retains both valid MLO links and uses mac80211's
+normal active-link transition, including keys and peer lifecycle.
+At scan completion or cancellation an async request restores the
+previous active set after confirming the link/association state;
+scan-request failure synchronously restores it. The tracepoint
+mt7925_lab_scan_link_park records phases, masks and results.
+Host TXD and firmware TXS tracepoints remain. This experiment is
+NOT production-qualified, especially for 2.4GHz-primary (independent
+AP Q6 crashes on secondary activation). Test only 5GHz-primary
+behind the independent WDAT hardware watchdog plus 15min rollback.
