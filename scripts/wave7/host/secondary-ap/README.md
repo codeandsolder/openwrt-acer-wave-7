@@ -637,3 +637,15 @@ Wyse header tree; the five loaded PCIe files are individually pinned
 by SHA/srcversion/Build ID under variant
 upstream-prefix22-postscan-txroute-trace. No global module installs,
 no persistent profile changes, exact watchdog/rollback.
+
+### AP station counter chronology
+
+For a read-only AP-side RX-vs-bridge discriminator, use the
+separate observe-ap-link-stats.sh TAG APPROVED_AP_BOOT SECONDS
+on Asus. It uses one short-lived wired root SSH stream to the
+existing /usr/sbin/iw on the AP, at most 5 station-dump samples
+per second, and records router /proc/uptime for correlation with
+the independent passive AP observer. It modifies nothing on the AP
+and creates no persistent AP-side files or services. Raw output
+and checksums are kept off-router in TAG-ap-link-stats. Inspect
+whether per-link RX counters are supported before relying on them.
