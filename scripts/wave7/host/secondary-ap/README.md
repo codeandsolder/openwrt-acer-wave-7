@@ -609,3 +609,31 @@ encapsulation and skb length. It does not include packet payload,
 addresses or ICMP sequence; TX status is not guaranteed for every
 packet, so correlate aggregates/timing rather than assert a 1:1
 packet correspondence.
+
+### Postscan MLO TXD intent versus firmware band (source diagnostic)
+
+The first matched A/B TX-status evidence is at
+/home/jan/firmware/wave7/analysis/20261123-postscan-txband/.
+Without a fixed BSSID, two post-association scans each cause an
+11-frame shared ICMP blackout; 5 of 88 sampled peer TXS in the hold
+show firmware hardware band1 while 83 show band0. With a fixed
+5GHz BSSID, no post-association scans, 440/440 packet reception
+on both paths and all 88 matched hold TX statuses use band0.
+Both tests negotiate and activate both MLO links. All 106 and 108
+matched statuses respectively have ack_error0. Association-time
+band1 is normal enough to require this controlled distinction.
+
+Apply mt7925-client-prefix22-postscan-txroute-trace.patch ONLY on
+top of exact pinned exact-upstream-prefix22-authorize-primary-mld-trace
+source. It adds one pure TX descriptor tracepoint, not new TX routing
+policy: for station per-peer skbs it records WCID, link validity,
+configured per-link band, final TXD1 TGID, MLD flag, PID, encapsulation
+and length, without payload or addresses. Host TXD intent and
+firmware TXS physical band can thus be compared in one anchored trace,
+testing whether the transient band1 originates in host descriptor
+selection or autonomous firmware/link handling. Full eight-module
+closure is built using the existing managed clang/sccache plus exact
+Wyse header tree; the five loaded PCIe files are individually pinned
+by SHA/srcversion/Build ID under variant
+upstream-prefix22-postscan-txroute-trace. No global module installs,
+no persistent profile changes, exact watchdog/rollback.
