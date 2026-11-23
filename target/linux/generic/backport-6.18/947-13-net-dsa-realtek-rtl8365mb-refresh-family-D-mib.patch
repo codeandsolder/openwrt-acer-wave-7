@@ -1,0 +1,129 @@
+From: Wave7 development <wave7-test@localhost>
+Subject: [PATCH] net: dsa: realtek: refresh repeated RTL8367D MIB row reads
+
+The exact Acer stock driver selects an alternate SRAM row and waits
+for completion before reselecting an already selected MIB address.
+It also confirms address readback. Preserve this behavior for the
+observed RTL8367D revision, with bounded retries and an alternate
+row within the same port. Keep the existing behavior for other
+chips. This is a counter-integrity fix, not a SerDes recovery claim.
+
+Signed-off-by: Wave7 development <wave7-test@localhost>
+---
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -815,6 +815,7 @@
+  * @chip_ver: chip silicon revision
+  * @family: chip family
+  * @sds_pulse_recovery: stock-derived internal pulse supported on this chip
++ * @mib_refresh_same_address: force an address transition for repeated MIB reads
+  * @extints: available external interfaces
+  * @jam_table: chip-specific initialization jam table
+  * @jam_size: size of the chip's jam table
+@@ -829,6 +830,7 @@
+ 	u32 chip_ver;
+ 	enum rtl8365mb_family family;
+ 	bool sds_pulse_recovery;
++	bool mib_refresh_same_address;
+ 	const struct rtl8365mb_extint extints[RTL8365MB_MAX_NUM_EXTINTS];
+ 	const struct rtl8365mb_jam_tbl_entry *jam_table;
+ 	size_t jam_size;
+@@ -910,6 +912,7 @@
+ 		.chip_ver = 0x0020,
+ 		.family = RTL8365MB_FAMILY_D,
+ 		.sds_pulse_recovery = true,
++		.mib_refresh_same_address = true,
+ 		.extints = {
+ 			{ 6, 0, PHY_INTF(SGMII) | PHY_INTF(HSGMII) },
+ 			{ 7, 1, PHY_INTF(MII) | PHY_INTF(TMII) |
+@@ -3177,33 +3180,69 @@
+ 				  mask, 0);
+ }
+ 
++static int rtl8365mb_mib_select(struct realtek_priv *priv, u32 addr, bool verify)
++{
++	u32 val;
++	int ret, attempt;
++
++	/* A rejected address write must not expose the previous SRAM row. */
++	for (attempt = 0; ; attempt++) {
++		ret = regmap_write(priv->map, RTL8365MB_MIB_ADDRESS_REG, addr);
++		if (ret)
++			return ret;
++		if (!verify)
++			break;
++		ret = regmap_read(priv->map, RTL8365MB_MIB_ADDRESS_REG, &val);
++		if (ret)
++			return ret;
++		if (val == addr)
++			break;
++		if (attempt == 2)
++			return -EIO;
++	}
++
++	ret = regmap_read_poll_timeout(priv->map, RTL8365MB_MIB_CTRL0_REG, val,
++				       !(val & RTL8365MB_MIB_CTRL0_BUSY_MASK),
++				       10, 100);
++	if (ret)
++		return ret;
++
++	return val & RTL8365MB_MIB_CTRL0_RESET_MASK ? -EIO : 0;
++}
++
+ static int rtl8365mb_mib_counter_read(struct realtek_priv *priv, int port,
+ 				      u32 offset, u32 length, u64 *mibvalue)
+ {
++	struct rtl8365mb *mb = priv->chip_data;
++	bool verify = mb->chip_info->mib_refresh_same_address;
++	u32 addr = RTL8365MB_MIB_ADDRESS(port, offset);
+ 	u64 tmpvalue = 0;
+ 	u32 val;
+ 	int ret;
+-	int i;
+-
+-	/* The MIB address is an SRAM address. We request a particular address
+-	 * and then poll the control register before reading the value from some
+-	 * counter registers.
+-	 */
+-	ret = regmap_write(priv->map, RTL8365MB_MIB_ADDRESS_REG,
+-			   RTL8365MB_MIB_ADDRESS(port, offset));
+-	if (ret)
+-		return ret;
+-
+-	/* Poll for completion */
+-	ret = regmap_read_poll_timeout(priv->map, RTL8365MB_MIB_CTRL0_REG, val,
+-				       !(val & RTL8365MB_MIB_CTRL0_BUSY_MASK),
+-				       10, 100);
+-	if (ret)
+-		return ret;
+-
+-	/* Presumably this indicates a MIB counter read failure */
+-	if (val & RTL8365MB_MIB_CTRL0_RESET_MASK)
+-		return -EIO;
++	u32 i;
++
++	/* RTL8367D stock code changes the selected SRAM row before requesting
++	 * it again. Writing the same address may leave the old latch intact.
++	 * Use another row within the same port, including for its last row.
++	 * The caller holds mib_lock across both transactions.
++	 */
++	if (verify) {
++		ret = regmap_read(priv->map, RTL8365MB_MIB_ADDRESS_REG, &val);
++		if (ret)
++			return ret;
++		if (val == addr) {
++			u32 other = offset >= RTL8365MB_MIB_ADDRESS_PORT_OFFSET - 4 ?
++				    addr - 1 : addr + 1;
++
++			ret = rtl8365mb_mib_select(priv, other, true);
++			if (ret)
++				return ret;
++		}
++	}
++
++	ret = rtl8365mb_mib_select(priv, addr, verify);
++	if (ret)
++		return ret;
+ 
+ 	/* There are four MIB counter registers each holding a 16 bit word of a
+ 	 * MIB counter. Depending on the offset, we should read from the upper
