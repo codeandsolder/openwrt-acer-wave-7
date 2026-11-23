@@ -211,8 +211,8 @@ early_ipv4_probe() {
             printf 'probe_started_epoch=%s target=%s source=%s\n' \
                 "$(date +%s.%N)" "$target" "$ipaddr"
             rc=0
-            LC_ALL=C rootcmd arping -f -I "$iface" -s "$ipaddr" -i 0.12 \
-                -c 10 -w 2 "$target" || rc=$?
+            LC_ALL=C rootcmd arping -f -I "$iface" -s "$ipaddr" \
+                -c 2 -w 2 "$target" || rc=$?
             printf 'probe_finished_epoch=%s exit=%s\n' "$(date +%s.%N)" "$rc"
         ) > "$out/early-$label-arp.txt" 2>&1 &
         children+=("$!")
@@ -456,8 +456,26 @@ if (( early_only )); then
         ip -4 route get 192.168.76.1 from "$v4" oif "$iface" || :
         ip -s neigh show dev "$iface" || :
         iw dev "$iface" link || :
+        path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+        for mask in active_links valid_links dormant_links; do
+            printf 'mac80211_%s=' "$mask"
+            rootcmd cat "$path/$mask" || :
+        done
     } > "$out/early-only-snapshot.txt" 2>&1
-    sleep 3
+    # Observe beyond the previously measured ~4.7s Q6 fatal window,
+    # including both post-association and post-DHCP phases.
+    # Do not count this abbreviated run as a production acceptance PASS.
+    for target in 192.168.76.1 192.168.76.2; do
+        (
+            printf 'probe_started_epoch=%s target=%s\n' "$(date +%s.%N)" "$target"
+            LC_ALL=C ping -4 -n -D -O -I "$iface" -I "$v4" \
+                -c 200 -i .05 -W 1 "$target"
+            printf 'probe_finished_epoch=%s\n' "$(date +%s.%N)"
+        ) > "$out/short-hold-${target##*.}.txt" 2>&1 &
+        pings+=("$!")
+    done
+    for pid in "${pings[@]}"; do wait "$pid" || :; done
+    pings=()
     echo EARLY_IPV4_ONLY_DIAGNOSTIC_COMPLETE
     exit 0
 fi
