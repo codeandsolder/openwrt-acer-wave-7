@@ -6,11 +6,13 @@ set -Eeuo pipefail
    $(id -un) == jan ]] || exit 2
 tag=$1
 seconds=$2
-iface=enp4s0f4u2u4
+interfaces=(enp4s0f4u2u4 enp4s0f4u2u2u4)
 base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8/client-validation
 out="$base/$tag-asus-wire"
+# The lab NICs share 192.168.76/24. One alone misses ingress traffic.
 [[ ! -e $out &&
-   $(ip -4 -o addr show "$iface") == *"192.168.76.2/24"* &&
+   $(ip -4 -o addr show "${interfaces[0]}") == *"192.168.76.2/24"* &&
+   $(ip -4 -o addr show "${interfaces[1]}") == *"192.168.76.250/24"* &&
    $(systemctl is-active wave7-lab-upstream-guard8.service) == active ]]
 mkdir -m 700 "$out"
 capture_pid=''
@@ -39,13 +41,15 @@ trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
-printf 'capture_start_epoch=%s\niface=%s\nfilter=%s\n' \
-    "$(date +%s.%N)" "$iface" \
+printf 'capture_start_epoch=%s\ninterface0=%s\ninterface1=%s\nfilter=%s\n' \
+    "$(date +%s.%N)" "${interfaces[0]}" "${interfaces[1]}" \
     'icmp and host 192.168.76.145 and host 192.168.76.2' \
     > "$out/metadata.txt"
-# The BPF is applied before packet bytes are copied. Snaplen includes
-# only Ethernet/IP/ICMP headers; no unrelated lab traffic or payload.
-dumpcap -q -i "$iface" \
+# Capture both physical lab interfaces with a separate BPF on each.
+# pcapng records the actual ingress/egress interface ID per frame.
+dumpcap -q -i "${interfaces[0]}" \
+    -f 'icmp and host 192.168.76.145 and host 192.168.76.2' \
+    -i "${interfaces[1]}" \
     -f 'icmp and host 192.168.76.145 and host 192.168.76.2' \
     -s 96 -a "duration:$seconds" -w "$out/icmp.pcapng" \
     > "$out/dumpcap-stdout.txt" 2> "$out/dumpcap-stderr.txt" &
@@ -71,5 +75,6 @@ printf 'capture_end_epoch=%s\n' "$(date +%s.%N)" >> "$out/metadata.txt"
 tshark -n -r "$out/icmp.pcapng" -T fields -E separator=, \
     -e frame.time_epoch -e ip.src -e ip.dst -e icmp.type \
     -e icmp.ident -e icmp.seq -e frame.len \
+    -e frame.interface_id -e frame.interface_name \
     > "$out/packets.csv" 2> "$out/tshark-stderr.txt"
 printf 'PACKETS=%s\n' "$(wc -l < "$out/packets.csv")"

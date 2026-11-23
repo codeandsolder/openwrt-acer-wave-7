@@ -136,9 +136,9 @@ server. The existing vendor fallback collector remains observational.
 - client-scan-pm-trace.sh: scoped Wyse mac80211/MT7925 hardware scan
   requests, scan completions, power-state worker calls and queue events,
   with bounded anchored trace snapshots and exact guarded variant checks.
-- observe-asus-icmp.sh: Asus user-owned bounded dumpcap on its existing
-  enp4s0f4u2u4 interface, with off-AP header-only capture and exported
-  packet epoch/source/destination/ICMP request-reply identity.
+- observe-asus-icmp.sh: Asus user-owned bounded dumpcap on BOTH lab
+  interfaces enp4s0f4u2u4 (.2) and enp4s0f4u2u2u4 (.250), retaining
+  interface ID, frame time and ICMP identity; IPs share one subnet.
 
 All scripts ShellCheck clean. Image packager verifies allowed root
 changes, special /dev/console inode, roundtrip extraction, 46 firmware
@@ -569,3 +569,14 @@ and hold probes use separate ping processes with independently chosen
 IDs. Use the client-side echo-reply log to identify missing hold
 sequences. The original strict no-loss gate remains unchanged. The
 bounded probe and trace are diagnostics, NOT production acceptance.
+
+
+**Asus ingress scope correction, 17:17 CET.** A single-interface
+capture saw ALL 440 outgoing echo replies but only 371 incoming
+requests during the 5GHz-BSSID-pinned zero-loss control, despite zero
+reported capture drops. Asus has TWO active NICs in 192.168.76/24, so
+the missing requests may have arrived via the other interface. One-
+interface request absence is not enough to attribute a loss to the
+client TX path. This tool now captures both with interface IDs. The
+5GHz-BSSID-pinned result itself was 440/440 to each destination with
+valid/active links0x3, no second connected scan, Q6 healthy.
