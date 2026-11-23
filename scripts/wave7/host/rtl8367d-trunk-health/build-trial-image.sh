@@ -3,7 +3,7 @@
 # one kernel module and identity metadata only. No router access.
 set -euo pipefail
 umask 077
-[[ $# == 5 ]] || { echo 'usage: build-trial-image.sh trunk|native PARENT MODULE MODULE_SHA OUTPUT_DIR' >&2; exit 2; }
+[[ $# == 5 ]] || { echo 'usage: build-trial-image.sh trunk|native|mib-refresh PARENT MODULE MODULE_SHA OUTPUT_DIR' >&2; exit 2; }
 variant=$1; shift
 parent=$(realpath -e "$1")
 module=$(realpath -e "$2")
@@ -16,6 +16,7 @@ toolchain="$prod/staging_dir/toolchain-aarch64_cortex-a53_gcc-14.4.0_musl/bin"
 parent_sha=3a84923c5c18b1f1354985de975a775e3fbea464fc69dbf8e086267f0b917172
 parent_rev=r0+38346-0fbc2cc77b-ap-dhcp-guard8
 kernel_sha=9258ee2d5c2b9d154552d000fc8deb647bc85a02efc9c1086700736473757be4
+old_module_sha=ef2fd6186279e997be4368e358f6bda9c2f4222150c9704ad6c24c69a1f99ed7
 case "$variant" in
   trunk)
     patch_commit=895ed9016db597e47be58e4373b986b17bb41fe3
@@ -25,10 +26,18 @@ case "$variant" in
     patch_commit=0e69b8931cb9639367b293f825842703c0f39d29
     image_kind=native-recovery
     ;;
+  mib-refresh)
+    patch_commit=14a0f757e7
+    image_kind=mib-refresh
+    parent_sha=ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516
+    parent_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
+    kernel_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
+    old_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+    ;;
   *) echo 'unknown trunk trial variant' >&2; exit 2 ;;
 esac
+patch_commit=$(git -C "$repo" rev-parse "$patch_commit^{commit}")
 new_rev="r0+38346-${patch_commit:0:10}-ap-dhcp-guard8"
-old_module_sha=ef2fd6186279e997be4368e358f6bda9c2f4222150c9704ad6c24c69a1f99ed7
 digest() { sha256sum "$1" | cut -d' ' -f1; }
 fail() { echo "TRUNK_IMAGE_FAIL $*" >&2; exit 1; }
 [[ ! -e $out && -d $(dirname "$out") ]] || fail 'output must not exist'
@@ -68,7 +77,7 @@ imports() { readelf -Ws "$1" | awk '$7=="UND" && $8!="" {print $8}' | LC_ALL=C s
 diff -u <(imports "$root/$rel") <(imports "$work/candidate.ko") || fail 'undefined symbol delta'
 readelf -h "$work/candidate.ko" | rg -q 'Machine:.*AArch64'
 strings "$work/candidate.ko" | rg 'SerDes CPU port %d corrupt-only ingress:' >/dev/null
-if [[ $variant == native ]]; then
+if [[ $variant != trunk ]]; then
   strings "$work/candidate.ko" | rg -F 'trying stock-derived recovery pulse' >/dev/null
   strings "$work/candidate.ko" | rg -F 'SerDes recovery pulse completed' >/dev/null
 fi
@@ -84,6 +93,9 @@ sed -i -e "s/^source_revision=.*/source_revision=$parent_rev/" \
        -e "s/^revision=.*/revision=$new_rev/" \
        -e "s/^builder_commit=.*/builder_commit=$builder/" \
        -e "s/^base_image_sha256=.*/base_image_sha256=$parent_sha/" "$m"
+# The 0498 predecessor already carries switch-module provenance. Replace
+# only those two keys and retain all independently qualified PCS/PHY fields.
+sed -i '/^trial_kernel_patch_commit=/d; /^trial_module_sha256=/d' "$m"
 printf 'trial_kernel_patch_commit=%s\ntrial_module_sha256=%s\n' "$patch_commit" "$stripped_sha" >> "$m"
 chmod --reference="$work/orig/etc/wave7-role-profile" "$m"
 sh -c '. "$1"; wave7_ap_check_image "$2"' sh "$root/lib/wave7/overlay-reset.sh" "$root"
