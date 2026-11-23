@@ -48,6 +48,48 @@ while IFS= read -r seq; do
 done
 """
 
+# Passive recovery-safe observer: never asks mac80211/ath12k for peer
+# statistics while its datapath is being torn down after a Q6 crash.
+# Remoteproc and bridge counters are independent of station lookup.
+REMOTE_PASSIVE = r"""
+set -eu
+printf 'READY %s %s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$(cat /etc/openwrt_version)"
+while IFS= read -r seq; do
+    case "$seq" in *[!0-9]*|'') exit 2;; esac
+    printf 'BEGIN %s ' "$seq"
+    cat /proc/uptime
+    for pair in \
+        'q6_state:/sys/class/remoteproc/remoteproc0/state' \
+        'bridge_rx:/sys/class/net/br-lan/statistics/rx_packets' \
+        'bridge_tx:/sys/class/net/br-lan/statistics/tx_packets'; do
+        name=${pair%%:*}
+        path=${pair#*:}
+        printf 'FIELD %s\n' "$name"
+        if [ -r "$path" ]; then
+            cat "$path"
+        else
+            echo UNAVAILABLE
+        fi
+    done
+    printf 'END %s\n' "$seq"
+done
+"""
+
+def decode_passive(lines):
+    fields = {}
+    for i, line in enumerate(lines):
+        if line.startswith('FIELD '):
+            if i + 1 >= len(lines) or lines[i + 1].startswith('FIELD '):
+                raise ValueError('missing passive field')
+            fields[line[6:]] = lines[i + 1]
+    if set(fields) != {'q6_state', 'bridge_rx', 'bridge_tx'}:
+        raise ValueError('incomplete passive sample')
+    if fields['bridge_rx'] != 'UNAVAILABLE':
+        int(fields['bridge_rx'])
+    if fields['bridge_tx'] != 'UNAVAILABLE':
+        int(fields['bridge_tx'])
+    return {'mode': 'passive', **fields}
+
 def decode(lines):
     stats={}
     debug={}
@@ -76,9 +118,24 @@ def selftest():
     assert data["debug"]["flags"]==["AUTH","ASSOC"]
     assert data["debug"]["num_ps_buf_frames"]==["AC0: 0"]
     assert decode(["\trx packets: 10"])["incomplete"]
+    assert decode_passive(['FIELD q6_state','running',
+                           'FIELD bridge_rx','123',
+                           'FIELD bridge_tx','456']) == {
+        'mode': 'passive', 'q6_state': 'running',
+        'bridge_rx': '123', 'bridge_tx': '456'}
+    for bad in (['FIELD q6_state','running'], ['FIELD bridge_rx','garbage',
+                 'FIELD bridge_tx','3','FIELD q6_state','running']):
+        try:
+            decode_passive(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('accepted malformed passive sample')
     print("AP_CLIENT_OBSERVER_SELFTEST_PASS")
 
-def observe(tag,duration,boot):
+def observe(tag,duration,boot,mode):
+    if mode not in ('station', 'passive'):
+        raise ValueError('invalid observer mode')
     if os.getuid()==0 or not re.fullmatch(r"0498-\d{8}-\d{6}",tag) or not 10<=duration<=240 or not BOOT_RE.fullmatch(boot):
         raise ValueError("invalid user, tag or duration")
     if Path("/sys/class/net/enp4s0f4u2u2u4/address").read_text().strip()!="00:e0:4c:68:01:45":
@@ -97,7 +154,7 @@ def observe(tag,duration,boot):
          "-o","BindInterface=enp4s0f4u2u2u4","-o","BindAddress=192.168.76.250",
          "-o","BatchMode=yes","-o","IdentitiesOnly=yes","-o","StrictHostKeyChecking=yes",
          "-o",f"UserKnownHostsFile={BASE/'known_hosts'}","-o","ConnectTimeout=4",
-         "-o","ServerAliveInterval=4","-o","ServerAliveCountMax=2","root@192.168.76.1",REMOTE]
+         "-o","ServerAliveInterval=4","-o","ServerAliveCountMax=2","root@192.168.76.1",REMOTE if mode=='station' else REMOTE_PASSIVE]
     # Binary reads avoid buffered TextIO interfering with readiness selection.
     raw=open(out/"samples.jsonl","x",buffering=1)
     stderr=open(out/"ssh-stderr.txt","xb")
@@ -152,15 +209,18 @@ def observe(tag,duration,boot):
                     raise ValueError("oversized sample")
             t1=time.time_ns()
             raw.write(json.dumps({"seq":count,"before_ns":t0,"after_ns":t1,
-                "router_uptime_s":head[2],"data":decode(lines)},separators=(",",":"))+"\n")
+                "router_uptime_s":head[2],
+                "data":decode(lines) if mode=='station' else decode_passive(lines)},
+                separators=(",",":"))+"\n")
             count+=1
-        (out/"status.txt").write_text(f"complete samples={count}\n")
+        (out/"status.txt").write_text(
+            f"complete mode={mode} samples={count}\n")
     except Exception as exc:
         # Retain the exact outcome beside the sealed complete samples.
         # A failed final query cannot invalidate prior bounded observations,
         # but must never be represented as a completed observer run.
         (out/"status.txt").write_text(
-            f"partial samples={count} error={type(exc).__name__}: {exc}\n")
+            f"partial mode={mode} samples={count} error={type(exc).__name__}: {exc}\n")
         raise
     finally:
         sel.close()
@@ -191,10 +251,12 @@ if __name__=="__main__":
     parser.add_argument("--boot",help="explicit UUID of the qualified 0498 router boot")
     parser.add_argument("--seconds",type=int,default=220)
     parser.add_argument("--selftest",action="store_true")
+    parser.add_argument("--mode",choices=('station','passive'),default='station',
+                        help='passive avoids Wi-Fi peer statistics during firmware SSR')
     args=parser.parse_args()
     if args.selftest:
         selftest()
     else:
         if args.tag is None or args.boot is None:
             parser.error("supply tag and explicit expected router --boot")
-        observe(args.tag,args.seconds,args.boot)
+        observe(args.tag,args.seconds,args.boot,args.mode)
