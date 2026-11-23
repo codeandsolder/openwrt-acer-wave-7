@@ -34,13 +34,13 @@ events=(
 )
 awk -v functions="${functions[*]}" '
   BEGIN {
-    n=split(functions, f, " ")
-    for (i=1; i<=n; i++) need[f[i]]=1
+    n=split(functions, names, " ")
+    for (i=1; i<=n; i++) need[names[i]]=1
   }
   ($1 in need) {seen[$1]=1}
   END {
-    for (f in need) if (!(f in seen)) {
-      print "SCAN_PM_FUNCTION_MISSING " f > "/dev/stderr"
+    for (name in need) if (!(name in seen)) {
+      print "SCAN_PM_FUNCTION_MISSING " name > "/dev/stderr"
       fail=1
     }
     exit fail
