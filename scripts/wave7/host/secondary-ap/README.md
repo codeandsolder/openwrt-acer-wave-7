@@ -793,3 +793,38 @@ upstream-prefix22-force-secondary-data-trace.
 Use WDAT+15m reboot, primary 5GHz only, offhost traces, Asus wired
 capture and independent read-only AP station counters.
 A positive result is not Wave7 wireless approval.
+
+### Actual TXQ enqueue route, not the direct .tx callback
+
+Lab trial 0498-20261123-225730 with old force-secondary-data-trace
+established that mac80211 normal 802.3 traffic never traversed
+mt792x_tx: 993/993 data TX descriptors remained WCID2/link1/TGID0,
+none used WCID3; despite two-link active/valid and WPA/DHCP success.
+Original postscan blackout reproduced: 429/440 Asus, 430/440 AP,
+11 consecutive Asus misses 0.984s after the last scan. Independent
+Asus wired capture matched 429 requests/replies, while firmware TXS
+reported band1 for the primary WCID during the missing packets.
+This is a negative callback-placement experiment, not a negative
+secondary-link-data-path test. Machine-readable SHA report:
+  /home/jan/firmware/wave7/analysis/20261123-secondary-tx-callback/
+
+The actual mac80211 data path is tx.c::mt76_txq_send_burst(), using
+mtxq->wcid before calling __mt76_tx_queue_skb(). The corrected
+mt7925-client-prefix22-secondary-txq-route.patch adds an optional
+per-packet driver select_txq_wcid callback, called under an RCU
+read section immediately before rate/descriptor preparation.
+It submits the selected WCID consistently to __mt76_tx_queue_skb,
+with packet status, key and accounting using the same WCID.
+Only the guarded MT7925 PCIe lab driver registers this callback;
+other mt76 drivers retain the old path. On this diagnostic,
+eligible unicast hardware-encapsulated Ethernet can select an
+already-active secondary link0/WCID3; EAPOL, management, group
+frames and disconnected/PS links are not redirected.
+Existing primary/secondary wcid_to_sta parent correction is retained.
+
+Scoped source:
+  /home/jan/build/wave7/mt7925-single-channel-split/exact-upstream-prefix22-secondary-txq-route-trace/
+Scoped Kbuild MO: same prefix with -build suffix. Eight-module
+managed Clang/sccache+BTF build PASS, five exact PCIe module pins
+in upstream-prefix22-secondary-txq-route-trace.
+This is still only a diagnostic forced-link policy.
