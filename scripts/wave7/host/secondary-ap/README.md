@@ -846,3 +846,28 @@ whether replies arrive via 5GHz primary or 2.4GHz secondary during
 forced WCID3 TX, without assigning physical over-air TX from TXS alone.
 No firmware, module, station or AP behavior changes. A bounded
 single hardware run must archive client/scanpm SHA before stock restore.
+
+### Scan/EID41 phase match across primary and secondary TXQ routes
+
+Hash-qualified offline correlation report:
+  /home/jan/firmware/wave7/analysis/20261123-secondary-txq-route/scan-absence-eid41-timing.json
+
+It compares three loss windows in two real guarded trials:
+  primary WCID2 TAG 0498-20261123-225730 one gap,
+  secondary WCID3 TAG 0498-20261123-231910 two gaps.
+Every loss is eleven consecutive missing ICMP requests, starting
++0.949 to +0.990s after scan completion. Firmware unsolicited EID41
+BSS_IS_ABSENCE messages occur in near-identical pairs at
++0.932..0.937 / +0.973..0.979 seconds and
++1.499..1.505 / +1.545..1.552 seconds, bracketing loss and recovery.
+Firmware-sampled TXS radio band1 occurs inside each missing group,
+even though host descriptor uses band0 on primary or band1 on secondary.
+The source timing is anchored via 20+ monotonic-to-wall-clock markers
+per trial, with spread <0.34ms. These tests only emitted MCU RX
+headers without BSS/absence/quota, so cannot establish cause.
+An earlier MLD-wide host quota correction failed, so do not repeat it.
+
+The next *read-only* RX trace variant includes existing
+mt7925_lab_absence as well as rxdesc and rx_frame to collect exactly
+that missing BSS/absence/free-quota information. Only a future
+guarded hardware trial can distinguish causality.

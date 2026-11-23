@@ -54,6 +54,10 @@ if [[ $variant == upstream-prefix22-secondary-txq-route-trace ]]; then
     # firmware/MLD selection that delivers replies only on the primary.
     events+=(mt7925_lab/mt7925_lab_rxdesc)
     events+=(mt7925_lab/mt7925_lab_rx_frame)
+    # The four repeatable EID41 BSS-absence headers arrive at +0.93,
+    # +0.98, +1.50, +1.55s relative to scan completion. Record the
+    # firmware-defined BSS ID, absence state and free quota for each.
+    events+=(mt7925_lab/mt7925_lab_absence)
 fi
 if [[ $variant == upstream-prefix22-postscan-link-park-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_scan_link_park)
