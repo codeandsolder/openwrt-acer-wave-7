@@ -19,6 +19,27 @@ scan_event_state() {
     ' "$1"
 }
 
+lab_ipv4_from_ip() {
+    # Only the bounded, isolated lab prefix is eligible for probing.
+    awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {
+        split($4, octets, "/")
+        print octets[1]
+        exit
+    }'
+}
+
+if [[ $# == 1 && $1 == --selftest-early-ipv4 ]]; then
+    [[ $(printf '%s\n' \
+        '5: wlp2s0 inet 10.1.0.221/24 scope global wlp2s0' \
+        '5: wlp2s0 inet 192.168.76.145/24 scope global dynamic wlp2s0' |
+        lab_ipv4_from_ip) == 192.168.76.145 ]]
+    [[ -z $(printf '%s\n' \
+        '5: wlp2s0 inet 192.168.77.145/24 scope global dynamic wlp2s0' |
+        lab_ipv4_from_ip) ]]
+    echo EARLY_IPV4_SELFTEST_PASS
+    exit 0
+fi
+
 if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
     [[ $(scan_event_state - </dev/null) == "0 0" ]]
     [[ $(printf '%s\n' '1: wlp2s0 (phy #1): scan aborted: 2412' |
@@ -139,11 +160,88 @@ sample_pid=''
 tap_pid=''
 scope_pid=''
 trace_pid=''
+early_pid=''
+neigh_pid=''
 pings=()
+
+# Start before NetworkManager connects, so ARP and ICMP are sampled at the
+# moment the first lab IPv4 address appears, not after nmcli has waited for
+# the complete IPv6/DAD activation. This is additional evidence only:
+# the existing all-packets-delivered gate is unchanged.
+early_ipv4_probe() {
+    local ipaddr='' i target label rc pid
+    local -a children=()
+
+    printf 'watch_started_epoch=%s\n' "$(date +%s.%N)"
+    for ((i=0; i<820; i++)); do
+        ipaddr=$(ip -4 -o addr show dev "$iface" | lab_ipv4_from_ip)
+        if [[ -n $ipaddr ]]; then break; fi
+        sleep .05
+    done
+    if [[ -z $ipaddr ]]; then
+        echo EARLY_IPV4_NO_ADDRESS
+        return 0
+    fi
+
+    printf 'address_seen_epoch=%s address=%s\n' "$(date +%s.%N)" "$ipaddr"
+    # The lease can appear before NetworkManager installs its connected
+    # route. Preserve this distinction rather than calling ENETUNREACH
+    # a wireless datapath failure.
+    ip -4 route get 192.168.76.1 from "$ipaddr" oif "$iface" ||
+        echo EARLY_IPV4_ROUTE_NOT_READY
+    ip -s neigh show dev "$iface" || :
+    for label in ap asus; do
+        case $label in
+            ap) target=192.168.76.1 ;;
+            asus) target=192.168.76.2 ;;
+        esac
+        (
+            printf 'probe_started_epoch=%s target=%s source=%s\n' \
+                "$(date +%s.%N)" "$target" "$ipaddr"
+            rc=0
+            LC_ALL=C rootcmd arping -f -I "$iface" -s "$ipaddr" -i .12 \
+                -c 10 -w 2 "$target" || rc=$?
+            printf 'probe_finished_epoch=%s exit=%s\n' "$(date +%s.%N)" "$rc"
+        ) > "$out/early-$label-arp.txt" 2>&1 &
+        children+=("$!")
+        (
+            printf 'probe_started_epoch=%s target=%s source=%s\n' \
+                "$(date +%s.%N)" "$target" "$ipaddr"
+            rc=0
+            LC_ALL=C ping -4 -n -D -O -I "$iface" -I "$ipaddr" \
+                -c 32 -i .05 -W 1 "$target" || rc=$?
+            printf 'probe_finished_epoch=%s exit=%s\n' "$(date +%s.%N)" "$rc"
+        ) > "$out/early-$label-icmp.txt" 2>&1 &
+        children+=("$!")
+    done
+    for pid in "${children[@]}"; do wait "$pid" || :; done
+    printf 'window_finished_epoch=%s\n' "$(date +%s.%N)"
+    ip -s neigh show dev "$iface" || :
+}
+
 cleanup() {
     local rc=$?
     trap - EXIT
     for pid in "${pings[@]}"; do kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; done
+    if [[ -n $early_pid ]]; then
+        # In the failure path, bound the address watcher independently of
+        # NetworkManager. It has at most ~3s of finished probe work.
+        if [[ -f $out/early-probe-status.txt ]] &&
+           grep -q '^address_seen_epoch=' "$out/early-probe-status.txt"; then
+            # A detected IPv4 starts at most three seconds of probes.
+            # Wait for all packet logs before checksumming the evidence.
+            wait "$early_pid" 2>/dev/null || :
+        else
+            kill "$early_pid" 2>/dev/null || :
+            wait "$early_pid" 2>/dev/null || :
+        fi
+        early_pid=''
+    fi
+    if [[ -n $neigh_pid ]]; then
+        kill "$neigh_pid" 2>/dev/null || :
+        wait "$neigh_pid" 2>/dev/null || :
+        neigh_pid=''
+    fi
     if [[ -n $scope_pid ]]; then kill "$scope_pid" 2>/dev/null || :; wait "$scope_pid" 2>/dev/null || :; fi
     if [[ -n $sample_pid ]]; then kill "$sample_pid" 2>/dev/null || :; wait "$sample_pid" 2>/dev/null || :; fi
     if [[ -n $tap_pid ]]; then
@@ -319,7 +417,21 @@ elif [[ $association_preference == --bssid-24 ]]; then
 fi
 # Preserve pre-association evidence even if the client hard-locks.
 sync -f "$out"
+if (( timing_experiment )); then
+    # Kernel neighbour-state transitions, including ARP replies, are
+    # captured continuously without querying AP station state.
+    ip -ts monitor neigh dev "$iface" > "$out/early-neigh-events.txt" 2>&1 &
+    neigh_pid=$!
+    early_ipv4_probe > "$out/early-probe-status.txt" 2>&1 &
+    early_pid=$!
+fi
 rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/association.txt" 2>&1
+# Join the independent, bounded early sampling before changing interface or
+# scan state. Its results are diagnostic, never a substitute for strict ICMP.
+if [[ -n $early_pid ]]; then
+    wait "$early_pid" || :
+    early_pid=''
+fi
 ip -br addr show dev "$iface" > "$out/addresses-at-activation.txt"
 v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {split($4,parts,"/"); print parts[1]; exit}')
 v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
