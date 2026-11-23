@@ -323,17 +323,14 @@ cleanup() {
     ping_names=()
     ping_counts=()
     if [[ -n $early_pid ]]; then
-        # In the failure path, bound the address watcher independently of
-        # NetworkManager. Once IPv4 is seen, early probes run at most 8s.
-        if [[ -f $out/early-probe-status.txt ]] &&
-           grep -q '^address_seen_epoch=' "$out/early-probe-status.txt"; then
-            # A detected IPv4 starts at most three seconds of probes.
-            # Wait for all packet logs before checksumming the evidence.
-            wait "$early_pid" 2>/dev/null || :
-        else
-            kill "$early_pid" 2>/dev/null || :
-            wait "$early_pid" 2>/dev/null || :
-        fi
+        # This watcher owns subprocesses (ip/sleep and, after getting an
+        # address, bounded arping/ping). Signalling its shell while it
+        # waits for a child can let that child finish and append to the
+        # log AFTER the shell has been reaped. Always join the bounded
+        # watcher instead: at most 820 x .05s plus command overhead
+        # without an address, or at most 8s of probes once one appears.
+        # No log writer may outlive the immutable SHA256SUMS manifest.
+        wait "$early_pid" 2>/dev/null || :
         early_pid=''
     fi
     if [[ -n $neigh_pid ]]; then
