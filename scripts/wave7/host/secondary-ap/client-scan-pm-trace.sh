@@ -5,6 +5,7 @@ set -Eeuo pipefail
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ &&
    ( $2 == upstream-prefix22-authorize-primary-mld-trace ||
      $2 == upstream-prefix22-postscan-txroute-trace ||
+     $2 == upstream-prefix22-postscan-txroute-fw20261016 ||
      $2 == upstream-prefix22-postscan-roc-reacquire-trace ) &&
    $3 =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ &&
    $4 =~ ^[0-9]{2,3}$ && $4 -ge 40 && $4 -le 180 ]] || exit 2
@@ -36,6 +37,7 @@ events=(
     mt7925_lab/mt7925_lab_beacon_loss
 )
 if [[ $variant == upstream-prefix22-postscan-txroute-trace ||
+      $variant == upstream-prefix22-postscan-txroute-fw20261016 ||
       $variant == upstream-prefix22-postscan-roc-reacquire-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_route)
 fi

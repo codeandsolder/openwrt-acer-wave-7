@@ -54,6 +54,7 @@ for e in roc_wire mlo_roc_req mlo_roc_result roc_geometry roc_abort roc_band \
 done
 if [[ $variant == upstream-prefix22-authorize-primary-mld-trace ||
       $variant == upstream-prefix22-postscan-txroute-trace ||
+      $variant == upstream-prefix22-postscan-txroute-fw20261016 ||
       $variant == upstream-prefix22-postscan-roc-reacquire-trace ||
       $variant == upstream-prefix22-authorize-single-link-trace ||
       $variant == upstream-prefix22-authorize-delayed-links-trace ]]; then
@@ -65,6 +66,7 @@ if [[ $variant == upstream-prefix22-lifecycle-trace ||
       $variant == upstream-prefix22-authorize-bss-band-trace ||
       $variant == upstream-prefix22-authorize-primary-mld-trace ||
       $variant == upstream-prefix22-postscan-txroute-trace ||
+      $variant == upstream-prefix22-postscan-txroute-fw20261016 ||
       $variant == upstream-prefix22-postscan-roc-reacquire-trace ||
       $variant == upstream-prefix22-authorize-single-link-trace ||
       $variant == upstream-prefix22-authorize-delayed-links-trace ]]; then

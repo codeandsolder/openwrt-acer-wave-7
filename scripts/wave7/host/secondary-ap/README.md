@@ -671,3 +671,48 @@ trace and off-host AP/Asus packet observers.
 Use variant upstream-prefix22-postscan-roc-reacquire-trace and
 early-tap profile, not installed modules. Compare to the exact
 unmodified postscan-txroute-trace reference before any upstream PR.
+
+### MT7925 October 2026 firmware-only A/B (temporarily staged)
+
+The installed MT7925 Wi-Fi firmware on Wyse (despite the October 22
+package timestamp) is **August 13** content:
+- RAM uncompressed SHA256
+  23ff53b4bb639b30481e2e06bb1688569ad1ba971b897936db539882abfbd120
+- PATCH MCU uncompressed SHA256
+  8eb46014d2a6b4124472eee7476d995008a6f40b1daffef87eb42f30d98699e1
+
+Official linux-firmware October 20 commit
+5a3f625f2e9d9f70134af2340d82af3f19ae6891 contains October 16:
+- RAM SHA256
+  329c0e27f780550789e4eba47452731b1723f69f9e67f525d0e50bf3cd2978ac
+- PATCH MCU SHA256
+  67ff85f1a39d1a100a51abd8e2a26edd2f198d7052514b6b8981948b231e5016
+
+Raw upstream file bytes, SHA256SUMS and provenance are on Acer in
+/home/jan/firmware/wave7/research/20261123-mt7925-fw/.
+The two bytes-identical files are staged in Wyse's user-owned
+/home/jan/firmware/wave7/mt7925-fw-trials/20261016-official/
+under mediatek/mt7925.
+
+The explicit guard variant
+upstream-prefix22-postscan-txroute-fw20261016 uses the SAME already
+built and pinned five PCIe kernel modules as
+upstream-prefix22-postscan-txroute-trace. It verifies the two official
+upstream firmware SHA256s, copies the firmware to root-owned
+/run/wave7-VARIANT-stack/firmware/mediatek/mt7925 (mode0644),
+and only after arming the WDAT hardware watchdog and 15-minute
+reboot timer sets the kernel firmware_class.path sysfs parameter to
+that staged directory. It then reloads the unchanged five-module
+closure and verifies October FW build IDs 20261016232915a and
+20261016233029. Other variants continue requiring August IDs and
+the default (empty) firmware_class.path. A guarded reboot restores
+the original driver, installed August firmware and empty sysfs path;
+the disk firmware package is never changed. This is diagnostic,
+not a firmware promotion.
+
+The first exploratory October firmware activation via the August
+guard loaded October 16 firmware successfully but was rejected by
+the guard's hardcoded August build-ID assertion, causing an intentional
+reboot. The explicit variant corrects this without weakening the
+existing August guard. No October-firmware packet test was completed
+by that first exploratory run.

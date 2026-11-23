@@ -34,6 +34,7 @@ declare -A trace_profiles=(
     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
     [upstream-prefix22-postscan-txroute-trace]=association-rxtx
+    [upstream-prefix22-postscan-txroute-fw20261016]=association-rxtx
     [upstream-prefix22-postscan-roc-reacquire-trace]=association-rxtx
     [upstream-prefix22-authorize-bss-band-trace]=association-rxtx
     [upstream-prefix22-lifecycle-trace]=association-rxtx
@@ -54,6 +55,10 @@ kver=7.4.0-rc1-2-cachyos-rc
 bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$variant
 stage=/run/wave7-$variant-stack
 timer=wave7-$variant-rollback.timer
+firmware_variant=upstream-prefix22-postscan-txroute-fw20261016
+firmware_source=/home/jan/firmware/wave7/mt7925-fw-trials/20261016-official
+firmware_ram_sha=329c0e27f780550789e4eba47452731b1723f69f9e67f525d0e50bf3cd2978ac
+firmware_patch_sha=67ff85f1a39d1a100a51abd8e2a26edd2f198d7052514b6b8981948b231e5016
 modules=(mt76 mt76_connac_lib mt792x_lib mt7925_common mt7925e)
 declare -A names=(
     [mt76]=mt76.ko
@@ -475,7 +480,7 @@ declare -A candidate_id=(
     [mt7925e]=7841c56b0c951529abfc3c1e05b004dde0994252
 )
 ;;
-upstream-prefix22-postscan-txroute-trace)
+upstream-prefix22-postscan-txroute-trace|upstream-prefix22-postscan-txroute-fw20261016)
 declare -A candidate_hash=(
     [mt76]=9625bc9cc20c811c201d5d13967117c723d77706f802062ae7d8675ff1b0b772
     [mt76_connac_lib]=5dea1de50438e65cd09d7f98f3ac9a53aaa6dcfdd45451cc54436d570c724b85
@@ -1106,6 +1111,7 @@ candidate_files() {
 check_original() {
     scope
     interface_ready
+    [[ -z $(cat /sys/module/firmware_class/parameters/path) ]]
     check_watchdog inactive
     disk_original
     loaded_closure original
@@ -1116,9 +1122,25 @@ check_original() {
     done
     printf 'STACK_ORIGINAL_PASS boot=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
 }
+check_firmware_bundle() {
+    local dir=$1
+    local root=$dir/mediatek/mt7925
+    local ram=$root/WIFI_RAM_CODE_MT7925_1_1.bin
+    local patch=$root/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
+    [[ -f $ram && ! -L $ram && $(hash "$ram") == "$firmware_ram_sha" &&
+       -f $patch && ! -L $patch && $(hash "$patch") == "$firmware_patch_sha" ]]
+}
 check_candidate() {
     scope
     interface_ready
+    if [[ $variant == "$firmware_variant" ]]; then
+        [[ $(cat /sys/module/firmware_class/parameters/path) == "$stage/firmware" ]]
+        check_firmware_bundle "$stage/firmware"
+        [[ $(stat -c '%u:%g:%a' "$stage/firmware/mediatek/mt7925/WIFI_RAM_CODE_MT7925_1_1.bin") == 0:0:644 &&
+           $(stat -c '%u:%g:%a' "$stage/firmware/mediatek/mt7925/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin") == 0:0:644 ]]
+    else
+        [[ -z $(cat /sys/module/firmware_class/parameters/path) ]]
+    fi
     check_watchdog active
     disk_original
     [[ $(stat -c '%u:%g:%a' "$stage") == 0:0:755 &&
@@ -1135,6 +1157,9 @@ case "$action" in
         [[ $EUID == 0 ]]
         check_original
         candidate_files "$bundle"
+        if [[ $variant == "$firmware_variant" ]]; then
+            check_firmware_bundle "$firmware_source"
+        fi
         [[ -z $(ls /sys/kernel/tracing/instances) &&
            $(cat /sys/kernel/tracing/current_tracer) == nop &&
            $(cat /sys/module/mt7925e/refcnt) == 0 ]]
@@ -1164,6 +1189,13 @@ case "$action" in
             install -m 0644 "$bundle/${names[$name]}" "$stage/${names[$name]}"
         done
         candidate_files "$stage"
+        if [[ $variant == "$firmware_variant" ]]; then
+            install -d -m 0755 "$stage/firmware/mediatek/mt7925"
+            for filename in WIFI_RAM_CODE_MT7925_1_1.bin WIFI_MT7925_PATCH_MCU_1_1_hdr.bin; do
+                install -m 0644 "$firmware_source/mediatek/mt7925/$filename" "$stage/firmware/mediatek/mt7925/$filename"
+            done
+            check_firmware_bundle "$stage/firmware"
+        fi
         cat /proc/sys/kernel/random/boot_id > "$stage/boot"
         date +%s > "$stage/epoch"
         chmod 0644 "$stage"/{boot,epoch}
@@ -1175,6 +1207,12 @@ case "$action" in
         set_watchdog 60000000
         check_watchdog active
         changed=1
+        if [[ $variant == "$firmware_variant" ]]; then
+            printf '%s' "$stage/firmware" > /sys/module/firmware_class/parameters/path
+            [[ $(cat /sys/module/firmware_class/parameters/path) == "$stage/firmware" ]]
+            printf 'FIRMWARE_OVERRIDE_PINNED sha_ram=%s sha_patch=%s
+' "$firmware_ram_sha" "$firmware_patch_sha"
+        fi
         for ((i=${#modules[@]}-1; i>=0; i--)); do rmmod "${modules[i]}"; done
         for name in "${modules[@]}"; do [[ ! -e /sys/module/$name ]]; done
         for name in "${modules[@]}"; do insmod "$stage/${names[$name]}"; done
@@ -1186,7 +1224,11 @@ case "$action" in
         firmware=$(journalctl -k -b --no-pager --since "@$(cat "$stage/epoch")" |
             rg 'mt7925e.*(HW/SW Version|WM Firmware Version)')
         printf '%s\n' "$firmware"
-        [[ $firmware == *20260813113015a* && $firmware == *20260813113118* ]]
+        if [[ $variant == "$firmware_variant" ]]; then
+            [[ $firmware == *20261016232915a* && $firmware == *20261016233029* ]]
+        else
+            [[ $firmware == *20260813113015a* && $firmware == *20260813113118* ]]
+        fi
         trap - EXIT
         ;;
     --restore)
