@@ -97,7 +97,7 @@ class Replay:
     def allowed(self, offset):
         return any(start <= offset < start + size for start, size in self.ranges)
 
-    def case(self, mode, initial_misc, initial_nway, *, enable=0, fail_at=None):
+    def case(self, mode, initial_misc, initial_nway, *, enable=0, fail_at=None, ability=None, initial_ability=0):
         uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
         for start, size in ((TEXT, 0x20000), (RODATA, 0x2000),
                             (MOCK, 0x4000), (STACK, 0x10000)):
@@ -105,10 +105,11 @@ class Replay:
         uc.mem_write(TEXT, self.code)
         uc.mem_write(RODATA, self.rodata)
         uc.mem_write(GUARD, struct.pack("<I", 0x12345678))
-        uc.mem_write(ABILITY, struct.pack("<7I", 1, 4 if mode == 10 else 2,
-                                          1, 1, 0, 1, 1))
+        uc.mem_write(ABILITY, struct.pack("<7I", *(ability if ability is not None else
+                                                  (1, 4 if mode == 10 else 2, 1, 1, 0, 1, 1))))
         direct = defaultdict(int, {0x1d11: initial_misc, 0x130c: 0x4020,
-                                   0x13e8: 0xa5a5, 0x3f7: 0xffff})
+                                   0x13e8: 0xa5a5, 0x3f7: 0xffff,
+                                   0x12c6: initial_ability})
         sds = defaultdict(int, {(13, 2): initial_nway})
         bus = []
         events = []
@@ -185,6 +186,9 @@ class Replay:
             assert stopped, f"did not return: {name}"
             return uc.reg_read(UC_ARM_REG_R0)
 
+        if ability is not None:
+            ret = call("dal_rtl8367d_port_macForceLink_set", 16, ABILITY)
+            return ret, None, events, bus, failed
         ret = call("dal_rtl8367d_port_macForceLinkExt_set", 16, mode, ABILITY)
         if ret:
             return ret, None, events, bus, failed
@@ -237,9 +241,28 @@ def main():
                     assert result == 0 and split is not None and not failed
                     verify(events, split, mode, misc, nway, enable)
                     count += 1
+    force_count = 0
+    for speed, encoded in ((0, 0), (1, 1), (2, 2), (4, 0x1001)):
+        for duplex in (0, 1):
+            for link in (0, 1):
+                for tx_pause in (0, 1):
+                    for rx_pause in (0, 1):
+                        for initial in (0, 0x1075, 0xa5a5, 0xffff):
+                            ability = (1, speed, duplex, link, 0, tx_pause, rx_pause)
+                            result, _, writes, _, failed = replay.case(
+                                10, 0, 0, ability=ability, initial_ability=initial)
+                            assert result == 0 and not failed, (ability, result)
+                            val = encoded | duplex << 2 | tx_pause << 6 | rx_pause << 5
+                            expected = [("write", 0x12c6, initial & ~16),
+                                        ("write", 0x12c6, val),
+                                        ("write", 0x12ce, 0xffff)]
+                            if link:
+                                expected.append(("write", 0x12c6, val | 16))
+                            assert writes == expected, (ability, writes, expected)
+                            force_count += 1
     result, split, events, bus, _ = replay.case(10, 0x1f, 0x200)
     assert result == 0
-    print(json.dumps({"module_sha256": SHA, "cases": count,
+    print(json.dumps({"module_sha256": SHA, "cases": count, "mac_force_cases": force_count,
                       "hsgmii_initialization": events[:split],
                       "hsgmii_nway_disable": events[split:],
                       "smi_transactions": len(bus)}, indent=2))

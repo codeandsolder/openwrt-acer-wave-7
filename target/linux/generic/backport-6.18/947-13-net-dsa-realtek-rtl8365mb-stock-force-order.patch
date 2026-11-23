@@ -1,0 +1,93 @@
+From: Wave7 development <wave7-test@localhost>
+Subject: [PATCH] net: dsa: realtek: publish RTL8367D forced MAC link last
+
+The pinned stock 067 ARM routine clears the old link bit, writes
+the new ability with link down, enables force mode and publishes
+link up last. Replay confirms this ordering across 256 combinations.
+Match that sequence on RTL8367D rev 0020 only, preserving the existing
+link-down ability policy. This isolates MAC publication ordering
+from the SerDes lane configuration and recovery candidates.
+
+Signed-off-by: Wave7 development <wave7-test@localhost>
+---
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -814,6 +814,7 @@
+  * @chip_id: chip identifier
+  * @chip_ver: chip silicon revision
+  * @family: chip family
++ * @mac_force_link_last: publish forced link after parameters and enable
+  * @sds_pulse_recovery: stock-derived internal pulse supported on this chip
+  * @extints: available external interfaces
+  * @jam_table: chip-specific initialization jam table
+@@ -828,6 +829,7 @@
+ 	u32 chip_id;
+ 	u32 chip_ver;
+ 	enum rtl8365mb_family family;
++	bool mac_force_link_last;
+ 	bool sds_pulse_recovery;
+ 	const struct rtl8365mb_extint extints[RTL8365MB_MAX_NUM_EXTINTS];
+ 	const struct rtl8365mb_jam_tbl_entry *jam_table;
+@@ -909,6 +911,7 @@
+ 		.chip_id = 0x6642,
+ 		.chip_ver = 0x0020,
+ 		.family = RTL8365MB_FAMILY_D,
++		.mac_force_link_last = true,
+ 		.sds_pulse_recovery = true,
+ 		.extints = {
+ 			{ 6, 0, PHY_INTF(SGMII) | PHY_INTF(HSGMII) },
+@@ -2412,6 +2415,7 @@
+ 					  bool link, int speed, int duplex,
+ 					  bool tx_pause, bool rx_pause)
+ {
++	struct rtl8365mb *mb = priv->chip_data;
+ 	const struct rtl8365mb_extint *extint =
+ 		rtl8365mb_get_port_extint(priv, port);
+ 	u32 r_tx_pause;
+@@ -2420,7 +2424,7 @@
+ 	u32 r_speed;
+ 	u32 r_link;
+ 	bool is_d;
+-	int val;
++	u32 val;
+ 	int ret;
+ 
+ 	if (!extint)
+@@ -2493,8 +2497,22 @@
+ 		val |= FIELD_PREP(RTL8365MB_D_DIGITAL_INTERFACE_FORCE_SPEED2_MASK,
+ 				  r_speed >>
+ 				  RTL8365MB_DIGITAL_INTERFACE_FORCE_SPEED_WIDTH);
++		if (mb->chip_info->mac_force_link_last) {
++			/* Stock clears the old link before changing ability, and
++			 * publishes the new link only after enabling force mode.
++			 */
++			ret = regmap_write_bits(priv->map,
++						RTL8365MB_D_DIGITAL_INTERFACE_FORCE_REG(port),
++						RTL8365MB_DIGITAL_INTERFACE_FORCE_LINK_MASK,
++						0);
++			if (ret)
++				return ret;
++		}
++
+ 		ret = regmap_write(priv->map,
+ 				   RTL8365MB_D_DIGITAL_INTERFACE_FORCE_REG(port),
++				   mb->chip_info->mac_force_link_last ?
++				   val & ~RTL8365MB_DIGITAL_INTERFACE_FORCE_LINK_MASK :
+ 				   val);
+ 		if (ret)
+ 			return ret;
+@@ -2504,6 +2522,14 @@
+ 				   RTL8365MB_D_DIGITAL_INTERFACE_FORCE_EN_ALL_MASK);
+ 		if (ret)
+ 			return ret;
++
++		if (mb->chip_info->mac_force_link_last && link) {
++			ret = regmap_write(priv->map,
++					   RTL8365MB_D_DIGITAL_INTERFACE_FORCE_REG(port),
++					   val);
++			if (ret)
++				return ret;
++		}
+ 	} else {
+ 		val |= FIELD_PREP(RTL8365MB_DIGITAL_INTERFACE_FORCE_EN_MASK, 1);
+ 		ret = regmap_write(priv->map,
