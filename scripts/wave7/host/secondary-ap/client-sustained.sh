@@ -175,14 +175,34 @@ trace_pid=''
 early_pid=''
 neigh_pid=''
 pings=()
+ping_names=()
+ping_counts=()
 
 # Start before NetworkManager connects, so ARP and ICMP are sampled at the
 # moment the first lab IPv4 address appears, not after nmcli has waited for
 # the complete IPv6/DAD activation. This is additional evidence only:
 # the existing all-packets-delivered gate is unchanged.
-early_ipv4_probe() {
-    local ipaddr='' i target label rc pid
+early_ipv4_probe() (
+    local ipaddr='' i target label pid
     local -a children=()
+
+    # The observer runs as a distinct subshell with its own traps. If
+    # the parent is interrupted, forward TERM to every child and reap
+    # them before the parent can checksum evidence files.
+    # shellcheck disable=SC2329 # called indirectly from signal trap
+    stop_children() {
+        local pid
+        trap - TERM INT HUP
+        # GNU timeout creates a process group containing the actual
+        # child. Signal the entire group and reap before checksumming.
+        for pid in "${children[@]}"; do
+            kill -TERM -- "-$pid" 2>/dev/null ||
+                kill -TERM "$pid" 2>/dev/null || :
+        done
+        for pid in "${children[@]}"; do wait "$pid" 2>/dev/null || :; done
+        exit 143
+    }
+    trap stop_children TERM INT HUP
 
     printf 'watch_started_epoch=%s\n' "$(date +%s.%N)"
     for ((i=0; i<820; i++)); do
@@ -207,37 +227,41 @@ early_ipv4_probe() {
             ap) target=192.168.76.1 ;;
             asus) target=192.168.76.2 ;;
         esac
-        (
-            printf 'probe_started_epoch=%s target=%s source=%s\n' \
-                "$(date +%s.%N)" "$target" "$ipaddr"
-            rc=0
-            LC_ALL=C rootcmd arping -f -I "$iface" -s "$ipaddr" \
-                -c 2 -w 2 "$target" || rc=$?
-            printf 'probe_finished_epoch=%s exit=%s\n' "$(date +%s.%N)" "$rc"
-        ) > "$out/early-$label-arp.txt" 2>&1 &
+        printf 'probe_started_epoch=%s target=%s source=%s\n' \
+            "$(date +%s.%N)" "$target" "$ipaddr" > "$out/early-$label-arp.txt"
+        LC_ALL=C timeout --signal=TERM --kill-after=2s 4s \
+            sudo -n arping -f -I "$iface" -s "$ipaddr" -c 2 -w 2 "$target" \
+            >> "$out/early-$label-arp.txt" 2>&1 &
         children+=("$!")
-        (
-            printf 'probe_started_epoch=%s target=%s source=%s\n' \
-                "$(date +%s.%N)" "$target" "$ipaddr"
-            rc=0
-            LC_ALL=C ping -4 -n -D -O -I "$iface" -I "$ipaddr" \
-                -c 32 -i .05 -W 1 "$target" || rc=$?
-            printf 'probe_finished_epoch=%s exit=%s\n' "$(date +%s.%N)" "$rc"
-        ) > "$out/early-$label-icmp.txt" 2>&1 &
+        printf 'probe_started_epoch=%s target=%s source=%s\n' \
+            "$(date +%s.%N)" "$target" "$ipaddr" > "$out/early-$label-icmp.txt"
+        LC_ALL=C timeout --signal=TERM --kill-after=2s 8s \
+            ping -4 -n -D -O -I "$iface" -I "$ipaddr" \
+            -c 32 -i .05 -W 1 "$target" \
+            >> "$out/early-$label-icmp.txt" 2>&1 &
         children+=("$!")
     done
     for pid in "${children[@]}"; do wait "$pid" || :; done
+    trap - TERM INT HUP
     printf 'window_finished_epoch=%s\n' "$(date +%s.%N)"
     ip -s neigh show dev "$iface" || :
-}
-
+)
 cleanup() {
     local rc=$?
     trap - EXIT
-    for pid in "${pings[@]}"; do kill "$pid" 2>/dev/null || :; wait "$pid" 2>/dev/null || :; done
+    # Every active PID is GNU timeout's process-group leader.
+    # Reap all group members before closing the checksum manifest.
+    for pid in "${pings[@]}"; do
+        kill -TERM -- "-$pid" 2>/dev/null ||
+            kill -TERM "$pid" 2>/dev/null || :
+    done
+    for pid in "${pings[@]}"; do wait "$pid" 2>/dev/null || :; done
+    pings=()
+    ping_names=()
+    ping_counts=()
     if [[ -n $early_pid ]]; then
         # In the failure path, bound the address watcher independently of
-        # NetworkManager. It has at most ~3s of finished probe work.
+        # NetworkManager. Once IPv4 is seen, early probes run at most 8s.
         if [[ -f $out/early-probe-status.txt ]] &&
            grep -q '^address_seen_epoch=' "$out/early-probe-status.txt"; then
             # A detected IPv4 starts at most three seconds of probes.
@@ -464,17 +488,15 @@ if (( early_only )); then
     # Observe beyond the previously measured ~4.7s Q6 fatal window,
     # including both post-association and post-DHCP phases.
     # Do not count this abbreviated run as a production acceptance PASS.
+    short_failed=0
     for target in 192.168.76.1 192.168.76.2; do
-        (
-            printf 'probe_started_epoch=%s target=%s\n' "$(date +%s.%N)" "$target"
-            LC_ALL=C ping -4 -n -D -O -I "$iface" -I "$v4" \
-                -c 440 -i .05 -W 1 "$target"
-            printf 'probe_finished_epoch=%s\n' "$(date +%s.%N)"
-        ) > "$out/short-hold-${target##*.}.txt" 2>&1 &
-        pings+=("$!")
+        probe_start "short-hold-${target##*.}" 440 "$v4" "$target" -4
     done
-    for pid in "${pings[@]}"; do wait "$pid" || :; done
-    pings=()
+    for index in "${!pings[@]}"; do
+        probe_wait_one "$index" || short_failed=1
+    done
+    printf 'short_hold_all_replies=%s\n' "$((1 - short_failed))" \
+        > "$out/short-hold-result.txt"
     {
         printf 'snapshot_epoch=%s\n' "$(date +%s.%N)"
         ip -4 route get 192.168.76.1 from "$v4" oif "$iface" || :
@@ -528,12 +550,15 @@ check_link() {
       grep -Eq 'Link 0 BSSID ' <<< "$link" &&
       grep -Eq 'Link 1 BSSID ' <<< "$link"
 }
-probe() {
-    local name=$1 count=$2 ip=$3 target=$4 family=$5 rc=0 interval=.25
-    if (( timing_experiment )) && [[ $name == steady-* ]]; then
+probe_start() {
+    local name=$1 count=$2 ip=$3 target=$4 family=$5 interval=.25
+    local interval_ms budget_s
+    local -a id_args=()
+
+    if (( timing_experiment )) &&
+       [[ $name == steady-* || $name == short-hold-* ]]; then
         interval=.05
     fi
-    local -a id_args=()
     if (( trace )); then
         case "$name" in
             immediate-v4) id_args=(-e 47601) ;;
@@ -543,9 +568,42 @@ probe() {
             *) return 2 ;;
         esac
     fi
-    LC_ALL=C ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" -c "$count" -i "$interval" -W 1 "$target" > "$out/$name.txt" 2>&1 || rc=$?
-    [[ $rc == 0 ]] && grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
+    # Bound a lost-packet -O test to cadence + recovery margin.
+    case $interval in
+        .05) interval_ms=50 ;;
+        .25) interval_ms=250 ;;
+        *) return 2 ;;
+    esac
+    budget_s=$(((count * interval_ms + 999) / 1000 + 25))
+    # Track timeout itself, not an outer subshell that can exit while
+    # ping remains alive. GNU timeout establishes its own process group.
+    LC_ALL=C timeout --signal=TERM --kill-after=2s "${budget_s}s" \
+        ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" \
+        -c "$count" -i "$interval" -W 1 "$target" \
+        > "$out/$name.txt" 2>&1 &
+    pings+=("$!")
+    ping_names+=("$name")
+    ping_counts+=("$count")
 }
+
+probe_wait_one() {
+    local index=$1
+    local pid=${pings[$index]} name=${ping_names[$index]}
+    local count=${ping_counts[$index]} rc=0
+
+    wait "$pid" || rc=$?
+    unset "pings[$index]" "ping_names[$index]" "ping_counts[$index]"
+    [[ $rc == 0 ]] &&
+        grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
+}
+
+probe() {
+    local index=${#pings[@]}
+
+    probe_start "$@" || return
+    probe_wait_one "$index"
+}
+
 # This is a diagnostic, not a relaxation of the zero-loss acceptance gate.
 # Request only the dedicated lab SSID; never change the background scan policy.
 # Logs contain just the requested frequencies/status and existing iw events.
@@ -674,16 +732,12 @@ fi
     done
 ) > "$out/stations-during.txt" 2>&1 &
 sample_pid=$!
-probe steady-v4 "$steady_count" "$v4" 192.168.76.2 -4 &
-pings+=("$!")
-probe steady-v6 "$steady_count" "$v6" fd76:7::2 -6 &
-pings+=("$!")
+probe_start steady-v4 "$steady_count" "$v4" 192.168.76.2 -4
+probe_start steady-v6 "$steady_count" "$v6" fd76:7::2 -6
 if (( mode_experiment )); then
-    probe steady-ap-v4 "$steady_count" "$v4" 192.168.76.1 -4 &
-    pings+=("$!")
+    probe_start steady-ap-v4 "$steady_count" "$v4" 192.168.76.1 -4
 fi
-for pid in "${pings[@]}"; do wait "$pid" || failed=1; done
-pings=()
+for index in "${!pings[@]}"; do probe_wait_one "$index" || failed=1; done
 if [[ -n $scope_pid ]]; then
     # Do not let late scan requests outlive the packet test.
     if kill -0 "$scope_pid" 2>/dev/null; then
