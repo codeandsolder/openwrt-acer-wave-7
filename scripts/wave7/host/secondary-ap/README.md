@@ -133,6 +133,12 @@ server. The existing vendor fallback collector remains observational.
 - test-stage.sh: valid/invalid role and boot acceptance tests.
 - ap-mlo-function-trace.sh: isolated finite AP mac80211/ath12k call
   chronology with automatic tracefs cleanup, no AP installation.
+- client-scan-pm-trace.sh: scoped Wyse mac80211/MT7925 hardware scan
+  requests, scan completions, power-state worker calls and queue events,
+  with bounded anchored trace snapshots and exact guarded variant checks.
+- observe-asus-icmp.sh: Asus user-owned bounded dumpcap on its existing
+  enp4s0f4u2u4 interface, with off-AP header-only capture and exported
+  packet epoch/source/destination/ICMP request-reply identity.
 
 All scripts ShellCheck clean. Image packager verifies allowed root
 changes, special /dev/console inode, roundtrip extraction, 46 firmware
@@ -527,3 +533,39 @@ correct AP boot and fully removed the trace instance. An earlier live
 trace_pipe attempt hung its SSH session because the reader survived
 the intended capture; that isolated instance was also removed. Only
 the finite snapshot implementation is supported.
+
+
+### 5GHz-primary parallel packet-loss discriminator (2026-11-23)
+
+Normal-primary diagnostic 0498-20261123-162945 had identical 11 lost
+ICMP sequences (56..66) out of 440 on both AP and Asus targets,
+single 0.748202s receive gap, both MLO links active, no AP-side
+peer/key/selected WMI calls within 3s and Q6 stable. MT7925 background
+scan ended 0.894101s before the gap, which alone does NOT prove causality.
+
+The next experiment attaches **independent** Asus lab ingress/egress
+ICMP capture and Wyse targeted scan/PM ftrace before creating the
+disposable Wi-Fi connection. Asus capture is ordinary unprivileged
+dumpcap (capabilities already present), with BPF requiring both
+192.168.76.145 and 192.168.76.2, snaplen96, bounded duration
+and tshark CSV of only time/src/dst/ICMP identity; the host and AP
+software remain unchanged. observe-asus-icmp.sh TAG DURATION emits
+TAG-asus-wire/ready.txt, an immutable capture and SHA256SUMS.
+client-scan-pm-trace.sh TAG upstream-prefix22-authorize-primary-mld-trace
+EXPECTED_WYSE_BOOT DURATION is run as root via wired SSH to Wyse,
+and leaves no tracefs instance behind. It requires the exact five
+modules already activated by the existing safeguarded stack tool.
+Off-host stdout is saved as a separate trace artifact and hashed.
+
+For a missing ICMP sequence, the Asus dumpcap permits three outcomes:
+- No Asus-side echo request: loss before arrival to Asus (client TX,
+  AP WLAN ingress, AP bridge path, or link-layer switching).
+- Request received, Asus echo reply emitted: loss on the return path
+  (Asus-to-AP switching, WLAN downlink, or client RX).
+- Request received but no Asus echo reply: Asus responder/local stack.
+
+Compare exact ICMP echo ID+sequence rather than sequence alone: early
+and hold probes use separate ping processes with independently chosen
+IDs. Use the client-side echo-reply log to identify missing hold
+sequences. The original strict no-loss gate remains unchanged. The
+bounded probe and trace are diagnostics, NOT production acceptance.
