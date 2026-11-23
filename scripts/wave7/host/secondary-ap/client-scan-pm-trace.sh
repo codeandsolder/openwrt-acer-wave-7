@@ -48,6 +48,13 @@ if [[ $variant == upstream-prefix22-postscan-txroute-trace ||
       $variant == upstream-prefix22-secondary-txq-route-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_route)
 fi
+if [[ $variant == upstream-prefix22-secondary-txq-route-trace ]]; then
+    # The TX path forces data onto WCID3. Observe actual received WCID,
+    # frequency and BSS to distinguish usable secondary RF from a
+    # firmware/MLD selection that delivers replies only on the primary.
+    events+=(mt7925_lab/mt7925_lab_rxdesc)
+    events+=(mt7925_lab/mt7925_lab_rx_frame)
+fi
 if [[ $variant == upstream-prefix22-postscan-link-park-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_scan_link_park)
 fi

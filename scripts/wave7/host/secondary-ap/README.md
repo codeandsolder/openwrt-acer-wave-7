@@ -828,3 +828,21 @@ Scoped Kbuild MO: same prefix with -build suffix. Eight-module
 managed Clang/sccache+BTF build PASS, five exact PCIe module pins
 in upstream-prefix22-secondary-txq-route-trace.
 This is still only a diagnostic forced-link policy.
+
+### Follow-up RX-frequency discriminator for the secondary TXQ variant
+
+The MT7925 secondary TXQ experiment confirmed 950 actual WCID3
+link0/band1 TX descriptors and two correlated 11-packet loss bursts,
+but AP only supplied aggregate station counters; the operator-installed
+temporary AP per-link iw was absent by Nov23, without an AP reboot.
+Do not reinstall or modify the AP as part of this test.
+
+The pinned secondary TXQ variant already includes read-only lab
+mt7925_lab_rxdesc and mt7925_lab_rx_frame tracepoints in mac.c.
+A trace-only change to client-scan-pm-trace.sh enables those two events
+only for the secondary TXQ variant. Their resolved receiving WCID,
+frequency, BSS, 802.3 decapsulation, and U2M/data flags can establish
+whether replies arrive via 5GHz primary or 2.4GHz secondary during
+forced WCID3 TX, without assigning physical over-air TX from TXS alone.
+No firmware, module, station or AP behavior changes. A bounded
+single hardware run must archive client/scanpm SHA before stock restore.
