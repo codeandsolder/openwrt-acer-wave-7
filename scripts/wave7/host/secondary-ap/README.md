@@ -580,3 +580,24 @@ interface request absence is not enough to attribute a loss to the
 client TX path. This tool now captures both with interface IDs. The
 5GHz-BSSID-pinned result itself was 440/440 to each destination with
 valid/active links0x3, no second connected scan, Q6 healthy.
+
+### Post-scan client transmission locus (diagnostic)
+
+Client sustained TAG with
+--early-tap-upstream-prefix22-authorize-primary-mld-trace combines
+the existing two-target 440-packet early-only diagnostic with:
+- Already SHA-pinned icmp-probe-tap on client wlp2s0, recording only
+  known IPv4 lab echo metadata using explicit ICMP identifier 47603
+  for the Asus hold. Packet-socket visibility alone does not prove
+  firmware DMA or RF transmission.
+- Read-only client-tx-queue-monitor.sh sampling mt76 xmit-queues
+  (WFDMA0 queued/head/tail and MCU queues) at most 20 Hz, bounded
+  to 28 seconds. Tap is bounded to 30 seconds. Both are reaped and
+  verified by terminal markers before computing SHA256SUMS.
+- Independent client scan/PM trace and Asus dual-interface capture
+  must be READY before the test association. No AP modifications.
+
+Optional third arg --bssid-5 pins only the disposable client profile
+for an otherwise identical MLO dual-link control, while unpinned
+runs exercise post-association background scanning. Neither early
+scope is a complete production dual-stack scan acceptance test.

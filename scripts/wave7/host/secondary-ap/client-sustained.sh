@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -81,6 +81,7 @@ roccontract_experiment=0
 rocgeometry_experiment=0
 upstream_stack_variant=''
 early_only=0
+early_tap=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -99,8 +100,12 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-*|--early-only-upstream-*)
-        if [[ $2 == --early-only-upstream-* ]]; then
+    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*)
+        if [[ $2 == --early-tap-upstream-* ]]; then
+            early_only=1
+            early_tap=1
+            upstream_stack_variant=${2#--early-tap-}
+        elif [[ $2 == --early-only-upstream-* ]]; then
             early_only=1
             upstream_stack_variant=${2#--early-only-}
         else
@@ -131,7 +136,7 @@ case "${2:-}" in
     *) exit 2 ;;
 esac
 tap=/home/jan/scripts/wave7/client-validation/icmp-probe-tap
-if (( trace )); then
+if (( trace || early_tap )); then
     [[ $(sha256sum "$tap" | cut -d' ' -f1) == d1fa6760fef57a219ba3df1255e7ab5a6f78e8038091b24bd7cc8ab5d9a56558 ]]
     "$tap" --selftest
 fi
@@ -170,6 +175,7 @@ clone=0
 event_pid=''
 sample_pid=''
 tap_pid=''
+queue_pid=''
 scope_pid=''
 trace_pid=''
 early_pid=''
@@ -255,6 +261,9 @@ probe_start() {
        [[ $name == steady-* || $name == short-hold-* ]]; then
         interval=.05
     fi
+    if (( early_tap )) && [[ $name == short-hold-2 ]]; then
+        id_args=(-e 47603)
+    fi
     if (( trace )); then
         case "$name" in
             immediate-v4) id_args=(-e 47601) ;;
@@ -335,9 +344,14 @@ cleanup() {
     if [[ -n $scope_pid ]]; then kill "$scope_pid" 2>/dev/null || :; wait "$scope_pid" 2>/dev/null || :; fi
     if [[ -n $sample_pid ]]; then kill "$sample_pid" 2>/dev/null || :; wait "$sample_pid" 2>/dev/null || :; fi
     if [[ -n $tap_pid ]]; then
-        # The tap has its own 120-second deadline, even on a failed probe.
+        # Short independent deadlines; wait for sudo children to exit
+        # before sealing immutable evidence.
         wait "$tap_pid" || rc=1
         grep -Eq '^END parsed=[0-9]+ rejected=0 recv=[0-9]+ dropped=0 ifdrop=0$' "$out/client-tap.txt" || rc=1
+    fi
+    if [[ -n $queue_pid ]]; then
+        wait "$queue_pid" || rc=1
+        grep -Eq '^TX_QUEUE_DONE epoch=[0-9.]+ samples=[0-9]+$' "$out/tx-queues.txt" || rc=1
     fi
     if (( clone )); then
         rootcmd nmcli connection delete "$tmp" > "$out/cleanup.txt" 2>&1 || rc=1
@@ -546,9 +560,34 @@ if (( early_only )); then
             rootcmd cat "$path/$mask" || :
         done
     } > "$out/early-only-snapshot.txt" 2>&1
-    # Observe beyond the previously measured ~4.7s Q6 fatal window,
-    # including both post-association and post-DHCP phases.
-    # Do not count this abbreviated run as a production acceptance PASS.
+    # The opt-in packet tap observes outbound skb visibility at wlp2s0.
+    # The pinned helper accepts only known lab ICMP IDs; use -e 47603
+    # solely for the Asus hold probe (never change the AP hold).
+    if (( early_tap )); then
+        [[ $v4 == 192.168.76.145 ]]
+        rootcmd "$tap" "$iface" 30 > "$out/client-tap.txt" \
+            2> "$out/client-tap-stderr.txt" &
+        tap_pid=$!
+        ready=0
+        for _ in {1..60}; do
+            kill -0 "$tap_pid"
+            if grep -q '^READY ' "$out/client-tap.txt"; then ready=1; break; fi
+            sleep .05
+        done
+        (( ready ))
+        helper=/home/jan/scripts/wave7/client-validation/client-tx-queue-monitor.sh
+        rootcmd bash "$helper" "$phy" 28 > "$out/tx-queues.txt" \
+            2> "$out/tx-queues-stderr.txt" &
+        queue_pid=$!
+        ready=0
+        for _ in {1..60}; do
+            kill -0 "$queue_pid"
+            if grep -q '^TX_QUEUE_READY ' "$out/tx-queues.txt"; then ready=1; break; fi
+            sleep .05
+        done
+        (( ready ))
+    fi
+    # This shortened diagnostic is not a production acceptance PASS.
     short_failed=0
     for target in 192.168.76.1 192.168.76.2; do
         probe_start "short-hold-${target##*.}" 440 "$v4" "$target" -4
