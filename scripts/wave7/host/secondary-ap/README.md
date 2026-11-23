@@ -716,3 +716,16 @@ the guard's hardcoded August build-ID assertion, causing an intentional
 reboot. The explicit variant corrects this without weakening the
 existing August guard. No October-firmware packet test was completed
 by that first exploratory run.
+
+### Firmware STAREC MLO link-state trigger probe (non-mutating)
+
+The scoped client scan/PM ftrace also enables the already-built
+mt7925_lab_mcu_rx event (firmware MCU RX EID, seq, option, ext_eid,
+length only) to detect unsolicited UNI STAREC event EID 15 (0x0f)
+around each post-association hardware scan. This observation
+changes no firmware behavior, MLO link masks or status. The
+November 10 upstream MLO patch25 introduces actual link-state
+handling, but only apply a minimal form if the EID and its
+link-state TLV are physically observed and event parsing is
+verified; do not blindly change active links or assume every
+MCU RX is an unsolicited event.
