@@ -1,0 +1,102 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt792x.h
++++ b/drivers/net/wireless/mediatek/mt76/mt792x.h
+@@ -226,6 +226,8 @@
+ 
+ 	struct work_struct csa_work;
+ 	struct timer_list csa_timer;
++	/* Diagnostic: schedule secondary MLD link activation under wiphy lock. */
++	struct wiphy_delayed_work mlo_activate_work;
+ 
+ 	struct mt792x_nan nan;
+ };
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -491,6 +491,9 @@
+ 	return ret;
+ }
+ 
++static void mt7925_delayed_mlo_activate(struct wiphy *wiphy,
++					 struct wiphy_work *work);
++
+ static int
+ mt7925_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+ {
+@@ -501,6 +504,8 @@
+ 
+ 	mt792x_mutex_acquire(dev);
+ 
++	wiphy_delayed_work_init(&mvif->mlo_activate_work,
++				mt7925_delayed_mlo_activate);
+ 	mvif->phy = phy;
+ 	mvif->bss_conf.vif = mvif;
+ 	mvif->sta.vif = mvif;
+@@ -534,6 +539,10 @@
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 	struct mt792x_bss_conf *mconf;
+ 
++	/* The VIF backing this callback is about to be freed. Serialize
++	 * against any pending or executing delayed activation first.
++	 */
++	wiphy_delayed_work_cancel(hw->wiphy, &mvif->mlo_activate_work);
+ 	mt792x_mutex_acquire(dev);
+ 
+ 	if (dev->nan_vif == vif)
+@@ -1394,6 +1403,29 @@
+ 	ieee80211_set_active_links_async(vif, sel_links);
+ }
+ 
++#define MT7925_MLO_DIAGNOSTIC_ACTIVATION_DELAY	(8 * HZ)
++
++static void mt7925_delayed_mlo_activate(struct wiphy *wiphy,
++					 struct wiphy_work *work)
++{
++	struct wiphy_delayed_work *dwork =
++		container_of(work, struct wiphy_delayed_work, work);
++	struct mt792x_vif *mvif =
++		container_of(dwork, struct mt792x_vif, mlo_activate_work);
++	struct ieee80211_vif *vif =
++		container_of((void *)mvif, struct ieee80211_vif, drv_priv);
++
++	lockdep_assert_wiphy(wiphy);
++	if (vif->type != NL80211_IFTYPE_STATION ||
++	    !ieee80211_vif_is_mld(vif) || !vif->cfg.assoc)
++		return;
++
++	/* Only timing differs from ordinary post-authorize MLO activation.
++	 * No changes to firmware BSS, STA, key or ROC command semantics.
++	 */
++	mt7925_mac_set_links(vif);
++}
++
+ struct mt7925_set_links_key_iter {
+ 	struct ieee80211_sta *sta;
+ 	unsigned long links;
+@@ -1499,14 +1531,24 @@
+ 
+ 		mt7925_mac_link_sta_assoc(mdev, vif, link_sta);
+ 		break;
++	case MT76_STA_EVENT_DISASSOC:
++		if (vif->type == NL80211_IFTYPE_STATION && !sta->tdls)
++			wiphy_delayed_work_cancel(
++				mvif->phy->mt76->hw->wiphy,
++				&mvif->mlo_activate_work);
++		break;
+ 	case MT76_STA_EVENT_AUTHORIZE:
+-		/* Complete the four-way handshake on the original primary
+-		 * before requesting a potentially band-changing MLO ROC.
+-		 * The asynchronous activation runs after authorization.
++		/* Delay only the active-link transition to distinguish
++		 * association-time firmware faults from MLO activation.
++		 * The work is serialized by the wiphy mutex and discarded
++		 * when the association or interface is removed.
+ 		 */
+ 		if (vif->type == NL80211_IFTYPE_STATION && !sta->tdls &&
+ 		    ieee80211_vif_is_mld(vif))
+-			mt7925_mac_set_links(vif);
++			wiphy_delayed_work_queue(
++				mvif->phy->mt76->hw->wiphy,
++				&mvif->mlo_activate_work,
++				MT7925_MLO_DIAGNOSTIC_ACTIVATION_DELAY);
+ 
+ 		if (vif->type == NL80211_IFTYPE_NAN_DATA) {
+ 			int ret;
