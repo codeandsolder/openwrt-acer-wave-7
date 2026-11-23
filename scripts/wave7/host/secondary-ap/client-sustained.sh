@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && $2 == --scan-timing-upstream-* && ( $3 == --primary-24 || $3 == --bssid-24 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -80,6 +80,7 @@ rocwire_experiment=0
 roccontract_experiment=0
 rocgeometry_experiment=0
 upstream_stack_variant=''
+early_only=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -98,8 +99,13 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-*)
-        upstream_stack_variant=${2#--scan-timing-}
+    --scan-timing-upstream-*|--early-only-upstream-*)
+        if [[ $2 == --early-only-upstream-* ]]; then
+            early_only=1
+            upstream_stack_variant=${2#--early-only-}
+        else
+            upstream_stack_variant=${2#--scan-timing-}
+        fi
         upstream_trace_profile=$(bash "$stack_guard" "$upstream_stack_variant" --trace-profile) || exit 2
         if [[ -n $association_preference ]]; then
             # Require firmware association evidence to identify the setup link.
@@ -435,6 +441,20 @@ fi
 ip -br addr show dev "$iface" > "$out/addresses-at-activation.txt"
 v4=$(ip -4 -o addr show dev "$iface" | awk '$3=="inet" && $4 ~ /^192[.]168[.]76[.]/ {split($4,parts,"/"); print parts[1]; exit}')
 v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
+if (( early_only )); then
+    # Compare the first IPv4/ARP exchanges before a possible Q6 SSR.
+    # Never label this shortened diagnostic as a production PASS.
+    {
+        printf 'snapshot_epoch=%s ipv4=%s ipv6=%s
+' "$(date +%s.%N)" "$v4" "$v6"
+        ip -4 route get 192.168.76.1 from "$v4" oif "$iface" || :
+        ip -s neigh show dev "$iface" || :
+        iw dev "$iface" link || :
+    } > "$out/early-only-snapshot.txt" 2>&1
+    sleep 3
+    echo EARLY_IPV4_ONLY_DIAGNOSTIC_COMPLETE
+    exit 0
+fi
 [[ -n $v4 && -n $v6 ]]
 routes() {
     if (( mode_experiment )); then
