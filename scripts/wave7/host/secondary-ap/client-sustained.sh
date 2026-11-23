@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -503,6 +503,13 @@ elif [[ $association_preference == --bssid-24 ]]; then
     # from the candidate frequencies. Firmware trace determines the
     # actual association link; this setting is not proof of role reversal.
     rootcmd nmcli connection modify --temporary "$tmp" 802-11-wireless.bssid 70:5A:6F:5A:BB:16
+    nmcli -g 802-11-wireless.bssid,802-11-wireless.band,802-11-wireless.channel connection show "$tmp" > "$out/association-preference.txt"
+elif [[ $association_preference == --bssid-5 ]]; then
+    # Dedicated 5GHz-primary, BSSID-locked discriminator for wpa_supplicant
+    # bgscan; pin only the transient test clone and still require firmware
+    # evidence of both negotiated/active MLO links. NetworkManager's
+    # supplicant integration disables bgscan for a fixed BSSID.
+    rootcmd nmcli connection modify --temporary "$tmp" 802-11-wireless.bssid 4E:5A:6F:5A:BB:16
     nmcli -g 802-11-wireless.bssid,802-11-wireless.band,802-11-wireless.channel connection show "$tmp" > "$out/association-preference.txt"
 fi
 # Preserve pre-association evidence even if the client hard-locks.
