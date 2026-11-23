@@ -451,8 +451,7 @@ if (( early_only )); then
     # Compare the first IPv4/ARP exchanges before a possible Q6 SSR.
     # Never label this shortened diagnostic as a production PASS.
     {
-        printf 'snapshot_epoch=%s ipv4=%s ipv6=%s
-' "$(date +%s.%N)" "$v4" "$v6"
+        printf 'snapshot_epoch=%s ipv4=%s ipv6=%s\n' "$(date +%s.%N)" "$v4" "$v6"
         ip -4 route get 192.168.76.1 from "$v4" oif "$iface" || :
         ip -s neigh show dev "$iface" || :
         iw dev "$iface" link || :
@@ -469,13 +468,24 @@ if (( early_only )); then
         (
             printf 'probe_started_epoch=%s target=%s\n' "$(date +%s.%N)" "$target"
             LC_ALL=C ping -4 -n -D -O -I "$iface" -I "$v4" \
-                -c 200 -i .05 -W 1 "$target"
+                -c 440 -i .05 -W 1 "$target"
             printf 'probe_finished_epoch=%s\n' "$(date +%s.%N)"
         ) > "$out/short-hold-${target##*.}.txt" 2>&1 &
         pings+=("$!")
     done
     for pid in "${pings[@]}"; do wait "$pid" || :; done
     pings=()
+    {
+        printf 'snapshot_epoch=%s\n' "$(date +%s.%N)"
+        ip -4 route get 192.168.76.1 from "$v4" oif "$iface" || :
+        ip -s neigh show dev "$iface" || :
+        iw dev "$iface" link || :
+        path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+        for mask in active_links valid_links dormant_links; do
+            printf 'mac80211_%s=' "$mask"
+            rootcmd cat "$path/$mask" || :
+        done
+    } > "$out/early-only-final.txt" 2>&1
     echo EARLY_IPV4_ONLY_DIAGNOSTIC_COMPLETE
     exit 0
 fi
