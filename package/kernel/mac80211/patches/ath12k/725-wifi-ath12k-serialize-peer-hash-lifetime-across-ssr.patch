@@ -1,0 +1,129 @@
+From: Wave7 ath12k recovery work
+Subject: [PATCH] wifi: ath12k: serialize peer address table lifetime across SSR
+
+Keep the DP peer lock alive across firmware restarts and use it to
+publish and retire the peer-address table. The preexisting mutex only
+serialized table init/destroy, not active lookup, which can run from
+NL80211_GET_STATION during Q6 SSR. The dereference could race a null
+or freed table, causing a host panic. Insertions during teardown fail
+with ESHUTDOWN, while lookups and removals safely see no table.
+
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp.c
+@@ -170,6 +170,14 @@
+ 	dp->hw_params = ab->hw_params;
+ 	dp->hal = &ab->hal;
+ 
++	/* These locks outlive individual firmware restarts. A recovery can
++	 * overlap mac80211 station-statistics queries, so never reinitialize
++	 * the locks while the device object remains published.
++	 */
++	spin_lock_init(&dp->dp_lock);
++	mutex_init(&dp->link_peer_rhash_tbl_lock);
++	INIT_LIST_HEAD(&dp->peers);
++
+ 	dp->ops = &ath12k_wifi7_dp_arch_ops;
+ 
+ 	return dp;
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1500,10 +1500,12 @@
+ 	spin_lock_init(&dp->reo_cmd_lock);
+ 	spin_lock_init(&dp->reo_rxq_flush_lock);
+ 
+-	spin_lock_init(&dp->dp_lock);
++	/* Lock lifetime is the DP device lifetime, not the FW epoch.
++	 * Reset the per-firmware peer list under that persistent lock.
++	 */
++	spin_lock_bh(&dp->dp_lock);
+ 	INIT_LIST_HEAD(&dp->peers);
+-
+-	mutex_init(&dp->link_peer_rhash_tbl_lock);
++	spin_unlock_bh(&dp->dp_lock);
+ 
+ 	dp->reo_cmd_cache_flush_count = 0;
+ 	dp->idle_link_rbm =
+--- a/drivers/net/wireless/ath/ath12k/dp_peer.c
++++ b/drivers/net/wireless/ath/ath12k/dp_peer.c
+@@ -62,6 +62,12 @@
+ {
+ 	lockdep_assert_held(&dp->dp_lock);
+ 
++	/* Device teardown unpublishes the table before destroying it.
++	 * A concurrent statistics query simply has no peer to report.
++	 */
++	if (!dp->rhead_peer_addr)
++		return NULL;
++
+ 	return rhashtable_lookup_fast(dp->rhead_peer_addr, addr,
+ 				      dp->rhash_peer_addr_param);
+ }
+@@ -233,6 +239,9 @@
+ 
+ 	lockdep_assert_held(&dp->link_peer_rhash_tbl_lock);
+ 
++	if (dp->rhead_peer_addr)
++		return -EALREADY;
++
+ 	rhash_addr_tbl = kzalloc_obj(*dp->rhead_peer_addr);
+ 	if (!rhash_addr_tbl)
+ 		return -ENOMEM;
+@@ -251,7 +260,9 @@
+ 		goto err_free;
+ 	}
+ 
++	spin_lock_bh(&dp->dp_lock);
+ 	dp->rhead_peer_addr = rhash_addr_tbl;
++	spin_unlock_bh(&dp->dp_lock);
+ 
+ 	return 0;
+ 
+@@ -274,14 +285,23 @@
+ 
+ void ath12k_dp_link_peer_rhash_tbl_destroy(struct ath12k_dp *dp)
+ {
++	struct rhashtable *table;
++
+ 	guard(mutex)(&dp->link_peer_rhash_tbl_lock);
+ 
+-	if (!dp->rhead_peer_addr)
++	/* All peer lookups/inserts/removals hold dp_lock. Unpublish under
++	 * the same lock, then reclaim outside it: rhashtable_destroy()
++	 * may sleep and must never run under a spinlock.
++	 */
++	spin_lock_bh(&dp->dp_lock);
++	table = dp->rhead_peer_addr;
++	dp->rhead_peer_addr = NULL;
++	spin_unlock_bh(&dp->dp_lock);
++	if (!table)
+ 		return;
+ 
+-	rhashtable_destroy(dp->rhead_peer_addr);
+-	kfree(dp->rhead_peer_addr);
+-	dp->rhead_peer_addr = NULL;
++	rhashtable_destroy(table);
++	kfree(table);
+ }
+ 
+ static int ath12k_dp_link_peer_rhash_insert(struct ath12k_dp *dp,
+@@ -291,6 +311,9 @@
+ 
+ 	lockdep_assert_held(&dp->dp_lock);
+ 
++	if (!dp->rhead_peer_addr)
++		return -ESHUTDOWN;
++
+ 	tmp = rhashtable_lookup_get_insert_fast(dp->rhead_peer_addr, &peer->rhash_addr,
+ 						dp->rhash_peer_addr_param);
+ 	if (!tmp)
+@@ -308,6 +331,10 @@
+ 
+ 	lockdep_assert_held(&dp->dp_lock);
+ 
++	/* Teardown may already have retired the whole table. */
++	if (!dp->rhead_peer_addr)
++		return 0;
++
+ 	ret = rhashtable_remove_fast(dp->rhead_peer_addr, &peer->rhash_addr,
+ 				     dp->rhash_peer_addr_param);
+ 	if (ret && ret != -ENOENT)
