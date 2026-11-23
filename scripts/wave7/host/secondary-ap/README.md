@@ -131,6 +131,8 @@ server. The existing vendor fallback collector remains observational.
   scoped changes cleaned up on stop.
 - build-image.sh: deterministic native sysupgrade/SquashFS repacker.
 - test-stage.sh: valid/invalid role and boot acceptance tests.
+- ap-mlo-function-trace.sh: isolated finite AP mac80211/ath12k call
+  chronology with automatic tracefs cleanup, no AP installation.
 
 All scripts ShellCheck clean. Image packager verifies allowed root
 changes, special /dev/console inode, roundtrip extraction, 46 firmware
@@ -497,3 +499,31 @@ authorization-driven link activation and FW-driven link-state handling,
 respectively. Preserve the raw/derived manifests and AP observer; do
 not infer missing keys solely from RX silence or assume the second
 link carried data merely because its firmware STA_REC was accepted.
+
+
+### AP-side cross-chip MLO function chronology (diagnostic only)
+
+IPQ5332 root-Q6 raised its repeatable NoC address-decode fault about
+4.68 seconds after 2.4 GHz-primary MLO secondary-link activation.
+The host ath12k build lacks ath12k event tracepoints but exposes
+function-tracer targets. The AP-side diagnostic script records only
+eleven selected WMI/MLO/peer functions and six mac80211/cfg80211
+station/link/key events. It creates an isolated tracefs instance and
+takes a finite snapshot after tracing is stopped; the global tracing
+instance and AP filesystem are not changed.
+
+Run on the approved Asus management path via root SSH, with the exact
+existing pinned identity, BindInterface, BindAddress, IdentitiesOnly,
+StrictHostKeyChecking and UserKnownHostsFile options. Pass the script
+through stdin to sh -s with TAG EXPECTED_ROUTER_BOOT_UUID SECONDS;
+do not use ssh -n when providing stdin. Store stdout/stderr and
+SHA256 files off-host. Verify AP_TRACE_READY, AP_TRACE_SNAPSHOT_END,
+AP_TRACE_CLEANUP_OK, boot identity and ring-buffer overrun counters.
+
+The independent AP Q6-state monitor and guarded Wyse original-driver
+rollback must be ready before an active client repro. The eight-second
+idle trial idle_20261123_161530 completed with zero drops or overruns,
+correct AP boot and fully removed the trace instance. An earlier live
+trace_pipe attempt hung its SSH session because the reader survived
+the intended capture; that isolated instance was also removed. Only
+the finite snapshot implementation is supported.
