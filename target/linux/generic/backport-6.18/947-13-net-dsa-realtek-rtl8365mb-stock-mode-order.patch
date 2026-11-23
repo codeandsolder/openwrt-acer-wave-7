@@ -1,0 +1,121 @@
+From: Wave7 development <wave7-test@localhost>
+Subject: [PATCH] net: dsa: realtek: order RTL8367D SerDes configuration writes
+
+The exact Acer RTL8367D stock module selects the MAC6 SerDes mux
+before its tuning table, then programs RX, PA12, PA33 and mode in
+distinct transactions. Its RMW helpers write even when unchanged.
+The native driver instead selects mux/power/mode together after
+tuning. Preserve the stock order on the evidenced revision only.
+
+Retain existing reset, NWAY, MAC force and recovery behavior to
+isolate this experiment. No claim of hardware efficacy.
+
+Signed-off-by: Wave7 development <wave7-test@localhost>
+---
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -815,6 +815,7 @@
+  * @chip_ver: chip silicon revision
+  * @family: chip family
+  * @sds_pulse_recovery: stock-derived internal pulse supported on this chip
++ * @sds_ordered_mode: select and configure the lane in separate stock-order writes
+  * @extints: available external interfaces
+  * @jam_table: chip-specific initialization jam table
+  * @jam_size: size of the chip's jam table
+@@ -829,6 +830,7 @@
+ 	u32 chip_ver;
+ 	enum rtl8365mb_family family;
+ 	bool sds_pulse_recovery;
++	bool sds_ordered_mode;
+ 	const struct rtl8365mb_extint extints[RTL8365MB_MAX_NUM_EXTINTS];
+ 	const struct rtl8365mb_jam_tbl_entry *jam_table;
+ 	size_t jam_size;
+@@ -910,6 +912,7 @@
+ 		.chip_ver = 0x0020,
+ 		.family = RTL8365MB_FAMILY_D,
+ 		.sds_pulse_recovery = true,
++		.sds_ordered_mode = true,
+ 		.extints = {
+ 			{ 6, 0, PHY_INTF(SGMII) | PHY_INTF(HSGMII) },
+ 			{ 7, 1, PHY_INTF(MII) | PHY_INTF(TMII) |
+@@ -1834,6 +1837,7 @@
+ 	u32 misc_val;
+ 	u32 sds_mode;
+ 	u8 sds_index;
++	bool ordered_mode = mb->chip_info->sds_ordered_mode;
+ 	bool is_d;
+ 	u16 val;
+ 	int ret;
+@@ -1899,10 +1903,22 @@
+ 	/* The vendor driver clears the line rate bypass for all interface
+ 	 * modes except TMII.
+ 	 */
+-	ret = regmap_update_bits(priv->map, RTL8365MB_BYPASS_LINE_RATE_REG,
+-				 RTL8365MB_SDS_BYPASS_LINE_RATE_MASK, 0);
+-	if (ret)
+-		return ret;
++	ret = regmap_update_bits_base(priv->map, RTL8365MB_BYPASS_LINE_RATE_REG,
++				      RTL8365MB_SDS_BYPASS_LINE_RATE_MASK, 0,
++				      NULL, false, ordered_mode);
++	if (ret)
++		return ret;
++
++	/* Stock RTL8367D selects the lane before writing its tuning table.
++	 * An unchanged field still produces a physical register write.
++	 */
++	if (ordered_mode) {
++		ret = regmap_write_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0,
++					RTL8365MB_D_SDS_MISC_MAC6_SEL_SDS0);
++		if (ret)
++			return ret;
++	}
+ 
+ 	/* Tune the SerDes with vendor-prescribed parameters */
+ 	for (i = 0; i < sds_jam_size; i++) {
+@@ -1918,9 +1934,10 @@
+ 		 * sequence the whole 2-bit field (bits 7:6) is written, so
+ 		 * bit 7 is cleared as well.
+ 		 */
+-		ret = regmap_update_bits(priv->map, RTL8365MB_D_FIBER_CFG2_REG,
+-					 RTL8365MB_D_FIBER_CFG2_RX_DISABLE_MASK,
+-					 RTL8365MB_D_FIBER_CFG2_RX_DISABLE_SDS0);
++		ret = regmap_update_bits_base(priv->map, RTL8365MB_D_FIBER_CFG2_REG,
++					      RTL8365MB_D_FIBER_CFG2_RX_DISABLE_MASK,
++					      RTL8365MB_D_FIBER_CFG2_RX_DISABLE_SDS0,
++					      NULL, false, ordered_mode);
+ 		if (ret)
+ 			return ret;
+ 
+@@ -1937,8 +1954,29 @@
+ 			    RTL8365MB_SDS_MISC_MAC8_SEL_HSGMII_MASK;
+ 	}
+ 
+-	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
+-				 misc_mask, misc_val);
++	if (ordered_mode) {
++		/* The stock PA12, PA33 and mode writes are distinct ordered
++		 * transactions. Do not coalesce them into the final value.
++		 */
++		ret = regmap_write_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					RTL8365MB_D_SDS_MISC_PA12PC_EN,
++					RTL8365MB_D_SDS_MISC_PA12PC_EN);
++		if (ret)
++			return ret;
++
++		ret = regmap_write_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					RTL8365MB_D_SDS_MISC_PA33PC_EN,
++					RTL8365MB_D_SDS_MISC_PA33PC_EN);
++		if (ret)
++			return ret;
++
++		ret = regmap_write_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					RTL8365MB_D_SDS_MISC_MODE_FIELD_MASK,
++					sds_mode);
++	} else {
++		ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
++					 misc_mask, misc_val);
++	}
+ 	if (ret)
+ 		return ret;
+ 
