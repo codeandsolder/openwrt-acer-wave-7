@@ -52,14 +52,16 @@ for e in roc_wire mlo_roc_req mlo_roc_result roc_geometry roc_abort roc_band \
     key_result beacon_loss; do
     events+=("mt7925_lab/mt7925_lab_$e")
 done
-if [[ $variant == upstream-prefix22-authorize-primary-mld-trace ]]; then
+if [[ $variant == upstream-prefix22-authorize-primary-mld-trace ||
+      $variant == upstream-prefix22-authorize-single-link-trace ]]; then
     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
 fi
 if [[ $variant == upstream-prefix22-lifecycle-trace ||
       $variant == upstream-prefix22-primary-bss-band-trace ||
       $variant == upstream-prefix22-authorize-links-trace ||
       $variant == upstream-prefix22-authorize-bss-band-trace ||
-      $variant == upstream-prefix22-authorize-primary-mld-trace ]]; then
+      $variant == upstream-prefix22-authorize-primary-mld-trace ||
+      $variant == upstream-prefix22-authorize-single-link-trace ]]; then
     # BTF field fetching avoids hard-coded structures/offsets. Register only
     # these two named probes and remove the exact definitions at cleanup.
     [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
