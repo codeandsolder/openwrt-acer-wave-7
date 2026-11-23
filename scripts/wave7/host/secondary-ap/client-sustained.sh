@@ -246,6 +246,60 @@ early_ipv4_probe() (
     printf 'window_finished_epoch=%s\n' "$(date +%s.%N)"
     ip -s neigh show dev "$iface" || :
 )
+probe_start() {
+    local name=$1 count=$2 ip=$3 target=$4 family=$5 interval=.25
+    local interval_ms budget_s
+    local -a id_args=()
+
+    if (( timing_experiment )) &&
+       [[ $name == steady-* || $name == short-hold-* ]]; then
+        interval=.05
+    fi
+    if (( trace )); then
+        case "$name" in
+            immediate-v4) id_args=(-e 47601) ;;
+            immediate-v6) id_args=(-e 47602) ;;
+            steady-v4) id_args=(-e 47603) ;;
+            steady-v6) id_args=(-e 47604) ;;
+            *) return 2 ;;
+        esac
+    fi
+    # Bound a lost-packet -O test to cadence + recovery margin.
+    case $interval in
+        .05) interval_ms=50 ;;
+        .25) interval_ms=250 ;;
+        *) return 2 ;;
+    esac
+    budget_s=$(((count * interval_ms + 999) / 1000 + 25))
+    # Track timeout itself, not an outer subshell that can exit while
+    # ping remains alive. GNU timeout establishes its own process group.
+    LC_ALL=C timeout --signal=TERM --kill-after=2s "${budget_s}s" \
+        ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" \
+        -c "$count" -i "$interval" -W 1 "$target" \
+        > "$out/$name.txt" 2>&1 &
+    pings+=("$!")
+    ping_names+=("$name")
+    ping_counts+=("$count")
+}
+
+probe_wait_one() {
+    local index=$1
+    local pid=${pings[$index]} name=${ping_names[$index]}
+    local count=${ping_counts[$index]} rc=0
+
+    wait "$pid" || rc=$?
+    unset "pings[$index]" "ping_names[$index]" "ping_counts[$index]"
+    [[ $rc == 0 ]] &&
+        grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
+}
+
+probe() {
+    local index=${#pings[@]}
+
+    probe_start "$@" || return
+    probe_wait_one "$index"
+}
+
 cleanup() {
     local rc=$?
     trap - EXIT
@@ -550,60 +604,6 @@ check_link() {
       grep -Eq 'Link 0 BSSID ' <<< "$link" &&
       grep -Eq 'Link 1 BSSID ' <<< "$link"
 }
-probe_start() {
-    local name=$1 count=$2 ip=$3 target=$4 family=$5 interval=.25
-    local interval_ms budget_s
-    local -a id_args=()
-
-    if (( timing_experiment )) &&
-       [[ $name == steady-* || $name == short-hold-* ]]; then
-        interval=.05
-    fi
-    if (( trace )); then
-        case "$name" in
-            immediate-v4) id_args=(-e 47601) ;;
-            immediate-v6) id_args=(-e 47602) ;;
-            steady-v4) id_args=(-e 47603) ;;
-            steady-v6) id_args=(-e 47604) ;;
-            *) return 2 ;;
-        esac
-    fi
-    # Bound a lost-packet -O test to cadence + recovery margin.
-    case $interval in
-        .05) interval_ms=50 ;;
-        .25) interval_ms=250 ;;
-        *) return 2 ;;
-    esac
-    budget_s=$(((count * interval_ms + 999) / 1000 + 25))
-    # Track timeout itself, not an outer subshell that can exit while
-    # ping remains alive. GNU timeout establishes its own process group.
-    LC_ALL=C timeout --signal=TERM --kill-after=2s "${budget_s}s" \
-        ping "${id_args[@]}" "$family" -n -D -O -I "$iface" -I "$ip" \
-        -c "$count" -i "$interval" -W 1 "$target" \
-        > "$out/$name.txt" 2>&1 &
-    pings+=("$!")
-    ping_names+=("$name")
-    ping_counts+=("$count")
-}
-
-probe_wait_one() {
-    local index=$1
-    local pid=${pings[$index]} name=${ping_names[$index]}
-    local count=${ping_counts[$index]} rc=0
-
-    wait "$pid" || rc=$?
-    unset "pings[$index]" "ping_names[$index]" "ping_counts[$index]"
-    [[ $rc == 0 ]] &&
-        grep -Eq "^$count packets transmitted, $count received, (\\+0 duplicates, )?0% packet loss," "$out/$name.txt"
-}
-
-probe() {
-    local index=${#pings[@]}
-
-    probe_start "$@" || return
-    probe_wait_one "$index"
-}
-
 # This is a diagnostic, not a relaxation of the zero-loss acceptance gate.
 # Request only the dedicated lab SSID; never change the background scan policy.
 # Logs contain just the requested frequencies/status and existing iw events.
