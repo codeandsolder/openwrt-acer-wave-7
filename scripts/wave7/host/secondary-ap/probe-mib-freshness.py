@@ -416,18 +416,23 @@ def latch_packets(out,name):
     return packets
 
 
+def timed_witnesses(t0,bounds,packets,other,count):
+    lower,upper=bounds
+    # Only use the first 150 ms of the known 250 ms sleep.
+    window=(t0+upper+5_000_000,t0+150_000_000+lower-5_000_000)
+    expected=set(range(1,count+1))
+    physical=all(set(packets[k])==expected for k in (8,0)) and not any(other.values())
+    witnesses=sorted(seq for seq,request in packets[8].items()
+                     if seq in packets[0] and window[0]<=request<=packets[0][seq]<=window[1])
+    return window,physical,witnesses
+
+
 def assess_latch(probe,bounds,packets,other,count):
     lower,upper=bounds
     first,same,refresh=(probe[k] for k in ("initial","same","refreshed"))
     t0,t1,t2=(probe[k] for k in ("initial_ns","same_ns","refreshed_ns"))
     require(t0+200_000_000<=t1<=t2,"invalid diagnostic timing")
-    # The second selection cannot begin during the first 150 ms of the
-    # 250 ms uninterruptible sleep; allow extra capture/clock margins.
-    window=(t0+upper+5_000_000,t0+150_000_000+lower-5_000_000)
-    expected=set(range(1,count+1))
-    physical=all(set(packets[k])==expected for k in (8,0)) and not any(other.values())
-    witnesses=[seq for seq,request in packets[8].items()
-               if seq in packets[0] and window[0]<=request<=packets[0][seq]<=window[1]]
+    window,physical,witnesses=timed_witnesses(t0,bounds,packets,other,count)
     if not physical:
         kind="PACKET_PATH_MISMATCH"
     elif not first<=same<=refresh:
@@ -486,43 +491,79 @@ test "$(cat /proc/sys/kernel/random/boot_id)" = 'BOOT'
     return parse_probe(after[-1])
 
 
+def timed_traffic(boot,out,action):
+    wall_start,mono_start=time.time_ns(),time.monotonic_ns()
+    with clock_peer() as sample:
+        before=clock_samples(boot,sample)
+        filt=f"icmp and host {ROUTER} and host {PATHS['switch'][0]} and icmp[4:2] = {LATCH_ID}"
+        with capture_nics(out,filt):
+            ip,dev,*_=PATHS["switch"]
+            with (out/"ping.txt").open("xb") as log:
+                proc=subprocess.Popen(["ping","-n","-D","-I",dev,"-I",ip,"-e",str(LATCH_ID),
+                    "-s","64","-c",str(LATCH_COUNT),"-i","0.01","-W","1",ROUTER],
+                    stdout=log,stderr=subprocess.STDOUT)
+                try:
+                    time.sleep(.5)
+                    require(proc.poll() is None,"probe traffic exited before trigger")
+                    result=action(sample)
+                    require(proc.wait(timeout=15)==0,"probe traffic failed")
+                finally:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+        after=clock_samples(boot,sample)
+    require(abs(time.time_ns()-wall_start-(time.monotonic_ns()-mono_start))<5_000_000,
+            "host wall-clock step during capture")
+    (out/"clock.json").write_text(json.dumps({"before":before,"after":after},indent=2)+"\n")
+    captures={name:latch_packets(out,name) for name in PATHS}
+    return result,clock_bounds(before,after),captures
+
+
+def checked_delta(initial,final):
+    changes=delta(initial,final)
+    require(all(changes[p][k]>=0 for p in MACS for k in FIELDS),"counters went backwards")
+    require(not any(changes[p][k] for p in MACS for k in ERRORS),"physical switch errors during probe")
+    return changes
+
+
 def latch(out):
     with lab_session(out):
         require(remote(f"cat {PARAM}").strip()=="N","diagnostic parameter absent or armed")
         initial=snapshot(out,"initial","mib-diag")
         require(initial["fields"]["noc"]=="0","diagnostic boot has historical NoC faults")
         boot=initial["fields"]["boot"]
-        wall_start,mono_start=time.time_ns(),time.monotonic_ns()
-        with clock_peer() as sample:
-            before=clock_samples(boot,sample)
-            filt=f"icmp and host {ROUTER} and host {PATHS['switch'][0]} and icmp[4:2] = {LATCH_ID}"
-            with capture_nics(out,filt):
-                ip,dev,*_=PATHS["switch"]
-                with (out/"ping.txt").open("xb") as log:
-                    proc=subprocess.Popen(["ping","-n","-D","-I",dev,"-I",ip,"-e",str(LATCH_ID),
-                        "-s","64","-c",str(LATCH_COUNT),"-i","0.01","-W","1",ROUTER],
-                        stdout=log,stderr=subprocess.STDOUT)
-                    try:
-                        time.sleep(.5)
-                        require(proc.poll() is None,"probe traffic exited before trigger")
-                        probe=trigger_latch(boot,out)
-                        require(proc.wait(timeout=15)==0,"probe traffic failed")
-                    finally:
-                        if proc.poll() is None:
-                            proc.terminate()
-                            proc.wait(timeout=5)
-            after=clock_samples(boot,sample)
-        require(abs(time.time_ns()-wall_start-(time.monotonic_ns()-mono_start))<5_000_000,
-                "host wall-clock step during capture")
-        (out/"clock.json").write_text(json.dumps({"before":before,"after":after},indent=2)+"\n")
+        probe,bounds,captures=timed_traffic(boot,out,lambda sample:trigger_latch(boot,out))
         final=snapshot(out,"final","mib-diag")
-        changes=delta(initial,final)
-        require(all(changes[p][k]>=0 for p in MACS for k in FIELDS),"counters went backwards")
-        require(not any(changes[p][k] for p in MACS for k in ERRORS),"physical switch errors during probe")
+        changes=checked_delta(initial,final)
         require(remote(f"cat {PARAM}").strip()=="N","probe remained armed")
-        captures={name:latch_packets(out,name) for name in PATHS}
-        report=assess_latch(probe,clock_bounds(before,after),captures["switch"],captures["direct"],LATCH_COUNT)
+        report=assess_latch(probe,bounds,captures["switch"],captures["direct"],LATCH_COUNT)
         report.update(boot=boot,variant="mib-diag",counter_deltas=changes)
+        (out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
+    print(json.dumps(report,indent=2))
+
+
+def clock_check(variant,out):
+    # Read-only timing rehearsal, not a latch experiment. No driver
+    # parameter is accessed and no synthetic counter result is generated.
+    with lab_session(out):
+        initial=snapshot(out,"initial",variant)
+        boot=initial["fields"]["boot"]
+        def mark(sample):
+            actual,uptime=sample().split()
+            require(actual==boot and re.fullmatch(r"\d+\.\d{2}",uptime),"invalid timing mark")
+            (out/"timing-mark.txt").write_text(f"{actual} {uptime}\n")
+            return ns(uptime)+10_000_000
+        t0,bounds,captures=timed_traffic(boot,out,mark)
+        changes=checked_delta(initial,snapshot(out,"final",variant))
+        window,physical,witnesses=timed_witnesses(
+            t0,bounds,captures["switch"],captures["direct"],LATCH_COUNT)
+        require(physical and witnesses,"timing rehearsal lacks physical witnesses")
+        report={"kind":"TIMING_REHEARSAL_PASS","variant":variant,"boot":boot,
+                "clock_offset_uncertainty_ns":bounds[1]-bounds[0],
+                "conservative_window_epoch_ns":window,"witness_sequences":witnesses,
+                "requests":len(captures["switch"][8]),"replies":len(captures["switch"][0]),
+                "wrong_path_frames":sum(map(len,captures["direct"].values())),
+                "counter_deltas":changes}
         (out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     print(json.dumps(report,indent=2))
 
@@ -581,6 +622,9 @@ if __name__=="__main__":
     p=sub.add_parser("capture")
     p.add_argument("variant",choices=PINS)
     p.add_argument("out",type=Path)
+    c=sub.add_parser("clock-check")
+    c.add_argument("variant",choices=PINS)
+    c.add_argument("out",type=Path)
     q=sub.add_parser("latch")
     q.add_argument("out",type=Path)
     args=parser.parse_args()
@@ -591,5 +635,7 @@ if __name__=="__main__":
         require(args.out.parent.resolve()==expected.resolve(),"output must be in MIB observations")
         if args.command=="latch":
             latch(args.out)
+        elif args.command=="clock-check":
+            clock_check(args.variant,args.out)
         else:
             capture(args.variant,args.out)
