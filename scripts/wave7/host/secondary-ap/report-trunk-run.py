@@ -58,7 +58,31 @@ def report(run):
     log = (run / "observer.log").read_text()
     match = re.search(r"\b(?:AUTONOMOUS_)?SOAK_PASS seconds=(\d+)\b", log)
     soak_seconds = int(match[1]) if match else 0
-    dmesg = (run / "final-dmesg.txt").read_text()
+    restored_boot = None
+    if status == "RESTORED":
+        raw = (run / "pre-rollback.txt").read_text()
+        marker = f"====BOOT====\n{boot}\n====DMESG====\n"
+        if not raw.startswith(marker) or "====ETHERNET====\n" not in raw:
+            raise ValueError("pre-rollback evidence does not match trial boot")
+        dmesg, tail = raw[len(marker):].split("====ETHERNET====\n", 1)
+        if "====END_BOOT====\n" in tail and not tail.endswith(f"====END_BOOT====\n{boot}\n"):
+            raise ValueError("pre-rollback boot changed")
+        restored = dict(line.split("=", 1) for line in
+                        (run / "restored-state.txt").read_text().splitlines() if "=" in line)
+        restored_boot = restored.get("boot")
+        if (not restored_boot or not BOOT_RE.fullmatch(restored_boot) or restored_boot == boot or
+            not all(restored.get(k) == v for k, v in {
+                "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
+                "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
+                "token": "0", "local_ready": "1", "switch_verified": "1",
+                "direct_verified": "1",
+            }.items())):
+            raise ValueError("missing verified restored 0491 identity")
+    elif status == "SOAK_PASS":
+        dmesg = (run / "final-dmesg.txt").read_text()
+    else:
+        raise ValueError("trial not terminal or missing supported evidence")
+
     trigger = [line for line in dmesg.splitlines() if
                "SerDes CPU port" in line and "corrupt-only ingress" in line]
     link_loss = [line for line in dmesg.splitlines() if
@@ -81,6 +105,7 @@ def report(run):
     clean = complete and no_error and all(r["switch"] for r in accepted)
     return {
         "boot": boot, "status": status, "soak_seconds": soak_seconds,
+        "restored_boot": restored_boot,
         "autonomous": autonomous, "samples": len(rows), "first_uptime": rows[0]["uptime"],
         "last_uptime": rows[-1]["uptime"],
         "first_accepted_uptime": accepted[0]["uptime"] if accepted else None,
