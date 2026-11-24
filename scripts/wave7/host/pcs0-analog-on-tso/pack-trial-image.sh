@@ -30,7 +30,7 @@ builder=$(git -C "$repo" rev-parse HEAD)
 [[ $(digest "$parent") == "$parent_sha" ]] || fail 'parent digest'
 (cd "$modules"; sha256sum -c SHA256SUMS)
 report="$modules/report.json"
-[[ $(jq -er .parent_image_sha256 "$report") == "$parent_sha" ]] || fail 'module parent'
+[[ $(jq -er .parent_image_sha256 "$report") == "$module_parent_sha" ]] || fail 'module parent'
 [[ $(jq -er .baseline_byte_identical "$report") == true ]] || fail 'baseline parity'
 module_builder=$(jq -er .builder_commit "$report")
 [[ $module_builder == "$expected_module_builder" ]] || fail 'module builder'
