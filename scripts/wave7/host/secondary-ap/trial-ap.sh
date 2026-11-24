@@ -638,6 +638,35 @@ trunk_fault_episode() {
              new["cpu_fragments"]>old["cpu_fragments"]) ? 1 : 0
     }' <(printf '%s\n' "$previous") <(printf '%s\n' "$current")
 }
+# Qualify a persistent switched-management miss independently of FCS.
+# Capture distinct failure signatures without repeating a sample every poll.
+trunk_fault_class() {
+  local previous=$1 current=$2 corrupt=$3
+  awk -F= -v corrupt="$corrupt" '
+    FNR==NR {old[$1]=$2; next}
+    {new[$1]=$2}
+    END {
+      if(old["boot"]!=new["boot"] || new["boot"]=="" ||
+         new["uptime"] !~ /^[0-9]+$/ || new["uptime"]<60) exit
+      n=split("keep bootfail switch_verified direct_verified q6 ap noc", keys, " ")
+      split("1 0 0 1 3 2 0", expected, " ")
+      for(i=1;i<=n;i++)
+        if(old[keys[i]]!=expected[i] || new[keys[i]]!=expected[i]) exit
+      if(corrupt==1) {print "corrupt-only"; exit}
+      n=split("cpu_fcs cpu_fragments cpu_drops cpu_ucast cpu_mcast cpu_bcast xgmac_tx_frames xgmac_rx_frames", keys, " ")
+      for(i=1;i<=n;i++) {
+        k=keys[i]
+        if(old[k] !~ /^[0-9]+$/ || new[k] !~ /^[0-9]+$/ || new[k]<old[k]) exit
+        d[k]=new[k]-old[k]
+      }
+      if(d["cpu_fcs"]+d["cpu_fragments"]+d["cpu_drops"]==0 &&
+         d["cpu_ucast"]+d["cpu_mcast"]+d["cpu_bcast"]>0 &&
+         d["xgmac_tx_frames"]>0 && d["xgmac_rx_frames"]==0) {
+        print "rx-silent"; exit
+      }
+      print "switch-miss"
+    }' <(printf '%s\n' "$previous") <(printf '%s\n' "$current")
+}
 trunk_error_key() {
   printf '%s:%s:%s\n' "$(value "$1" cpu_fcs)" "$(value "$1" cpu_fragments)" "$(value "$1" cpu_drops)"
 }
@@ -1112,6 +1141,18 @@ if [[ $mode == --selftest ]]; then
        $(trunk_fault_episode "$more_error" "$base_fault" 1) == 0 &&
        $(trunk_fault_episode "$more_error" "$(sed 's/^boot=A/boot=B/' <<< "$more_error")" 1) == 0 ]] ||
       fatal 'corrupt-only episode detection mismatch'
+    qualified=$base_fault$'\nuptime=60\nkeep=1\nbootfail=0\nswitch_verified=0\ndirect_verified=1\nq6=3\nap=2\nnoc=0\nxgmac_tx_frames=10\nxgmac_rx_frames=0'
+    silent=$(sed -e 's/^cpu_mcast=2/cpu_mcast=3/' -e 's/^xgmac_tx_frames=10/xgmac_tx_frames=11/' <<< "$qualified")
+    [[ $(trunk_fault_class "$qualified" "$silent" 0) == rx-silent &&
+       $(trunk_fault_class "$qualified" "$silent" 1) == corrupt-only &&
+       $(trunk_fault_class "$qualified" "$qualified" 0) == switch-miss &&
+       $(trunk_fault_class "$qualified" "$(sed 's/^xgmac_rx_frames=0/xgmac_rx_frames=1/' <<< "$silent")" 0) == switch-miss ]] ||
+      fatal 'fault classification mismatch'
+    for change in boot=B uptime=59 keep=0 bootfail=1 switch_verified=1 direct_verified=0 q6=2 ap=1 noc=1 cpu_mcast=1 xgmac_tx_frames=0 xgmac_rx_frames=missing; do
+      field=${change%%=*}
+      bad=$(sed "s/^$field=.*/$change/" <<< "$silent")
+      [[ -z $(trunk_fault_class "$qualified" "$bad" 0) ]] || fatal "false fault snapshot: $change"
+    done
   fi
   if restore_profile; then
     restore_source_valid "$s"$'\napproval=0' || fatal 'failed experiment restore source rejected'
@@ -1293,7 +1334,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
     trunk_counter_header > "$out/trunk-counters.tsv"
     xgmac_counter_header > "$out/trunk-xgmac.tsv"
   fi
-  fault_snapshot_boot=''
+  declare -A fault_snapshots=()
   previous_trunk_state=''
   fault_episode=0
   restore() {
@@ -1381,23 +1422,22 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           fi
           last_errors=$errors
         fi
-        # Capture only after autonomous commitment, so attestation and
-        # the firstboot watchdog are unaffected. At most one bounded sample.
+        # Capture after commitment and two consecutive qualified misses.
+        # Preserve distinct signatures even if a different fault appeared first.
         if [[ $switch_module_trial == 1 ]]; then
           fault_episode=$(trunk_fault_episode "$previous_trunk_state" "$s" "$fault_episode")
+          fault_class=$(trunk_fault_class "$previous_trunk_state" "$s" "$fault_episode")
           previous_trunk_state=$s
-        fi
-        if [[ $switch_module_trial == 1 && $fault_snapshot_boot != "$boot" &&
-              $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 &&
-              $(value "$s" switch_verified) == 0 && $(value "$s" direct_verified) == 1 &&
-              $(value "$s" noc) == 0 && $fault_episode == 1 ]]; then
-          fault_snapshot_boot=$boot
-          if timeout 8 uv run --no-project --offline --python /usr/bin/python3 python "$(dirname "$(realpath "$0")")/snapshot-trunk-pcs.py" supervised "$boot" "$rev" > "$out/fault-pcs-$boot.json" 2> "$out/fault-pcs-$boot.log"; then
-            log "TRUNK_FAULT_PCS_CAPTURED boot=$boot"
-          else
-            log "TRUNK_FAULT_PCS_CAPTURE_FAILED boot=$boot"
+          if [[ -n $fault_class && ! ${fault_snapshots[$boot-$fault_class]+seen} ]]; then
+            fault_snapshots[$boot-$fault_class]=1
+            fault_path="$out/fault-pcs-$boot-$fault_class"
+            if timeout 8 uv run --no-project --offline --python /usr/bin/python3 python "$(dirname "$(realpath "$0")")/snapshot-trunk-pcs.py" supervised "$boot" "$rev" > "$fault_path.json" 2> "$fault_path.log"; then
+              log "TRUNK_FAULT_PCS_CAPTURED boot=$boot class=$fault_class"
+            else
+              log "TRUNK_FAULT_PCS_CAPTURE_FAILED boot=$boot class=$fault_class"
+            fi
+            now=$(date +%s)
           fi
-          now=$(date +%s)
         fi
         # Authenticated AP preinit cannot commit bootfail=0 without this
         # independent key-only SSH check. Retry during the early boot; do

@@ -45,6 +45,11 @@ CLOCKS |= {"nss_cc_uniphy_port1_"+d+"_clk" for d in ("rx","tx")}
 CLOCKS.add("nss_cc_port1_mac_clk")
 PARENTS = ("nss_cc_port1_rx_clk_src","nss_cc_port1_tx_clk_src")
 XGMAC = probe["XGMAC"]
+MIB = tuple(f"if{direction}{kind}Pkts"
+            for direction in ("In", "Out")
+            for kind in ("Ucast", "Multicast", "Broadcast")) + (
+                "dot3StatsFCSErrors", "etherStatsFragments", "etherStatsDropEvents")
+
 COMMAND = r"""set -eu
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "rev=$(cat /rom/etc/openwrt_version)"
@@ -83,6 +88,8 @@ for reg in RTL_OFFSETS; do
 done
 echo '=== XGMAC ==='
 ethtool -S switch
+echo '=== COPPER ==='
+ethtool -S lan1
 echo '=== END ==='
 echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "end_uptime=$(cut -d' ' -f1 /proc/uptime)"
@@ -140,6 +147,17 @@ def parse_regs(lines, offsets, addr_width, val_width):
     return {name: regs[reg] for name, reg in offsets.items()}
 
 
+def parse_mib(lines, prefix):
+    result = {}
+    for line in lines:
+        match = re.fullmatch(r"\s*" + re.escape(prefix) + r"(\w+):\s+(\d+)", line)
+        if match and match[1] in MIB:
+            require(match[1] not in result, "duplicate directional MIB")
+            result[match[1]] = int(match[2])
+    require(set(result)==set(MIB), "missing directional MIB")
+    return result
+
+
 def parse(raw, boot, rev):
     sections = {"CORE":[]}
     active = "CORE"
@@ -151,7 +169,7 @@ def parse(raw, boot, rev):
             sections[active] = []
         else:
             sections[active].append(line)
-    require(list(sections)==["CORE","PCS","CLOCK","PARENT","NSSCC","RTL","XGMAC","END"],"incomplete sections")
+    require(list(sections)==["CORE","PCS","CLOCK","PARENT","NSSCC","RTL","XGMAC","COPPER","END"],"incomplete sections")
     core = {**fields(sections["CORE"]),**fields(sections["END"])}
     require(core["boot"]==core["end_boot"]==boot and core["rev"]==rev,"wrong boot or revision")
     require(core["peer"]=="192.168.76.2" and core["bootfail"]=="0","wrong management path or uncommitted boot")
@@ -176,7 +194,9 @@ def parse(raw, boot, rev):
     xgmac = probe["parse_xgmac"]("\n".join(sections["XGMAC"]))
     return {"core":core,"pcs":pcs,"clocks":clocks,"parents":parents,
             "nsscc":nsscc,"nsscc_decoded":decode(nsscc),
-            "rtl":rtl,"rtl_decoded":decode_rtl(rtl),"xgmac":xgmac}
+            "rtl":rtl,"rtl_decoded":decode_rtl(rtl),"xgmac":xgmac,
+            "cpu6_mib":parse_mib(sections["XGMAC"],"s00_p06_"),
+            "lan1_mib":parse_mib(sections["COPPER"],"")}
 
 
 def capture(variant,out):
@@ -218,10 +238,15 @@ def selftest():
     raw+="=== NSSCC ===\n"+"".join(f"{r}: 00000001\n" for r in NSSCC.values())
     raw+="=== RTL ===\n"+"".join(f"{r}: 0001\n" for r in RTL.values())
     raw+="=== XGMAC ===\n"+"".join(f" {n}: 10\n" for n in XGMAC)
+    raw+="".join(f" s00_p06_{n}: 11\n" for n in MIB)
+    raw+="=== COPPER ===\n"+"".join(f" {n}: 12\n" for n in MIB)
     raw+=f"=== END ===\nend_boot={boot}\nend_uptime=1.20\n"
     result=parse(raw,boot,rev)
     require(result["nsscc_decoded"]["rx"]["branch"]=={"enable":True,"halt":False},"decode")
     require(result["xgmac"]["rx_frames"]==10,"xgmac")
+    require(result["cpu6_mib"]["ifOutMulticastPkts"]==11 and
+            result["lan1_mib"]["ifInBroadcastPkts"]==12,"directional MIB")
+
     require(result["rtl"]["sds_misc"]==1,"RTL raw")
     example = {key:0 for key in RTL}
     example.update(sds_misc=0x0e12, mac6_force_ability=0x1075,
@@ -233,7 +258,9 @@ def selftest():
             decoded["mac6_select_sds0"] and decoded["pa12_enabled"] and
             decoded["pa33_enabled"] and decoded["fiber_rx_disable_field"]==1 and
             decoded["cpu6_selected"] and not decoded["dw8051_enabled"],"RTL decode")
-    for bad in (raw.replace("end_boot="+boot,"end_boot=bad"),
+    for bad in (raw.replace(" s00_p06_ifOutMulticastPkts: 11\n",""),
+                raw.replace(" ifInBroadcastPkts: 12\n"," ifInBroadcastPkts: 12\n ifInBroadcastPkts: 12\n"),
+                raw.replace("end_boot="+boot,"end_boot=bad"),
                 raw.replace("428: 00000001","429: 00000001"),
                 raw.replace("mii0_status=0x00000001\n",""),
                 raw.replace("1d11: 0001","1d11: XXXX"),

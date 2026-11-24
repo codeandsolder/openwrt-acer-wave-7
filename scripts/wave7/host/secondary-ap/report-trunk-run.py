@@ -48,7 +48,13 @@ def xgmac_report(run, mib_rows):
         mib={k:md1[k]-md0[k] for k in COUNTERS}
         reset=any(v<0 for v in (*mac.values(),*mib.values()))
         corrupt=not reset and mib["fcs"]+mib["fragments"]>0 and not any(mib[k] for k in ("ucast","mcast","bcast"))
-        intervals.append({"start_uptime":a["uptime"],"end_uptime":b["uptime"],
+        rx_silent = (not reset and md0["keep"] and md1["keep"] and
+                     not md0["switch"] and not md1["switch"] and
+                     not any(mib[k] for k in ERRORS) and
+                     not any(mac[k] for k in XGMAC_ERRORS) and
+                     sum(mib[k] for k in ("ucast","mcast","bcast")) > 0 and
+                     mac["tx_frames"] > 0 and mac["rx_frames"] == 0)
+        intervals.append({"rx_silent":bool(rx_silent),"start_uptime":a["uptime"],"end_uptime":b["uptime"],
                           "reset":reset,"corrupt_only":corrupt,"mib":mib,"xgmac":mac})
     corrupt=[r for r in intervals if r["corrupt_only"]]
     complete = len(rows)==len(expected)
@@ -65,6 +71,7 @@ def xgmac_report(run, mib_rows):
             "resets":resets,
             "corrupt_only_with_mac_tx_unicast":[r["end_uptime"] for r in corrupt if r["xgmac"]["tx_unicast"]>0],
             "corrupt_only_with_mac_tx_frames":[r["end_uptime"] for r in corrupt if r["xgmac"]["tx_frames"]>0],
+            "rx_silent_during_switch_miss":[r["end_uptime"] for r in intervals if r["rx_silent"]],
             "hardware_error_intervals":[r["end_uptime"] for r in intervals if not r["reset"] and any(r["xgmac"][k] for k in XGMAC_ERRORS)],
             "intervals":intervals}
 
@@ -97,7 +104,7 @@ def planned_restore_report(run):
             "samples": 0, "soak_seconds": 0}
 
 
-def report(run):
+def report(run, *, candidate_only=False):
     if ((run / "status").read_text().strip() == "RESTORED"
             and not (run / "latest-state.txt").exists()
             and (run / "preflight.txt").exists()):
@@ -148,7 +155,10 @@ def report(run):
     match = re.search(r"\b(?:AUTONOMOUS_)?SOAK_PASS seconds=(\d+)\b", log)
     soak_seconds = int(match[1]) if match else 0
     restored_boot = None
-    if status == "RESTORED":
+    if candidate_only and (status not in ("RESTORE_ISSUED","RESTORED","TIMEOUT") or
+                           "RESTORE_NATIVE_SYSUPGRADE" not in log):
+        raise ValueError("candidate-only report requires an issued native restore")
+    if status == "RESTORED" or candidate_only:
         raw = (run / "pre-rollback.txt").read_text()
         marker = f"====BOOT====\n{boot}\n====DMESG====\n"
         if not raw.startswith(marker) or "====ETHERNET====\n" not in raw:
@@ -156,17 +166,18 @@ def report(run):
         dmesg, tail = raw[len(marker):].split("====ETHERNET====\n", 1)
         if "====END_BOOT====\n" in tail and not tail.endswith(f"====END_BOOT====\n{boot}\n"):
             raise ValueError("pre-rollback boot changed")
-        restored = dict(line.split("=", 1) for line in
-                        (run / "restored-state.txt").read_text().splitlines() if "=" in line)
-        restored_boot = restored.get("boot")
-        if (not restored_boot or not BOOT_RE.fullmatch(restored_boot) or restored_boot == boot or
-            not all(restored.get(k) == v for k, v in {
-                "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
-                "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
-                "token": "0", "local_ready": "1", "switch_verified": "1",
-                "direct_verified": "1",
-            }.items())):
-            raise ValueError("missing verified restored 0491 identity")
+        if status == "RESTORED":
+            restored = dict(line.split("=", 1) for line in
+                            (run / "restored-state.txt").read_text().splitlines() if "=" in line)
+            restored_boot = restored.get("boot")
+            if (not restored_boot or not BOOT_RE.fullmatch(restored_boot) or restored_boot == boot or
+                not all(restored.get(k) == v for k, v in {
+                    "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
+                    "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
+                    "token": "0", "local_ready": "1", "switch_verified": "1",
+                    "direct_verified": "1",
+                }.items())):
+                raise ValueError("missing verified restored 0491 identity")
     elif status == "SOAK_PASS":
         dmesg = (run / "final-dmesg.txt").read_text()
     else:
@@ -217,11 +228,16 @@ def report(run):
         "classification": (
             "CLEAN_BOOT_NO_CORRUPTION_OBSERVED" if clean and not recovery_seen else
             "CORRUPTION_TRIGGER_OBSERVED_REVIEW_RECOVERY" if trigger else
+            "RX_SILENT_DURING_SWITCH_FAILURE" if xgmac and xgmac["rx_silent_during_switch_miss"] else
             "LINK_RECOVERY_OBSERVED_REVIEW_RECOVERY" if recovery_seen else
             "REVIEW_REQUIRED"),
     }
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: report-trunk-run.py RUN_DIR")
-    print(json.dumps(report(Path(sys.argv[1])), indent=2))
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("run",type=Path)
+    parser.add_argument("--candidate-only",action="store_true",
+                        help="summarize a failed candidate after restore issuance, without claiming healthy rollback")
+    args=parser.parse_args()
+    print(json.dumps(report(args.run,candidate_only=args.candidate_only), indent=2))

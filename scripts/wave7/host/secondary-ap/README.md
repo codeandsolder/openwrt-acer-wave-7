@@ -920,3 +920,20 @@ The next *read-only* RX trace variant includes existing
 mt7925_lab_absence as well as rxdesc and rx_frame to collect exactly
 that missing BSS/absence/free-quota information. Only a future
 guarded hardware trial can distinguish causality.
+
+### Error-free receive blackholes and rollback evidence
+
+The observer classifies two consecutive committed, independently
+authenticated management failures (with radio state healthy) as
+corrupt-only, RX-silent with valid ingress and MAC TX progress, or
+other switch misses. Each distinct class gets one bounded snapshot
+per boot. Snapshot includes CPU6 and copper directional MIBs as well
+as XGMAC and PCS/NSSCC/RTL state; absence of MAC RX progress alone
+does not establish what happened on the physical reverse lane.
+
+If a native restore has been issued but the approved image has not
+qualified its own switched path, report-trunk-run.py RUN_DIR
+--candidate-only summarizes the stopped candidate using boot-bound
+pre-rollback evidence. It does not certify a successful rollback.
+Keep the independently observed rollback fault under its own boot ID.
+Normal terminal archival still requires SOAK_PASS or a verified RESTORED.
