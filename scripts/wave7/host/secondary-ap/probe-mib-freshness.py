@@ -16,6 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
+import runpy
 import signal
 import select
 import subprocess
@@ -27,13 +28,8 @@ PATHS = {
     "direct": ("192.168.76.2", "enp4s0f4u2u4", "762", "00:e0:4c:68:00:6d", "2500"),
     "switch": ("192.168.76.250", "enp4s0f4u2u2u4", "763", "00:e0:4c:68:01:45", "1000"),
 }
-PINS = {
-    "mib-diag": ("022d0978e9", "192835d8344c5341b4f5dc7bdb43da000d4568252b78a064c39c82dc7e5c995e"),
-    "0498": ("f9aa3e1fa3", "ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91"),
-    "mib-refresh": ("14a0f757e7", "0675df8af2c490bb5957be5cc2d2124c6500cdcf01d09cef02b744d5e090a485"),
-    "stock-order": ("472043f203", "2d0da46a3bb51ebc52d4b70c3e31a4808bcf3a82955bf1b4414375d407aff319"),
-    "force-order": ("b9db617b17", "bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e"),
-}
+IDENTITIES = runpy.run_path(str(Path(__file__).with_name("report-ordering-cohort.py")))["PINS"]
+PINS = {name: pin[:2] for name, pin in IDENTITIES.items()}
 FIELDS = ("ifInUcastPkts", "ifOutUcastPkts", "ifInOctets", "ifOutOctets",
           "dot3StatsFCSErrors", "etherStatsFragments", "etherStatsDropEvents")
 ERRORS = FIELDS[4:]
@@ -65,6 +61,16 @@ p=lib/modules/6.18.60/rtl8365mb.ko
 echo "module=$(sha256sum /$p | cut -d' ' -f1)"
 echo "module_rom=$(sha256sum /rom/$p | cut -d' ' -f1)"
 echo "module_live=$(cat /sys/module/rtl8365mb/initstate)"
+for item in pcs:pcs-qcom-ipq9574:pcs_qcom_ipq9574 ppe:qcom-ppe:qcom_ppe; do
+    name=${item%%:*}; rest=${item#*:}; file=${rest%%:*}; mod=${rest#*:}
+    p=lib/modules/6.18.60/$file.ko
+    echo "${name}_sha=$(sha256sum /$p | cut -d' ' -f1)"
+    echo "${name}_rom_sha=$(sha256sum /rom/$p | cut -d' ' -f1)"
+    echo "${name}_live=$(cat /sys/module/$mod/initstate)"
+    echo "${name}_taint=$(cat /sys/module/$mod/taint)"
+done
+echo "manifest_handoff_patch=$(sed -n 's/^trial_pcs0_handoff_patch_commit=//p' /rom/etc/wave7-role-profile)"
+echo "manifest_feature_patch=$(sed -n 's/^trial_edma_feature_init_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
 echo '=== CPU ==='
 ethtool -S switch
@@ -129,12 +135,15 @@ def parse_snapshot(raw, variant):
             if match and match[1] in FIELDS:
                 require(match[1] not in sections[port], f"duplicate {port} counter {match[1]}")
                 sections[port][match[1]] = int(match[2])
-    commit, module = PINS[variant]
+    commit, module, pcs, ppe, handoff, feature = IDENTITIES[variant]
     expected = {"rev": f"r0+38346-{commit}-ap-dhcp-guard8",
                 "peer": PATHS["direct"][0], "bootfail":"0", "keep":"1",
                 "q6":"3", "lan":"2500", "lan1":"1000",
                 "module":module, "module_rom":module, "module_live":"live",
-                "module_upper_clear":"1"}
+                "module_upper_clear":"1",
+                "pcs_sha":pcs, "pcs_rom_sha":pcs, "pcs_live":"live", "pcs_taint":"",
+                "ppe_sha":ppe, "ppe_rom_sha":ppe, "ppe_live":"live", "ppe_taint":"",
+                "manifest_handoff_patch":handoff, "manifest_feature_patch":feature}
     require(BOOT.fullmatch(fields["boot"]) and fields["end_boot"] == fields["boot"], "mixed boot")
     require(all(fields.get(k)==v for k,v in expected.items()), "snapshot identity or link mismatch")
     require(fields["noc"].isdecimal(), "invalid NoC count")

@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -29,6 +29,10 @@ candidate_worker_patch=''
 candidate_worker_marker=0
 candidate_down_patch=''
 candidate_serial_patch=''
+candidate_handoff_patch=''
+candidate_feature_patch=''
+source_pcs_sha=''
+source_ppe_sha=''
 accepted_phy_patch=''
 accepted_fit_sha=''
 accepted_phy_marker=0
@@ -104,7 +108,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order|mib-diag|source-reboot|return-0498)
+  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|source-reboot|return-0498)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -121,6 +125,20 @@ case "$profile" in
         candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
         base="$guard8/serial-speed-dhcp-guard8"
         candidate_artifact=wave7-serial-speed-dhcp-guard8-sysupgrade.bin
+        ;;
+      pcs0-handoff)
+        candidate_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
+        candidate_builder=5315aec9233753a3c26aaa4022307ac8fd99a9b1
+        expected_candidate_sha=662d82b2f3721cfcd0a021310438077b342ead6e7316332134588963f2fe9a93
+        candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+        candidate_handoff_patch=6eeae4dd45ab4ebb7c9cb296dc45d53470677c5b
+        ;;
+      edma-feature-init)
+        candidate_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
+        candidate_builder=ac850f0295db7c67b80cc4bc0c9f8d01610cc599
+        expected_candidate_sha=088e4b388cf56ff2f8255c43b686a229afbd751a8a7c9bfbc901d6beb50dbfdd
+        candidate_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
+        candidate_feature_patch=7ea0722a9af6bd078005052ed1c209f07b739aaf
         ;;
       mib-diag)
         candidate_switch_patch=022d0978e9b87af26926addd237841ca57f698dc
@@ -171,6 +189,21 @@ case "$profile" in
     source_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
     source_module_sha=$accepted_module_sha
     source_switch_patch=$accepted_switch_patch
+    source_pcs_sha=$candidate_pcs_sha
+    source_ppe_sha=$candidate_ppe_sha
+    if [[ $trial_kind == pcs0-handoff || $trial_kind == edma-feature-init ]]; then
+      source_rev=r0+38346-b9db617b17-ap-dhcp-guard8
+      source_builder=55c04ca358d57b7db68f7cf78bf67ea1b9760a13
+      source_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
+      source_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
+      if [[ $trial_kind == pcs0-handoff ]]; then
+        candidate_rev=r0+38346-6eeae4dd45-ap-dhcp-guard8
+        candidate_pcs_sha=44e34472f0edab4aae5b8349a7c8b3f42396ecb102ac12803e82ff1c03c8338a
+      else
+        candidate_rev=r0+38346-7ea0722a9a-ap-dhcp-guard8
+        candidate_ppe_sha=54d77cdbdce44a435afd767c16861fa7ce7fca3a8e754d3b4694f1dfdfd05876
+      fi
+    fi
     if [[ $trial_kind == source-reboot || $trial_kind == return-0498 ]]; then
       candidate_rev=$source_rev
       [[ $mode == --selftest || $mode == --check || $mode == --run || $mode == --watch ]] ||
@@ -442,6 +475,8 @@ read_state() {
     echo "manifest_worker_patch=$(sed -n "s/^trial_fifo_worker_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "fifo_worker_marker=$(dmesg | grep -Eq "wave7-diag: fifo-worker tick=[0-9]+ edge=[0-9]+ ss=[0-9]+ phylib=[01] result=0$" && echo 1 || echo 0)"
     echo "manifest_serial_patch=$(sed -n "s/^trial_serial_speed_patch_commit=//p" /rom/etc/wave7-role-profile)"
+    echo "manifest_handoff_patch=$(sed -n "s/^trial_pcs0_handoff_patch_commit=//p" /rom/etc/wave7-role-profile)"
+    echo "manifest_feature_patch=$(sed -n "s/^trial_edma_feature_init_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_relink_patch=$(sed -n "s/^trial_relink_patch_commit=//p" /rom/etc/wave7-role-profile)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
       $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
@@ -484,6 +519,11 @@ relink_matches() {
     "manifest_relink_patch=$patch" "manifest_serial_patch=$serial" "manifest_pcs_sha=$manifest_pcs" "manifest_ppe_sha=$manifest_ppe" module_upper_clear=1; do
     grep -Fxq "$exp" <<< "$s" || return 1
   done
+}
+experiment_matches() {
+  local s=$1 handoff=$2 feature=$3
+  grep -Fxq "manifest_handoff_patch=$handoff" <<< "$s" &&
+    grep -Fxq "manifest_feature_patch=$feature" <<< "$s"
 }
 phy_matches() {
   local s=$1 patch=$2 fit=$3 marker=$4
@@ -593,7 +633,8 @@ has_permanent_address() {
 # and when checking that the rollback has actually booted successfully.
 baseline_healthy() {
   if [[ $switch_module_trial == 1 ]]; then
-    grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" || return 1
+    grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" &&
+      experiment_matches "$1" '' '' || return 1
   fi
   role_healthy "$1" "$accepted_rev" "$accepted_mode" 2500 || return 1
   if [[ -n $accepted_builder ]]; then
@@ -631,7 +672,8 @@ switch_source_healthy() {
     grep -Fxq "manifest_switch_patch=$source_switch_patch" <<< "$1" &&
     trunk_path_healthy "$1" &&
     phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 &&
-    relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" '' '' "$candidate_serial_patch" &&
+    relink_matches "$1" "$source_pcs_sha" "$source_ppe_sha" '' '' "$candidate_serial_patch" &&
+    experiment_matches "$1" '' '' &&
     kernel_variant_matches "$1" '' '' 0 '' 0 ''
 }
 # Historical NoC is tolerated exclusively for rebooting the same
@@ -663,7 +705,8 @@ rollback_eligible() {
 }
 healthy() {
   if [[ $switch_module_trial == 1 ]]; then
-    grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$1" || return 1
+    grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$1" &&
+      experiment_matches "$1" "$candidate_handoff_patch" "$candidate_feature_patch" || return 1
   fi
   if [[ $trial_kind == mib-diag ]]; then
     grep -Fxq mib_probe=N <<< "$1" || return 1
@@ -790,11 +833,15 @@ if [[ $mode == --selftest ]]; then
     fi
   fi
   if [[ $switch_module_trial == 1 ]]; then
-    s+=$(printf '\nmanifest_switch_patch=%s' "$candidate_switch_patch")
+    s+=$(printf '\nmanifest_switch_patch=%s\nmanifest_handoff_patch=%s\nmanifest_feature_patch=%s' "$candidate_switch_patch" "$candidate_handoff_patch" "$candidate_feature_patch")
     source=$(sed -e "s/^rev=.*/rev=$source_rev/" -e "s/^builder_commit=.*/builder_commit=$source_builder/" \
       -e "s/^module_sha=.*/module_sha=$source_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$source_module_sha/" \
       -e "s/^manifest_module_sha=.*/manifest_module_sha=$source_module_sha/" -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$source_switch_patch/" <<< "$s")
     source+=$'\napproval=0\ntoken=1'
+    source=$(sed -e "s/^pcs_sha=.*/pcs_sha=$source_pcs_sha/" -e "s/^pcs_rom_sha=.*/pcs_rom_sha=$source_pcs_sha/" \
+      -e "s/^manifest_pcs_sha=.*/manifest_pcs_sha=$source_pcs_sha/" -e "s/^ppe_sha=.*/ppe_sha=$source_ppe_sha/" \
+      -e "s/^ppe_rom_sha=.*/ppe_rom_sha=$source_ppe_sha/" -e "s/^manifest_ppe_sha=.*/manifest_ppe_sha=$source_ppe_sha/" \
+      -e 's/^manifest_handoff_patch=.*/manifest_handoff_patch=/' -e 's/^manifest_feature_patch=.*/manifest_feature_patch=/' <<< "$source")
     if [[ $trial_kind == return-0498 ]]; then source+=$'\nmib_probe=N'; fi
     switch_source_healthy "$source" || fatal 'valid provisional source rejected'
     if [[ $trial_kind == return-0498 ]]; then
@@ -818,12 +865,17 @@ if [[ $mode == --selftest ]]; then
         fi
       done
     fi
-    for change in approval=1 token=0 manifest_switch_patch=wrong manifest_serial_patch=wrong pcs_sha=wrong management_peer=192.168.76.250; do
+    for change in approval=1 token=0 manifest_switch_patch=wrong manifest_serial_patch=wrong manifest_handoff_patch=wrong manifest_feature_patch=wrong pcs_sha=wrong ppe_sha=wrong management_peer=192.168.76.250; do
       if switch_source_healthy "$(sed "s/^${change%%=*}=.*/$change/" <<< "$source")"; then
         fatal "bad provisional source accepted: $change"
       fi
     done
-    if healthy "$(sed '/^manifest_switch_patch=/d' <<< "$s")"; then fatal 'missing switch patch accepted'; fi
+    for field in manifest_switch_patch manifest_handoff_patch manifest_feature_patch; do
+      if healthy "$(sed "/^$field=/d" <<< "$s")" ||
+         healthy "$(sed "s/^$field=.*/$field=wrong/" <<< "$s")"; then
+        fatal "missing or wrong experiment identity accepted: $field"
+      fi
+    done
   fi
   if [[ $trial_kind == mib-diag ]]; then
     s+=$'\nmib_probe=N'
@@ -913,7 +965,8 @@ if [[ $mode == --selftest ]]; then
     if healthy "$bad"; then fatal 'wrong independent FIFO marker accepted'; fi
   fi
   if [[ $switch_module_trial == 1 ]]; then
-    baseline=$(sed "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" <<< "$baseline")
+    baseline=$(sed -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" \
+      -e 's/^manifest_handoff_patch=.*/manifest_handoff_patch=/' -e 's/^manifest_feature_patch=.*/manifest_feature_patch=/' <<< "$baseline")
     for change in manifest_switch_patch=wrong manifest_switch_patch=MISSING; do
       if [[ $change == *=MISSING ]]; then
         bad=$(sed '/^manifest_switch_patch=/d' <<< "$baseline")
@@ -1303,7 +1356,9 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
             sleep 3
             continue
           fi
-          if [[ $switch_module_trial == 1 ]] && ! grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$s"; then
+          if [[ $switch_module_trial == 1 ]] &&
+             { ! grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$s" ||
+               ! experiment_matches "$s" "$candidate_handoff_patch" "$candidate_feature_patch"; }; then
             log SWITCH_ATTESTATION_BLOCKED_IDENTITY
             sleep 3
             continue

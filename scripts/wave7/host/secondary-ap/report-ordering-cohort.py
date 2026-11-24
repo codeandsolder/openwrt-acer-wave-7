@@ -7,23 +7,23 @@ import json
 from pathlib import Path
 import re
 
-# Compare full measured module identities, not directory names or abbreviated
-# source revisions. All of these are based on the exact same 0498 FIT/PCS/PPE.
-MODULES = {
-    "ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91": "0498",
-    "192835d8344c5341b4f5dc7bdb43da000d4568252b78a064c39c82dc7e5c995e": "mib-diag",
-    "0675df8af2c490bb5957be5cc2d2124c6500cdcf01d09cef02b744d5e090a485": "mib-refresh",
-    "2d0da46a3bb51ebc52d4b70c3e31a4808bcf3a82955bf1b4414375d407aff319": "stock-order",
-    "bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e": "force-order",
-}
-REVISIONS = {
-    "0498": "f9aa3e1fa3", "mib-diag": "022d0978e9", "mib-refresh": "14a0f757e7",
-    "stock-order": "472043f203", "force-order": "b9db617b17",
+# Exact identities, including the independently changed PCS/PPE modules.
+# Never group two experiments merely because the switch module is shared.
+PCS_0498 = "6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf"
+PPE_0498 = "1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0"
+RTL_0498 = "ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91"
+RTL_FORCE = "bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e"
+PINS = {
+    "0498": ("f9aa3e1fa3", RTL_0498, PCS_0498, PPE_0498, "", ""),
+    "mib-diag": ("022d0978e9", "192835d8344c5341b4f5dc7bdb43da000d4568252b78a064c39c82dc7e5c995e", PCS_0498, PPE_0498, "", ""),
+    "mib-refresh": ("14a0f757e7", "0675df8af2c490bb5957be5cc2d2124c6500cdcf01d09cef02b744d5e090a485", PCS_0498, PPE_0498, "", ""),
+    "stock-order": ("472043f203", "2d0da46a3bb51ebc52d4b70c3e31a4808bcf3a82955bf1b4414375d407aff319", PCS_0498, PPE_0498, "", ""),
+    "force-order": ("b9db617b17", RTL_FORCE, PCS_0498, PPE_0498, "", ""),
+    "pcs0-handoff": ("6eeae4dd45", RTL_0498, "44e34472f0edab4aae5b8349a7c8b3f42396ecb102ac12803e82ff1c03c8338a", PPE_0498, "6eeae4dd45ab4ebb7c9cb296dc45d53470677c5b", ""),
+    "edma-feature-init": ("7ea0722a9a", RTL_FORCE, PCS_0498, "54d77cdbdce44a435afd767c16861fa7ce7fca3a8e754d3b4694f1dfdfd05876", "", "7ea0722a9af6bd078005052ed1c209f07b739aaf"),
 }
 COMMON = {
     "manifest_fit_sha": "c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e",
-    "manifest_pcs_sha": "6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf",
-    "manifest_ppe_sha": "1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0",
     "manifest_phy_patch": "0418bb7af25d13406bb896696eb78541ccd2aa00",
     "manifest_serial_patch": "f9aa3e1fa3a541bb52e11223c7297cbd4dbc0ecc",
 }
@@ -77,13 +77,23 @@ def load_run(run):
     boot = state["boot"]
     if not BOOT.fullmatch(boot) or boot != report["boot"]:
         raise ValueError(f"{run}: boot mismatch")
-    module = state["module_sha"]
-    variant = MODULES[module]
-    expected_rev = f"r0+38346-{REVISIONS[variant]}-ap-dhcp-guard8"
-    if state["rev"] != expected_rev or any(state.get(k) != v for k, v in COMMON.items()):
+    variants = [name for name, pin in PINS.items()
+                if state["rev"] == f"r0+38346-{pin[0]}-ap-dhcp-guard8"]
+    if len(variants) != 1 or any(state.get(k) != v for k, v in COMMON.items()):
         raise ValueError(f"{run}: firmware identity outside matched cohort")
-    if any(state.get(k) != module for k in ("module_rom_sha", "manifest_module_sha")):
-        raise ValueError(f"{run}: module identity mismatch")
+    variant = variants[0]
+    _, module, pcs, ppe, handoff, feature = PINS[variant]
+    for prefix, digest in (("module", module), ("pcs", pcs), ("ppe", ppe)):
+        if any(state.get(k) != digest for k in
+               (f"{prefix}_sha", f"{prefix}_rom_sha", f"manifest_{prefix}_sha")):
+            raise ValueError(f"{run}: {prefix} identity mismatch")
+    # Historic sealed switch-only archives predate these two fields.
+    # Absence cannot satisfy a nonempty experiment pin.
+    if state.get("manifest_handoff_patch", "") != handoff or state.get("manifest_feature_patch", "") != feature:
+        raise ValueError(f"{run}: wrong experiment manifest")
+    if any(state.get(f"{prefix}_live") != "live" or state.get(f"{prefix}_taint") != ""
+           for prefix in ("pcs", "ppe")):
+        raise ValueError(f"{run}: PCS/PPE not verified live")
     if state["module_live"] != "1" or state["module_upper_clear"] != "1":
         raise ValueError(f"{run}: candidate module not verified live")
     direct = int(state["lan_speed"])
