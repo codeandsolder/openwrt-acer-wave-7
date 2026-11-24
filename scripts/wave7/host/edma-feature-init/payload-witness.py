@@ -122,6 +122,8 @@ def run_case(out, path, family, mode, mss, binary, variant, boot, payload):
     server = subprocess.Popen(probe["ssh_args"](cmd), stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, text=True)
     stdout, stderr = "", ""
+    failure = None
+    transferred = {}
     try:
         require(bool(select.select([server.stdout], [], [], 8)[0]), "peer readiness timeout")
         stdout = server.stdout.readline()
@@ -131,6 +133,8 @@ def run_case(out, path, family, mode, mss, binary, variant, boot, payload):
         stdout += tail
         require(server.returncode == 0 and stdout.splitlines()[-1].startswith("PASS "),
                 "remote peer did not verify transfer")
+    except Exception as exc:
+        failure = exc
     finally:
         if server.poll() is None:
             try:
@@ -143,11 +147,32 @@ def run_case(out, path, family, mode, mss, binary, variant, boot, payload):
         (out / (tag+"-peer.log")).write_text(stdout)
         (out / (tag+"-peer.err")).write_text(stderr)
     after = bench["sample"](out, tag+"-after", variant, boot)
-    record = {"case": tag, "payload_verified": True, "payload_bytes": transferred}
-    # Direct and switched physical byte witnesses remain mandatory even
-    # when the application payload is correct.
-    record.update(bench["assess"](before, after, path, transferred))
-    print(json.dumps({"case":tag,"payload_bytes":transferred}), flush=True)
+    record = {"case": tag, "payload_verified": failure is None, "payload_bytes": transferred}
+    def offload(raw, section):
+        chunk = raw.split("=== " + section + " ===\n", 1)[1]
+        chunk = chunk.split("=== ", 1)[0]
+        fields = {}
+        for key in ("tx_tso_packets", "tx_tso_drop_packets", "tx_gso_packets", "tx_gso_drop_packets"):
+            matches = re.findall(rf"^\s*{key}:\s+(\d+)$", chunk, re.M)
+            require(len(matches) == 1, "missing or duplicate EDMA offload counter")
+            fields[key] = int(matches[0])
+        return fields
+    section = "CPU" if path == "switch" else "DIRECT"
+    old = offload((out / (tag+"-before.txt")).read_text(), section)
+    new = offload((out / (tag+"-after.txt")).read_text(), section)
+    record["edma_delta"] = {key:new[key]-old[key] for key in old}
+    require(all(v >= 0 for v in record["edma_delta"].values()), "EDMA counter reset")
+    if failure is not None:
+        record.update(qualification="FAILED", error=str(failure))
+    else:
+        # Physical witnesses are mandatory even when payload is correct.
+        try:
+            record.update(bench["assess"](before, after, path, transferred))
+            record["qualification"] = "PASS"
+        except ValueError as exc:
+            record.update(qualification="FAILED", error=str(exc))
+    print(json.dumps({"case":tag,"payload_bytes":transferred,
+                      "qualification":record["qualification"],"edma_delta":record["edma_delta"]}), flush=True)
     return record
 
 
@@ -159,7 +184,7 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
     record = cohort["load_run"](args.run.resolve())
-    require(record and record["variant"] in ("force-order", "stock-order") and
+    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init") and
             record["outcome"] == "clean", "requires sealed clean ordering boot")
     variant, boot = record["variant"], record["boot"]
     peers = tuple(args.peer or PATHS)
@@ -172,6 +197,8 @@ def main():
     with probe["lab_session"](out):
         try:
             bench["sample"](out, "initial", variant, boot)
+            (out / "features.txt").write_text(remote(
+                'for d in switch lan1 lan br-lan; do echo "=== $d ==="; ethtool -k "$d"; done'))
             with remote_peer(out, boot, args.binary.resolve()) as binary:
                 for peer in peers:
                     for family in (socket.AF_INET, socket.AF_INET6):
@@ -181,7 +208,9 @@ def main():
                                                                 binary, variant, boot, payload))
                         report["cases"].append(run_case(out, peer, family, "udp", 0,
                                                         binary, variant, boot, payload))
-            report["status"] = "PASS"
+            report["status"] = "PASS" if all(c["qualification"] == "PASS" for c in report["cases"]) else "FAILED"
+            if report["status"] == "FAILED":
+                failure = ValueError("one or more payload qualification cases failed")
         except Exception as exc:
             report.update(status="FAILED", error=str(exc))
             failure = exc
