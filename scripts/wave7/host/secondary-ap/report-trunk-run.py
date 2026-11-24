@@ -68,7 +68,40 @@ def xgmac_report(run, mib_rows):
             "hardware_error_intervals":[r["end_uptime"] for r in intervals if not r["reset"] and any(r["xgmac"][k] for k in XGMAC_ERRORS)],
             "intervals":intervals}
 
+def planned_restore_report(run):
+    """A deliberate return to 0491 is not a candidate soak or fault."""
+    def state(name):
+        return dict(line.split("=", 1) for line in
+                    (run / name).read_text().splitlines() if "=" in line)
+    source = state("preflight.txt")
+    restored = state("restored-state.txt")
+    boot = source.get("boot", "")
+    target = restored.get("boot", "")
+    if (not BOOT_RE.fullmatch(boot) or not BOOT_RE.fullmatch(target)
+            or boot == target or not all(restored.get(k) == v for k, v in {
+                "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
+                "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
+                "token": "0", "local_ready": "1", "switch_verified": "1",
+                "direct_verified": "1",
+            }.items())):
+        raise ValueError("missing verified restored 0491 identity")
+    log = (run / "observer.log").read_text()
+    if f"ARMED predecessor={boot}" not in log or f"ACCEPTED_IMAGE_BOOT_HEALTHY boot={target}" not in log:
+        raise ValueError("restoration observer identity mismatch")
+    with (run / "trunk-counters.tsv").open() as f:
+        if list(csv.reader(f, delimiter="\t")) != [list(HEADER)]:
+            raise ValueError("planned restoration contains candidate samples")
+    return {"boot": boot, "source_revision": source.get("rev"),
+            "restored_boot": target, "restored_revision": restored["rev"],
+            "status": "RESTORED", "classification": "PLANNED_APPROVED_RESTORE",
+            "samples": 0, "soak_seconds": 0}
+
+
 def report(run):
+    if ((run / "status").read_text().strip() == "RESTORED"
+            and not (run / "latest-state.txt").exists()
+            and (run / "preflight.txt").exists()):
+        return planned_restore_report(run)
     with (run / "trunk-counters.tsv").open(newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         if tuple(reader.fieldnames or ()) != HEADER:

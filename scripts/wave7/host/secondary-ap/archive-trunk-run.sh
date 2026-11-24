@@ -19,7 +19,15 @@ flock -n 8 || { echo 'lab control held by another trial'; exit 2; }
 status=$(cat "$run/status")
 [[ $status == SOAK_PASS || $status == RESTORED ]] || { echo 'not a terminal qualified/restored trial'; exit 2; }
 [[ ! -e $run/evidence.sha256 ]] || { echo 'already archived'; exit 2; }
-boot=$(sed -n 's/^boot=//p' "$run/latest-state.txt")
+planned_restore=0
+if [[ $status == RESTORED && ${run##*/} == restore-0491-* ]]; then
+  planned_restore=1
+fi
+source_state=latest-state.txt
+if (( planned_restore )); then
+  source_state=preflight.txt
+fi
+boot=$(sed -n 's/^boot=//p' "$run/$source_state")
 [[ $boot =~ ^[a-f0-9-]{36}$ ]]
 opts=(-i /home/jan/.ssh/wave7-root-rsa -o "BindInterface=$iface" -o "BindAddress=$addr" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$base/known_hosts" -o ConnectTimeout=4)
 remote() { ssh -nT "${opts[@]}" root@192.168.76.1 "$@"; }
@@ -36,11 +44,15 @@ if [[ $status == RESTORED ]]; then
   capture_boot=$(sed -n 's/^boot=//p' "$run/restored-state.txt")
   [[ $capture_boot =~ ^[a-f0-9-]{36}$ && $capture_boot != "$boot" ]]
   prefix=restored
-  cp "$run"/{pre-rollback.txt,restored-state.txt} "$tmp/"
+  if (( !planned_restore )); then
+    cp "$run/pre-rollback.txt" "$tmp/"
+  fi
+  cp "$run/restored-state.txt" "$tmp/"
 fi
 remote "set -e; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'; dmesg; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'" > "$tmp/$prefix-dmesg.txt"
 remote "set -e; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'; cat /proc/sys/kernel/random/boot_id /proc/uptime /etc/openwrt_version; fw_printenv -n bootfail; ethtool -S switch; ethtool -S lan1; ethtool -S lan; iw dev ap-mld0 info; . /rom/lib/wave7/role-firstboot.sh; wave7_secondary_ap_local_ready && echo LOCAL_READY; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'" > "$tmp/$prefix-hardware.txt"
-cp "$run"/{status,observer.log,trunk-counters.tsv,latest-state.txt} "$tmp/"
+cp "$run"/{status,observer.log,trunk-counters.tsv} "$tmp/"
+cp "$run/$source_state" "$tmp/$source_state"
 if [[ -f $run/trunk-xgmac.tsv ]]; then cp "$run/trunk-xgmac.tsv" "$tmp/"; fi
 uv run --no-project --offline --python /usr/bin/python3 python "$script_dir/report-trunk-run.py" "$tmp" > "$tmp/report.json"
 for f in "$prefix-dmesg.txt" "$prefix-hardware.txt" report.json; do
@@ -70,12 +82,12 @@ if [[ $run == "$base"/serial-speed-dhcp-guard8/runs/source-reboot-* ||
 fi
 (
   cd "$run"
-  files=(status observer.log trunk-counters.tsv latest-state.txt "$prefix-dmesg.txt" "$prefix-hardware.txt" report.json)
+  files=(status observer.log trunk-counters.tsv "$source_state" "$prefix-dmesg.txt" "$prefix-hardware.txt" report.json)
   if [[ -f outgoing-boot.sha256 ]]; then
     sha256sum -c outgoing-boot.sha256
   fi
   for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256 fallback-watch.log pstore.txt ramoops-raw.bin pre-rollback.txt unhealthy-state.txt restored-state.txt restore.log attestation-latest.log trunk-xgmac.tsv; do
-    if [[ -f $f ]]; then files+=("$f"); fi
+    if [[ -f $f && $f != "$source_state" ]]; then files+=("$f"); fi
   done
   for f in fault-pcs-*.json fault-pcs-*.log; do
     if [[ -f $f ]]; then files+=("$f"); fi
