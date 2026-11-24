@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|pcs0-force-only|edma-feature-init|edma-sg-inheritance|edma-dsa-feature-check|pcs0-stock-analog|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|pcs0-force-only|edma-feature-init|edma-sg-inheritance|edma-dsa-feature-check|edma-tso-limits|pcs0-stock-analog|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -111,7 +111,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|pcs0-force-only|edma-feature-init|edma-sg-inheritance|edma-dsa-feature-check|pcs0-stock-analog|source-reboot|return-0498)
+  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|pcs0-force-only|edma-feature-init|edma-sg-inheritance|edma-dsa-feature-check|edma-tso-limits|pcs0-stock-analog|source-reboot|return-0498)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -156,6 +156,13 @@ case "$profile" in
         expected_candidate_sha=626fb7edb8dca51648f1fcda051b601881ad90efed2fb6a719541a47dac00759
         candidate_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
         candidate_feature_patch=88d0753b1b952e9707004585bcbed79fba9fd5f7
+        ;;
+      edma-tso-limits)
+        candidate_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
+        candidate_builder=3a63bf7b2d4468287bdf82ce20aced07add296ec
+        expected_candidate_sha=b40f782ad170126b465b8eaee51d753a7ab9d9273b49aa3791cc4caafb5b151d
+        candidate_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
+        candidate_feature_patch=c9e53ed451f64e24b0b840e462c548cd26268a37
         ;;
       pcs0-stock-analog)
         candidate_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
@@ -259,6 +266,16 @@ case "$profile" in
         candidate_rev=r0+38346-1595883d9c-ap-dhcp-guard8
         candidate_pcs_sha=330c24eddf25e7605f63f2a8f6b5bb7783e3d6c9bebce3390b541a3ae7e4cb38
       fi
+    fi
+    if [[ $trial_kind == edma-tso-limits ]]; then
+      source_rev=r0+38346-88d0753b1b-ap-dhcp-guard8
+      source_builder=b0fa2d0541ed3b756c6c77a3b4d99e2afdaafe02
+      source_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
+      source_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
+      source_ppe_sha=fe7809a89dee4ccc128fe825d975aa567b781989a4dd1ce20670b06f641af1f8
+      source_feature_patch=88d0753b1b952e9707004585bcbed79fba9fd5f7
+      candidate_rev=r0+38346-c9e53ed451-ap-dhcp-guard8
+      candidate_ppe_sha=6a3df3cd632e4a4aa14016b1d4ea2a72dc0adb191a483aa522f24be427bbe825
     fi
     if [[ $trial_kind == pcs0-stock-mode || $trial_kind == pcs0-force-only ]]; then
       candidate_rev=r0+38346-5685b30aa2-ap-dhcp-guard8
@@ -770,7 +787,7 @@ baseline_healthy() {
 # recovery image. The return transition only accepts the disarmed lab
 # diagnostic; all ordinary module trials accept exact 0498.
 switch_source_healthy() {
-  if [[ $trial_kind == pcs0-stock-mode || $trial_kind == pcs0-force-only || $trial_kind == edma-dsa-feature-check || $trial_kind == pcs0-stock-analog ]]; then
+  if [[ $trial_kind == pcs0-stock-mode || $trial_kind == pcs0-force-only || $trial_kind == edma-dsa-feature-check || $trial_kind == edma-tso-limits || $trial_kind == pcs0-stock-analog ]]; then
     [[ $(trunk_error_key "$1") == 0:0:0 ]] || return 1
   fi
   if [[ $trial_kind == return-0498 ]]; then

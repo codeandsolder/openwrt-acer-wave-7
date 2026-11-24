@@ -24,6 +24,7 @@ PINS = {
     "pcs0-handoff": ("6eeae4dd45", RTL_0498, "44e34472f0edab4aae5b8349a7c8b3f42396ecb102ac12803e82ff1c03c8338a", PPE_0498, "6eeae4dd45ab4ebb7c9cb296dc45d53470677c5b", ""),
     "edma-feature-init": ("7ea0722a9a", RTL_FORCE, PCS_0498, "54d77cdbdce44a435afd767c16861fa7ce7fca3a8e754d3b4694f1dfdfd05876", "", "7ea0722a9af6bd078005052ed1c209f07b739aaf"),
     "edma-dsa-feature-check": ("88d0753b1b", RTL_FORCE, PCS_0498, "fe7809a89dee4ccc128fe825d975aa567b781989a4dd1ce20670b06f641af1f8", "", "88d0753b1b952e9707004585bcbed79fba9fd5f7"),
+    "edma-tso-limits": ("c9e53ed451", RTL_FORCE, PCS_0498, "6a3df3cd632e4a4aa14016b1d4ea2a72dc0adb191a483aa522f24be427bbe825", "", "c9e53ed451f64e24b0b840e462c548cd26268a37"),
     "pcs0-stock-analog": ("1595883d9c", RTL_0498, "330c24eddf25e7605f63f2a8f6b5bb7783e3d6c9bebce3390b541a3ae7e4cb38", PPE_0498, "", ""),
     "edma-sg-inheritance": ("5d080c941b", RTL_FORCE, PCS_0498, "d916e3e68e6fa057bce328eba94baba30c695d8087a890bc925f281b6c08554c", "", "5d080c941b8905d8e8f4a22c1292856ef63791fc"),
 }
