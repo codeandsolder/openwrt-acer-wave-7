@@ -1,0 +1,11 @@
+# Retired identity: package and kernel validation now share one scoped build.
+# Keep disabled at repository level so stale branches cannot start duplicates.
+name: Retired Wave 7 package workflow
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  retired:
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "Use Wave 7 validation in packages mode." && exit 1
