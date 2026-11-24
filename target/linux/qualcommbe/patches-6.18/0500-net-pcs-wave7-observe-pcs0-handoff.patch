@@ -1,0 +1,72 @@
+From: codeandsolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] net: pcs: observe initial Wave7 PCS0 hardware mode
+
+Sample the dedicated switch PCS before publication and its first mode
+configuration. All five registers are already exposed by the bounded
+read-only debugfs snapshot. Do not alter any mode, clock or reset.
+
+Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -347,6 +347,41 @@
+ 	state->pause |= MLO_PAUSE_TXRX_MASK;
+ }
+ 
++/* Observe the dedicated Wave7 switch PCS before Linux changes its mode. */
++static void ipq_pcs_wave7_handoff(struct ipq_pcs *qpcs, const char *stage)
++{
++	struct resource *res;
++	unsigned int mode, misc, cal, ctrl, sts;
++	int ret;
++
++	if (!qpcs->mppe || !of_machine_is_compatible("acer,wave7"))
++		return;
++
++	res = platform_get_resource(to_platform_device(qpcs->dev),
++				    IORESOURCE_MEM, 0);
++	if (!res || res->start != 0x7a00000)
++		return;
++
++	ret = regmap_read(qpcs->regmap, PCS_MODE_CTRL, &mode);
++	if (!ret)
++		ret = regmap_read(qpcs->regmap, PCS_MISC2, &misc);
++	if (!ret)
++		ret = regmap_read(qpcs->regmap, PCS_CALIBRATION, &cal);
++	if (!ret)
++		ret = regmap_read(qpcs->regmap, PCS_MII_CTRL(0), &ctrl);
++	if (!ret)
++		ret = regmap_read(qpcs->regmap, PCS_MII_STS(0), &sts);
++	if (ret) {
++		dev_warn(qpcs->dev, "wave7-handoff: %s read failed: %d\n",
++			 stage, ret);
++		return;
++	}
++
++	dev_info(qpcs->dev,
++		 "wave7-handoff: %s mode=%#x misc=%#x cal=%#x ctrl=%#x sts=%#x\n",
++		 stage, mode, misc, cal, ctrl, sts);
++}
++
+ static bool ipq_pcs_reconfig_port_clks(struct ipq_pcs *qpcs,
+ 				       phy_interface_t interface)
+ {
+@@ -407,6 +442,9 @@
+ 			 qpcs->diag_mode_reconfigs, phy_modes(qpcs->interface),
+ 			 phy_modes(interface));
+ 	}
++
++	if (!qpcs->interface)
++		ipq_pcs_wave7_handoff(qpcs, "before-mode");
+ 
+ 	/* Hold the affected port clocks off across mode reconfiguration. */
+ 	ipq_pcs_disable_port_clks(qpcs, interface);
+@@ -1524,6 +1562,8 @@
+ 	if (ret)
+ 		return ret;
+ 
++	ipq_pcs_wave7_handoff(qpcs, "probe");
++
+ 	platform_set_drvdata(pdev, qpcs);
+ 	ipq_pcs_debugfs_register(dev, qpcs);
+ 

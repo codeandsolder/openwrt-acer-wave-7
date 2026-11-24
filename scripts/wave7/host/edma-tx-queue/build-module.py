@@ -52,6 +52,7 @@ def main():
     serial_patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
     patch=patches/"0499-net-ethernet-qualcomm-edma-init-features-before-register.patch"
     tso_patch=patches/"0500-net-ethernet-qualcomm-edma-validate-tso-and-sg-limits.patch"
+    handoff_patch=patches/"0500-net-pcs-wave7-observe-pcs0-handoff.patch"
     analog_patch=patches/"0501-net-pcs-wave7-test-stock-analog-only.patch"
     queue_patch=patches/"0502-net-ethernet-qualcomm-edma-wake-own-tx-queue.patch"
     config=old/"linked/.config"
@@ -105,8 +106,9 @@ def main():
             assert "intree:         Y" in info and "6.18.60 SMP mod_unload aarch64" in info
             return f,set(sym),info.splitlines()[1:]
         run(["patch","-p1","--fuzz=0","-i",str(serial_patch)],cwd=k)
-        for applied in (patch,tso_patch,analog_patch):
+        for applied in (patch,tso_patch,handoff_patch,analog_patch):
             run(["patch","-p1","--fuzz=0","-i",str(applied)],cwd=k)
+        assert sha(k/"drivers/net/pcs/pcs-qcom-ipq9574.c")=="2029bd65fba03e141d9cbece8524ddf0ea7025a666f3b1cb34cb819e19f268bd"
         base,before,base_info=build(work/"baseline")
         assert sha(base)==PPE_SHA
         print("EXACT_PARENT_PPE_PASS",flush=True)
@@ -120,7 +122,7 @@ def main():
                 "candidate_ppe_sha256":sha(candidate),"nand_config_sha256":sha(config),
                 "kernel_exports_sha256":sha(exports),"kernel_export_count":len(kernel_exports),
                 "module_exports_identical":True,"module_metadata_identical":True,
-                "baseline_byte_identical":True,"patch_sha256":sha(patch),"tso_patch_sha256":sha(tso_patch),"analog_patch_sha256":sha(analog_patch),"queue_patch_sha256":sha(queue_patch),"fixture_pass":True,
+                "baseline_byte_identical":True,"patch_sha256":sha(patch),"tso_patch_sha256":sha(tso_patch),"handoff_patch_sha256":sha(handoff_patch),"analog_patch_sha256":sha(analog_patch),"queue_patch_sha256":sha(queue_patch),"fixture_pass":True,
                 "builder_commit":subprocess.check_output(["git","-C",str(REPO),"rev-parse","HEAD"],text=True).strip()}
         (publish/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (publish/"SHA256SUMS").write_text("".join(f"{sha(f)}  {f.relative_to(publish)}\n" for f in sorted(publish.rglob("*")) if f.is_file() and f.name!="SHA256SUMS"))
