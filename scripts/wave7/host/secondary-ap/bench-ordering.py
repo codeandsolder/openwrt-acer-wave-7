@@ -172,7 +172,7 @@ def run_case(out, path, mode, runtime_dir, variant, boot, bitrate):
             flags = {"forward": [], "reverse": ["-R"], "bidir": ["--bidir"]}[mode]
             argv = ["iperf3", "-4", "-c", probe["ROUTER"], "-B", ip, "--bind-dev", dev,
                     "-p", str(PORT), "--connect-timeout", "4000", "-t", str(DURATION),
-                    "-O", "1", "-J", *flags]
+                    "-J", *flags]
             if bitrate is not None:
                 argv.extend(["-b", str(bitrate * 1_000_000)])
             result = subprocess.run(argv, text=True, capture_output=True, timeout=25)
@@ -206,12 +206,13 @@ def bench(run, peers, modes, bitrate):
             and record["outcome"] == "clean" and record["direct_mbps"] == 2500,
             "requires sealed clean ordering boot at 2.5GbE direct")
     variant, boot = record["variant"], record["boot"]
-    suffix = "" if bitrate is None else f"-paced-{bitrate}mbps"
+    suffix = "-no-omit" + ("" if bitrate is None else f"-paced-{bitrate}mbps")
     if peers != ("switch", "direct") or modes != ("forward", "reverse", "bidir"):
         suffix += "-" + "-".join(peers) + "-" + "-".join(modes)
     out = run / ("throughput" + suffix)
     report = {"boot": boot, "variant": variant, "duration": DURATION,
-              "offered_mbps_per_direction": bitrate, "peers": peers, "modes": modes, "cases": []}
+              "offered_mbps_per_direction": bitrate, "omit_seconds": 0,
+              "peers": peers, "modes": modes, "cases": []}
     failure = None
     with probe["lab_session"](out):
         try:
