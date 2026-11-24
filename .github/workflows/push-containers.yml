@@ -1,28 +1,12 @@
-name: Build and Push prebuilt tools container
-
+# Reserved legacy workflow identity. Keep this file on main and the
+# workflow disabled at repository level; older branches contain automatic
+# upstream-wide triggers at this path. Never re-enable this identity.
+name: Retired upstream container publication
 on:
-  push:
-    paths:
-      - 'include/version.mk'
-      - 'include/cmake.mk'
-      - 'tools/**'
-      - '.github/workflows/push-containers.yml'
-      - 'toolchain/**'
-    branches-ignore:
-      - master
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+  workflow_dispatch:
+permissions: {}
 jobs:
-  build-push-containers:
-    name: Build and Push all prebuilt containers
-    permissions:
-      contents: read
-      packages: write
-      actions: write
-    uses: openwrt/actions-shared-workflows/.github/workflows/push-containers.yml@main
+  retired:
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "Retired workflow identity; use the Wave 7 workflow instead." && exit 1
