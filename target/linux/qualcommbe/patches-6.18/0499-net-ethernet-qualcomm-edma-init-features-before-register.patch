@@ -1,14 +1,10 @@
 From: codeandsolder <codeandsolder@users.noreply.github.com>
-Subject: [PATCH] net: ethernet: qualcomm: initialize EDMA features before registration
+Subject: [PATCH] net: ethernet: qualcomm: isolate stacked scatter-gather inheritance
 
-DSA and other stacked netdevices inherit capabilities when they are
-registered. EDMA currently publishes them only at ndo_open, which is
-too late. Reopening also overrides features disabled by the user.
-Initialize the capability masks when preparing the netdevice and let
-register_netdevice initialize wanted_features.
-
-This isolates the lifecycle fix. Validate the parser/offload behavior
-of each DSA tag protocol separately before using the result in production.
+Lab-only ablation of early feature advertisement. Preserve the netdev
+lifecycle fix while withholding parser-dependent TX offloads from
+stacked devices until their actual frame layouts are qualified.
+This is not a proposed permanent VLAN capability restriction.
 
 Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
 ---
@@ -30,18 +26,23 @@ Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
  
  	ppe_port  = port_priv->ppe_port;
  	port_id = ppe_port->port_id;
-@@ -398,6 +389,14 @@
+@@ -398,6 +389,19 @@
  	netdev->watchdog_timeo = 5 * HZ;
  	netdev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
  	netdev->netdev_ops = &edma_port_netdev_ops;
 +
-+	/* Publish capabilities before registration, so upper devices can
-+	 * inherit them. The netdev core initializes wanted_features.
-+	 * Reopening a port must not reset user-selected features.
++	/* Publish capabilities before registration. Reopening the port
++	 * must not reset the administrator's selected feature mask.
 +	 */
 +	netdev->features |= EDMA_NETDEV_FEATURES;
 +	netdev->hw_features |= EDMA_NETDEV_FEATURES;
-+	netdev->vlan_features |= EDMA_NETDEV_FEATURES;
++
++	/* Lab ablation: allow stacked devices to inherit scatter-gather
++	 * and RX checksum, but not parser-dependent TX checksum or GSO.
++	 * This leaves standalone-port offloads intact.
++	 */
++	netdev->vlan_features |= EDMA_NETDEV_FEATURES &
++				 ~(NETIF_F_CSUM_MASK | NETIF_F_GSO_MASK);
  	netdev->gso_max_segs = GSO_MAX_SEGS;
  	edma_set_ethtool_ops(netdev);
  
