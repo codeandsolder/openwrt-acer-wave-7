@@ -51,6 +51,7 @@ def main():
     phy_patch=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
     serial_patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
     patch=patches/"0499-net-ethernet-qualcomm-edma-init-features-before-register.patch"
+    tso_patch=patches/"0500-net-ethernet-qualcomm-edma-validate-tso-and-sg-limits.patch"
     config=old/"linked/.config"
     exports=old/"linked/vmlinux.symvers"
     assert sha(config)==CONFIG_SHA and sha(exports)==EXPORTS_SHA
@@ -106,15 +107,16 @@ def main():
         assert sha(base)==PPE_SHA
         print("EXACT_PARENT_PPE_PASS",flush=True)
         run(["patch","-p1","--fuzz=0","-i",str(patch)],cwd=k)
+        run(["patch","-p1","--fuzz=0","-i",str(tso_patch)],cwd=k)
         run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         candidate,after,candidate_info=build(publish/"modules")
         assert before==after and base_info==candidate_info and sha(candidate)!=PPE_SHA
-        report={"experiment":"edma-dsa-feature-check","parent_image_sha256":PARENT_SHA,
+        report={"experiment":"edma-tso-limits","parent_image_sha256":PARENT_SHA,
                 "accepted_ppe_sha256":PPE_SHA,"unchanged_pcs_sha256":PCS_SHA,
                 "candidate_ppe_sha256":sha(candidate),"nand_config_sha256":sha(config),
                 "kernel_exports_sha256":sha(exports),"kernel_export_count":len(kernel_exports),
                 "module_exports_identical":True,"module_metadata_identical":True,
-                "baseline_byte_identical":True,"patch_sha256":sha(patch),"fixture_pass":True,
+                "baseline_byte_identical":True,"patch_sha256":sha(patch),"tso_patch_sha256":sha(tso_patch),"fixture_pass":True,
                 "builder_commit":subprocess.check_output(["git","-C",str(REPO),"rev-parse","HEAD"],text=True).strip()}
         (publish/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (publish/"SHA256SUMS").write_text("".join(f"{sha(f)}  {f.relative_to(publish)}\n" for f in sorted(publish.rglob("*")) if f.is_file() and f.name!="SHA256SUMS"))
