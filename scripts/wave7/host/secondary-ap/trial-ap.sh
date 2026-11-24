@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|edma-sg-inheritance|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -21,7 +21,7 @@ relink_trial=0
 kernel_variant_trial=0
 candidate_direct_speed=2500
 reboot_1g=0
-repeat_ordering=0
+repeat_candidate=0
 candidate_clock_patch=''
 candidate_instant_patch=''
 candidate_instant_marker=0
@@ -108,7 +108,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|source-reboot|return-0498)
+  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|edma-sg-inheritance|source-reboot|return-0498)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -132,6 +132,13 @@ case "$profile" in
         expected_candidate_sha=662d82b2f3721cfcd0a021310438077b342ead6e7316332134588963f2fe9a93
         candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
         candidate_handoff_patch=6eeae4dd45ab4ebb7c9cb296dc45d53470677c5b
+        ;;
+      edma-sg-inheritance)
+        candidate_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
+        candidate_builder=cf743af94b10094a4841a8a982650b8110dccd72
+        expected_candidate_sha=b89f8d6a6d0aa34599f82245b0b8b214e88b01121b3a8f37c2a2df68a0532504
+        candidate_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
+        candidate_feature_patch=5d080c941b8905d8e8f4a22c1292856ef63791fc
         ;;
       edma-feature-init)
         candidate_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
@@ -191,7 +198,7 @@ case "$profile" in
     source_switch_patch=$accepted_switch_patch
     source_pcs_sha=$candidate_pcs_sha
     source_ppe_sha=$candidate_ppe_sha
-    if [[ $trial_kind == pcs0-handoff || $trial_kind == edma-feature-init ]]; then
+    if [[ $trial_kind == pcs0-handoff || $trial_kind == edma-feature-init || $trial_kind == edma-sg-inheritance ]]; then
       source_rev=r0+38346-b9db617b17-ap-dhcp-guard8
       source_builder=55c04ca358d57b7db68f7cf78bf67ea1b9760a13
       source_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
@@ -199,6 +206,9 @@ case "$profile" in
       if [[ $trial_kind == pcs0-handoff ]]; then
         candidate_rev=r0+38346-6eeae4dd45-ap-dhcp-guard8
         candidate_pcs_sha=44e34472f0edab4aae5b8349a7c8b3f42396ecb102ac12803e82ff1c03c8338a
+      elif [[ $trial_kind == edma-sg-inheritance ]]; then
+        candidate_rev=r0+38346-5d080c941b-ap-dhcp-guard8
+        candidate_ppe_sha=d916e3e68e6fa057bce328eba94baba30c695d8087a890bc925f281b6c08554c
       else
         candidate_rev=r0+38346-7ea0722a9a-ap-dhcp-guard8
         candidate_ppe_sha=54d77cdbdce44a435afd767c16861fa7ce7fca3a8e754d3b4694f1dfdfd05876
@@ -332,9 +342,9 @@ if [[ ( $trial_kind == down-mode || $trial_kind == serial-speed ) && $mode != --
 fi
 case "$mode" in
   --check-reboot-current|--reboot-current)
-    [[ $trial_kind == stock-order || $trial_kind == force-order ]] ||
-      { echo 'same-image repeats restricted to pinned ordering candidates' >&2; exit 2; }
-    repeat_ordering=1
+    [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]] ||
+      { echo 'same-image repeats restricted to pinned ordering or PCS0 candidates' >&2; exit 2; }
+    repeat_candidate=1
     ;;
   --check-reboot-1g|--reboot-1g|--watch-reboot-1g|--selftest-reboot-1g)
     [[ $trial_kind == serial-speed ]] || { echo '1G reboot restricted to 0498' >&2; exit 2; }
@@ -683,7 +693,7 @@ switch_source_healthy() {
 # flash just to reach a source revision unrelated to the measured delta.
 approved_experiment_source_valid() {
   [[ $trial_kind == stock-order || $trial_kind == force-order ||
-     $trial_kind == pcs0-handoff ]] &&
+     $trial_kind == pcs0-handoff || $trial_kind == edma-sg-inheritance ]] &&
     restore_target_valid "$1" &&
     [[ $(trunk_error_key "$1") == 0:0:0 ]]
 }
@@ -770,8 +780,8 @@ autonomous_healthy() {
 restore_profile() {
   [[ $switch_module_trial == 1 ]] || [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
 }
-ordering_repeat_source_valid() {
-  [[ $trial_kind == stock-order || $trial_kind == force-order ]] &&
+repeat_source_valid() {
+  [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]] &&
     healthy "$1" && grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1" &&
     [[ $(trunk_error_key "$1") == 0:0:0 ]]
 }
@@ -978,19 +988,19 @@ if [[ $mode == --selftest ]]; then
     done
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
-  if [[ $trial_kind == stock-order || $trial_kind == force-order ]]; then
+  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]]; then
     repeat_source="$s"$'\napproval=0\ntoken=1'
-    ordering_repeat_source_valid "$repeat_source" || fatal 'valid ordering repeat source rejected'
+    repeat_source_valid "$repeat_source" || fatal 'valid ordering repeat source rejected'
     for change in approval=1 token=0 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 module_sha=wrong; do
-      if ordering_repeat_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$repeat_source")"; then
+      if repeat_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$repeat_source")"; then
         fatal "invalid ordering repeat source accepted: $change"
       fi
     done
   fi
-  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]]; then
+  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == edma-sg-inheritance ]]; then
     approved_source="$baseline"$'\napproval=1\ntoken=0'
     approved_experiment_source_valid "$approved_source" || fatal 'approved experiment source rejected'
-    if ordering_repeat_source_valid "$approved_source"; then fatal 'rollback accepted as repeat source'; fi
+    if repeat_source_valid "$approved_source"; then fatal 'rollback accepted as repeat source'; fi
     for change in approval=0 token=1 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 pcs_sha=wrong; do
       if approved_experiment_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$approved_source")"; then
         fatal "invalid approved experiment source accepted: $change"
@@ -1490,8 +1500,8 @@ elif [[ $reboot_1g == 1 ]]; then
 elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
   if [[ $trial_kind == source-reboot ]]; then
     reboot_history_source_valid "$s" || fatal "incorrect reboot-only source: $s"
-  elif [[ $repeat_ordering == 1 ]]; then
-    ordering_repeat_source_valid "$s" || fatal "incorrect same-image repeat source: $s"
+  elif [[ $repeat_candidate == 1 ]]; then
+    repeat_source_valid "$s" || fatal "incorrect same-image repeat source: $s"
   elif approved_experiment_source_valid "$s"; then
     echo "EXPERIMENT_SOURCE=approved-0491"
   else
@@ -1528,7 +1538,7 @@ echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
 [[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g || $mode == --reboot-current ]] || exit 0
 if [[ $trial_kind == source-reboot ]]; then
   tag=source-reboot-$(date +%Y%m%d-%H%M%S)
-elif [[ $repeat_ordering == 1 ]]; then
+elif [[ $repeat_candidate == 1 ]]; then
   tag=repeat-$(date +%Y%m%d-%H%M%S)
 elif [[ $trial_kind == return-0498 ]]; then
   tag=return-0498-$(date +%Y%m%d-%H%M%S)
@@ -1550,7 +1560,7 @@ if [[ $mode == --restore-baseline ]]; then
   flash_image=/tmp/wave7-secondary-ap-restore.bin
   pairs=("$accepted|$flash_image|$accepted_sha")
 fi
-if [[ $trial_kind == source-reboot || $repeat_ordering == 1 ]]; then
+if [[ $trial_kind == source-reboot || $repeat_candidate == 1 ]]; then
   pairs=("$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha")
   # Preserve this exact boot before the restart; no disruptive stats APIs.
   remote 'set -e; echo ====BOOT====; cat /proc/sys/kernel/random/boot_id; echo ====DMESG====; dmesg; echo ====LOGREAD====; logread; echo ====IW====; iw dev ap-mld0 info; echo ====END_BOOT====; cat /proc/sys/kernel/random/boot_id' > "$out/outgoing-boot.txt"
@@ -1591,7 +1601,7 @@ if [[ $mode == --reboot-1g ]]; then
     fatal 'peer window changed before reboot'
 fi
 flash_started=1
-if [[ $trial_kind == source-reboot || $repeat_ordering == 1 ]]; then
+if [[ $trial_kind == source-reboot || $repeat_candidate == 1 ]]; then
   set +e
   remote_timed 'sync; /sbin/reboot' > "$out/reboot.log" 2>&1
   rc=$?
