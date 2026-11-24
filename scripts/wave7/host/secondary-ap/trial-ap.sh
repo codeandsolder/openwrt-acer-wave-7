@@ -678,11 +678,12 @@ switch_source_healthy() {
 }
 # Historical NoC is tolerated exclusively for rebooting the same
 # exact firmware. It never qualifies any image for a flash or soak.
-# Approved 0491 is a valid launch source for the two isolated ordering
-# candidates, which still derive from exact 0498 outside the switch
-# module and manifest. Avoid repeating the failed intermediate flash.
-ordering_approved_source_valid() {
-  [[ $trial_kind == stock-order || $trial_kind == force-order ]] &&
+# The exact approved rollback is also a valid launch source for pinned
+# independent experiments. Do not require an additional risky provisional
+# flash just to reach a source revision unrelated to the measured delta.
+approved_experiment_source_valid() {
+  [[ $trial_kind == stock-order || $trial_kind == force-order ||
+     $trial_kind == pcs0-handoff ]] &&
     restore_target_valid "$1" &&
     [[ $(trunk_error_key "$1") == 0:0:0 ]]
 }
@@ -985,12 +986,14 @@ if [[ $mode == --selftest ]]; then
         fatal "invalid ordering repeat source accepted: $change"
       fi
     done
+  fi
+  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]]; then
     approved_source="$baseline"$'\napproval=1\ntoken=0'
-    ordering_approved_source_valid "$approved_source" || fatal 'approved ordering source rejected'
+    approved_experiment_source_valid "$approved_source" || fatal 'approved experiment source rejected'
     if ordering_repeat_source_valid "$approved_source"; then fatal 'rollback accepted as repeat source'; fi
     for change in approval=0 token=1 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 pcs_sha=wrong; do
-      if ordering_approved_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$approved_source")"; then
-        fatal "invalid approved ordering source accepted: $change"
+      if approved_experiment_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$approved_source")"; then
+        fatal "invalid approved experiment source accepted: $change"
       fi
     done
   fi
@@ -1489,8 +1492,8 @@ elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
     reboot_history_source_valid "$s" || fatal "incorrect reboot-only source: $s"
   elif [[ $repeat_ordering == 1 ]]; then
     ordering_repeat_source_valid "$s" || fatal "incorrect same-image repeat source: $s"
-  elif ordering_approved_source_valid "$s"; then
-    echo "ORDERING_SOURCE=approved-0491"
+  elif approved_experiment_source_valid "$s"; then
+    echo "EXPERIMENT_SOURCE=approved-0491"
   else
     switch_source_healthy "$s" || fatal "unhealthy or incorrect provisional source: $s"
   fi
