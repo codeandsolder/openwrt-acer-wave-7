@@ -202,7 +202,7 @@ def profile_load(out, name, boot, enabled):
             "CPU sampler boot mismatch")
 
 
-def run_case(out, path, mode, runtime_dir, variant, boot, bitrate, profile=False):
+def run_case(out, path, mode, runtime_dir, variant, boot, bitrate, profile, streams):
     name = f"{path}-{mode}"
     before = sample(out, name+"-before", variant, boot)
     require(not listening(), "benchmark server port occupied")
@@ -225,9 +225,9 @@ def run_case(out, path, mode, runtime_dir, variant, boot, bitrate, profile=False
             flags = {"forward": [], "reverse": ["-R"], "bidir": ["--bidir"]}[mode]
             argv = ["iperf3", "-4", "-c", probe["ROUTER"], "-B", ip, "--bind-dev", dev,
                     "-p", str(PORT), "--connect-timeout", "4000", "-t", str(DURATION),
-                    "-J", *flags]
+                    "-J", "-P", str(streams), *flags]
             if bitrate is not None:
-                argv.extend(["-b", str(bitrate * 1_000_000)])
+                argv.extend(["-b", str(bitrate * 1_000_000 // streams)])
             with profile_load(out, name, boot, profile):
                 result = subprocess.run(argv, text=True, capture_output=True, timeout=25)
             (out / f"{name}-client.json").write_text(result.stdout)
@@ -249,9 +249,17 @@ def run_case(out, path, mode, runtime_dir, variant, boot, bitrate, profile=False
     summaries = {d: client["end"]["sum_received_bidir_reverse"
                                   if mode=="bidir" and d=="tx" else "sum_received"]
                  for d in payload}
-    return {"name": name, **assess(before, after, path, payload),
-            "receiver_mbps": {d: row["bits_per_second"]/1e6 for d,row in summaries.items()},
-            "iperf_end": client["end"]}
+    result = {"name": name, "payload_bytes": payload,
+              "receiver_mbps": {d: row["bits_per_second"]/1e6 for d,row in summaries.items()},
+              "iperf_end": client["end"]}
+    try:
+        result.update(assess(before, after, path, payload))
+        result["qualification"] = "PASS"
+    except ValueError as exc:
+        # Preserve measured throughput even when an independent hardware
+        # acceptance condition rejects the run. Raw snapshots remain sealed.
+        result.update(qualification="FAILED", qualification_error=str(exc))
+    return result
 
 
 RPS_PATHS = tuple(f"/sys/class/net/switch/queues/rx-{i}/rps_cpus"
@@ -299,7 +307,7 @@ def temporary_steering(out, boot, mode):
         (out / "rps-restored.json").write_text(json.dumps(rps_state(), indent=2)+"\n")
 
 
-def bench(run, peers, modes, bitrate, profile=False, steering="baseline"):
+def bench(run, peers, modes, bitrate, profile, steering, streams, repeat):
     record = cohort["load_run"](run)
     require(record is not None and record["variant"] in ("stock-order", "force-order")
             and record["outcome"] == "clean" and record["direct_mbps"] == 2500,
@@ -312,10 +320,12 @@ def bench(run, peers, modes, bitrate, profile=False, steering="baseline"):
         suffix += "-profile"
     if steering != "baseline":
         suffix += "-" + steering
+    suffix += f"-p{streams}-r{repeat}"
     out = run / ("throughput" + suffix)
     report = {"boot": boot, "variant": variant, "duration": DURATION,
               "offered_mbps_per_direction": bitrate, "omit_seconds": 0,
-              "peers": peers, "modes": modes, "cpu_profile": profile, "steering": steering, "cases": []}
+              "peers": peers, "modes": modes, "cpu_profile": profile, "steering": steering, "streams_per_direction": streams,
+              "repeat": repeat, "cases": []}
     failure = None
     with probe["lab_session"](out):
         try:
@@ -330,10 +340,11 @@ def bench(run, peers, modes, bitrate, profile=False, steering="baseline"):
                     f"LD_LIBRARY_PATH='{path}' '{path}/iperf3' --version"))
                 for peer in peers:
                     for mode in modes:
-                        case = run_case(out, peer, mode, path, variant, boot, bitrate, profile)
+                        case = run_case(out, peer, mode, path, variant, boot, bitrate, profile, streams)
                         report["cases"].append(case)
-                        print(json.dumps({"case":case["name"],"receiver_mbps":case["receiver_mbps"]}),
-                              flush=True)
+                        print(json.dumps({"case":case["name"],"receiver_mbps":case["receiver_mbps"],
+                                          "qualification":case["qualification"]}), flush=True)
+                        require(case["qualification"] == "PASS", case.get("qualification_error"))
             report["status"] = "PASS"
         except Exception as exc:
             report["status"] = "FAILED"
@@ -400,7 +411,9 @@ if __name__ == "__main__":
     b.add_argument("run",type=Path)
     b.add_argument("--peer",choices=tuple(PATHS),action="append")
     b.add_argument("--mode",choices=("forward", "reverse", "bidir"),action="append")
-    b.add_argument("--bitrate-mbps",type=int)
+    b.add_argument("--bitrate-mbps",type=int,help="aggregate offered rate per direction")
+    b.add_argument("--streams",type=int,default=1)
+    b.add_argument("--repeat",type=int,default=1)
     b.add_argument("--profile",action="store_true",help="sample per-core CPU and network backlog")
     b.add_argument("--steering", choices=("baseline", "post-tag", "post-tag-native", "native-only", "post-tag-native-all"), default="baseline")
     args=parser.parse_args()
@@ -412,4 +425,5 @@ if __name__ == "__main__":
         modes = tuple(args.mode or ("forward", "reverse", "bidir"))
         require(len(set(peers))==len(peers) and len(set(modes))==len(modes), "duplicate case selection")
         require(args.steering == "baseline" or peers == ("switch",), "steering experiment only on switched path")
-        bench(args.run.resolve(), peers, modes, args.bitrate_mbps, args.profile, args.steering)
+        require(1 <= args.streams <= 8 and args.repeat > 0, "invalid stream or repeat count")
+        bench(args.run.resolve(), peers, modes, args.bitrate_mbps, args.profile, args.steering, args.streams, args.repeat)
