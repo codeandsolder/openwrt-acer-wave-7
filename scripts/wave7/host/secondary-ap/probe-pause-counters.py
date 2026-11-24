@@ -8,6 +8,7 @@ frames with quanta zero, never a nonzero pause or a configuration change.
 import argparse
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import runpy
@@ -55,7 +56,7 @@ def send(count):
         for _ in range(count):
             require(sock.send(packet)==len(packet),"short PAUSE send")
             time.sleep(.02)
-    print(json.dumps({"sent":count,"interface":DEV,"quanta":0,"frame":packet.hex()}))
+    return {"sent":count,"interface":DEV,"quanta":0,"frame":packet.hex()}
 
 
 def pause_stats(raw):
@@ -100,14 +101,20 @@ def compare(before,after,count):
             "exact_drop_count":copper["etherStatsDropEvents"]==count}
 
 
-def measure(run):
+def sudo_sender(count):
+    return json.loads(subprocess.check_output(["sudo","-n","/usr/bin/python3",str(Path(__file__).resolve()),"--send",str(count)],text=True,timeout=10))
+
+
+def measure(run, sender=None):
     require(os.getuid()!=0,"run observer as jan; sudo only for the sender")
     record=bench["cohort"]["load_run"](run)
     require(record and record["outcome"]=="clean","requires sealed clean experiment")
     variant,boot=record["variant"],record["boot"]
     out=run/f"pause-counter-probe-{time.strftime('%Y%m%d-%H%M%S')}"
     # Obtain explicit user authorization before taking the exclusive lab lock.
-    subprocess.run(["sudo","-v"],check=True)
+    if sender is None:
+        subprocess.run(["sudo","-v"],check=True)
+        sender=sudo_sender
     report={"variant":variant,"boot":boot,"phases":[]}
     with probe["lab_session"](out):
         try:
@@ -115,10 +122,9 @@ def measure(run):
                 for i,count in enumerate((0,COUNTS[0],0,COUNTS[1],0,COUNTS[2],0)):
                     before=observe(out,f"phase{i}-before",variant,boot)
                     if count:
-                        result=subprocess.run(["sudo","-n","/usr/bin/python3",str(Path(__file__).resolve()),"--send",str(count)],
-                                              check=True,text=True,capture_output=True,timeout=10)
-                        (out/f"phase{i}-sent.json").write_text(result.stdout)
-                        require(json.loads(result.stdout)["sent"]==count,"sender count mismatch")
+                        result=sender(count)
+                        (out/f"phase{i}-sent.json").write_text(json.dumps(result)+"\n")
+                        require(result["sent"]==count,"sender count mismatch")
                     time.sleep(1)
                     after=observe(out,f"phase{i}-after",variant,boot)
                     report["phases"].append(compare(before,after,count))
@@ -146,6 +152,47 @@ def measure(run):
     return report["status"]=="PASS"
 
 
+def root_measure(run):
+    """Run only the fixed sender as root; drop all observer privileges."""
+    require(os.getuid()==0,"root launcher requires root")
+    user=pwd.getpwnam("jan")
+    parent,child=socket.socketpair()
+    pid=os.fork()
+    if pid==0:
+        parent.close()
+        os.initgroups(user.pw_name,user.pw_gid)
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+        os.environ.update(HOME=user.pw_dir,USER=user.pw_name,LOGNAME=user.pw_name)
+        with child,child.makefile("rwb") as channel:
+            def sender(count):
+                channel.write(f"{count}\n".encode());channel.flush()
+                response=json.loads(channel.readline())
+                require("error" not in response,response.get("error","sender failed"))
+                return response
+            load_observer()
+            return measure(run,sender)
+    child.close()
+    try:
+        with parent,parent.makefile("rwb") as channel:
+            for expected in COUNTS:
+                line=channel.readline()
+                if not line:
+                    break
+                try:
+                    require(line==f"{expected}\n".encode(),"unexpected probe phase")
+                    result=send(expected)
+                except Exception as exc:
+                    channel.write(json.dumps({"error":str(exc)}).encode()+b"\n")
+                    channel.flush()
+                    break
+                channel.write(json.dumps(result).encode()+b"\n")
+                channel.flush()
+    finally:
+        _,status=os.waitpid(pid,0)
+    return os.waitstatus_to_exitcode(status)==0
+
+
 def selftest():
     packet=frame()
     assert len(packet)==60 and packet[:6]==bytes.fromhex("0180c2000001")
@@ -171,10 +218,13 @@ if __name__=="__main__":
     action=parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--send",type=int,choices=COUNTS)
     action.add_argument("--run",type=Path)
+    action.add_argument("--root-run",type=Path)
     action.add_argument("--selftest",action="store_true")
     args=parser.parse_args()
     if args.send:
-        send(args.send)
+        print(json.dumps(send(args.send)))
+    elif args.root_run:
+        sys.exit(0 if root_measure(args.root_run.resolve()) else 1)
     else:
         load_observer()
         if args.selftest:selftest()
