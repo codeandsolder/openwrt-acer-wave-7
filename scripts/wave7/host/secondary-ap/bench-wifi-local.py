@@ -38,16 +38,21 @@ def standalone(out,boot,enabled,channel,width):
         while time.monotonic()<deadline:
             raw=b.remote("iw dev")
             matches=re.findall(r"Interface ([a-zA-Z0-9_.-]+)",raw)
-            if len(matches)==1 and "ssid Wave7-5G-Lab" in raw and f"channel {channel} ({5000+5*channel} MHz), width: {width} MHz" in raw and "MLD with links:" not in raw:
+            if len(matches)==1 and "ssid Wave7-5G-Lab" in raw and "MLD with links:" not in raw:
                 candidate=matches[0]
                 try:
                     status=json.loads(b.remote(f"ubus call hostapd.{candidate} get_status"))
-                    if status.get("status")=="ENABLED" and not status.get("dfs",{}).get("cac_active",False):
-                        iface=candidate
-                        break
                 except (ValueError,subprocess.CalledProcessError):
-                    pass
-            time.sleep(1)
+                    status={}
+                if status.get("status")=="ENABLED" and not status.get("dfs",{}).get("cac_active",False):
+                    (out/"standalone-ap-status.json").write_text(json.dumps(status,indent=2)+"\n")
+                    (out/"standalone-ap-observed.txt").write_text(raw)
+                    b.require(f"channel {channel} ({5000+5*channel} MHz), width: {width} MHz" in raw and status.get("freq")==5000+5*channel,"AP enabled on unexpected channel/width (DFS fallback or configuration mismatch)")
+                    iface=candidate
+                    break
+            # During a 600-second CAC there is no reason to flood the
+            # router's small system log with hundreds of SSH sessions.
+            time.sleep(5 if width==160 and channel==100 else 2)
         b.require(iface,"standalone AP did not become ready")
         (out/"standalone-ready.txt").write_text(raw)
         deadline=time.monotonic()+110
@@ -110,7 +115,7 @@ def main():
                 for i,(path,mode) in enumerate(cases):
                     name=f"{i}-{path}-{mode}"
                     before=b.snapshot(out,name+"-before",boot)
-                    w["radio_snapshot"](out,name+"-radio-before",boot,args.width,iface)
+                    w["radio_snapshot"](out,name+"-radio-before",boot,args.width,iface,args.channel)
                     flags=["-R"] if mode=="reverse" else []
                     if path=="local":
                         cmd=f"timeout 22 env LD_LIBRARY_PATH={remote_dir} {remote_dir}/iperf3 -c 192.168.76.248 -B 192.168.76.1 -p 52229 -P 4 -t 12 --connect-timeout 4000 -J "+" ".join(flags)
@@ -124,7 +129,7 @@ def main():
                             deadline=time.monotonic()+28
                             while child.poll() is None:
                                 b.require(time.monotonic()<deadline,"iperf timeout")
-                                w["radio_snapshot"](out,f"{name}-sample-{idx:02}",boot,args.width,iface)
+                                w["radio_snapshot"](out,f"{name}-sample-{idx:02}",boot,args.width,iface,args.channel)
                                 idx+=1
                                 time.sleep(0.8)
                             b.require(child.returncode==0,"iperf failed")
@@ -133,7 +138,7 @@ def main():
                                 child.terminate()
                                 child.wait(timeout=5)
                     after=b.snapshot(out,name+"-after",boot)
-                    w["radio_snapshot"](out,name+"-radio-after",boot,args.width,iface)
+                    w["radio_snapshot"](out,name+"-radio-after",boot,args.width,iface,args.channel)
                     r=json.loads((out/(name+".json")).read_text())
                     row=r["end"]["sum_received"]
                     result=b.analyze(before,after,{})

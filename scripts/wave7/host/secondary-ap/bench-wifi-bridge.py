@@ -105,7 +105,7 @@ def radio_width(out,boot,width):
         b.require(b.remote("uci changes wireless").strip()=="","wireless changes remain")
 
 
-def radio_snapshot(out,name,boot,width,iface="ap-mld0"):
+def radio_snapshot(out,name,boot,width,iface="ap-mld0",channel=None):
     b.require(re.fullmatch(r"[a-zA-Z0-9_.-]+",iface),"invalid AP interface")
     raw=b.remote(
         f"cat /proc/sys/kernel/random/boot_id; iw dev {iface} info; "
@@ -115,7 +115,8 @@ def radio_snapshot(out,name,boot,width,iface="ap-mld0"):
         "cat /proc/sys/kernel/random/boot_id; dmesg | grep -c 'NOC ERROR DETECTED' || :")
     (out/(name+".txt")).write_text(raw)
     b.require(raw.splitlines()[0]==boot and raw.splitlines()[-2:]==[boot,"0"],"boot or NoC changed")
-    b.require(re.search(r"channel \d+ \(5\d+ MHz\), width: "+str(width)+r" MHz,",raw),"unexpected AP width")
+    wanted=(r"\d+ \(5\d+" if channel is None else f"{channel} \({5000+5*channel}")
+    b.require(re.search(r"channel "+wanted+r" MHz\), width: "+str(width)+r" MHz,",raw),"unexpected AP channel/width")
     b.require("Station " in raw,"no associated station")
     return raw
 
