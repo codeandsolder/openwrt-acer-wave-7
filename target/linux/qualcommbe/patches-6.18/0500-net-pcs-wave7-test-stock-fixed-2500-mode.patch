@@ -1,0 +1,158 @@
+From: codeandsolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] net: pcs: test stock fixed-speed MPPE PCS0 personality
+
+Stock ARM wrapper 12 (replay f24a9e9260) writes 0x21c=0xa882,
+sets channel 0 force speed, writes MISC2=0x50 and clears MODE_CTRL
+mask 0x1f01 for Wave7's dedicated fixed 2500/full switch port.
+Apply this register policy only to the single-MII board PCS0.
+
+Keep native reset, calibration, clock and link-up adapter sequencing
+unchanged, so this is a mode policy ablation, not full stock replay.
+Verify effective mode, force and misc values after calibration.
+
+Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -37,6 +37,10 @@
+ #define PCS_MISC2_MODE_SGMII_PLUS	FIELD_PREP(PCS_MISC2_MODE_MASK, 0x5)
+ #define PCS_MISC2_MODE_USXGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x7)
+ 
++/* Stock MPPE UNIPHY0 wrapper-12 control word. */
++#define PCS_MPPE_FIXED_CTRL		0x21c
++#define PCS_MPPE_FIXED_CTRL_2500		0xa882
++
+ #define PCS_MODE_CTRL			0x46c
+ #define PCS_MODE_AUTONEG_ATH		BIT(0)
+ #define PCS_MODE_SEL_MASK		GENMASK(12, 8)
+@@ -425,11 +429,57 @@
+ 	return clk_prepare_enable(qpcs->qpcs_mii[0]->tx_clk);
+ }
+ 
++/*
++ * Wave7's dedicated switch trunk uses the stock MPPE wrapper-12
++ * fixed-speed personality, not generic 2500BASE-X mode selection.
++ */
++static bool ipq_pcs_wave7_fixed_2500(struct ipq_pcs *qpcs,
++				     phy_interface_t interface)
++{
++	struct resource *res;
++	int i;
++
++	if (!qpcs->mppe || interface != PHY_INTERFACE_MODE_2500BASEX ||
++	    !qpcs->qpcs_mii[0] || !of_machine_is_compatible("acer,wave7"))
++		return false;
++
++	res = platform_get_resource(to_platform_device(qpcs->dev),
++				    IORESOURCE_MEM, 0);
++	if (!res || res->start != 0x7a00000)
++		return false;
++
++	for (i = 1; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			return false;
++
++	return true;
++}
++
++static int ipq_pcs_wave7_fixed_prepare(struct ipq_pcs *qpcs)
++{
++	int ret;
++
++	/* The stock wrapper writes these before changing MODE_CTRL. */
++	ret = regmap_write(qpcs->regmap, PCS_MPPE_FIXED_CTRL,
++			   PCS_MPPE_FIXED_CTRL_2500);
++	if (ret)
++		return ret;
++
++	ret = regmap_write_bits(qpcs->regmap, PCS_MII_CTRL(0),
++				PCS_MII_FORCE_MODE, PCS_MII_FORCE_MODE);
++	if (ret)
++		return ret;
++
++	return regmap_write(qpcs->regmap, PCS_MISC2,
++			    PCS_MISC2_MODE_SGMII_PLUS);
++}
++
+ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
+ 			       phy_interface_t interface, bool serial_speed)
+ {
+ 	unsigned long rate = 125000000;
+ 	unsigned int val, mask, misc2 = 0;
++	bool fixed_2500 = ipq_pcs_wave7_fixed_2500(qpcs, interface);
+ 	bool xpcs_mode = false;
+ 	bool diag_mode;
+ 	int ret;
+@@ -445,6 +495,12 @@
+ 
+ 	if (!qpcs->interface)
+ 		ipq_pcs_wave7_handoff(qpcs, "before-mode");
++
++	if (fixed_2500) {
++		ret = ipq_pcs_wave7_fixed_prepare(qpcs);
++		if (ret)
++			return ret;
++	}
+ 
+ 	/* Hold the affected port clocks off across mode reconfiguration. */
+ 	ipq_pcs_disable_port_clks(qpcs, interface);
+@@ -476,9 +532,14 @@
+ 		misc2 = PCS_MISC2_MODE_SGMII;
+ 		break;
+ 	case PHY_INTERFACE_MODE_2500BASEX:
+-		val = PCS_MODE_2500BASEX;
+-		misc2 = PCS_MISC2_MODE_SGMII_PLUS;
+ 		rate = 312500000;
++		if (fixed_2500) {
++			mask |= PCS_MODE_AUTONEG_ATH;
++			val = 0;
++		} else {
++			val = PCS_MODE_2500BASEX;
++			misc2 = PCS_MISC2_MODE_SGMII_PLUS;
++		}
+ 		break;
+ 	case PHY_INTERFACE_MODE_USXGMII:
+ 	case PHY_INTERFACE_MODE_10G_QXGMII:
+@@ -492,7 +553,10 @@
+ 		goto err_clk;
+ 	}
+ 
+-	ret = regmap_update_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
++	if (fixed_2500)
++		ret = regmap_write_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
++	else
++		ret = regmap_update_bits(qpcs->regmap, PCS_MODE_CTRL, mask, val);
+ 	if (ret)
+ 		goto err_clk;
+ 
+@@ -597,6 +661,30 @@
+ 	if (ret) {
+ 		dev_err(qpcs->dev, "PCS calibration timed-out\n");
+ 		goto err_clk;
++	}
++
++	if (fixed_2500) {
++		unsigned int mode, ctrl, misc;
++
++		ret = regmap_read(qpcs->regmap, PCS_MODE_CTRL, &mode);
++		if (ret)
++			goto err_clk;
++		ret = regmap_read(qpcs->regmap, PCS_MII_CTRL(0), &ctrl);
++		if (ret)
++			goto err_clk;
++		ret = regmap_read(qpcs->regmap, PCS_MISC2, &misc);
++		if (ret)
++			goto err_clk;
++
++		dev_info(qpcs->dev,
++			 "wave7-fixed-2500: mode=%#x ctrl=%#x misc=%#x\n",
++			 mode, ctrl, misc);
++		if ((mode & (PCS_MODE_SEL_MASK | PCS_MODE_AUTONEG_ATH)) ||
++		    !(ctrl & PCS_MII_FORCE_MODE) ||
++		    misc != PCS_MISC2_MODE_SGMII_PLUS) {
++			ret = -EIO;
++			goto err_clk;
++		}
+ 	}
+ 
+ 	/* Re-enable the port clocks disabled at entry */
