@@ -1,0 +1,180 @@
+From: Wave7 development <wave7-test@localhost>
+Subject: [PATCH] net: dsa: realtek: add one-shot RTL8367D MIB latch diagnostic
+
+LAB ONLY. With the MIB refresh candidate installed, compare an exact
+legacy repeated-address read with an immediate stock-derived forced
+row transition. Hold the existing MIB lock throughout the test so
+unrelated statistics requests cannot change the selected address.
+
+A privileged module parameter arms one CPU-port ethtool request.
+Log three values and monotonic timestamps for external traffic
+correlation. The default is off, and normal statistics still use
+the refresh candidate's reader.
+
+Signed-off-by: Wave7 development <wave7-test@localhost>
+---
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -102,6 +102,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/irqdomain.h>
+ #include <linux/mii.h>
++#include <linux/moduleparam.h>
++#include <linux/timekeeping.h>
+ #include <linux/mutex.h>
+ #include <linux/workqueue.h>
+ #include <linux/reboot.h>
+@@ -3210,16 +3212,48 @@
+ 	return val & RTL8365MB_MIB_CTRL0_RESET_MASK ? -EIO : 0;
+ }
+ 
++static int rtl8365mb_mib_read_latch(struct realtek_priv *priv, u32 offset,
++				    u32 length, u64 *mibvalue)
++{
++	u64 tmpvalue = 0;
++	u32 val;
++	u32 i;
++	int ret;
++
++	/* There are four MIB counter registers each holding a 16 bit word of a
++	 * MIB counter. Depending on the offset, we should read from the upper
++	 * two or lower two registers. In case the MIB counter is 4 words, we
++	 * read from all four registers.
++	 */
++	if (length == 4)
++		offset = 3;
++	else
++		offset = (offset + 1) % 4;
++
++	/* Read the MIB counter 16 bits at a time */
++	for (i = 0; i < length; i++) {
++		ret = regmap_read(priv->map,
++				  RTL8365MB_MIB_COUNTER_REG(offset - i), &val);
++		if (ret)
++			return ret;
++
++		tmpvalue = ((tmpvalue) << 16) | (val & 0xFFFF);
++	}
++
++	/* Only commit the result if no error occurred */
++	*mibvalue = tmpvalue;
++
++	return 0;
++}
++
+ static int rtl8365mb_mib_counter_read(struct realtek_priv *priv, int port,
+ 				      u32 offset, u32 length, u64 *mibvalue)
+ {
+ 	struct rtl8365mb *mb = priv->chip_data;
+ 	bool verify = mb->chip_info->mib_refresh_same_address;
+ 	u32 addr = RTL8365MB_MIB_ADDRESS(port, offset);
+-	u64 tmpvalue = 0;
+ 	u32 val;
+ 	int ret;
+-	u32 i;
+ 
+ 	/* RTL8367D stock code changes the selected SRAM row before requesting
+ 	 * it again. Writing the same address may leave the old latch intact.
+@@ -3244,30 +3278,66 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	/* There are four MIB counter registers each holding a 16 bit word of a
+-	 * MIB counter. Depending on the offset, we should read from the upper
+-	 * two or lower two registers. In case the MIB counter is 4 words, we
+-	 * read from all four registers.
+-	 */
+-	if (length == 4)
+-		offset = 3;
+-	else
+-		offset = (offset + 1) % 4;
+-
+-	/* Read the MIB counter 16 bits at a time */
+-	for (i = 0; i < length; i++) {
+-		ret = regmap_read(priv->map,
+-				  RTL8365MB_MIB_COUNTER_REG(offset - i), &val);
+-		if (ret)
+-			return ret;
+-
+-		tmpvalue = ((tmpvalue) << 16) | (val & 0xFFFF);
+-	}
+-
+-	/* Only commit the result if no error occurred */
+-	*mibvalue = tmpvalue;
+-
+-	return 0;
++	return rtl8365mb_mib_read_latch(priv, offset, length, mibvalue);
++}
++
++/* Lab-only one-shot trigger. Consume it under mib_lock on the CPU port,
++ * not in the background counter worker. Default off.
++ */
++static bool mib_same_row_probe;
++module_param(mib_same_row_probe, bool, 0600);
++MODULE_PARM_DESC(mib_same_row_probe, "One-shot RTL8367D CPU6 MIB latch comparison");
++
++static void rtl8365mb_mib_probe_same_row(struct realtek_priv *priv, int port)
++{
++	const struct rtl8365mb_mib_counter *mib =
++		&rtl8365mb_mib_counters[RTL8365MB_MIB_ifInUcastPkts];
++	u32 addr = RTL8365MB_MIB_ADDRESS(port, mib->offset);
++	u64 initial, same, refreshed;
++	u64 initial_ns, same_ns, refreshed_ns;
++	int ret;
++
++	/* All selections are serialized by the caller's mib_lock.
++	 * Refresh first, then allow external traffic to advance this counter
++	 * while no other kernel user can change the selected MIB row.
++	 */
++	ret = rtl8365mb_mib_counter_read(priv, port, mib->offset,
++					 mib->length, &initial);
++	if (ret)
++		goto failed;
++	initial_ns = ktime_get_boottime_ns();
++
++	msleep(250);
++
++	/* The unmodified driver simply rewrote the selected address and
++	 * waited for BUSY to clear. Reproduce that exact sequence.
++	 */
++	ret = rtl8365mb_mib_select(priv, addr, false);
++	if (ret)
++		goto failed;
++	ret = rtl8365mb_mib_read_latch(priv, mib->offset, mib->length, &same);
++	if (ret)
++		goto failed;
++	same_ns = ktime_get_boottime_ns();
++
++	/* The candidate's normal reader forces a row transition if needed.
++	 * Compare immediately rather than wait for another traffic burst.
++	 */
++	ret = rtl8365mb_mib_counter_read(priv, port, mib->offset,
++					 mib->length, &refreshed);
++	if (ret)
++		goto failed;
++	refreshed_ns = ktime_get_boottime_ns();
++
++	dev_info(priv->dev,
++		 "wave7-mib-probe port=%d row=%u initial=%llu same=%llu refreshed=%llu initial_ns=%llu same_ns=%llu refreshed_ns=%llu\n",
++		 port, addr, initial, same, refreshed, initial_ns, same_ns,
++		 refreshed_ns);
++	return;
++
++failed:
++	dev_err(priv->dev, "wave7-mib-probe port=%d row=%u error=%pe\n",
++		port, addr, ERR_PTR(ret));
+ }
+ 
+ static void rtl8365mb_get_ethtool_stats(struct dsa_switch *ds, int port, u64 *data)
+@@ -3280,6 +3350,11 @@
+ 	mb = priv->chip_data;
+ 
+ 	mutex_lock(&mb->mib_lock);
++	if (mb->chip_info->mib_refresh_same_address &&
++	    port == RTL8365MB_SDS_EXT_INTERFACE_PORT &&
++	    xchg(&mib_same_row_probe, false))
++		rtl8365mb_mib_probe_same_row(priv, port);
++
+ 	for (i = 0; i < RTL8365MB_MIB_END; i++) {
+ 		struct rtl8365mb_mib_counter *mib = &rtl8365mb_mib_counters[i];
+ 
