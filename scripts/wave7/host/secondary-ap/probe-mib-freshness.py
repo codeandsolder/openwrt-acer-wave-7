@@ -28,7 +28,8 @@ PATHS = {
     "direct": ("192.168.76.2", "enp4s0f4u2u4", "762", "00:e0:4c:68:00:6d", "2500"),
     "switch": ("192.168.76.250", "enp4s0f4u2u2u4", "763", "00:e0:4c:68:01:45", "1000"),
 }
-IDENTITIES = runpy.run_path(str(Path(__file__).with_name("report-ordering-cohort.py")))["PINS"]
+COHORT = runpy.run_path(str(Path(__file__).with_name("report-ordering-cohort.py")))
+IDENTITIES = COHORT["PINS"]
 PINS = {name: pin[:2] for name, pin in IDENTITIES.items()}
 FIELDS = ("ifInUcastPkts", "ifOutUcastPkts", "ifInOctets", "ifOutOctets",
           "dot3StatsFCSErrors", "etherStatsFragments", "etherStatsDropEvents")
@@ -71,6 +72,7 @@ for item in pcs:pcs-qcom-ipq9574:pcs_qcom_ipq9574 ppe:qcom-ppe:qcom_ppe; do
 done
 echo "manifest_handoff_patch=$(sed -n 's/^trial_pcs0_handoff_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "manifest_feature_patch=$(sed -n 's/^trial_edma_feature_init_patch_commit=//p' /rom/etc/wave7-role-profile)"
+echo "manifest_fixed_patch=$(sed -n 's/^trial_pcs0_stock_mode_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
 echo '=== CPU ==='
 ethtool -S switch
@@ -143,9 +145,10 @@ def parse_snapshot(raw, variant):
                 "module_upper_clear":"1",
                 "pcs_sha":pcs, "pcs_rom_sha":pcs, "pcs_live":"live", "pcs_taint":"",
                 "ppe_sha":ppe, "ppe_rom_sha":ppe, "ppe_live":"live", "ppe_taint":"",
-                "manifest_handoff_patch":handoff, "manifest_feature_patch":feature}
+                "manifest_handoff_patch":handoff, "manifest_feature_patch":feature,
+                "manifest_fixed_patch":COHORT["FIXED_MODE_PINS"].get(variant,"")}
     require(BOOT.fullmatch(fields["boot"]) and fields["end_boot"] == fields["boot"], "mixed boot")
-    require(all(fields.get(k)==v for k,v in expected.items()), "snapshot identity or link mismatch")
+    require(all(fields.get(k, "" if k=="manifest_fixed_patch" else None)==v for k,v in expected.items()), "snapshot identity or link mismatch")
     require(fields["noc"].isdecimal(), "invalid NoC count")
     for port in MACS:
         require(set(sections[port]) == set(FIELDS), f"missing {port} MIB fields")

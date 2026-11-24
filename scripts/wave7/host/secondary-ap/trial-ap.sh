@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|edma-sg-inheritance|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|edma-feature-init|edma-sg-inheritance|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -30,6 +30,8 @@ candidate_worker_marker=0
 candidate_down_patch=''
 candidate_serial_patch=''
 candidate_handoff_patch=''
+candidate_fixed_patch=''
+source_handoff_patch=''
 candidate_feature_patch=''
 source_pcs_sha=''
 source_ppe_sha=''
@@ -108,7 +110,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|edma-feature-init|edma-sg-inheritance|source-reboot|return-0498)
+  mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|edma-feature-init|edma-sg-inheritance|source-reboot|return-0498)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -125,6 +127,13 @@ case "$profile" in
         candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
         base="$guard8/serial-speed-dhcp-guard8"
         candidate_artifact=wave7-serial-speed-dhcp-guard8-sysupgrade.bin
+        ;;
+      pcs0-stock-mode)
+        candidate_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
+        candidate_builder=058f5c2cafb929a4474759d0c34a79f53e835004
+        expected_candidate_sha=7b11503d6f5e7ce2842763f65decbd282db3317ad39b57ba8e04337784180dea
+        candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+        candidate_fixed_patch=5685b30aa28384ae9a9fe00a889639b618bd57a5
         ;;
       pcs0-handoff)
         candidate_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
@@ -213,6 +222,14 @@ case "$profile" in
         candidate_rev=r0+38346-7ea0722a9a-ap-dhcp-guard8
         candidate_ppe_sha=54d77cdbdce44a435afd767c16861fa7ce7fca3a8e754d3b4694f1dfdfd05876
       fi
+    fi
+    if [[ $trial_kind == pcs0-stock-mode ]]; then
+      candidate_rev=r0+38346-5685b30aa2-ap-dhcp-guard8
+      candidate_pcs_sha=3b36b616128110c64cbc3dd384e8b1615f9c237a41aa5a5678e4a3c01022350e
+      source_rev=r0+38346-6eeae4dd45-ap-dhcp-guard8
+      source_builder=5315aec9233753a3c26aaa4022307ac8fd99a9b1
+      source_pcs_sha=44e34472f0edab4aae5b8349a7c8b3f42396ecb102ac12803e82ff1c03c8338a
+      source_handoff_patch=6eeae4dd45ab4ebb7c9cb296dc45d53470677c5b
     fi
     if [[ $trial_kind == source-reboot || $trial_kind == return-0498 ]]; then
       candidate_rev=$source_rev
@@ -342,7 +359,7 @@ if [[ ( $trial_kind == down-mode || $trial_kind == serial-speed ) && $mode != --
 fi
 case "$mode" in
   --check-reboot-current|--reboot-current)
-    [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]] ||
+    [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode ]] ||
       { echo 'same-image repeats restricted to pinned ordering or PCS0 candidates' >&2; exit 2; }
     repeat_candidate=1
     ;;
@@ -487,6 +504,8 @@ read_state() {
     echo "manifest_serial_patch=$(sed -n "s/^trial_serial_speed_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_handoff_patch=$(sed -n "s/^trial_pcs0_handoff_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_feature_patch=$(sed -n "s/^trial_edma_feature_init_patch_commit=//p" /rom/etc/wave7-role-profile)"
+    echo "manifest_fixed_patch=$(sed -n "s/^trial_pcs0_stock_mode_patch_commit=//p" /rom/etc/wave7-role-profile)"
+    echo "fixed_mode_marker=$(dmesg | sed -n "s/^.*ipq9574_pcs 7a00000[.]ethernet-pcs: wave7-fixed-2500: //p" | awk '\''{line=$0} END {if(NR==1) print line; else print "absent-or-repeated"}'\'')"
     echo "manifest_relink_patch=$(sed -n "s/^trial_relink_patch_commit=//p" /rom/etc/wave7-role-profile)"
     ethtool -S switch 2>/dev/null | awk '\''$1=="s00_p06_dot3StatsFCSErrors:"{print "cpu_fcs=" $2}
       $1=="s00_p06_etherStatsFragments:"{print "cpu_fragments=" $2}
@@ -531,9 +550,10 @@ relink_matches() {
   done
 }
 experiment_matches() {
-  local s=$1 handoff=$2 feature=$3
+  local s=$1 handoff=$2 feature=$3 fixed=$4
   grep -Fxq "manifest_handoff_patch=$handoff" <<< "$s" &&
-    grep -Fxq "manifest_feature_patch=$feature" <<< "$s"
+    grep -Fxq "manifest_feature_patch=$feature" <<< "$s" &&
+    grep -Fxq "manifest_fixed_patch=$fixed" <<< "$s"
 }
 phy_matches() {
   local s=$1 patch=$2 fit=$3 marker=$4
@@ -644,7 +664,7 @@ has_permanent_address() {
 baseline_healthy() {
   if [[ $switch_module_trial == 1 ]]; then
     grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" &&
-      experiment_matches "$1" '' '' || return 1
+      experiment_matches "$1" '' '' '' || return 1
   fi
   role_healthy "$1" "$accepted_rev" "$accepted_mode" 2500 || return 1
   if [[ -n $accepted_builder ]]; then
@@ -670,6 +690,9 @@ baseline_healthy() {
 # recovery image. The return transition only accepts the disarmed lab
 # diagnostic; all ordinary module trials accept exact 0498.
 switch_source_healthy() {
+  if [[ $trial_kind == pcs0-stock-mode ]]; then
+    [[ $(trunk_error_key "$1") == 0:0:0 ]] || return 1
+  fi
   if [[ $trial_kind == return-0498 ]]; then
     grep -Fxq mib_probe=N <<< "$1" || return 1
   fi
@@ -683,7 +706,7 @@ switch_source_healthy() {
     trunk_path_healthy "$1" &&
     phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 &&
     relink_matches "$1" "$source_pcs_sha" "$source_ppe_sha" '' '' "$candidate_serial_patch" &&
-    experiment_matches "$1" '' '' &&
+    experiment_matches "$1" "$source_handoff_patch" '' '' &&
     kernel_variant_matches "$1" '' '' 0 '' 0 ''
 }
 # Historical NoC is tolerated exclusively for rebooting the same
@@ -693,7 +716,7 @@ switch_source_healthy() {
 # flash just to reach a source revision unrelated to the measured delta.
 approved_experiment_source_valid() {
   [[ $trial_kind == stock-order || $trial_kind == force-order ||
-     $trial_kind == pcs0-handoff || $trial_kind == edma-sg-inheritance ]] &&
+     $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode || $trial_kind == edma-sg-inheritance ]] &&
     restore_target_valid "$1" &&
     [[ $(trunk_error_key "$1") == 0:0:0 ]]
 }
@@ -714,10 +737,21 @@ rollback_eligible() {
   [[ $(value "$s" rev) == "$candidate_rev" &&
      $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
 }
+fixed_mode_marker_valid() {
+  local marker
+  marker=$(value "$1" fixed_mode_marker)
+  [[ $marker =~ ^mode=(0x[0-9a-f]{1,8}|0)\ ctrl=(0x[0-9a-f]{1,8}|0)\ misc=(0x[0-9a-f]{1,8}|0)$ ]] || return 1
+  (( (BASH_REMATCH[1] & 0x1f01) == 0 &&
+     (BASH_REMATCH[2] & 8) != 0 &&
+     BASH_REMATCH[3] == 0x50 ))
+}
 healthy() {
+  if [[ -n $candidate_fixed_patch ]]; then
+    fixed_mode_marker_valid "$1" || return 1
+  fi
   if [[ $switch_module_trial == 1 ]]; then
     grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$1" &&
-      experiment_matches "$1" "$candidate_handoff_patch" "$candidate_feature_patch" || return 1
+      experiment_matches "$1" "$candidate_handoff_patch" "$candidate_feature_patch" "$candidate_fixed_patch" || return 1
   fi
   if [[ $trial_kind == mib-diag ]]; then
     grep -Fxq mib_probe=N <<< "$1" || return 1
@@ -781,7 +815,7 @@ restore_profile() {
   [[ $switch_module_trial == 1 ]] || [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
 }
 repeat_source_valid() {
-  [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]] &&
+  [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode ]] &&
     healthy "$1" && grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1" &&
     [[ $(trunk_error_key "$1") == 0:0:0 ]]
 }
@@ -844,7 +878,7 @@ if [[ $mode == --selftest ]]; then
     fi
   fi
   if [[ $switch_module_trial == 1 ]]; then
-    s+=$(printf '\nmanifest_switch_patch=%s\nmanifest_handoff_patch=%s\nmanifest_feature_patch=%s' "$candidate_switch_patch" "$candidate_handoff_patch" "$candidate_feature_patch")
+    s+=$(printf '\nmanifest_switch_patch=%s\nmanifest_handoff_patch=%s\nmanifest_feature_patch=%s\nmanifest_fixed_patch=%s\nfixed_mode_marker=mode=0x20 ctrl=0x84c misc=0x50' "$candidate_switch_patch" "$candidate_handoff_patch" "$candidate_feature_patch" "$candidate_fixed_patch")
     source=$(sed -e "s/^rev=.*/rev=$source_rev/" -e "s/^builder_commit=.*/builder_commit=$source_builder/" \
       -e "s/^module_sha=.*/module_sha=$source_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$source_module_sha/" \
       -e "s/^manifest_module_sha=.*/manifest_module_sha=$source_module_sha/" -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$source_switch_patch/" <<< "$s")
@@ -852,7 +886,7 @@ if [[ $mode == --selftest ]]; then
     source=$(sed -e "s/^pcs_sha=.*/pcs_sha=$source_pcs_sha/" -e "s/^pcs_rom_sha=.*/pcs_rom_sha=$source_pcs_sha/" \
       -e "s/^manifest_pcs_sha=.*/manifest_pcs_sha=$source_pcs_sha/" -e "s/^ppe_sha=.*/ppe_sha=$source_ppe_sha/" \
       -e "s/^ppe_rom_sha=.*/ppe_rom_sha=$source_ppe_sha/" -e "s/^manifest_ppe_sha=.*/manifest_ppe_sha=$source_ppe_sha/" \
-      -e 's/^manifest_handoff_patch=.*/manifest_handoff_patch=/' -e 's/^manifest_feature_patch=.*/manifest_feature_patch=/' <<< "$source")
+      -e "s/^manifest_handoff_patch=.*/manifest_handoff_patch=$source_handoff_patch/" -e 's/^manifest_feature_patch=.*/manifest_feature_patch=/' -e 's/^manifest_fixed_patch=.*/manifest_fixed_patch=/' <<< "$source")
     if [[ $trial_kind == return-0498 ]]; then source+=$'\nmib_probe=N'; fi
     switch_source_healthy "$source" || fatal 'valid provisional source rejected'
     if [[ $trial_kind == return-0498 ]]; then
@@ -876,12 +910,12 @@ if [[ $mode == --selftest ]]; then
         fi
       done
     fi
-    for change in approval=1 token=0 manifest_switch_patch=wrong manifest_serial_patch=wrong manifest_handoff_patch=wrong manifest_feature_patch=wrong pcs_sha=wrong ppe_sha=wrong management_peer=192.168.76.250; do
+    for change in approval=1 token=0 manifest_switch_patch=wrong manifest_serial_patch=wrong manifest_handoff_patch=wrong manifest_feature_patch=wrong manifest_fixed_patch=wrong pcs_sha=wrong ppe_sha=wrong management_peer=192.168.76.250; do
       if switch_source_healthy "$(sed "s/^${change%%=*}=.*/$change/" <<< "$source")"; then
         fatal "bad provisional source accepted: $change"
       fi
     done
-    for field in manifest_switch_patch manifest_handoff_patch manifest_feature_patch; do
+    for field in manifest_switch_patch manifest_handoff_patch manifest_feature_patch manifest_fixed_patch; do
       if healthy "$(sed "/^$field=/d" <<< "$s")" ||
          healthy "$(sed "s/^$field=.*/$field=wrong/" <<< "$s")"; then
         fatal "missing or wrong experiment identity accepted: $field"
@@ -894,6 +928,13 @@ if [[ $mode == --selftest ]]; then
        healthy "$(sed '/^mib_probe=/d' <<< "$s")"; then
       fatal 'armed or missing diagnostic parameter accepted'
     fi
+  fi
+  if [[ -n $candidate_fixed_patch ]]; then
+    for marker in "mode=0x821 ctrl=0x84c misc=0x50" "mode=0x20 ctrl=0x844 misc=0x50" "mode=0x20 ctrl=0x84c misc=0x70" absent-or-repeated; do
+      if healthy "$(sed "s/^fixed_mode_marker=.*/fixed_mode_marker=$marker/" <<< "$s")"; then
+        fatal "invalid fixed mode readback accepted: $marker"
+      fi
+    done
   fi
   healthy "$s" || fatal 'good state rejected'
   if [[ $phy_trial == 1 ]]; then
@@ -977,7 +1018,7 @@ if [[ $mode == --selftest ]]; then
   fi
   if [[ $switch_module_trial == 1 ]]; then
     baseline=$(sed -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" \
-      -e 's/^manifest_handoff_patch=.*/manifest_handoff_patch=/' -e 's/^manifest_feature_patch=.*/manifest_feature_patch=/' <<< "$baseline")
+      -e 's/^manifest_handoff_patch=.*/manifest_handoff_patch=/' -e 's/^manifest_feature_patch=.*/manifest_feature_patch=/' -e 's/^manifest_fixed_patch=.*/manifest_fixed_patch=/' <<< "$baseline")
     for change in manifest_switch_patch=wrong manifest_switch_patch=MISSING; do
       if [[ $change == *=MISSING ]]; then
         bad=$(sed '/^manifest_switch_patch=/d' <<< "$baseline")
@@ -988,7 +1029,7 @@ if [[ $mode == --selftest ]]; then
     done
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
-  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff ]]; then
+  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode ]]; then
     repeat_source="$s"$'\napproval=0\ntoken=1'
     repeat_source_valid "$repeat_source" || fatal 'valid ordering repeat source rejected'
     for change in approval=1 token=0 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 module_sha=wrong; do
@@ -997,7 +1038,7 @@ if [[ $mode == --selftest ]]; then
       fi
     done
   fi
-  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == edma-sg-inheritance ]]; then
+  if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode || $trial_kind == edma-sg-inheritance ]]; then
     approved_source="$baseline"$'\napproval=1\ntoken=0'
     approved_experiment_source_valid "$approved_source" || fatal 'approved experiment source rejected'
     if repeat_source_valid "$approved_source"; then fatal 'rollback accepted as repeat source'; fi
@@ -1371,7 +1412,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           fi
           if [[ $switch_module_trial == 1 ]] &&
              { ! grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$s" ||
-               ! experiment_matches "$s" "$candidate_handoff_patch" "$candidate_feature_patch"; }; then
+               ! experiment_matches "$s" "$candidate_handoff_patch" "$candidate_feature_patch" "$candidate_fixed_patch"; }; then
             log SWITCH_ATTESTATION_BLOCKED_IDENTITY
             sleep 3
             continue
