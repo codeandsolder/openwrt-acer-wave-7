@@ -1095,6 +1095,11 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
             sleep 3
             continue
           fi
+          if [[ $trial_kind == mib-diag ]] && ! grep -Fxq mib_probe=N <<< "$s"; then
+            log MIB_DIAGNOSTIC_ATTESTATION_BLOCKED_ARMED
+            sleep 3
+            continue
+          fi
           if [[ $phy_trial == 1 ]] && ! phy_matches "$s" "$candidate_phy_patch" "$candidate_fit_sha" 1; then
             log PHY_ATTESTATION_BLOCKED_IDENTITY
             sleep 3

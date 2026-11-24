@@ -1,12 +1,15 @@
 #!/usr/bin/env -S uv run --no-project python
 """Physical packet/counter accounting on the guarded Wave7 lab.
 
-No flash, reset, configuration or register writes. The existing lab-control
+No flash, reset or raw register writes. The latch mode arms only a
+revision-pinned, lab-only driver parameter. The existing lab-control
 lock excludes other captures/trials. Observe ordinary driver stats reads,
 not the indirect SRAM bus itself. Background traffic is allowed, so the
 number of physically observed probe frames is a lower bound on MIB deltas.
 """
 import argparse
+from contextlib import contextmanager
+from decimal import Decimal
 import fcntl
 import hashlib
 import json
@@ -24,6 +27,7 @@ PATHS = {
     "switch": ("192.168.76.250", "enp4s0f4u2u2u4", "763", "00:e0:4c:68:01:45", "1000"),
 }
 PINS = {
+    "mib-diag": ("022d0978e9", "192835d8344c5341b4f5dc7bdb43da000d4568252b78a064c39c82dc7e5c995e"),
     "0498": ("f9aa3e1fa3", "ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91"),
     "mib-refresh": ("14a0f757e7", "0675df8af2c490bb5957be5cc2d2124c6500cdcf01d09cef02b744d5e090a485"),
     "stock-order": ("472043f203", "2d0da46a3bb51ebc52d4b70c3e31a4808bcf3a82955bf1b4414375d407aff319"),
@@ -120,16 +124,19 @@ def parse_snapshot(raw, variant):
     return {"fields":fields,"counters":sections,"wall":time.time()}
 
 
-def snapshot(out, name, variant):
+def remote(command, timeout=20):
     ip,dev,*_ = PATHS["direct"]
-    raw = run(["ssh","-nT","-i","/home/jan/.ssh/wave7-root-rsa",
+    return run(["ssh","-nT","-i","/home/jan/.ssh/wave7-root-rsa",
                "-o",f"BindInterface={dev}","-o",f"BindAddress={ip}",
                "-o","BatchMode=yes","-o","IdentitiesOnly=yes",
                "-o","StrictHostKeyChecking=yes","-o",f"UserKnownHostsFile={BASE/'known_hosts'}",
-               "-o","ConnectTimeout=4","-o","ConnectionAttempts=1",f"root@{ROUTER}",REMOTE],20)
+               "-o","ConnectTimeout=4","-o","ConnectionAttempts=1",f"root@{ROUTER}",command],timeout)
+
+
+def snapshot(out, name, variant):
+    raw = remote(REMOTE)
     (out/f"{name}.txt").write_text(raw)
     return parse_snapshot(raw,variant)
-
 
 def delta(before, after):
     require(before["fields"]["boot"] == after["fields"]["boot"], "boot changed")
@@ -200,7 +207,8 @@ def extract(out,name):
     return data
 
 
-def capture(variant,out):
+@contextmanager
+def lab_session(out):
     require(os.getuid()!=0,"run as jan")
     lockpath=BASE/".lab-control.lock"
     require(lockpath.is_file() and not lockpath.is_symlink() and lockpath.stat().st_uid==os.getuid(),
@@ -216,22 +224,54 @@ def capture(variant,out):
         routes_before=routes()
         out.mkdir(mode=0o700,parents=False,exist_ok=False)
         (out/"routes-before.json").write_text(json.dumps(routes_before,indent=2)+"\n")
-        procs={}
-        logs={}
+        yield
+        routes_after=routes()
+        (out/"routes-after.json").write_text(json.dumps(routes_after,indent=2)+"\n")
+        seal(out)
+
+
+@contextmanager
+def capture_nics(out,filt):
+    procs={}
+    logs={}
+    try:
+        for name,(_,dev,*_) in PATHS.items():
+            logs[name]=(out/f"{name}-capture.log").open("xb")
+            procs[name]=subprocess.Popen(["dumpcap","-q","-p","-i",dev,"-f",filt,
+                "-s","160","-a","duration:180","-w",str(out/f"{name}.pcapng")],
+                stdout=logs[name],stderr=subprocess.STDOUT)
+        deadline=time.monotonic()+5
+        while not all((out/f"{n}.pcapng").exists() and p.poll() is None
+                      for n,p in procs.items()):
+            require(time.monotonic()<deadline,"capture failed to arm")
+            time.sleep(.1)
+        time.sleep(.3)
+        yield
+    finally:
+        for proc in procs.values():
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGINT)
+        for name,proc in procs.items():
+            proc.wait(timeout=10)
+            logs[name].close()
+    require(all(p.returncode==0 for p in procs.values()),"capture failure")
+    for name in PATHS:
+        log=(out/f"{name}-capture.log").read_text()
+        match=re.search(r"Packets received/dropped on interface '[^']+': (\d+)/(\d+)",log)
+        require(match is not None and int(match[2])==0,
+                f"{name}: capture drop count not confirmed")
+
+
+def seal(out):
+    files=sorted(p for p in out.iterdir() if p.is_file())
+    (out/"SHA256SUMS").write_text("".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in files))
+
+
+def capture(variant,out):
+    with lab_session(out):
         phase_data=[]
-        try:
-            for name,(_,dev,*_) in PATHS.items():
-                logs[name]=(out/f"{name}-capture.log").open("xb")
-                filt="icmp and host 192.168.76.1 and (host 192.168.76.2 or host 192.168.76.250) and icmp[4:2] >= 48101 and icmp[4:2] <= 48106"
-                procs[name]=subprocess.Popen(["dumpcap","-q","-p","-i",dev,"-f",filt,
-                    "-s","160","-a","duration:180","-w",str(out/f"{name}.pcapng")],
-                    stdout=logs[name],stderr=subprocess.STDOUT)
-            deadline=time.monotonic()+5
-            while not all((out/f"{n}.pcapng").exists() and p.poll() is None
-                          for n,p in procs.items()):
-                require(time.monotonic()<deadline,"capture failed to arm")
-                time.sleep(.1)
-            time.sleep(.3)
+        filt="icmp and host 192.168.76.1 and (host 192.168.76.2 or host 192.168.76.250) and icmp[4:2] >= 48101 and icmp[4:2] <= 48106"
+        with capture_nics(out,filt):
             initial=snapshot(out,"initial",variant)
             require(variant=="0498" or initial["fields"]["noc"]=="0","candidate has historical NoC faults")
             for index,(name,count,payload) in enumerate(PHASES,1):
@@ -251,29 +291,224 @@ def capture(variant,out):
                     "repeat_delta":delta(before,repeat)})
                 delta(initial,repeat)
                 (out/"phases.json").write_text(json.dumps(phase_data,indent=2)+"\n")
-            routes_after=routes()
-            (out/"routes-after.json").write_text(json.dumps(routes_after,indent=2)+"\n")
-        finally:
-            for proc in procs.values():
-                if proc.poll() is None:
-                    proc.send_signal(signal.SIGINT)
-            for name,proc in procs.items():
-                proc.wait(timeout=10)
-                logs[name].close()
-        require(all(p.returncode==0 for p in procs.values()),"capture failure")
-        for name in PATHS:
-            log=(out/f"{name}-capture.log").read_text()
-            match=re.search(r"Packets received/dropped on interface '[^']+': (\d+)/(\d+)",log)
-            require(match is not None and int(match[2])==0,
-                    f"{name}: capture drop count not confirmed")
         captures={name:extract(out,name) for name in PATHS}
         report=[assess(p,captures) for p in phase_data]
         summary={"variant":variant,"boot":initial["fields"]["boot"],
             "historical_noc":int(initial["fields"]["noc"]),"phases":report}
         (out/"report.json").write_text(json.dumps(summary,indent=2)+"\n")
-        files=sorted(p for p in out.iterdir() if p.is_file())
-        (out/"SHA256SUMS").write_text("".join(f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in files))
-        print(json.dumps(summary,indent=2))
+    print(json.dumps(summary,indent=2))
+
+
+# The kernel logs read-completion timestamps, not the start of the second
+# bus transaction. Use only the first 150 ms of its explicit 250 ms sleep.
+# Require both the request and its reply in that window, so a queued old
+# reply cannot count as a newly forwarded CPU-ingress frame.
+NS = 1_000_000_000
+LATCH_ID = 48201
+LATCH_COUNT = 500
+PARAM = "/sys/module/rtl8365mb/parameters/mib_same_row_probe"
+PROBE_LINE = re.compile(
+    r"wave7-mib-probe port=6 row=190 initial=(\d+) same=(\d+) refreshed=(\d+) "
+    r"initial_ns=(\d+) same_ns=(\d+) refreshed_ns=(\d+)$"
+)
+
+
+def ns(seconds):
+    return int(Decimal(seconds)*NS)
+
+
+def clock_samples(boot):
+    samples=[]
+    for _ in range(3):
+        start=time.time_ns()
+        mono_start=time.monotonic_ns()
+        raw=remote("cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/uptime",5)
+        mono_end=time.monotonic_ns()
+        end=time.time_ns()
+        actual,uptime=raw.splitlines()
+        require(actual==boot,"boot changed during clock bracket")
+        require(re.fullmatch(r"\d+\.\d{2}",uptime),"unexpected uptime precision")
+        require(abs(end-start-(mono_end-mono_start))<5_000_000,"host wall-clock step")
+        # /proc/uptime exposes boottime truncated to centiseconds.
+        low=start-ns(uptime)-10_000_000
+        high=end-ns(uptime)
+        samples.append({"lower":low,"upper":high,"start":start,"end":end,"uptime":uptime})
+    return samples
+
+
+def clock_bounds(before,after):
+    # Use the fastest round trip on either side. Take the union, not the
+    # intersection, and add a drift margin over the short bounded trial.
+    a,b=(min(x,key=lambda y:y["upper"]-y["lower"]) for x in (before,after))
+    low=min(a["lower"],b["lower"])-5_000_000
+    high=max(a["upper"],b["upper"])+5_000_000
+    require(high-low<=100_000_000,"clock bracket too wide for latch witness")
+    return low,high
+
+
+def parse_probe(raw):
+    lines=raw.splitlines()
+    require(len(lines)==1,"expected exactly one new probe log line")
+    match=PROBE_LINE.search(lines[0])
+    require(match is not None,"diagnostic failed or malformed log")
+    keys=("initial","same","refreshed","initial_ns","same_ns","refreshed_ns")
+    return dict(zip(keys,map(int,match.groups())))
+
+
+def latch_packets(out,name):
+    raw=run(["tshark","-n","-r",str(out/f"{name}.pcapng"),"-Y","icmp.type == 8 || icmp.type == 0",
+             "-T","fields","-E","occurrence=f","-e","icmp.ident","-e","icmp.seq",
+             "-e","icmp.type","-e","ip.src","-e","ip.dst","-e","frame.time_epoch"],20)
+    (out/f"{name}-packets.tsv").write_text(raw)
+    packets={8:{},0:{}}
+    host=PATHS["switch"][0]
+    for line in raw.splitlines():
+        ident,seq,kind,src,dst,stamp=line.split("\t")
+        ident,seq,kind=map(int,(ident,seq,kind))
+        require(ident==LATCH_ID and kind in (0,8) and 1<=seq<=LATCH_COUNT,"unexpected probe frame")
+        require((src,dst)==((host,ROUTER) if kind==8 else (ROUTER,host)),"wrong probe IP")
+        require(seq not in packets[kind],"duplicate probe frame")
+        packets[kind][seq]=ns(stamp)
+    return packets
+
+
+def assess_latch(probe,bounds,packets,other,count):
+    lower,upper=bounds
+    first,same,refresh=(probe[k] for k in ("initial","same","refreshed"))
+    t0,t1,t2=(probe[k] for k in ("initial_ns","same_ns","refreshed_ns"))
+    require(t0+200_000_000<=t1<=t2,"invalid diagnostic timing")
+    # The second selection cannot begin during the first 150 ms of the
+    # 250 ms uninterruptible sleep; allow extra capture/clock margins.
+    window=(t0+upper+5_000_000,t0+150_000_000+lower-5_000_000)
+    expected=set(range(1,count+1))
+    physical=all(set(packets[k])==expected for k in (8,0)) and not any(other.values())
+    witnesses=[seq for seq,request in packets[8].items()
+               if seq in packets[0] and window[0]<=request<=packets[0][seq]<=window[1]]
+    if not physical:
+        kind="PACKET_PATH_MISMATCH"
+    elif not first<=same<=refresh:
+        kind="NONMONOTONIC_COUNTERS"
+    elif not witnesses:
+        kind="INSUFFICIENT_TIMED_TRAFFIC"
+    elif same-first>=len(witnesses):
+        kind="SAME_READ_FRESH_CONSISTENT"
+    elif refresh-first>=len(witnesses):
+        kind="SAME_ROW_STALE_REFRESH_RECOVERS"
+    else:
+        kind="BOTH_READS_DEFICIENT"
+    return {"kind":kind,"probe":probe,"clock_offset_ns":[lower,upper],
+            "conservative_window_epoch_ns":window,"witness_sequences":sorted(witnesses),
+            "same_delta":same-first,"refresh_delta":refresh-first,
+            "requests":len(packets[8]),"replies":len(packets[0]),
+            "wrong_path_frames":sum(map(len,other.values()))}
+
+
+def trigger_latch(boot,out):
+    # Re-check the exact boot and image before changing the one-shot
+    # parameter. The EXIT trap disarms even if the ethtool call fails.
+    command=r"""set -eu
+test "$(cat /proc/sys/kernel/random/boot_id)" = 'BOOT'
+test "$(cat /rom/etc/openwrt_version)" = 'REV'
+test "$(sha256sum /lib/modules/6.18.60/rtl8365mb.ko | cut -d' ' -f1)" = 'MODULE'
+test "$(sha256sum /rom/lib/modules/6.18.60/rtl8365mb.ko | cut -d' ' -f1)" = 'MODULE'
+test ! -e /overlay/upper/lib/modules
+test ! -L /overlay/upper/lib/modules
+test "$(cat /sys/module/rtl8365mb/initstate)" = live
+test "$(fw_printenv -n bootfail)" = 0
+test -e /tmp/wave7-keep-boot
+test "$(dmesg | grep -c 'NOC ERROR DETECTED' || :)" = 0
+p=PARAM
+test "$(cat "$p")" = N
+echo '=== BEFORE ==='
+dmesg | grep 'wave7-mib-probe' || :
+trap 'printf "N\n" > "$p"' EXIT
+trap 'exit 1' HUP INT TERM
+printf 'Y\n' > "$p"
+ethtool -S switch >/dev/null
+test "$(cat "$p")" = N
+echo '=== AFTER ==='
+dmesg | grep 'wave7-mib-probe' || :
+test "$(cat /proc/sys/kernel/random/boot_id)" = 'BOOT'
+"""
+    commit,module=PINS["mib-diag"]
+    command=command.replace("BOOT",boot).replace("REV",f"r0+38346-{commit}-ap-dhcp-guard8")
+    command=command.replace("MODULE",module).replace("PARAM",PARAM)
+    raw=remote(command)
+    (out/"trigger.txt").write_text(raw)
+    require(raw.startswith("=== BEFORE ===\n"),"missing pre-trigger log")
+    before,after=raw.removeprefix("=== BEFORE ===\n").split("=== AFTER ===\n")
+    before,after=before.splitlines(),after.splitlines()
+    require(after[:len(before)]==before and len(after)==len(before)+1,"ambiguous new diagnostic log")
+    return parse_probe(after[-1])
+
+
+def latch(out):
+    with lab_session(out):
+        require(remote(f"cat {PARAM}").strip()=="N","diagnostic parameter absent or armed")
+        initial=snapshot(out,"initial","mib-diag")
+        require(initial["fields"]["noc"]=="0","diagnostic boot has historical NoC faults")
+        boot=initial["fields"]["boot"]
+        wall_start,mono_start=time.time_ns(),time.monotonic_ns()
+        before=clock_samples(boot)
+        filt=f"icmp and host {ROUTER} and host {PATHS['switch'][0]} and icmp[4:2] = {LATCH_ID}"
+        with capture_nics(out,filt):
+            ip,dev,*_=PATHS["switch"]
+            with (out/"ping.txt").open("xb") as log:
+                proc=subprocess.Popen(["ping","-n","-D","-I",dev,"-I",ip,"-e",str(LATCH_ID),
+                    "-s","64","-c",str(LATCH_COUNT),"-i","0.01","-W","1",ROUTER],
+                    stdout=log,stderr=subprocess.STDOUT)
+                try:
+                    time.sleep(.5)
+                    require(proc.poll() is None,"probe traffic exited before trigger")
+                    probe=trigger_latch(boot,out)
+                    require(proc.wait(timeout=15)==0,"probe traffic failed")
+                finally:
+                    if proc.poll() is None:
+                        proc.terminate()
+                        proc.wait(timeout=5)
+        after=clock_samples(boot)
+        require(abs(time.time_ns()-wall_start-(time.monotonic_ns()-mono_start))<5_000_000,
+                "host wall-clock step during capture")
+        (out/"clock.json").write_text(json.dumps({"before":before,"after":after},indent=2)+"\n")
+        final=snapshot(out,"final","mib-diag")
+        changes=delta(initial,final)
+        require(all(changes[p][k]>=0 for p in MACS for k in FIELDS),"counters went backwards")
+        require(not any(changes[p][k] for p in MACS for k in ERRORS),"physical switch errors during probe")
+        require(remote(f"cat {PARAM}").strip()=="N","probe remained armed")
+        captures={name:latch_packets(out,name) for name in PATHS}
+        report=assess_latch(probe,clock_bounds(before,after),captures["switch"],captures["direct"],LATCH_COUNT)
+        report.update(boot=boot,variant="mib-diag",counter_deltas=changes)
+        (out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
+    print(json.dumps(report,indent=2))
+
+
+def latch_selftest():
+    base={"initial":10,"same":10,"refreshed":12,
+          "initial_ns":NS,"same_ns":NS+250_000_000,"refreshed_ns":NS+251_000_000}
+    offset=100*NS
+    bounds=(offset-10_000_000,offset+10_000_000)
+    packets={8:{1:101*NS+20_000_000,2:101*NS+40_000_000},
+             0:{1:101*NS+21_000_000,2:101*NS+41_000_000}}
+    empty={8:{},0:{}}
+    def classify(p=base,frames=packets,other=empty):
+        return assess_latch(p,bounds,frames,other,2)["kind"]
+    require(classify()=="SAME_ROW_STALE_REFRESH_RECOVERS","stale latch")
+    require(classify({**base,"same":12})=="SAME_READ_FRESH_CONSISTENT","fresh latch")
+    require(classify({**base,"refreshed":11})=="BOTH_READS_DEFICIENT","both deficient")
+    require(classify({**base,"same":9})=="NONMONOTONIC_COUNTERS","nonmonotonic")
+    require(classify(other=packets)=="PACKET_PATH_MISMATCH","wrong NIC")
+    require(classify(frames={8:packets[8],0:{}})=="PACKET_PATH_MISMATCH","missing packet")
+    late={8:{k:v+200_000_000 for k,v in packets[8].items()},
+          0:{k:v+200_000_000 for k,v in packets[0].items()}}
+    require(classify(frames=late)=="INSUFFICIENT_TIMED_TRAFFIC","late packets")
+    crossing={8:{1:101*NS,2:101*NS},0:packets[0]}
+    require(classify(frames=crossing)=="INSUFFICIENT_TIMED_TRAFFIC","old requests")
+    require(parse_probe("prefix wave7-mib-probe port=6 row=190 "+" ".join(
+        f"{k}={v}" for k,v in base.items()))==base,"log parser")
+    require(clock_bounds([{"lower":offset-1,"upper":offset+1}],
+                         [{"lower":offset-2,"upper":offset+2}])==
+            (offset-5_000_002,offset+5_000_002),"clock bracket")
+    print("MIB_LATCH_ACCOUNTING_SELFTEST_PASS")
 
 
 def selftest():
@@ -291,6 +526,7 @@ def selftest():
     require(assess(phase,{**captures,"direct":{48102:packets}})["kind"]=="PACKET_PATH_MISMATCH","wrong NIC")
     require(assess(phase,{"switch":{},"direct":{}})["kind"]=="PACKET_PATH_MISMATCH","missing")
     print("MIB_PHYSICAL_ACCOUNTING_SELFTEST_PASS")
+    latch_selftest()
 
 
 if __name__=="__main__":
@@ -300,10 +536,15 @@ if __name__=="__main__":
     p=sub.add_parser("capture")
     p.add_argument("variant",choices=PINS)
     p.add_argument("out",type=Path)
+    q=sub.add_parser("latch")
+    q.add_argument("out",type=Path)
     args=parser.parse_args()
     if args.command=="selftest":
         selftest()
     else:
         expected=BASE/"mib-refresh-dhcp-guard8"/"observations"
         require(args.out.parent.resolve()==expected.resolve(),"output must be in MIB observations")
-        capture(args.variant,args.out)
+        if args.command=="latch":
+            latch(args.out)
+        else:
+            capture(args.variant,args.out)
