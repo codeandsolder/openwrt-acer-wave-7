@@ -203,6 +203,55 @@ it during a live flash soak requests rollback even while the router
 lease and Ethernet are healthy. Lab service/lease failures now have
 distinct rollback reasons and preserve the triggering state.
 
+### Isolated RTL8367D ordering trials on the 0498 parent
+
+The `stock-order` and `force-order` images change only the switch
+module and its recorded manifest identity relative to exact 0498.
+They isolate the stock lane mux/tuning/mode order and the stock MAC
+link-last publication respectively. Do not combine them until their
+individual hardware results are understood.
+
+On Asus the dedicated deployment is `~/scripts/wave7/secondary-ap-guard8/`
+(`trial-ap.sh` installed as `trial-switch-module.sh`,
+`archive-trunk-run.sh` as `archive-switch-run.sh`). With the isolated
+upstream service, direct 2.5GbE peer, switched 1GbE peer and clean approved
+0491 active:
+
+1. Run `trial-switch-module.sh stock-order --check` then
+   `trial-switch-module.sh stock-order --run` (or use `force-order` for
+   the separate candidate). The guard holds lab control until terminal
+   status. Do not interrupt the supervisor during flash or rollback.
+2. Archive the emitted RUN_DIR with `archive-switch-run.sh RUN_DIR`
+   while the exact terminal boot is live. Verify `evidence.sha256`.
+   A SOAK_PASS is provisional, never persistent approval. RESTORED
+   after a failed trial is a failure, not a qualified candidate.
+3. For a healthy candidate, run the read-only physical packet accounting
+   and PCS0 snapshots using `probe-mib-freshness.py capture VARIANT OUT`
+   and `snapshot-trunk-pcs.py capture VARIANT OUT`. Each OUT is a new
+   directory under `mib-refresh-dhcp-guard8/observations`; verify its
+   SHA256SUMS. Do not run these while a trial owns lab control.
+4. For repeated boots of that exact unapproved candidate, run
+   `trial-switch-module.sh VARIANT --check-reboot-current`, then
+   `trial-switch-module.sh VARIANT --reboot-current`. This does not
+   rewrite NAND. Archive each terminal boot before repeating. Stop
+   the sequence on any failure or unsealed evidence.
+5. To switch variants, use `trial-switch-module.sh VARIANT --restore-baseline`,
+   archive the deliberate restoration, and verify the next variant's
+   preflight. The report classifies that restoration separately from
+   candidate boot outcomes.
+
+The observer records time-aligned RTL CPU-port and XGMAC counters from
+the same ethtool invocation. A bounded read-only PCS0/NSSCC snapshot is
+attempted once per committed corrupt-only episode with intact direct
+management. A failed or missing snapshot is not a clean register result.
+The cohort report `report-ordering-cohort.py RUN_DIR [RUN_DIR ...]`
+checks sealed hashes, boot uniqueness and full module/common parent
+identities, separates 1GbE versus 2.5GbE direct-peer conditions, and
+counts planned restores separately (excluded from candidate cohorts).
+Include all sealed comparable boots, not only successes. Boot method
+is recorded; matching final link speed does not make flash and reboot
+histories identical. No finite clean-only cohort proves the defect fixed.
+
 ### Read-only trunk recovery observation
 
 On Asus, as Jan, run the installed `probe-trunk-recovery.py capture OUT EXPECTED_REVISION --duration 60` via `uv run --no-project --offline --python /usr/bin/python3 python`. OUT must be a new directory under the Guard8 `native-recovery-dhcp-guard8/observations/` directory. This observer generates concurrent low-rate source-bound ICMP on both independent paths; checks both policy routes every interval; takes boot-consistent CPU-port MIB/carrier/driver-event snapshots over the direct path. It makes no configuration changes and can span an operator-initiated reboot. The report distinguishes complete directional corrupt-only loss, other switch loss, copper-down, direct-path loss, counter discontinuity and unobserved intervals. It deliberately never claims causal recovery on a pulse log alone. SHA256SUMS covers metadata, raw JSONL and report. `selftest` runs synthetic known-fault and missing-sample cases. This is additional evidence, not a replacement for the guarded acceptance soak.
