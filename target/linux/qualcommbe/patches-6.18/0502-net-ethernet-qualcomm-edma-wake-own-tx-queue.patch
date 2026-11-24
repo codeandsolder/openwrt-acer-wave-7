@@ -1,0 +1,178 @@
+From: Wave7 development
+Subject: net: ethernet: qualcomm: edma: wake the completed TX queue
+
+TX descriptor and completion rings are mapped one-to-one in per-port
+queue order. The CPU executing completion need not be the CPU selecting
+the TX queue. Waking the latter by using the current CPU can strand
+nonzero queues when all completion IRQs are on CPU0.
+
+Use the completion ring's queue index, pair queue stop with a fresh
+hardware consumer-index read, and start/stop all queues during port
+lifecycle. Do not stop queues on DMA mapping errors, which need not
+produce any completion.
+
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_tx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_tx.c
+@@ -110,7 +110,7 @@
+ 	struct edma_txcmpl_stats *txcmpl_stats = &txcmpl_ring->txcmpl_stats;
+ 	struct ppe_device *ppe_dev = edma_ctx->ppe_dev;
+ 	struct regmap *regmap = ppe_dev->regmap;
+-	u32 cons_idx, end_idx, data, cpu_id;
++	u32 cons_idx, end_idx, data, queue_id;
+ 	struct device *dev = ppe_dev->dev;
+ 	u32 avail, count, txcmpl_errors;
+ 	struct edma_txcmpl_desc *txcmpl;
+@@ -219,19 +219,24 @@
+ 	reg = EDMA_BASE_OFFSET + EDMA_REG_TXCMPL_CONS_IDX(txcmpl_ring->id);
+ 	regmap_write(regmap, reg, cons_idx);
+ 
+-	/* If tx_requeue_stop disabled (tx_requeue_stop = 0)
+-	 * Fetch the tx queue of interface and check if it is stopped.
+-	 * if queue is stopped and interface is up, wake up this queue.
++	/* Completion rings are mapped one-to-one to TX descriptor rings.
++	 * The interrupt may run on any CPU: wake the queue belonging to
++	 * this ring, not the queue of the CPU executing NAPI.
+ 	 */
+ 	if (unlikely(!edma_ctx->tx_requeue_stop)) {
+-		cpu_id = smp_processor_id();
+-		nq = netdev_get_tx_queue(txcmpl_ring->napi.dev, cpu_id);
+-		if (unlikely(netif_tx_queue_stopped(nq)) &&
+-		    netif_carrier_ok(txcmpl_ring->napi.dev)) {
+-			dev_dbg(dev, "Waking queue number %d, for interface %s\n",
+-				cpu_id, txcmpl_ring->napi.dev->name);
+-			__netif_tx_lock(nq, cpu_id);
+-			netif_tx_wake_queue(nq);
++		struct net_device *ndev = txcmpl_ring->napi.dev;
++
++		queue_id = edma_tx_queue_index(txcmpl_ring->id,
++					       edma_ctx->hw_info->txcmpl->ring_start,
++					       num_possible_cpus());
++		nq = netdev_get_tx_queue(ndev, queue_id);
++		/* Pair with the stop-side descriptor recheck. */
++		smp_mb();
++		if (unlikely(netif_tx_queue_stopped(nq))) {
++			__netif_tx_lock(nq, smp_processor_id());
++			if (netif_tx_queue_stopped(nq) && netif_running(ndev) &&
++			    netif_carrier_ok(ndev))
++				netif_tx_wake_queue(nq);
+ 			__netif_tx_unlock(nq);
+ 		}
+ 	}
+@@ -651,6 +656,25 @@
+ 				      hw_next_to_use, EDMA_TX_RING_SIZE);
+ 
+ 	return avail;
++}
++
++/* Called under the netdev TX queue lock after descriptor exhaustion.
++ * Do not leave a queue stopped if hardware consumed descriptors between
++ * the failed reservation and publication of the stop bit.
++ */
++bool edma_tx_stop_if_full(struct netdev_queue *nq,
++			  struct edma_txdesc_ring *ring, struct sk_buff *skb)
++{
++	u32 needed = skb_is_nonlinear(skb) ? edma_tx_num_descs_for_sg(skb) : 1;
++
++	netif_tx_stop_queue(nq);
++	smp_mb__after_atomic();
++	ring->avail_desc = edma_tx_avail_desc(ring, ring->prod_idx);
++	if (ring->avail_desc < needed)
++		return true;
++
++	netif_tx_start_queue(nq);
++	return false;
+ }
+ 
+ /**
+@@ -716,7 +740,7 @@
+ 			u64_stats_update_begin(&txdesc_stats->syncp);
+ 			++txdesc_stats->no_desc_avail;
+ 			u64_stats_update_end(&txdesc_stats->syncp);
+-			return EDMA_TX_FAIL_NO_DESC;
++			return EDMA_TX_FAIL;
+ 		}
+ 
+ 		EDMA_TXDESC_ENDIAN_SET(txdesc);
+@@ -764,7 +788,7 @@
+ 			u64_stats_update_begin(&txdesc_stats->syncp);
+ 			++txdesc_stats->no_desc_avail;
+ 			u64_stats_update_end(&txdesc_stats->syncp);
+-			return EDMA_TX_FAIL_NO_DESC;
++			return EDMA_TX_FAIL;
+ 		}
+ 
+ 		num_desc_filled = edma_tx_skb_sg_fill_desc(txdesc_ring,
+@@ -777,7 +801,7 @@
+ 			u64_stats_update_begin(&txdesc_stats->syncp);
+ 			++txdesc_stats->no_desc_avail;
+ 			u64_stats_update_end(&txdesc_stats->syncp);
+-			return EDMA_TX_FAIL_NO_DESC;
++			return EDMA_TX_FAIL;
+ 		}
+ 	}
+ 
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
+@@ -302,6 +302,15 @@
+ 	bool napi_enabled;
+ };
+ 
++/* Completion and descriptor ring arrays use the same per-port ordering. */
++static inline u32 edma_tx_queue_index(u32 id, u32 start, u32 queues)
++{
++	return (id - start) % queues;
++}
++
++bool edma_tx_stop_if_full(struct netdev_queue *nq,
++			  struct edma_txdesc_ring *ring, struct sk_buff *skb);
++
+ extern int edma_tx_napi_budget;
+ extern int edma_tx_mitigation_timer;
+ extern int edma_tx_mitigation_pkt_cnt;
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+@@ -111,7 +111,7 @@
+ 	edma_cfg_tx_napi_enable(port_id);
+ 	edma_cfg_tx_enable_interrupts(port_id);
+ 
+-	netif_start_queue(netdev);
++	netif_tx_start_all_queues(netdev);
+ 
+ 	return 0;
+ }
+@@ -125,7 +125,7 @@
+ 	if (!port_priv)
+ 		return -EINVAL;
+ 
+-	netif_stop_queue(netdev);
++	netif_tx_stop_all_queues(netdev);
+ 
+ 	/* 20ms delay would provide a plenty of margin to take care of in-flight packets. */
+ 	msleep(20);
+@@ -225,16 +225,22 @@
+ 		/* Transmit the packet. */
+ 		ret = edma_tx_ring_xmit(dev, skb, txdesc_ring, stats);
+ 
+-		if (unlikely(ret == EDMA_TX_FAIL_NO_DESC)) {
+-			if (likely(!edma_ctx->tx_requeue_stop)) {
++		if (unlikely(ret == EDMA_TX_FAIL_NO_DESC) &&
++		    likely(!edma_ctx->tx_requeue_stop)) {
++			struct netdev_queue *nq = netdev_get_tx_queue(dev, skbq);
++
++			if (edma_tx_stop_if_full(nq, txdesc_ring, skb)) {
+ 				cpu_id = smp_processor_id();
+-				netdev_dbg(dev, "Stopping tx queue due to lack of tx descriptors\n");
+ 				u64_stats_update_begin(&stats->syncp);
+ 				++stats->tx_queue_stopped[cpu_id];
+ 				u64_stats_update_end(&stats->syncp);
+-				netif_tx_stop_queue(netdev_get_tx_queue(dev, skbq));
+ 				return NETDEV_TX_BUSY;
+ 			}
++
++			/* Hardware freed enough descriptors while we stopped.
++			 * The queue lock excludes any competing producer.
++			 */
++			ret = edma_tx_ring_xmit(dev, skb, txdesc_ring, stats);
+ 		}
+ 
+ 		if (unlikely(ret != EDMA_TX_OK)) {
