@@ -5,6 +5,7 @@ on:
     paths:
       - '.github/workflows/wave7-kernel.yml'
       - '.github/workflows/scripts/wave7-*.sh'
+      - '.github/workflows/scripts/test-wave7-ci.sh'
       - 'Makefile'
       - 'rules.mk'
       - 'Config.in'
@@ -21,6 +22,7 @@ on:
     paths:
       - '.github/workflows/wave7-kernel.yml'
       - '.github/workflows/scripts/wave7-*.sh'
+      - '.github/workflows/scripts/test-wave7-ci.sh'
       - 'Makefile'
       - 'rules.mk'
       - 'Config.in'
