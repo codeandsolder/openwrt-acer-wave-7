@@ -507,6 +507,8 @@ def timed_traffic(boot,out,action):
                     require(proc.poll() is None,"probe traffic exited before trigger")
                     result=action(sample)
                     require(proc.wait(timeout=15)==0,"probe traffic failed")
+                    # AF_PACKET/libpcap batches may still hold the tail.
+                    time.sleep(1)
                 finally:
                     if proc.poll() is None:
                         proc.terminate()
