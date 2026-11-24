@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
+/*
+ * RAM-only recovery and boot-test variant of Acer Wave 7.
+ *
+ * Retain the production hardware description; change only the chosen
+ * boot arguments, overriding the NAND-root flags in the included DTS.
+ * Do not attach UBI or mount a persistent root during a RAM trial.
+ */
+#include "ipq5332-acer-wave7.dts"
+
+&{/chosen} {
+	bootargs-append = " root=/dev/ram0 rdinit=/init panic=10 reboot=panic_w wave7.defer_wifi=1 wave7.autoprobe=1 clk_ignore_unused ubi.no_autoattach=1";
+};

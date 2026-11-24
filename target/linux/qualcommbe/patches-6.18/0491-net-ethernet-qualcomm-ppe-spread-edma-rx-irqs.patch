@@ -1,0 +1,111 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] net: ethernet: qualcomm: spread EDMA RX IRQs and honor RPS mask
+
+PPE RSS sends distinct flow hash buckets to four RX descriptor rings,
+but their IRQs currently all default to CPU0. Their NAPI polls thus
+share one softirq bottleneck, limiting 2.5GbE receive throughput.
+
+Distribute RX IRQs across online CPUs, with affinity hints that are
+cleared on teardown. Failure to set IRQ affinity is nonfatal.
+Also unwind already-registered RX IRQs correctly if registration fails.
+
+The rps_bitmap_cores sysctl was ineffective because the RSS mapping
+function read a hard-coded mask; use its configured value instead.
+
+Measured live IPQ5332, 2.5GbE Asus-to-router TCP receive:
+1 stream: 1741.81 -> 2228.04 Mbps (+27.9%).
+4 streams: 1573.30 -> 2347.87 Mbps (+49.2%).
+The standalone A/B restored all IRQ affinities afterward.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+
+---
+--- a/drivers/net/ethernet/qualcomm/ppe/edma.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma.c
+@@ -7,6 +7,8 @@
+   */
+ 
+ #include <linux/clk.h>
++#include <linux/cpumask.h>
++#include <linux/interrupt.h>
+ #include <linux/delay.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
+@@ -408,7 +410,7 @@ static int edma_irq_register(void)
+ 	struct edma_ring_info *rx = hw_info->rx;
+ 	struct device *dev = ppe_dev->dev;
+ 	int ret;
+-	u32 i;
++	u32 i, cpu;
+ 
+ 	/* Request IRQ for TXCMPL rings. */
+ 	edma_txcmpl_irq_name = kzalloc((sizeof(char *) * txcmpl->num_rings), GFP_KERNEL);
+@@ -457,7 +459,7 @@ static int edma_irq_register(void)
+ 						  GFP_KERNEL);
+ 		if (!edma_rxdesc_irq_name[i]) {
+ 			ret = -ENOMEM;
+-			goto rxdesc_ring_irq_name_alloc_fail;
++			goto rx_desc_ring_intr_req_fail;
+ 		}
+ 
+ 		snprintf(edma_rxdesc_irq_name[i], 20, "rxdesc_%d",
+@@ -479,6 +481,17 @@ static int edma_irq_register(void)
+ 			 rx->ring_start + i,
+ 			 edma_ctx->intr_info.intr_rx[i],
+ 			 edma_rxdesc_irq_name[i]);
++
++		/*
++		 * Hardware RSS maps each queue group to a different RX ring.
++		 * Keep the ring's interrupt/NAPI work on a distinct online CPU.
++		 */
++		cpu = cpumask_local_spread(i, dev_to_node(dev));
++		ret = irq_set_affinity_and_hint(edma_ctx->intr_info.intr_rx[i],
++						cpumask_of(cpu));
++		if (ret)
++			dev_warn(dev, "RXDESC ring %u IRQ %d affinity unavailable: %d\n",
++				 rx->ring_start + i, edma_ctx->intr_info.intr_rx[i], ret);
+ 	}
+ 
+ 	/* Request Misc IRQ */
+@@ -494,16 +507,18 @@ static int edma_irq_register(void)
+ 	return 0;
+ 
+ misc_intr_req_fail:
+-	/* Free IRQ for RXDESC rings */
+-	for (i = 0; i < rx->num_rings; i++) {
++	i = rx->num_rings;
++rx_desc_ring_intr_req_fail:
++	/* Only IRQs successfully requested before index i are owned here. */
++	while (i > 0) {
++		i--;
++		irq_update_affinity_hint(edma_ctx->intr_info.intr_rx[i], NULL);
+ 		synchronize_irq(edma_ctx->intr_info.intr_rx[i]);
+ 		free_irq(edma_ctx->intr_info.intr_rx[i],
+ 			 (void *)&edma_ctx->rx_rings[i]);
+ 	}
+-rx_desc_ring_intr_req_fail:
+ 	for (i = 0; i < rx->num_rings; i++)
+ 		kfree(edma_rxdesc_irq_name[i]);
+-rxdesc_ring_irq_name_alloc_fail:
+ 	kfree(edma_rxdesc_irq_name);
+ rxdesc_irq_name_alloc_fail:
+ 	for (i = 0; i < txcmpl->num_rings; i++) {
+@@ -837,6 +852,7 @@ void edma_destroy(struct ppe_device *ppe
+ 
+ 	/* Free IRQ for Rx DESC rings */
+ 	for (i = 0; i < rx->num_rings; i++) {
++		irq_update_affinity_hint(edma_ctx->intr_info.intr_rx[i], NULL);
+ 		synchronize_irq(edma_ctx->intr_info.intr_rx[i]);
+ 		free_irq(edma_ctx->intr_info.intr_rx[i],
+ 			 (void *)&edma_ctx->rx_rings[i]);
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_cfg_rx.c
+@@ -1003,7 +1003,7 @@ void edma_cfg_rx_napi_add(void)
+  */
+ int edma_cfg_rx_rps_hash_map(void)
+ {
+-	cpumask_t edma_rps_cpumask = {{EDMA_RX_DEFAULT_BITMAP}};
++	cpumask_t edma_rps_cpumask = {{READ_ONCE(edma_cfg_rx_rps_bitmap_cores)}};
+ 	int map_len = 0, idx = 0, ret = 0;
+ 	u32 q_off = EDMA_RX_QUEUE_START;
+ 	u32 q_map[EDMA_MAX_CORE] = {0};
