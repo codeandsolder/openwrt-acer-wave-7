@@ -249,3 +249,22 @@ that changes link authority, not just a register bit.
 Review PCS polling and the PHY's actual in-band signaling
 before building it; do not mix with the existing 0497 timing
 experiment, and verify cold-boot deferral in a separate trial.
+
+## Fixed switch PCS0 (wrapper 12)
+
+Use the same command with `--pcs0-only` and a fresh evidence directory.
+The pinned stock live DTS specifies wrapper 12 for both instances and
+forced 2500/full-duplex on port 1 (MDIO 0x1d), not port 2. The five
+targeted cases execute the actual wrapper-12 ARM instructions, including
+the actual force-speed and mode-register helpers, with mocked register,
+clock, reset, and delay boundaries. The two observed initial MODE_CTRL
+values (0x1021 and 0x821) both yield 0x20, preserving unrelated bits.
+The stock sequence writes 0x21c=0xa882, sets channel 0 force-speed bit 3
+at 0x480, writes 0x218=0x50, asserts XPCS reset, gates port 1 clocks
+12/13, clears MODE_CTRL mask 0x1f01, pulses VCO calibration bit 14,
+polls calibration completion, restores clocks and selects 312.5 MHz.
+The fixture verifies exact ordered events for three successful cases
+and two failure cases (read error and calibration timeout).
+This establishes a stock-policy discrepancy, not a demonstrated fix.
+The post-calibration stock state machine for subsequent initializations
+is a separate path; each focused case models its first initialization.

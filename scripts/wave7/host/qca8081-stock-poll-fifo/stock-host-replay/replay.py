@@ -78,6 +78,7 @@ def provenance(fit, dts):
     text = dts.read_text()
     assert 'compatible = "qcom,ess-switch-ipq53xx";' in text
     assert "switch_mac_mode1 = <0x0c>;" in text
+    assert "switch_mac_mode = <0x0c>;" in text
     # The actual forced-speed and forced-duplex parser references have
     # been resolved against this pinned stock module. Confirm exact nodes
     # rather than extrapolate port1's forced setting to PHY24.
@@ -145,6 +146,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("module", type=Path)
     p.add_argument("out", type=Path)
+    p.add_argument("--pcs0-only", action="store_true")
     p.add_argument("--stock-fit", required=True, type=Path)
     p.add_argument("--stock-dts", required=True, type=Path)
     args = p.parse_args()
@@ -153,9 +155,9 @@ def main():
     dest = args.out.resolve()
     dest.mkdir(parents=True, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix=".replay-", dir=dest) as work:
-        execute(args.module, Path(work), dest, metadata)
+        execute(args.module, Path(work), dest, metadata, args.pcs0_only)
 
-def execute(module, out, dest, metadata):
+def execute(module, out, dest, metadata, pcs0_only=False):
     original = module.read_bytes()
     assert hashlib.sha256(original).hexdigest() == SHA, "unknown stock module"
     stock = Elf(original)
@@ -179,7 +181,7 @@ def execute(module, out, dest, metadata):
     flags = ["sccache", "clang", "--target=arm-linux-gnueabi", "-march=armv7-a", "-marm", "-mfloat-abi=soft",
              "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-pic", "-fno-pie", "-fno-unwind-tables",
              "-fno-asynchronous-unwind-tables", "-O2", "-Wall", "-Wextra", "-Werror"]
-    run(flags+["-c", str(Path(__file__).with_name("fixture.c").resolve()), "-o", "fixture.o"], cwd=out, env=env)
+    run(flags+[f"-DPCS0_ONLY={int(pcs0_only)}", "-c", str(Path(__file__).with_name("fixture.c").resolve()), "-o", "fixture.o"], cwd=out, env=env)
     run(flags+["-c", "stock.S", "-o", "stock.o"], cwd=out, env=env)
     run(["ld.lld", "-T", "layout.ld", "-o", "fixture.unrelocated", "fixture.o", "stock.o"], cwd=out)
     binary = bytearray((out / "fixture.unrelocated").read_bytes())
@@ -196,7 +198,10 @@ def execute(module, out, dest, metadata):
         typ = info & 255
         old = word(image, off)
         if typ == 2:  # R_ARM_ABS32
-            if off == 0x930a0:
+            if off == 0x2a6c0:
+                assert name == ".bss" and old == 0x3228
+                target = syms["mock_pcs0_initialized"]
+            elif off == 0x930a0:
                 assert name == ".bss" and old == 0xa328
                 target = syms["mock_status_global"]
             elif off in (0x6f214,0x6f23c,0x6f2a0):
@@ -250,14 +255,62 @@ def execute(module, out, dest, metadata):
     if proc.returncode:
         print(result[-12:])
         proc.check_returncode()
-    summary = check(result)
-    (dest / "trace.json").write_text(json.dumps([e for e in result[:next(i for i,e in enumerate(result) if e['event']=='CASE' and e['a']==100)]], indent=2)+"\n")
+    summary = check_pcs0(result) if pcs0_only else check(result)
+    (dest / "trace.json").write_text(json.dumps(result if pcs0_only else result[:next(i for i,e in enumerate(result) if e["event"]=="CASE" and e["a"]==100)], indent=2)+"\n")
     (dest / "matrix.json").write_text(json.dumps(summary, indent=2)+"\n")
     metadata.update({"trace_binary_sha256": hashlib.sha256(trace).hexdigest(),
                      "relocations": len(applied), "events": len(result),
                      "fixture_sha256": hashlib.sha256(binary).hexdigest()})
     (dest / "provenance.json").write_text(json.dumps(metadata, indent=2)+"\n")
     print(f"{len(applied)} relocations; {len(result)} events; stock ARM replay PASS: {summary}")
+
+def check_pcs0(events):
+    cases, inputs = {}, {}
+    for e in events:
+        if e["event"] == "CASE":
+            assert e["a"] not in cases
+            case = cases[e["a"]] = []
+            inputs[e["a"]] = (e["b"], e["c"])
+        else:
+            case.append((e["event"], e["a"], e["b"], e["c"]))
+    assert set(cases) == set(range(71,76))
+    for i, (mode, ctrl) in inputs.items():
+        mode_out = mode & ~0x1f01
+        ctrl_out = ctrl | 8
+        prefix = [("REG_WRITE",0,0x21c,0xa882)]
+        if i == 74:
+            expected = prefix + [("END",2**32-5,0,ctrl),
+                                 ("UNIPHY_FINAL",mode,0x1234abcd,0)]
+        else:
+            ready = {71:3,72:1,73:3,75:100}[i]
+            expected = prefix + [
+                ("REG_READ",0,0x480,ctrl),
+                ("REG_WRITE",0,0x480,ctrl_out),
+                ("REG_WRITE",0,0x218,0x50),
+                ("UNIPHY_RESET",1,1,0),
+                ("GATE",12,0,0),("GATE",13,0,0),
+                ("REG_READ",0,0x46c,mode),
+                ("REG_WRITE",0,0x46c,mode_out),
+                ("REG_READ",0,0xb4,0x1234abcd),
+                ("REG_WRITE",0,0xb4,0x1234ebcd),
+                ("MSLEEP",10,0,0),
+                ("REG_WRITE",0,0xb4,0x1234abcd),
+                ("MSLEEP",10,0,0)]
+            for n in range(ready):
+                expected += [("DELAY",0x0ccccb60,0,0),
+                             ("REG_READ",0,0x1e0,128 if n==ready-1 and i!=75 else 0)]
+            if i==75:
+                expected += [("DELAY",0x0ccccb60,0,0)]
+            expected += [("GATE",12,1,0),("GATE",13,1,0)]
+            if i!=75:
+                expected += [("UNIPHY_RAW_RATE",0,0,312500000),
+                             ("UNIPHY_RAW_RATE",0,1,312500000)]
+            expected += [("END",2**32-23 if i==75 else 0,ready,ctrl_out),
+                         ("UNIPHY_FINAL",mode_out,0x1234abcd,0x50)]
+        assert cases[i]==expected,(i,cases[i],expected)
+    return {"pcs0_cases": len(cases), "success": 3, "failure": 2,
+            "stock_mode_clear_mask": "0x1f01", "stock_force_bit": 3,
+            "stock_analog_write": "0x21c=0xa882", "raw_clock_hz": 312500000}
 
 def check(events):
     cases, inputs = {}, {}
