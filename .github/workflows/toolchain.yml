@@ -1,29 +1,12 @@
-name: Build Toolchains
-
+# Reserved legacy workflow identity. Keep this file on main and the
+# workflow disabled at repository level; older branches contain automatic
+# upstream-wide triggers at this path. Never re-enable this identity.
+name: Retired upstream toolchain matrix
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/toolchain.yml'
-      - 'toolchain/**'
-  push:
-    paths:
-      - '.github/workflows/toolchain.yml'
-      - 'toolchain/**'
-    branches-ignore:
-      - master
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
+  workflow_dispatch:
+permissions: {}
 jobs:
-  build-toolchains:
-    name: Build Toolchains for each target
-    permissions:
-      contents: read
-      packages: read
-      actions: write
-    uses: openwrt/actions-shared-workflows/.github/workflows/toolchain.yml@main
+  retired:
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "Retired workflow identity; use the Wave 7 workflow instead." && exit 1
