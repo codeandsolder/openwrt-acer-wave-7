@@ -577,6 +577,14 @@ switch_source_healthy() {
 }
 # Historical NoC is tolerated exclusively for rebooting the same
 # exact firmware. It never qualifies any image for a flash or soak.
+# Approved 0491 is a valid launch source for the two isolated ordering
+# candidates, which still derive from exact 0498 outside the switch
+# module and manifest. Avoid repeating the failed intermediate flash.
+ordering_approved_source_valid() {
+  [[ $trial_kind == stock-order || $trial_kind == force-order ]] &&
+    restore_target_valid "$1" &&
+    [[ $(trunk_error_key "$1") == 0:0:0 ]]
+}
 reboot_history_source_valid() {
   local s=$1
   [[ $trial_kind == source-reboot ]] || return 1
@@ -852,6 +860,15 @@ if [[ $mode == --selftest ]]; then
     done
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
+  if [[ $trial_kind == stock-order || $trial_kind == force-order ]]; then
+    approved_source="$baseline"$'\napproval=1\ntoken=0'
+    ordering_approved_source_valid "$approved_source" || fatal 'approved ordering source rejected'
+    for change in approval=0 token=1 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 pcs_sha=wrong; do
+      if ordering_approved_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$approved_source")"; then
+        fatal "invalid approved ordering source accepted: $change"
+      fi
+    done
+  fi
   if [[ $reboot_1g == 1 ]]; then
     reboot_source_valid "$s"$'\napproval=0\ntoken=1' || fatal 'valid 1G reboot source rejected'
     for extra in $'approval=1\ntoken=1' $'approval=0\ntoken=0' approval=0 token=1; do
@@ -1074,6 +1091,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
   if [[ $trunk_trial == 1 ]]; then
     trunk_counter_header > "$out/trunk-counters.tsv"
   fi
+  fault_snapshot_boot=''
   restore() {
     local cause=$1 state=$2 check
     (( rollback == 0 )) || return 0
@@ -1088,7 +1106,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
     last_restore_attempt=$now
     log "ROLLBACK_REQUESTED cause=$cause"
     echo ROLLBACK_REQUESTED > "$out/status"
-    remote 'echo ====BOOT====; cat /proc/sys/kernel/random/boot_id; echo ====DMESG====; dmesg; echo ====ETHERNET====; ethtool lan1' > "$out/pre-rollback.txt" 2>&1 || :
+    remote 'echo ====BOOT====; cat /proc/sys/kernel/random/boot_id; echo ====DMESG====; dmesg; echo ====ETHERNET====; ethtool lan1; echo ====END_BOOT====; cat /proc/sys/kernel/random/boot_id' > "$out/pre-rollback.txt" 2>&1 || :
     upload "$accepted" /tmp/wave7-secondary-ap-restore.bin || { log RESTORE_COPY_FAILED; return 1; }
     check=$(remote 'sha256sum /tmp/wave7-secondary-ap-restore.bin; /sbin/sysupgrade -T -n /tmp/wave7-secondary-ap-restore.bin') || { log RESTORE_PREFLIGHT_FAILED; return 1; }
     [[ $check == "$accepted_sha  /tmp/wave7-secondary-ap-restore.bin"* ]] || { log RESTORE_SHA_FAILED; return 1; }
@@ -1157,6 +1175,22 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
             healthy_since=0
           fi
           last_errors=$errors
+        fi
+        # Capture only after autonomous commitment, so attestation and
+        # the firstboot watchdog are unaffected. At most one bounded sample.
+        if [[ $switch_module_trial == 1 && $fault_snapshot_boot != "$boot" &&
+              $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 &&
+              $(value "$s" switch_verified) == 0 && $(value "$s" direct_verified) == 1 &&
+              $(value "$s" noc) == 0 && -n $last_errors && $last_errors != 0:0:0 &&
+              $(value "$s" cpu_ucast) == 0 && $(value "$s" cpu_mcast) == 0 &&
+              $(value "$s" cpu_bcast) == 0 ]]; then
+          fault_snapshot_boot=$boot
+          if timeout 8 uv run --no-project --offline --python /usr/bin/python3 python "$(dirname "$(realpath "$0")")/snapshot-trunk-pcs.py" supervised "$boot" "$rev" > "$out/fault-pcs-$boot.json" 2> "$out/fault-pcs-$boot.log"; then
+            log "TRUNK_FAULT_PCS_CAPTURED boot=$boot"
+          else
+            log "TRUNK_FAULT_PCS_CAPTURE_FAILED boot=$boot"
+          fi
+          now=$(date +%s)
         fi
         # Authenticated AP preinit cannot commit bootfail=0 without this
         # independent key-only SSH check. Retry during the early boot; do
@@ -1298,6 +1332,8 @@ elif [[ $reboot_1g == 1 ]]; then
 elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
   if [[ $trial_kind == source-reboot ]]; then
     reboot_history_source_valid "$s" || fatal "incorrect reboot-only source: $s"
+  elif ordering_approved_source_valid "$s"; then
+    echo "ORDERING_SOURCE=approved-0491"
   else
     switch_source_healthy "$s" || fatal "unhealthy or incorrect provisional source: $s"
   fi

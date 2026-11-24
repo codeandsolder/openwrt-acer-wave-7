@@ -188,12 +188,29 @@ if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest="cmd",required=True)
     sub.add_parser("selftest")
+    # Invoked by the existing supervisor after boot commitment.
+    # No mutations or traffic generation.
+    f=sub.add_parser("supervised")
+    f.add_argument("boot")
+    f.add_argument("revision")
     c=sub.add_parser("capture")
     c.add_argument("variant",choices=PINS)
     c.add_argument("out",type=Path)
     args=parser.parse_args()
     if args.cmd=="selftest":
         selftest()
+    elif args.cmd=="supervised":
+        require(probe["BOOT"].fullmatch(args.boot),"invalid expected boot")
+        require(args.revision in {f"r0+38346-{c}-ap-dhcp-guard8" for c,_ in PINS.values()},
+                "unpinned revision")
+        raw=remote(COMMAND,timeout=5)
+        # Preserve raw evidence even if the configuration differs.
+        try:
+            sample=parse(raw,args.boot,args.revision)
+        except (ValueError,KeyError) as exc:
+            print(json.dumps({"raw":raw,"parse_error":str(exc)},indent=2),flush=True)
+            raise
+        print(json.dumps({"raw":raw,"state":sample},indent=2))
     else:
         require(args.out.parent.resolve()==(BASE/"mib-refresh-dhcp-guard8"/"observations").resolve(),
                 "output must be in wired observations")
