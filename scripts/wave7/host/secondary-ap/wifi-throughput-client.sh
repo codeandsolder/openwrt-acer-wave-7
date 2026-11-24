@@ -43,6 +43,10 @@ grep -Fq "dev $iface " "$out/route.txt"
 ! ip -4 route show default | grep -Fq "dev $iface "
 ! ip -6 route show default | grep -Fq "dev $iface "
 iw dev "$iface" link > "$out/link-before.txt"
+for f in active_links valid_links dormant_links; do
+    sudo -n cat "/sys/kernel/debug/ieee80211/phy0/netdev:$iface/$f"
+done > "$out/masks-before.txt"
+iw dev "$iface" station dump > "$out/station-before.txt"
 grep -Eq 'Link 1 BSSID 4e:5a:6f:5a:bb:16' "$out/link-before.txt"
 ping -I "$addr" -c 5 -W 1 192.168.76.2 > "$out/ping.txt" || :
 timeout "$seconds" iperf3 -s -B "$addr" -p 52229 > "$out/server.txt" 2>&1 &
