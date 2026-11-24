@@ -1,0 +1,103 @@
+From: codeandsolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] net: pcs: isolate Wave7 stock PCS0 analog control word
+
+The stock wrapper-12 ARM replay establishes the exact 0x21c=0xa882
+write before mode configuration. The full stock personality failed
+in the reverse direction; the force-only experiment retained the
+original forward corruption. Isolate this remaining analog control
+write on the same dedicated Wave7 MPPE PCS0. Observe its original
+value and require readback after native calibration. Do not infer
+individual undocumented bits or modify other analog controls.
+
+Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
+---
+--- a/drivers/net/pcs/pcs-qcom-ipq9574.c
++++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
+@@ -37,6 +37,10 @@
+ #define PCS_MISC2_MODE_SGMII_PLUS	FIELD_PREP(PCS_MISC2_MODE_MASK, 0x5)
+ #define PCS_MISC2_MODE_USXGMII		FIELD_PREP(PCS_MISC2_MODE_MASK, 0x7)
+ 
++/* Exact Wave7 stock wrapper-12 analog control word. */
++#define PCS_MPPE_FIXED_CTRL		0x21c
++#define PCS_MPPE_FIXED_CTRL_2500		0xa882
++
+ #define PCS_MODE_CTRL			0x46c
+ #define PCS_MODE_AUTONEG_ATH		BIT(0)
+ #define PCS_MODE_SEL_MASK		GENMASK(12, 8)
+@@ -425,11 +429,34 @@
+ 	return clk_prepare_enable(qpcs->qpcs_mii[0]->tx_clk);
+ }
+ 
++static bool ipq_pcs_wave7_analog_2500(struct ipq_pcs *qpcs,
++				      phy_interface_t interface)
++{
++	struct resource *res;
++	int i;
++
++	if (!qpcs->mppe || interface != PHY_INTERFACE_MODE_2500BASEX ||
++	    !qpcs->qpcs_mii[0] || !of_machine_is_compatible("acer,wave7"))
++		return false;
++
++	res = platform_get_resource(to_platform_device(qpcs->dev),
++				    IORESOURCE_MEM, 0);
++	if (!res || res->start != 0x7a00000)
++		return false;
++
++	for (i = 1; i < PCS_MAX_MII_NRS; i++)
++		if (qpcs->qpcs_mii[i])
++			return false;
++
++	return true;
++}
++
+ static int ipq_pcs_config_mode(struct ipq_pcs *qpcs,
+ 			       phy_interface_t interface, bool serial_speed)
+ {
+ 	unsigned long rate = 125000000;
+-	unsigned int val, mask, misc2 = 0;
++	unsigned int val, mask, misc2 = 0, analog_initial;
++	bool analog_2500 = ipq_pcs_wave7_analog_2500(qpcs, interface);
+ 	bool xpcs_mode = false;
+ 	bool diag_mode;
+ 	int ret;
+@@ -445,6 +472,19 @@
+ 
+ 	if (!qpcs->interface)
+ 		ipq_pcs_wave7_handoff(qpcs, "before-mode");
++
++	if (analog_2500) {
++		ret = regmap_read(qpcs->regmap, PCS_MPPE_FIXED_CTRL,
++				  &analog_initial);
++		if (ret)
++			return ret;
++
++		/* Reproduce the stock board's write, not guessed fields. */
++		ret = regmap_write(qpcs->regmap, PCS_MPPE_FIXED_CTRL,
++				   PCS_MPPE_FIXED_CTRL_2500);
++		if (ret)
++			return ret;
++	}
+ 
+ 	/* Hold the affected port clocks off across mode reconfiguration. */
+ 	ipq_pcs_disable_port_clks(qpcs, interface);
+@@ -597,6 +637,20 @@
+ 	if (ret) {
+ 		dev_err(qpcs->dev, "PCS calibration timed-out\n");
+ 		goto err_clk;
++	}
++
++	if (analog_2500) {
++		ret = regmap_read(qpcs->regmap, PCS_MPPE_FIXED_CTRL, &val);
++		if (ret)
++			goto err_clk;
++
++		dev_info(qpcs->dev,
++			 "wave7-analog-2500: initial=%#x final=%#x\n",
++			 analog_initial, val);
++		if (val != PCS_MPPE_FIXED_CTRL_2500) {
++			ret = -EIO;
++			goto err_clk;
++		}
+ 	}
+ 
+ 	/* Re-enable the port clocks disabled at entry */
