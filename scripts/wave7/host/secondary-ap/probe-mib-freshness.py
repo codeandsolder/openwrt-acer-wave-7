@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import select
 import subprocess
 import time
 
@@ -124,13 +125,17 @@ def parse_snapshot(raw, variant):
     return {"fields":fields,"counters":sections,"wall":time.time()}
 
 
-def remote(command, timeout=20):
+def ssh_args(command, stdin=False):
     ip,dev,*_ = PATHS["direct"]
-    return run(["ssh","-nT","-i","/home/jan/.ssh/wave7-root-rsa",
-               "-o",f"BindInterface={dev}","-o",f"BindAddress={ip}",
-               "-o","BatchMode=yes","-o","IdentitiesOnly=yes",
-               "-o","StrictHostKeyChecking=yes","-o",f"UserKnownHostsFile={BASE/'known_hosts'}",
-               "-o","ConnectTimeout=4","-o","ConnectionAttempts=1",f"root@{ROUTER}",command],timeout)
+    return ["ssh","-T" if stdin else "-nT","-i","/home/jan/.ssh/wave7-root-rsa",
+            "-o",f"BindInterface={dev}","-o",f"BindAddress={ip}",
+            "-o","BatchMode=yes","-o","IdentitiesOnly=yes",
+            "-o","StrictHostKeyChecking=yes","-o",f"UserKnownHostsFile={BASE/'known_hosts'}",
+            "-o","ConnectTimeout=4","-o","ConnectionAttempts=1",f"root@{ROUTER}",command]
+
+
+def remote(command, timeout=20):
+    return run(ssh_args(command),timeout)
 
 
 def snapshot(out, name, variant):
@@ -317,15 +322,54 @@ def ns(seconds):
     return int(Decimal(seconds)*NS)
 
 
-def clock_samples(boot):
+@contextmanager
+def clock_peer():
+    # One tiny line per request; keep the authenticated session open for
+    # both sets of brackets to exclude connection/handshake latency.
+    command=r"""set -eu
+printf 'READY\n'
+while IFS= read -r request; do
+    test "$request" = sample
+    printf '%s %s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$(cut -d' ' -f1 /proc/uptime)"
+done
+"""
+    proc=subprocess.Popen(ssh_args(command,stdin=True),stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE,bufsize=0)
+    def readline():
+        data=bytearray()
+        deadline=time.monotonic()+5
+        while not data.endswith(b"\n"):
+            remain=deadline-time.monotonic()
+            require(remain>0 and select.select([proc.stdout],[],[],remain)[0],"clock peer timeout")
+            chunk=os.read(proc.stdout.fileno(),256)
+            require(chunk and len(data)+len(chunk)<=256,"clock peer disconnected or malformed")
+            data.extend(chunk)
+        return data.decode("ascii").strip()
+    def sample():
+        proc.stdin.write(b"sample\n")
+        return readline()
+    try:
+        require(readline()=="READY","clock peer not ready")
+        yield sample
+    finally:
+        proc.stdin.close()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            proc.wait(timeout=3)
+        proc.stdout.close()
+
+
+def clock_samples(boot,sample):
     samples=[]
-    for _ in range(3):
+    for _ in range(5):
         start=time.time_ns()
         mono_start=time.monotonic_ns()
-        raw=remote("cat /proc/sys/kernel/random/boot_id; cut -d' ' -f1 /proc/uptime",5)
+        raw=sample()
         mono_end=time.monotonic_ns()
         end=time.time_ns()
-        actual,uptime=raw.splitlines()
+        actual,uptime=raw.split()
         require(actual==boot,"boot changed during clock bracket")
         require(re.fullmatch(r"\d+\.\d{2}",uptime),"unexpected uptime precision")
         require(abs(end-start-(mono_end-mono_start))<5_000_000,"host wall-clock step")
@@ -449,24 +493,25 @@ def latch(out):
         require(initial["fields"]["noc"]=="0","diagnostic boot has historical NoC faults")
         boot=initial["fields"]["boot"]
         wall_start,mono_start=time.time_ns(),time.monotonic_ns()
-        before=clock_samples(boot)
-        filt=f"icmp and host {ROUTER} and host {PATHS['switch'][0]} and icmp[4:2] = {LATCH_ID}"
-        with capture_nics(out,filt):
-            ip,dev,*_=PATHS["switch"]
-            with (out/"ping.txt").open("xb") as log:
-                proc=subprocess.Popen(["ping","-n","-D","-I",dev,"-I",ip,"-e",str(LATCH_ID),
-                    "-s","64","-c",str(LATCH_COUNT),"-i","0.01","-W","1",ROUTER],
-                    stdout=log,stderr=subprocess.STDOUT)
-                try:
-                    time.sleep(.5)
-                    require(proc.poll() is None,"probe traffic exited before trigger")
-                    probe=trigger_latch(boot,out)
-                    require(proc.wait(timeout=15)==0,"probe traffic failed")
-                finally:
-                    if proc.poll() is None:
-                        proc.terminate()
-                        proc.wait(timeout=5)
-        after=clock_samples(boot)
+        with clock_peer() as sample:
+            before=clock_samples(boot,sample)
+            filt=f"icmp and host {ROUTER} and host {PATHS['switch'][0]} and icmp[4:2] = {LATCH_ID}"
+            with capture_nics(out,filt):
+                ip,dev,*_=PATHS["switch"]
+                with (out/"ping.txt").open("xb") as log:
+                    proc=subprocess.Popen(["ping","-n","-D","-I",dev,"-I",ip,"-e",str(LATCH_ID),
+                        "-s","64","-c",str(LATCH_COUNT),"-i","0.01","-W","1",ROUTER],
+                        stdout=log,stderr=subprocess.STDOUT)
+                    try:
+                        time.sleep(.5)
+                        require(proc.poll() is None,"probe traffic exited before trigger")
+                        probe=trigger_latch(boot,out)
+                        require(proc.wait(timeout=15)==0,"probe traffic failed")
+                    finally:
+                        if proc.poll() is None:
+                            proc.terminate()
+                            proc.wait(timeout=5)
+            after=clock_samples(boot,sample)
         require(abs(time.time_ns()-wall_start-(time.monotonic_ns()-mono_start))<5_000_000,
                 "host wall-clock step during capture")
         (out/"clock.json").write_text(json.dumps({"before":before,"after":after},indent=2)+"\n")
