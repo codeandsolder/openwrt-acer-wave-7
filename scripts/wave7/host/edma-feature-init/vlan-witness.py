@@ -69,7 +69,7 @@ def main():
     parser.add_argument("--attempt", type=int, default=1)
     args = parser.parse_args()
     record = pw.cohort["load_run"](args.run.resolve())
-    require(record and record["variant"] == "edma-dsa-feature-check" and
+    require(record and record["variant"] in ("edma-dsa-feature-check", "edma-tso-limits") and
             record["outcome"] == "clean", "requires sealed clean DSA candidate")
     variant, boot = record["variant"], record["boot"]
     require(args.attempt > 0, "invalid attempt")

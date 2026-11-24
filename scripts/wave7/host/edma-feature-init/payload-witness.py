@@ -262,7 +262,7 @@ def main():
         return
     require(args.run and args.binary,"run and binary required")
     record = cohort["load_run"](args.run.resolve())
-    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init", "edma-sg-inheritance", "edma-dsa-feature-check") and
+    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init", "edma-sg-inheritance", "edma-dsa-feature-check", "edma-tso-limits") and
             record["outcome"] == "clean", "requires sealed clean EDMA or ordering boot")
     variant, boot = record["variant"], record["boot"]
     peers = tuple(args.peer or PATHS)
