@@ -17,6 +17,8 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("run",type=Path)
     p.add_argument("label")
+    p.add_argument("--policy",choices=w["POLICIES"],default="baseline")
+    p.add_argument("--local-only",action="store_true")
     args=p.parse_args()
     b.require(os.getuid()==0 and args.label.isalnum(),"invalid invocation")
     run=args.run.resolve(strict=True)
@@ -36,7 +38,7 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         out=run/("wifi-local-"+args.label)
         out.mkdir(mode=0o700)
-        report={"boot":boot,"cases":[],"status":"RUNNING"}
+        report={"boot":boot,"policy":args.policy,"cases":[],"status":"RUNNING"}
         created=False
         try:
             b.require(b.remote("cat /proc/sys/kernel/random/boot_id").strip()==boot,"wrong boot")
@@ -48,41 +50,43 @@ def main():
                 b.require(b.remote(f"sha256sum {remote_dir}/{f}").split()[0]==hashlib.sha256((runtime/f).read_bytes()).hexdigest(),"runtime digest mismatch")
             (out/"runtime-version.txt").write_text(b.remote(f"LD_LIBRARY_PATH={remote_dir} {remote_dir}/iperf3 --version"))
             (out/"route.txt").write_text(b.remote("ip route get 192.168.76.248 from 192.168.76.1; bridge fdb show 2>/dev/null || :; iw dev ap-mld0 survey dump"))
-            for i,(path,mode) in enumerate((("local","reverse"),("bridge","reverse"),("local","forward"),("bridge","forward"),("local","reverse"),("local","forward"))):
-                name=f"{i}-{path}-{mode}"
-                before=b.snapshot(out,name+"-before",boot)
-                w["radio_snapshot"](out,name+"-radio-before",boot,80)
-                flags=["-R"] if mode=="reverse" else []
-                if path=="local":
-                    cmd=f"timeout 22 env LD_LIBRARY_PATH={remote_dir} {remote_dir}/iperf3 -c 192.168.76.248 -B 192.168.76.1 -p 52229 -P 4 -t 12 --connect-timeout 4000 -J "+" ".join(flags)
-                    argv=["runuser","-u","jan","--","ssh","-nT",*opts,"root@192.168.76.1",cmd]
-                else:
-                    argv=["iperf3","-c",w["PEER"],"-B",b.DIRECT_IP,"--bind-dev",b.DIRECT,"-p","52229","-P","4","-t","12","--connect-timeout","4000","-J",*flags]
-                with (out/(name+".json")).open("x") as f,(out/(name+".err")).open("x") as e:
-                    child=subprocess.Popen(argv,stdout=f,stderr=e)
-                    try:
-                        idx=0
-                        deadline=time.monotonic()+28
-                        while child.poll() is None:
-                            b.require(time.monotonic()<deadline,"iperf timeout")
-                            w["radio_snapshot"](out,f"{name}-sample-{idx:02}",boot,80)
-                            idx+=1
-                            time.sleep(0.8)
-                        b.require(child.returncode==0,"iperf failed")
-                    finally:
-                        if child.poll() is None:
-                            child.terminate()
-                            child.wait(timeout=5)
-                after=b.snapshot(out,name+"-after",boot)
-                w["radio_snapshot"](out,name+"-radio-after",boot,80)
-                r=json.loads((out/(name+".json")).read_text())
-                row=r["end"]["sum_received"]
-                result=b.analyze(before,after,{})
-                wired=result["mac_delta"]["LAN"]["rx_bytes_g" if mode=="forward" else "tx_bytes_g"]
-                b.require(wired>=row["bytes"] if path=="bridge" else wired<row["bytes"]//20,"wrong physical path")
-                item={"case":name,"mbps":row["bits_per_second"]/1e6,"bytes":row["bytes"],"retransmits":r["end"]["sum_sent"].get("retransmits"),"wired_bytes":wired,"cpu":result["cpu"]}
-                print(json.dumps(item),flush=True)
-                report["cases"].append(item)
+            cases=(("local","reverse"),("local","forward")) if args.local_only else (("local","reverse"),("bridge","reverse"),("local","forward"),("bridge","forward"),("local","reverse"),("local","forward"))
+            with w["steering"](boot,args.policy):
+                for i,(path,mode) in enumerate(cases):
+                    name=f"{i}-{path}-{mode}"
+                    before=b.snapshot(out,name+"-before",boot)
+                    w["radio_snapshot"](out,name+"-radio-before",boot,80)
+                    flags=["-R"] if mode=="reverse" else []
+                    if path=="local":
+                        cmd=f"timeout 22 env LD_LIBRARY_PATH={remote_dir} {remote_dir}/iperf3 -c 192.168.76.248 -B 192.168.76.1 -p 52229 -P 4 -t 12 --connect-timeout 4000 -J "+" ".join(flags)
+                        argv=["runuser","-u","jan","--","ssh","-nT",*opts,"root@192.168.76.1",cmd]
+                    else:
+                        argv=["iperf3","-c",w["PEER"],"-B",b.DIRECT_IP,"--bind-dev",b.DIRECT,"-p","52229","-P","4","-t","12","--connect-timeout","4000","-J",*flags]
+                    with (out/(name+".json")).open("x") as f,(out/(name+".err")).open("x") as e:
+                        child=subprocess.Popen(argv,stdout=f,stderr=e)
+                        try:
+                            idx=0
+                            deadline=time.monotonic()+28
+                            while child.poll() is None:
+                                b.require(time.monotonic()<deadline,"iperf timeout")
+                                w["radio_snapshot"](out,f"{name}-sample-{idx:02}",boot,80)
+                                idx+=1
+                                time.sleep(0.8)
+                            b.require(child.returncode==0,"iperf failed")
+                        finally:
+                            if child.poll() is None:
+                                child.terminate()
+                                child.wait(timeout=5)
+                    after=b.snapshot(out,name+"-after",boot)
+                    w["radio_snapshot"](out,name+"-radio-after",boot,80)
+                    r=json.loads((out/(name+".json")).read_text())
+                    row=r["end"]["sum_received"]
+                    result=b.analyze(before,after,{})
+                    wired=result["mac_delta"]["LAN"]["rx_bytes_g" if mode=="forward" else "tx_bytes_g"]
+                    b.require(wired>=row["bytes"] if path=="bridge" else wired<row["bytes"]//20,"wrong physical path")
+                    item={"case":name,"mbps":row["bits_per_second"]/1e6,"bytes":row["bytes"],"retransmits":r["end"]["sum_sent"].get("retransmits"),"wired_bytes":wired,"cpu":result["cpu"]}
+                    print(json.dumps(item),flush=True)
+                    report["cases"].append(item)
             report["status"]="PASS"
         except BaseException as exc:
             report.update(status="FAILED",error=str(exc))
