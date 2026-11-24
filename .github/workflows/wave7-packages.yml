@@ -1,0 +1,74 @@
+name: Wave 7 core packages
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/wave7-packages.yml'
+      - 'config/**'
+      - 'include/**'
+      - 'package/**'
+      - 'toolchain/**'
+  push:
+    paths:
+      - '.github/workflows/wave7-packages.yml'
+      - 'config/**'
+      - 'include/**'
+      - 'package/**'
+      - 'toolchain/**'
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full-upstream-matrix:
+        description: Also validate the upstream x86 and Malta reference targets
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  changed-files:
+    uses: openwrt/actions-shared-workflows/.github/workflows/reusable_determine_changed_files.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+
+  changed-packages:
+    needs: changed-files
+    uses: openwrt/actions-shared-workflows/.github/workflows/reusable_determine_changed_packages.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+    with:
+      all_changed_files: ${{ needs.changed-files.outputs.all_changed_files }}
+
+  wave7-packages:
+    name: Build core packages for Wave 7
+    needs: changed-packages
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    uses: openwrt/actions-shared-workflows/.github/workflows/reusable_build.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+    with:
+      container_name: toolchain
+      target: qualcommbe
+      subtarget: ipq53xx
+      build_kernel: true
+      build_all_kmods: true
+      build_all_modules: true
+      build_full: true
+      ccache_type: packages
+      check_packages_list: ${{ needs.changed-packages.outputs.changed_packages }}
+
+  upstream-reference-packages:
+    name: Build upstream reference packages (explicit validation)
+    if: github.event_name == 'workflow_dispatch' && inputs.full-upstream-matrix
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    secrets:
+      ccache_s3_endpoint: ${{ secrets.CCACHE_S3_ENDPOINT }}
+      ccache_s3_bucket: ${{ secrets.CCACHE_S3_BUCKET }}
+      ccache_s3_access_key: ${{ secrets.CCACHE_S3_ACCESS_KEY }}
+      ccache_s3_secret_key: ${{ secrets.CCACHE_S3_SECRET_KEY }}
+    uses: openwrt/actions-shared-workflows/.github/workflows/packages.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
