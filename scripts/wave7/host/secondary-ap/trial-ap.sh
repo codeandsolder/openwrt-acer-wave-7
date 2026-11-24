@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -21,6 +21,7 @@ relink_trial=0
 kernel_variant_trial=0
 candidate_direct_speed=2500
 reboot_1g=0
+repeat_ordering=0
 candidate_clock_patch=''
 candidate_instant_patch=''
 candidate_instant_marker=0
@@ -297,6 +298,11 @@ if [[ ( $trial_kind == down-mode || $trial_kind == serial-speed ) && $mode != --
   done
 fi
 case "$mode" in
+  --check-reboot-current|--reboot-current)
+    [[ $trial_kind == stock-order || $trial_kind == force-order ]] ||
+      { echo 'same-image repeats restricted to pinned ordering candidates' >&2; exit 2; }
+    repeat_ordering=1
+    ;;
   --check-reboot-1g|--reboot-1g|--watch-reboot-1g|--selftest-reboot-1g)
     [[ $trial_kind == serial-speed ]] || { echo '1G reboot restricted to 0498' >&2; exit 2; }
     reboot_1g=1
@@ -720,6 +726,11 @@ autonomous_healthy() {
 restore_profile() {
   [[ $switch_module_trial == 1 ]] || [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
 }
+ordering_repeat_source_valid() {
+  [[ $trial_kind == stock-order || $trial_kind == force-order ]] &&
+    healthy "$1" && grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1" &&
+    [[ $(trunk_error_key "$1") == 0:0:0 ]]
+}
 reboot_source_valid() {
   [[ $reboot_1g == 1 && $trial_kind == serial-speed ]] &&
     healthy "$1" && grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1"
@@ -914,8 +925,16 @@ if [[ $mode == --selftest ]]; then
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   if [[ $trial_kind == stock-order || $trial_kind == force-order ]]; then
+    repeat_source="$s"$'\napproval=0\ntoken=1'
+    ordering_repeat_source_valid "$repeat_source" || fatal 'valid ordering repeat source rejected'
+    for change in approval=1 token=0 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 module_sha=wrong; do
+      if ordering_repeat_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$repeat_source")"; then
+        fatal "invalid ordering repeat source accepted: $change"
+      fi
+    done
     approved_source="$baseline"$'\napproval=1\ntoken=0'
     ordering_approved_source_valid "$approved_source" || fatal 'approved ordering source rejected'
+    if ordering_repeat_source_valid "$approved_source"; then fatal 'rollback accepted as repeat source'; fi
     for change in approval=0 token=1 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 pcs_sha=wrong; do
       if ordering_approved_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$approved_source")"; then
         fatal "invalid approved ordering source accepted: $change"
@@ -1018,7 +1037,7 @@ test -x "$attestor" ||
 # Serialize observer arming/setup against active upstream wire tests.
 # The persistent systemd observers guard the interval after this caller
 # exits; the wire test also checks their active/activating state.
-if [[ $mode == --run || $mode == --arm-reboot || $mode == --restore-baseline || $mode == --reboot-1g ]]; then
+if [[ $mode == --run || $mode == --arm-reboot || $mode == --restore-baseline || $mode == --reboot-1g || $mode == --reboot-current ]]; then
   lock="$guard8/.lab-control.lock"
   [[ -f $lock && ! -L $lock && -O $lock ]] ||
     fatal 'missing or invalid lab-control lock (initialize once as Jan)'
@@ -1371,7 +1390,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
   echo TIMEOUT > "$out/status"
   exit 6
 fi
-[[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline || $mode == --check-reboot-1g || $mode == --reboot-1g ]] ||
+[[ $mode == --check || $mode == --check-baseline || $mode == --run || $mode == --restore-baseline || $mode == --check-reboot-1g || $mode == --reboot-1g || $mode == --check-reboot-current || $mode == --reboot-current ]] ||
   fatal "unknown mode $mode"
 if [[ $mode == --restore-baseline ]]; then
   restore_profile && [[ $# == 0 ]] || fatal 'restore is only for failed 0492/0493/0494/0495/0496/0497/0498'
@@ -1413,6 +1432,8 @@ elif [[ $reboot_1g == 1 ]]; then
 elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
   if [[ $trial_kind == source-reboot ]]; then
     reboot_history_source_valid "$s" || fatal "incorrect reboot-only source: $s"
+  elif [[ $repeat_ordering == 1 ]]; then
+    ordering_repeat_source_valid "$s" || fatal "incorrect same-image repeat source: $s"
   elif ordering_approved_source_valid "$s"; then
     echo "ORDERING_SOURCE=approved-0491"
   else
@@ -1446,9 +1467,11 @@ if [[ $switch_module_trial == 1 ]]; then
   ip -4 route get 192.168.76.1 from "$switch_ip" | rg -Fq "dev $switch_iface " || fatal 'wrong switch route'
 fi
 echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
-[[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g ]] || exit 0
+[[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g || $mode == --reboot-current ]] || exit 0
 if [[ $trial_kind == source-reboot ]]; then
   tag=source-reboot-$(date +%Y%m%d-%H%M%S)
+elif [[ $repeat_ordering == 1 ]]; then
+  tag=repeat-$(date +%Y%m%d-%H%M%S)
 elif [[ $trial_kind == return-0498 ]]; then
   tag=return-0498-$(date +%Y%m%d-%H%M%S)
 elif [[ $mode == --restore-baseline ]]; then
@@ -1469,7 +1492,7 @@ if [[ $mode == --restore-baseline ]]; then
   flash_image=/tmp/wave7-secondary-ap-restore.bin
   pairs=("$accepted|$flash_image|$accepted_sha")
 fi
-if [[ $trial_kind == source-reboot ]]; then
+if [[ $trial_kind == source-reboot || $repeat_ordering == 1 ]]; then
   pairs=("$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha")
   # Preserve this exact boot before the restart; no disruptive stats APIs.
   remote 'set -e; echo ====BOOT====; cat /proc/sys/kernel/random/boot_id; echo ====DMESG====; dmesg; echo ====LOGREAD====; logread; echo ====IW====; iw dev ap-mld0 info; echo ====END_BOOT====; cat /proc/sys/kernel/random/boot_id' > "$out/outgoing-boot.txt"
@@ -1510,7 +1533,7 @@ if [[ $mode == --reboot-1g ]]; then
     fatal 'peer window changed before reboot'
 fi
 flash_started=1
-if [[ $trial_kind == source-reboot ]]; then
+if [[ $trial_kind == source-reboot || $repeat_ordering == 1 ]]; then
   set +e
   remote_timed 'sync; /sbin/reboot' > "$out/reboot.log" 2>&1
   rc=$?
