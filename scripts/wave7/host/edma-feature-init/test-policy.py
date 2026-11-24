@@ -22,7 +22,7 @@ assert "register_netdev(netdev)" in s[end:s.index("\n}", end)]
 assert "netdev->wanted_features |= EDMA_NETDEV_FEATURES;" not in s
 
 def function(text, name):
-    return re.search(r"^static(?: inline)? [^\n]*\b"+name+r"\([^;]*?\)\n\{.*?^\}", text, re.M|re.S)[0]
+    return re.search(r"^(?:static(?: inline)? )?[^\n]*\b"+name+r"\([^;]*?\)\n\{.*?^\}", text, re.M|re.S)[0]
 
 features = (kernel/"include/linux/netdev_features.h").read_text()
 enum = features[features.index("enum {"):features.index("/* Finds the next feature")]
@@ -30,8 +30,18 @@ masks = features[features.index("#define NETIF_F_GSO_MASK"):features.index("#def
 vlan = function((kernel/"include/linux/if_vlan.h").read_text(), "vlan_features_check")
 dsa = function((kernel/"include/net/dsa.h").read_text(), "netdev_uses_dsa")
 policy = function(s, "edma_port_feature_check")
+tx=(source.parent/"edma_tx.c").read_text()
+header=(source.parent/"edma_tx.h").read_text()
+skb_header=(kernel/"include/linux/skbuff.h").read_text()
+gso_enum=skb_header[skb_header.index("enum {\n\tSKB_GSO_TCPV4"):skb_header.index("#if BITS_PER_LONG > 32",skb_header.index("enum {\n\tSKB_GSO_TCPV4"))]
+limits="\n".join(re.findall(r"^#define EDMA_TX_TSO_(?:SEG_MAX|MSS_MIN|MSS_MAX).*",header,re.M))
+checksum="\n".join(re.findall(r"^#define CHECKSUM_(?:NONE|UNNECESSARY|COMPLETE|PARTIAL)\s+\d+",skb_header,re.M))
+status=header[header.index("enum edma_tx_gso_status {"):header.index("};",header.index("enum edma_tx_gso_status {"))+2]
+tso=function(header,"edma_tx_tso_supported")
+desc=function(tx,"edma_tx_num_descs_for_sg")
+segment=function(tx,"edma_tx_gso_segment")
 fixture = Path(__file__).with_name("feature-check-fixture.c").read_text()
-code = fixture.replace("/* FEATURE DEFINITIONS */", enum+masks).replace("/* ACTUAL FUNCTIONS */", "\n".join((vlan,dsa,policy)))
+code = fixture.replace("/* FEATURE DEFINITIONS */", "\n".join((enum,masks,gso_enum,limits,checksum,status))).replace("/* ACTUAL FUNCTIONS */", "\n".join((vlan,dsa,tso,desc,policy,segment)))
 with tempfile.TemporaryDirectory(prefix="wave7-edma-policy-") as work:
     p=Path(work)
     (p/"fixture.c").write_text(code)
