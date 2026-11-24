@@ -37,6 +37,13 @@ PINS = {
 FIELDS = ("ifInUcastPkts", "ifOutUcastPkts", "ifInOctets", "ifOutOctets",
           "dot3StatsFCSErrors", "etherStatsFragments", "etherStatsDropEvents")
 ERRORS = FIELDS[4:]
+# These are unique PPE XGMAC hardware statistics in ethtool -S switch.
+# rx_bytes and tx_bytes are deliberately excluded: EDMA exports those
+# same names earlier in the result.
+XGMAC_ERRORS = ("rx_crc_err","rx_frag_err","rx_jabber_err","rx_len_err",
+                "rx_fifo_overflow","rx_drop_frames","tx_underflow_err")
+XGMAC = ("rx_frames","tx_frames","rx_unicast_g","tx_unicast",
+         "rx_pause","tx_pause",*XGMAC_ERRORS)
 MACS = ("cpu", "copper")
 PHASES = [
     ("direct", 32, 64), ("switch", 32, 64),
@@ -92,6 +99,17 @@ def routes():
     return result
 
 
+def parse_xgmac(raw):
+    counters={}
+    for line in raw.splitlines():
+        match=re.fullmatch(r"\s*(\w+):\s+(\d+)",line)
+        if match and match[1] in XGMAC:
+            require(match[1] not in counters,"duplicate XGMAC counter")
+            counters[match[1]]=int(match[2])
+    require(set(counters)==set(XGMAC),"missing XGMAC counters")
+    return counters
+
+
 def parse_snapshot(raw, variant):
     sections = {"cpu": {}, "copper": {}}
     fields = {}
@@ -122,7 +140,8 @@ def parse_snapshot(raw, variant):
     require(fields["noc"].isdecimal(), "invalid NoC count")
     for port in MACS:
         require(set(sections[port]) == set(FIELDS), f"missing {port} MIB fields")
-    return {"fields":fields,"counters":sections,"wall":time.time()}
+    cpu_raw=raw.split("=== CPU ===\n",1)[1].split("=== COPPER ===\n",1)[0]
+    return {"fields":fields,"counters":sections,"xgmac":parse_xgmac(cpu_raw),"wall":time.time()}
 
 
 def ssh_args(command, stdin=False):
@@ -151,6 +170,11 @@ def delta(before, after):
             for port in MACS}
 
 
+def xgmac_delta(before,after):
+    require(before["fields"]["boot"]==after["fields"]["boot"],"XGMAC boot changed")
+    return {key:after["xgmac"][key]-before["xgmac"][key] for key in XGMAC}
+
+
 def lower_bounds(packets):
     requests, replies = packets[8], packets[0]
     req, rep = len(requests), len(replies)
@@ -170,7 +194,9 @@ def assess(phase, captures):
     physical_ok = all(sorted(seq for seq,_ in packets[t]) == expected for t in (8,0))
     physical_ok &= not any(other.values())
     first, repeat = phase["delta"], phase["repeat_delta"]
-    monotonic = all(repeat[p][k]>=first[p][k]>=0 for p in MACS for k in FIELDS)
+    mac, mac_repeat = phase["xgmac_delta"],phase["repeat_xgmac_delta"]
+    monotonic = (all(repeat[p][k]>=first[p][k]>=0 for p in MACS for k in FIELDS)
+                 and all(mac_repeat[k]>=mac[k]>=0 for k in XGMAC))
     errors = {p:{k:repeat[p][k] for k in ERRORS} for p in MACS}
     lower = lower_bounds(packets) if path=="switch" else None
     def sufficient(d):
@@ -181,8 +207,13 @@ def assess(phase, captures):
         kind = "NONMONOTONIC_COUNTERS"
     elif any(v for p in errors.values() for v in p.values()):
         kind = "COUNTER_ERRORS"
+    elif any(mac_repeat[k] for k in XGMAC_ERRORS):
+        kind = "XGMAC_ERRORS"
     elif lower is None:
         kind = "DIRECT_CONTROL"
+    elif (mac["rx_unicast_g"]<len(packets[8]) or
+          mac["tx_unicast"]<len(packets[0])):
+        kind = "XGMAC_COUNTER_DEFICIT"
     elif sufficient(first):
         kind = "FRESH_FIRST_READ"
     elif sufficient(repeat):
@@ -192,7 +223,8 @@ def assess(phase, captures):
     return {"id":ident,"path":path,"count":count,"payload":phase["payload"],
             "kind":kind,"requests":len(packets[8]),"replies":len(packets[0]),
             "wrong_path_frames":sum(map(len,other.values())),
-            "lower_bounds":lower,"delta":first,"repeat_delta":repeat}
+            "lower_bounds":lower,"delta":first,"repeat_delta":repeat,
+            "xgmac_delta":mac,"repeat_xgmac_delta":mac_repeat}
 
 
 def extract(out,name):
@@ -293,7 +325,9 @@ def capture(variant,out):
                 repeat=snapshot(out,f"{index:02}-repeat",variant)
                 phase_data.append({"id":ident,"path":name,"count":count,"payload":payload,
                     "ping_rc":result.returncode,"delta":delta(before,after),
-                    "repeat_delta":delta(before,repeat)})
+                    "repeat_delta":delta(before,repeat),
+                    "xgmac_delta":xgmac_delta(before,after),
+                    "repeat_xgmac_delta":xgmac_delta(before,repeat)})
                 delta(initial,repeat)
                 (out/"phases.json").write_text(json.dumps(phase_data,indent=2)+"\n")
         captures={name:extract(out,name) for name in PATHS}
@@ -539,7 +573,12 @@ def latch(out):
         changes=checked_delta(initial,final)
         require(remote(f"cat {PARAM}").strip()=="N","probe remained armed")
         report=assess_latch(probe,bounds,captures["switch"],captures["direct"],LATCH_COUNT)
-        report.update(boot=boot,variant="mib-diag",counter_deltas=changes)
+        mac=xgmac_delta(initial,final)
+        require(all(v>=0 for v in mac.values()) and not any(mac[k] for k in XGMAC_ERRORS),
+                "XGMAC counter reset or error during latch probe")
+        require(mac["rx_unicast_g"]>=LATCH_COUNT and mac["tx_unicast"]>=LATCH_COUNT,
+                "XGMAC does not account for physical probe traffic")
+        report.update(boot=boot,variant="mib-diag",counter_deltas=changes,xgmac_deltas=mac)
         (out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     print(json.dumps(report,indent=2))
 
@@ -556,7 +595,13 @@ def clock_check(variant,out):
             (out/"timing-mark.txt").write_text(f"{actual} {uptime}\n")
             return ns(uptime)+10_000_000
         t0,bounds,captures=timed_traffic(boot,out,mark)
-        changes=checked_delta(initial,snapshot(out,"final",variant))
+        final=snapshot(out,"final",variant)
+        changes=checked_delta(initial,final)
+        mac=xgmac_delta(initial,final)
+        require(all(v>=0 for v in mac.values()) and not any(mac[k] for k in XGMAC_ERRORS),
+                "XGMAC counter reset or error during timing rehearsal")
+        require(mac["rx_unicast_g"]>=LATCH_COUNT and mac["tx_unicast"]>=LATCH_COUNT,
+                "XGMAC does not account for physical probe traffic")
         window,physical,witnesses=timed_witnesses(
             t0,bounds,captures["switch"],captures["direct"],LATCH_COUNT)
         require(physical and witnesses,"timing rehearsal lacks physical witnesses")
@@ -565,7 +610,7 @@ def clock_check(variant,out):
                 "conservative_window_epoch_ns":window,"witness_sequences":witnesses,
                 "requests":len(captures["switch"][8]),"replies":len(captures["switch"][0]),
                 "wrong_path_frames":sum(map(len,captures["direct"].values())),
-                "counter_deltas":changes}
+                "counter_deltas":changes,"xgmac_deltas":mac}
         (out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
     print(json.dumps(report,indent=2))
 
@@ -602,8 +647,11 @@ def latch_selftest():
 def selftest():
     base=dict.fromkeys(FIELDS,0)
     counters={p:{**base,**{k:1000 for k in FIELDS[:4]}} for p in MACS}
+    mac={**dict.fromkeys(XGMAC,0),"rx_frames":2,"tx_frames":2,
+         "rx_unicast_g":2,"tx_unicast":2}
     phase={"id":48102,"path":"switch","count":2,"payload":64,"ping_rc":0,
-           "delta":counters,"repeat_delta":counters}
+           "delta":counters,"repeat_delta":counters,
+           "xgmac_delta":mac,"repeat_xgmac_delta":mac}
     packets={8:[(1,106),(2,106)],0:[(1,106),(2,106)]}
     captures={"switch":{48102:packets},"direct":{}}
     require(assess(phase,captures)["kind"]=="FRESH_FIRST_READ","fresh")
@@ -613,6 +661,10 @@ def selftest():
     require(assess({**phase,"repeat_delta":zero},captures)["kind"]=="NONMONOTONIC_COUNTERS","decreasing")
     require(assess(phase,{**captures,"direct":{48102:packets}})["kind"]=="PACKET_PATH_MISMATCH","wrong NIC")
     require(assess(phase,{"switch":{},"direct":{}})["kind"]=="PACKET_PATH_MISMATCH","missing")
+    bad_mac={**mac,"rx_unicast_g":1}
+    require(assess({**phase,"xgmac_delta":bad_mac},captures)["kind"]=="XGMAC_COUNTER_DEFICIT","XGMAC deficit")
+    require(assess({**phase,"repeat_xgmac_delta":{**mac,"rx_crc_err":1}},captures)["kind"]=="XGMAC_ERRORS","XGMAC errors")
+    require(parse_xgmac("".join(f"{k}: {v}\n" for k,v in mac.items()))==mac,"XGMAC parser")
     print("MIB_PHYSICAL_ACCOUNTING_SELFTEST_PASS")
     latch_selftest()
 

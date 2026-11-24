@@ -32,11 +32,7 @@ CLOCKS |= {"nss_cc_port1_"+d+s for d in ("rx","tx")
 CLOCKS |= {"nss_cc_uniphy_port1_"+d+"_clk" for d in ("rx","tx")}
 CLOCKS.add("nss_cc_port1_mac_clk")
 PARENTS = ("nss_cc_port1_rx_clk_src","nss_cc_port1_tx_clk_src")
-# Unique XGMAC counter names; avoid rx_bytes/tx_bytes which are also
-# exported by EDMA software counters in the same ethtool result.
-XGMAC = ("rx_frames","tx_frames","rx_unicast_g","tx_unicast","rx_crc_err",
-         "rx_frag_err","rx_jabber_err","rx_len_err","rx_fifo_overflow",
-         "rx_drop_frames","tx_underflow_err","rx_pause","tx_pause")
+XGMAC = probe["XGMAC"]
 COMMAND = r"""set -eu
 echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
 echo "rev=$(cat /rom/etc/openwrt_version)"
@@ -129,13 +125,7 @@ def parse(raw, boot, rev):
         regs[match[1]] = int(match[2],16)
     require(set(regs)==set(NSSCC.values()),"NSSCC allowlist mismatch")
     nsscc = {name:regs[reg] for name,reg in NSSCC.items()}
-    xgmac = {}
-    for line in sections["XGMAC"]:
-        match = re.fullmatch(r"\s*(\w+):\s+(\d+)",line)
-        if match and match[1] in XGMAC:
-            require(match[1] not in xgmac,"duplicate XGMAC counter")
-            xgmac[match[1]]=int(match[2])
-    require(set(xgmac)==set(XGMAC),"missing XGMAC counter")
+    xgmac = probe["parse_xgmac"]("\n".join(sections["XGMAC"]))
     return {"core":core,"pcs":pcs,"clocks":clocks,"parents":parents,
             "nsscc":nsscc,"nsscc_decoded":decode(nsscc),"xgmac":xgmac}
 
