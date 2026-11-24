@@ -2,10 +2,11 @@
 # Bounded temporary Wi-Fi endpoint; independent Ethernet management.
 set -euo pipefail
 umask 077
-[[ ( $# == 2 || ( $# == 3 && $3 == standalone ) ) && $1 =~ ^[a-zA-Z0-9-]+$ && $2 =~ ^[0-9]+$ && $2 -ge 60 && $2 -le 900 ]]
+[[ ( $# == 2 || ( $# == 3 && $3 == standalone ) || ( $# == 4 && $3 == standalone && ( $4 == 5180 || $4 == 5500 ) ) ) && $1 =~ ^[a-zA-Z0-9-]+$ && $2 =~ ^[0-9]+$ && $2 -ge 60 && $2 -le 900 ]]
 tag=$1
 seconds=$2
 mode=${3:-mlo}
+freq=${4:-5180}
 out="/home/jan/firmware/wave7/client-validation/$tag"
 mkdir -m 700 "$out"
 tmp="w7-$tag"
@@ -56,7 +57,7 @@ done > "$out/masks-before.txt"
 iw dev "$iface" station dump > "$out/station-before.txt"
 if [[ $mode == standalone ]]; then
     grep -Fq 'SSID: Wave7-5G-Lab' "$out/link-before.txt"
-    grep -Eq 'freq: 5180([.]0)?$' "$out/link-before.txt"
+    grep -Eq "freq: ${freq}([.]0)?$" "$out/link-before.txt"
     ! grep -q 'MLD .* stats:' "$out/link-before.txt"
 else
     grep -Eq 'Link 1 BSSID 4e:5a:6f:5a:bb:16' "$out/link-before.txt"
@@ -68,6 +69,7 @@ server=$!
     while kill -0 "$server" 2>/dev/null; do
         date -Is
         iw dev "$iface" link
+        iw dev "$iface" station dump
         sleep 1
     done
 ) > "$out/link-samples.txt" 2>&1 &
