@@ -27,27 +27,8 @@ def radio_irq_affinity(boot,policy):
     if policy!="irq-distributed":
         yield
         return
-    raw=b.remote("cat /proc/interrupts")
-    irqs={int(m[2]):int(m[1]) for line in raw.splitlines()
-          if (m:=re.search(r"^\s*(\d+):.*\bpci2_wlan_dp_(\d+)\s*$",line))}
-    b.require(set(irqs)==set(range(12)),"unexpected 5 GHz MSI layout")
-    old={irq:b.remote(f"cat /proc/irq/{irq}/smp_affinity_list").strip() for irq in irqs.values()}
-    b.require(all(re.fullmatch(r"[0-3,-]+",v) for v in old.values()),"unexpected original IRQ mask")
-    def apply(irq,cpus):
-        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
-                 f'printf %s {cpus} > /proc/irq/{irq}/smp_affinity_list')
-        b.require(b.remote(f"cat /proc/irq/{irq}/smp_affinity_list").strip()==cpus,
-                  "IRQ affinity readback mismatch")
-    try:
-        for group,irq in irqs.items():
-            core=str(1+group%3)
-            apply(irq,core)
-            b.require(b.remote(f"cat /proc/irq/{irq}/effective_affinity_list").strip()==core,
-                      "MSI effective affinity did not move")
+    with b.irq_affinity(boot,r"pci2_wlan_dp_(\d+)",range(12),lambda group:1+group%3):
         yield
-    finally:
-        for irq,cpus in old.items():
-            apply(irq,cpus)
 
 
 @contextmanager

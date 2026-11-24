@@ -32,7 +32,8 @@ PATHS = tuple(f"/sys/class/net/{d}/queues/rx-{i}/rps_cpus"
                   "/sys/class/net/lan1/queues/rx-0/rps_cpus",)
 POLICIES = {"baseline": ("1",)*8+("0",),
             "native": ("0",)*9,
-            "native-posttag": ("0",)*8+("e",)}
+            "native-posttag": ("0",)*8+("e",),
+            "native-posttag-irq": ("0",)*8+("e",)}
 COUNTERS = ("rx_bytes_g", "tx_bytes_g", "rx_crc_err", "rx_frag_err",
             "rx_jabber_err", "rx_len_err", "tx_underflow_err")
 MODES = {"forward": [], "reverse": ["-R"], "bidir": ["--bidir"]}
@@ -78,12 +79,42 @@ def apply(boot, values):
 
 
 @contextmanager
+def irq_affinity(boot,pattern,groups,select_core):
+    raw=remote("cat /proc/interrupts")
+    irqs={int(m[2]):int(m[1]) for line in raw.splitlines()
+          if (m:=re.search(r"^\s*(\d+):.*\b"+pattern+r"\s*$",line))}
+    require(set(irqs)==set(groups),"unexpected IRQ layout")
+    old={irq:remote(f"cat /proc/irq/{irq}/smp_affinity_list").strip() for irq in irqs.values()}
+    require(all(re.fullmatch(r"[0-3,-]+",v) for v in old.values()),"unexpected original IRQ mask")
+    def set_affinity(irq,cpus):
+        remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
+               f'printf %s {cpus} > /proc/irq/{irq}/smp_affinity_list')
+        require(remote(f"cat /proc/irq/{irq}/smp_affinity_list").strip()==cpus,
+                "IRQ affinity readback mismatch")
+    try:
+        for group,irq in irqs.items():
+            core=str(select_core(group))
+            require(core in ("0","1","2","3"),"invalid affinity target")
+            set_affinity(irq,core)
+            require(remote(f"cat /proc/irq/{irq}/effective_affinity_list").strip()==core,
+                    "IRQ effective affinity did not move")
+        yield
+    finally:
+        for irq,cpus in old.items():
+            set_affinity(irq,cpus)
+
+
+@contextmanager
 def steering(boot, policy):
     old=rps_state()
     require(old==POLICIES["baseline"], "unexpected starting steering")
     try:
         apply(boot,POLICIES[policy])
-        yield
+        if policy=="native-posttag-irq":
+            with irq_affinity(boot,r"txcmpl_(\d+)",range(4,16),lambda ring:(ring-4)%4):
+                yield
+        else:
+            yield
         require(rps_state()==POLICIES[policy], "steering changed during test")
     finally:
         apply(boot,old)
