@@ -79,7 +79,7 @@ def main():
     p.add_argument("--width",type=int,choices=(80,160),default=80)
     args=p.parse_args()
     b.require(args.standalone or (args.channel,args.width)==(36,80),"nonbaseline width requires standalone")
-    b.require(not args.standalone or (args.local_only and args.policy=="baseline"),"standalone baseline only")
+    b.require(not args.standalone or args.policy=="baseline","standalone baseline only")
     b.require(os.getuid()==0 and args.label.isalnum(),"invalid invocation")
     run=args.run.resolve(strict=True)
     b.require(run.is_relative_to(b.BASE),"outside lab")
