@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|source-reboot --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -103,7 +103,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order|mib-diag|source-reboot)
+  mib-refresh|stock-order|force-order|mib-diag|source-reboot|return-0498)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -113,7 +113,7 @@ case "$profile" in
     base="$guard8/$trial_kind-dhcp-guard8"
     candidate_artifact="wave7-$trial_kind-dhcp-guard8-sysupgrade.bin"
     case "$trial_kind" in
-      source-reboot)
+      source-reboot|return-0498)
         candidate_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
         candidate_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
         expected_candidate_sha=ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516
@@ -168,10 +168,18 @@ case "$profile" in
     accepted_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
     source_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
     source_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
-    if [[ $trial_kind == source-reboot ]]; then
+    source_module_sha=$accepted_module_sha
+    source_switch_patch=$accepted_switch_patch
+    if [[ $trial_kind == source-reboot || $trial_kind == return-0498 ]]; then
       candidate_rev=$source_rev
       [[ $mode == --selftest || $mode == --check || $mode == --run || $mode == --watch ]] ||
-        { echo 'source-reboot permits only reboot or observation' >&2; exit 2; }
+        { echo 'return/reboot profile permits only its exact transition or observation' >&2; exit 2; }
+    fi
+    if [[ $trial_kind == return-0498 ]]; then
+      source_rev=r0+38346-022d0978e9-ap-dhcp-guard8
+      source_builder=bda16e3e49634bee83a8bff6939e9dab46dd9460
+      source_module_sha=192835d8344c5341b4f5dc7bdb43da000d4568252b78a064c39c82dc7e5c995e
+      source_switch_patch=022d0978e9b87af26926addd237841ca57f698dc
     fi
     ;;
   relink|mac-order|nsscc|instant|worker|down-mode|serial-speed)
@@ -548,15 +556,20 @@ baseline_healthy() {
     kernel_variant_matches "$1" '' '' 0 '' 0 '' || return 1
   fi
 }
-# The source is the exact unapproved 0498 experiment, not the recovery image.
+# The source is a separately pinned provisional experiment, not the
+# recovery image. The return transition only accepts the disarmed lab
+# diagnostic; all ordinary module trials accept exact 0498.
 switch_source_healthy() {
+  if [[ $trial_kind == return-0498 ]]; then
+    grep -Fxq mib_probe=N <<< "$1" || return 1
+  fi
   role_healthy "$1" "$source_rev" dhcp 2500 &&
     grep -Fxq "builder_commit=$source_builder" <<< "$1" &&
     grep -Fxq approval=0 <<< "$1" &&
     grep -Fxq token=1 <<< "$1" &&
-    module_matches "$1" "$accepted_module_sha" O &&
-    grep -Fxq "manifest_module_sha=$accepted_module_sha" <<< "$1" &&
-    grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" &&
+    module_matches "$1" "$source_module_sha" O &&
+    grep -Fxq "manifest_module_sha=$source_module_sha" <<< "$1" &&
+    grep -Fxq "manifest_switch_patch=$source_switch_patch" <<< "$1" &&
     trunk_path_healthy "$1" &&
     phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 &&
     relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" '' '' "$candidate_serial_patch" &&
@@ -707,10 +720,21 @@ if [[ $mode == --selftest ]]; then
   if [[ $switch_module_trial == 1 ]]; then
     s+=$(printf '\nmanifest_switch_patch=%s' "$candidate_switch_patch")
     source=$(sed -e "s/^rev=.*/rev=$source_rev/" -e "s/^builder_commit=.*/builder_commit=$source_builder/" \
-      -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" \
-      -e "s/^manifest_module_sha=.*/manifest_module_sha=$accepted_module_sha/" -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" <<< "$s")
+      -e "s/^module_sha=.*/module_sha=$source_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$source_module_sha/" \
+      -e "s/^manifest_module_sha=.*/manifest_module_sha=$source_module_sha/" -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$source_switch_patch/" <<< "$s")
     source+=$'\napproval=0\ntoken=1'
+    if [[ $trial_kind == return-0498 ]]; then source+=$'\nmib_probe=N'; fi
     switch_source_healthy "$source" || fatal 'valid provisional source rejected'
+    if [[ $trial_kind == return-0498 ]]; then
+      for change in mib_probe=Y mib_probe=absent noc=1 module_sha=wrong; do
+        if switch_source_healthy "$(sed "s/^${change%%=*}=.*/$change/" <<< "$source")"; then
+          fatal "bad diagnostic return source accepted: $change"
+        fi
+      done
+      if switch_source_healthy "$s"$'\napproval=0\ntoken=1\nmib_probe=N'; then
+        fatal '0498 destination accepted as diagnostic return source'
+      fi
+    fi
     if [[ $trial_kind == source-reboot ]]; then
       history=$(sed -e 's/^noc=.*/noc=4/' -e 's/^local_ready=.*/local_ready=0/' <<< "$source")
       history+=$'\nlocal_policy_without_noc=1'
@@ -1308,6 +1332,8 @@ echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
 [[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g ]] || exit 0
 if [[ $trial_kind == source-reboot ]]; then
   tag=source-reboot-$(date +%Y%m%d-%H%M%S)
+elif [[ $trial_kind == return-0498 ]]; then
+  tag=return-0498-$(date +%Y%m%d-%H%M%S)
 elif [[ $mode == --restore-baseline ]]; then
   tag=restore-0491-$(date +%Y%m%d-%H%M%S)
 elif [[ $mode == --reboot-1g ]]; then

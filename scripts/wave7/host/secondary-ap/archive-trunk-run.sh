@@ -6,7 +6,7 @@ base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 [[ $(id -un) == jan && $# == 1 ]] || exit 2
 run=$(realpath -e "$1")
 case "$run" in
-  "$base"/trunk-health-dhcp-guard8/runs/*|"$base"/native-recovery-dhcp-guard8/runs/*|"$base"/serial-speed-dhcp-guard8/runs/source-reboot-*|"$base"/mib-refresh-dhcp-guard8/runs/*|"$base"/mib-diag-dhcp-guard8/runs/*|"$base"/stock-order-dhcp-guard8/runs/*|"$base"/force-order-dhcp-guard8/runs/*)
+  "$base"/trunk-health-dhcp-guard8/runs/*|"$base"/native-recovery-dhcp-guard8/runs/*|"$base"/serial-speed-dhcp-guard8/runs/source-reboot-*|"$base"/serial-speed-dhcp-guard8/runs/return-0498-*|"$base"/mib-refresh-dhcp-guard8/runs/*|"$base"/mib-diag-dhcp-guard8/runs/*|"$base"/stock-order-dhcp-guard8/runs/*|"$base"/force-order-dhcp-guard8/runs/*)
     iface=enp4s0f4u2u4; addr=192.168.76.2 ;;
   "$base"/stock-poll-fifo-dhcp-guard8/runs/*|"$base"/conditional-relink-dhcp-guard8/runs/*|"$base"/stock-mac-order-dhcp-guard8/runs/*|"$base"/nsscc-parent-order-dhcp-guard8/runs/*|"$base"/instant-fifo-dhcp-guard8/runs/*|"$base"/independent-fifo-dhcp-guard8/runs/*|"$base"/down-mode-dhcp-guard8/runs/*|"$base"/serial-speed-dhcp-guard8/runs/*)
     iface=enp4s0f4u2u2u4; addr=192.168.76.250 ;;
@@ -40,6 +40,7 @@ done
 tag=${run##*/}
 [[ $tag =~ ^[a-zA-Z0-9-]+$ ]] || exit 2
 if [[ $run == "$base"/serial-speed-dhcp-guard8/runs/source-reboot-* ||
+      $run == "$base"/serial-speed-dhcp-guard8/runs/return-0498-* ||
       $run == "$base"/mib-*-dhcp-guard8/runs/* ||
       $run == "$base"/stock-order-dhcp-guard8/runs/* ||
       $run == "$base"/force-order-dhcp-guard8/runs/* ]]; then
