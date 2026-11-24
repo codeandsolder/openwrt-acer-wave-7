@@ -35,14 +35,12 @@ References: original stock ARM trace sealed on Acer
 Public header confirms UNIPHY_AUTONEG_MODE_ATH and UNIPHY_CH_FORCE_MODE:
 https://github.com/openwrt/qca-uniphy/blob/main/qca_uniphy.h
 
-## PCS0 force-speed-only ablation
+## PCS0 stock analog-only ablation
 
-The stock personality experiment 5685b30aa2 lost all XGMAC receive
-frames despite valid RTL CPU6 ingress and egress. This independent
-candidate keeps native 2500BASE-X selection, masked MISC2, analog
-control and reset/clock sequencing. On the exact dedicated Wave7
-MPPE PCS0 only, physically set the documented MII force bit before
-mode programming, then require the native mode/misc and force bit
-readback after calibration. Do not conflate this with a full stock
-configuration or with the separate PCS1 negotiation policy.
-Exact parent: 0498. Require the matching actual readback marker.
+Stock wrapper 12 replay verifies the board's exact write 0x21c=0xa882.
+Other IPQ50xx firmware scripts refer to the register among transmit
+amplitude/emphasis controls, but this does not establish MPPE bitfield
+semantics. Apply only the actual stock write, before native mode and
+calibration, and observe original value plus post-calibration readback.
+Preserve native mode, force state, MISC2, clocks and reset sequencing.
+Exact scope: Wave7 MPPE single-MII PCS0, 2500BASE-X. Exact parent 0498.

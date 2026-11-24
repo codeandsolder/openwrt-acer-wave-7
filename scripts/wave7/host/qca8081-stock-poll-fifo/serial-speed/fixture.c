@@ -55,9 +55,8 @@ static unsigned writes,fail_at,mode_writes,force_writes,speed_writes,pulses,cal_
 static unsigned logs,post_logs,errors,reads,fail_read_at;
 static unsigned last_force_write,last_cal_start,last_cal_stop,last_pulse;
 static bool require_serial;
-#ifdef HAS_FORCE_2500
+#ifdef HAS_ANALOG_2500
 static unsigned event_addr[32],event_val[32],event_mask[32];
-static unsigned force_phys_writes;
 static bool bad_latch;
 #endif
 static bool of_machine_is_compatible(const char *s){assert(!strcmp(s,"acer,wave7"));return board;}
@@ -80,7 +79,7 @@ static bool of_property_read_bool(void *node,const char *name){return false;}
 static int regmap_update_bits(void *r,unsigned a,unsigned mask,unsigned val){
     assert(r==&regs&&a<sizeof(regs)&&!(a%4));
     if(++writes==fail_at)return -EIO;
-#ifdef HAS_FORCE_2500
+#ifdef HAS_ANALOG_2500
     assert(writes<=32);
     event_addr[writes-1]=a;event_val[writes-1]=val;event_mask[writes-1]=mask;
 #endif
@@ -106,14 +105,9 @@ static int regmap_update_bits(void *r,unsigned a,unsigned mask,unsigned val){
 static int regmap_set_bits(void*r,unsigned a,unsigned mask){return regmap_update_bits(r,a,mask,mask);}
 static int regmap_clear_bits(void*r,unsigned a,unsigned mask){return regmap_update_bits(r,a,mask,0);}
 static int regmap_write(void*r,unsigned a,unsigned val){return regmap_update_bits(r,a,~0U,val);}
-#ifdef HAS_FORCE_2500
-static int regmap_write_bits(void*r,unsigned a,unsigned mask,unsigned val){
-    force_phys_writes++;return regmap_update_bits(r,a,mask,val);
-}
-#endif
 static int regmap_read(void*r,unsigned a,unsigned*v){assert(r==&regs&&a<sizeof(regs)&&!(a%4));if(++reads==fail_read_at)return -EIO;*v=regs[a/4];
-#ifdef HAS_FORCE_2500
-    if(bad_latch&&a==PCS_MII_CTRL(0)&&reads>5)*v&=~PCS_MII_FORCE_MODE;
+#ifdef HAS_ANALOG_2500
+    if(bad_latch&&a==PCS_MPPE_FIXED_CTRL&&reads>6)*v^=1;
 #endif
     return 0;}
 #define regmap_read_poll_timeout(r,a,v,cond,interval,timeout) ((v=PCS_CALIBRATION_DONE),(cond)?0:-ETIMEDOUT)
@@ -128,8 +122,8 @@ static void init(int interface){
     writes=fail_at=mode_writes=force_writes=speed_writes=pulses=cal_starts=cal_stops=clock_off=clock_on=0;
     logs=post_logs=errors=reads=fail_read_at=last_force_write=last_cal_start=last_cal_stop=last_pulse=0;
     require_serial=false;
-#ifdef HAS_FORCE_2500
-    force_phys_writes=0;bad_latch=false;
+#ifdef HAS_ANALOG_2500
+    bad_latch=false;
 #endif
     regs[PCS_MODE_CTRL/4]=0x421;
     regs[PCS_MII_CTRL(0)/4]=0x84e; /* deliberately distinct previous speed */
@@ -215,15 +209,15 @@ int main(void){
     }
     init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;
     assert(!ipq_pcs_config_2500basex(&q));
-    #ifdef HAS_FORCE_2500
-    assert(reads==8&&q.interface==PHY_INTERFACE_MODE_2500BASEX&&clock_off==1&&clock_on==1);
-    assert(!ipq_pcs_config_2500basex(&q)&&reads==8);cases++;
+    #ifdef HAS_ANALOG_2500
+    assert(reads==7&&q.interface==PHY_INTERFACE_MODE_2500BASEX&&clock_off==1&&clock_on==1);
+    assert(!ipq_pcs_config_2500basex(&q)&&reads==7);cases++;
 #else
     assert(reads==5&&q.interface==PHY_INTERFACE_MODE_2500BASEX&&clock_off==1&&clock_on==1);
     assert(!ipq_pcs_config_2500basex(&q)&&reads==5);cases++;
 #endif
 #endif
-#ifdef HAS_FORCE_2500
+#ifdef HAS_ANALOG_2500
     for(int b=0;b<2;b++)for(int mppe=0;mppe<2;mppe++)
     for(int present=0;present<2;present++)for(int addr=0;addr<2;addr++)
     for(int zero=0;zero<2;zero++)for(int multi=0;multi<2;multi++)
@@ -232,7 +226,7 @@ int main(void){
         res.start=addr?0x7a00000:0x7a10000;
         if(!zero)q.qpcs_mii[0]=NULL;
         if(multi)q.qpcs_mii[1]=&other;
-        assert(ipq_pcs_wave7_force_2500(&q,mode)==
+        assert(ipq_pcs_wave7_analog_2500(&q,mode)==
                (b&&mppe&&present&&addr&&zero&&!multi&&mode==PHY_INTERFACE_MODE_2500BASEX));
         cases++;
     }
@@ -242,19 +236,21 @@ int main(void){
         init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;
         regs[PCS_MODE_CTRL/4]=modes[i];regs[PCS_MII_CTRL(0)/4]=ctrls[j];
         regs[PCS_MISC2/4]=0xffffffff;
+        regs[PCS_MPPE_FIXED_CTRL/4]=0x12345678;
         assert(!ipq_pcs_config_2500basex(&q));
-        assert(writes==5&&force_phys_writes==1&&reads==8);
-        assert(event_addr[0]==PCS_MII_CTRL(0)&&event_mask[0]==PCS_MII_FORCE_MODE);
+        assert(writes==5&&reads==7);
+        assert(event_addr[0]==PCS_MPPE_FIXED_CTRL&&event_mask[0]==~0U&&event_val[0]==0xa882);
         assert(event_addr[1]==PCS_MODE_CTRL&&event_mask[1]==PCS_MODE_SEL_MASK);
         assert(event_addr[2]==PCS_MISC2&&event_mask[2]==(PCS_MISC2_MODE_MASK|PCS_MISC2_RATE_MASK));
         assert(regs[PCS_MODE_CTRL/4]==((modes[i]&~PCS_MODE_SEL_MASK)|PCS_MODE_2500BASEX));
-        assert(regs[PCS_MII_CTRL(0)/4]==(ctrls[j]|PCS_MII_FORCE_MODE));
+        assert(regs[PCS_MII_CTRL(0)/4]==ctrls[j]);
+        assert(regs[PCS_MPPE_FIXED_CTRL/4]==0xa882);
         assert(regs[PCS_MISC2/4]==((~(PCS_MISC2_MODE_MASK|PCS_MISC2_RATE_MASK))|PCS_MISC2_MODE_SGMII_PLUS));
-        assert(last_force_write<last_cal_start&&last_cal_start<last_cal_stop);
+        assert(!force_writes&&last_cal_start==4&&last_cal_stop==5);
         assert(clock_off==1&&clock_on==1);
         assert(!ipq_pcs_config_2500basex(&q)&&writes==5);
         ipq_pcs_link_up(&m.pcs,PHYLINK_PCS_NEG_OUTBAND,PHY_INTERFACE_MODE_2500BASEX,2500,1);
-        assert(pulses==2&&(regs[PCS_MII_CTRL(0)/4]&PCS_MII_FORCE_MODE));
+        assert(pulses==2&&!force_writes&&(regs[PCS_MII_CTRL(0)/4]&PCS_MII_FORCE_MODE)==(ctrls[j]&PCS_MII_FORCE_MODE));
         cases++;
     }
     for(unsigned f=1;f<=5;f++){
@@ -263,10 +259,10 @@ int main(void){
         assert(q.interface==PHY_INTERFACE_MODE_NA&&writes==f);
         assert(clock_off==clock_on&&clock_off==(f>1));cases++;
     }
-    for(unsigned f=6;f<=8;f++){
+    for(unsigned f=6;f<=7;f++){
         init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;fail_read_at=f;
         assert(ipq_pcs_config_2500basex(&q)==-EIO);
-        assert(q.interface==PHY_INTERFACE_MODE_NA&&clock_off==1&&clock_on==1);
+        assert(q.interface==PHY_INTERFACE_MODE_NA&&clock_off==clock_on&&clock_off==(f==7));
         cases++;
     }
     init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;bad_latch=true;
