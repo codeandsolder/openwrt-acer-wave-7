@@ -1,11 +1,11 @@
-name: Build Kernel
+name: Wave 7 kernel
 
 on:
   pull_request:
     paths:
       - '.github/workflows/check-kernel-patches.yml'
       - '.github/workflows/build.yml'
-      - '.github/workflows/kernel.yml'
+      - '.github/workflows/wave7-kernel.yml'
       - 'include/kernel*'
       - 'package/kernel/**'
       - 'target/linux/**'
@@ -13,7 +13,7 @@ on:
     paths:
       - '.github/workflows/check-kernel-patches.yml'
       - '.github/workflows/build.yml'
-      - '.github/workflows/kernel.yml'
+      - '.github/workflows/wave7-kernel.yml'
       - 'include/kernel*'
       - 'package/kernel/**'
       - 'target/linux/**'
@@ -21,18 +21,23 @@ on:
   # Explicit full-tree validation remains available. Routine CI validates
   # the board this fork is developed for, not hundreds of upstream platforms.
   workflow_dispatch:
+    inputs:
+      full-upstream-matrix:
+        description: Explicitly build every upstream kernel target and subtarget
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   wave7-kernel:
     name: Build Wave 7 kernel and kmods
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || !inputs.full-upstream-matrix
     permissions:
       contents: read
       packages: read
@@ -48,7 +53,7 @@ jobs:
 
   wave7-patches:
     name: Check Wave 7 kernel patches
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name != 'workflow_dispatch' || !inputs.full-upstream-matrix
     permissions:
       contents: read
       packages: read
@@ -59,7 +64,7 @@ jobs:
 
   full-kernel-matrix:
     name: Build all upstream kernels (explicit full validation)
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.full-upstream-matrix
     permissions:
       contents: read
       packages: read

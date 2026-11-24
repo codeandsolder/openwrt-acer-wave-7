@@ -1,23 +1,14 @@
 name: Build Toolchains
 
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/toolchain.yml'
-      - 'toolchain/**'
-  push:
-    paths:
-      - '.github/workflows/toolchain.yml'
-      - 'toolchain/**'
-    branches-ignore:
-      - master
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   build-toolchains:
@@ -26,4 +17,4 @@ jobs:
       contents: read
       packages: read
       actions: write
-    uses: openwrt/actions-shared-workflows/.github/workflows/toolchain.yml@main
+    uses: openwrt/actions-shared-workflows/.github/workflows/toolchain.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a

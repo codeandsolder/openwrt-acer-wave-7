@@ -1,27 +1,16 @@
 name: Build host tools
 
 on:
-  pull_request:
-    paths:
-      - 'include/**'
-      - 'tools/**'
-      - '.github/workflows/tools.yml'
-  push:
-    paths:
-      - 'include/**'
-      - 'tools/**'
-      - '.github/workflows/tools.yml'
-    branches-ignore:
-      - master
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   build-tools:
     name: Build host tools for linux and macos based systems
-    uses: openwrt/actions-shared-workflows/.github/workflows/tools.yml@main
+    uses: openwrt/actions-shared-workflows/.github/workflows/tools.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a

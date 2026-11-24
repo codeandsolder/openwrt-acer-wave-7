@@ -1,9 +1,9 @@
-name: Build all core packages
+name: Wave 7 core packages
 
 on:
   pull_request:
     paths:
-      - '.github/workflows/packages.yml'
+      - '.github/workflows/wave7-packages.yml'
       - 'config/**'
       - 'include/**'
       - 'package/**'
@@ -11,7 +11,7 @@ on:
       - 'toolchain/**'
   push:
     paths:
-      - '.github/workflows/packages.yml'
+      - '.github/workflows/wave7-packages.yml'
       - 'config/**'
       - 'include/**'
       - 'package/**'
@@ -30,7 +30,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
   changed-files:
