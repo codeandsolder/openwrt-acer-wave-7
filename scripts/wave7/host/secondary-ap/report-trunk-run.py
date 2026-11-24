@@ -51,11 +51,18 @@ def xgmac_report(run, mib_rows):
         intervals.append({"start_uptime":a["uptime"],"end_uptime":b["uptime"],
                           "reset":reset,"corrupt_only":corrupt,"mib":mib,"xgmac":mac})
     corrupt=[r for r in intervals if r["corrupt_only"]]
+    complete = len(rows)==len(expected)
+    no_errors = not any(row[k] for row in rows for k in XGMAC_ERRORS)
+    resets = [r["end_uptime"] for r in intervals if r["reset"]]
     return {"samples":len(rows),"missing_samples":len(expected)-len(rows),
-            "complete":len(rows)==len(expected),
+            "complete":complete,"clean":complete and no_errors and not resets,
+            "tx_unicast_minus_rtl_ingress_range":(
+                [min(diffs),max(diffs)] if (diffs := [
+                    row["tx_unicast"]-expected[identity(row)]["ucast"] for row in rows
+                ]) else None),
             "initial":{k:rows[0][k] for k in XGMAC} if rows else None,
             "final":{k:rows[-1][k] for k in XGMAC} if rows else None,
-            "resets":[r["end_uptime"] for r in intervals if r["reset"]],
+            "resets":resets,
             "corrupt_only_with_mac_tx_unicast":[r["end_uptime"] for r in corrupt if r["xgmac"]["tx_unicast"]>0],
             "corrupt_only_with_mac_tx_frames":[r["end_uptime"] for r in corrupt if r["xgmac"]["tx_frames"]>0],
             "hardware_error_intervals":[r["end_uptime"] for r in intervals if not r["reset"] and any(r["xgmac"][k] for k in XGMAC_ERRORS)],
@@ -151,11 +158,13 @@ def report(run):
     autonomous = state.get("approval") == "1" and state.get("token") == "0"
     complete = status == "SOAK_PASS" and soak_seconds >= 300 and state_good
     no_error = not resets and not any(r[k] for r in rows for k in ERRORS)
-    clean = complete and no_error and all(r["switch"] for r in accepted)
+    xgmac = xgmac_report(run, rows)
+    clean = (complete and no_error and all(r["switch"] for r in accepted)
+             and (xgmac is None or xgmac["clean"]))
     return {
         "boot": boot, "status": status, "soak_seconds": soak_seconds,
         "restored_boot": restored_boot,
-        "xgmac": xgmac_report(run, rows),
+        "xgmac": xgmac,
         "autonomous": autonomous, "samples": len(rows), "first_uptime": rows[0]["uptime"],
         "last_uptime": rows[-1]["uptime"],
         "first_accepted_uptime": accepted[0]["uptime"] if accepted else None,
