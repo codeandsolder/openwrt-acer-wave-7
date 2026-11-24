@@ -12,7 +12,7 @@ from pathlib import Path
 
 FIRMWARE_SHA = "ec5332a6bcc1a67a2202ffbf7b44a87c8fad412a907c9f65edf7602bab0bffd9"
 
-def execute(code, entry, bus, lane=0, statuses=(), seed_a=0x9521, seed_b=0xa512):
+def execute(code, entry, bus, lane=0, statuses=(), seed_a=0x9521, seed_b=0xa512, *, startup=False):
     if hashlib.sha256(code).hexdigest() != FIRMWARE_SHA:
         raise ValueError("unknown firmware")
     if lane not in (0,1):
@@ -53,8 +53,14 @@ def execute(code, entry, bus, lane=0, statuses=(), seed_a=0x9521, seed_b=0xa512)
         nonlocal pc
         pc=stack.pop() if stack else -1
     for _ in range(10000):
-        if pc==-1:
+        if pc==-1 or (startup and pc==0x3e2):
             return log
+        if startup and pc in (0x0512, 0x04d5, 0x04d1, 0x052e):
+            # Timer setup and elapsed-time checks, not ASIC access.
+            # Model elapsed time without simulating clock interrupts.
+            log.append(["timer-boundary", pc])
+            carry=0
+            rte(); continue
         # Stock ASIC register read helper: R6:R7 address/result;
         # R4:R5 save original address. Vendor bus completion assumed.
         if pc==0x591:
@@ -112,6 +118,7 @@ def execute(code, entry, bus, lane=0, statuses=(), seed_a=0x9521, seed_b=0xa512)
             a=difference&255
             carry=int(difference<0)
         elif op==0x40: branch(bool(carry))
+        elif op==0x50: branch(not carry)
         elif op==0x60: branch(a==0)
         elif op==0x70: branch(a!=0)
         elif op==0x80: branch(True)
@@ -126,12 +133,31 @@ def execute(code, entry, bus, lane=0, statuses=(), seed_a=0x9521, seed_b=0xa512)
         elif op==0x75:
             addr=fetch(); direct_set(addr,fetch())
         elif op==0xe5: a=direct_get(fetch())
+        elif op==0xf5: direct_set(fetch(),a)
+        elif op==0xd2:
+            bit=fetch()
+            if bit<0x80: raise ValueError("unsupported bit address")
+            addr=bit&0xf8
+            direct_set(addr,direct_get(addr)|(1<<(bit&7)))
         elif op==0x15:
             addr=fetch(); direct_set(addr,direct_get(addr)-1)
         elif op==0xc5:
             addr=fetch(); old=direct_get(addr); direct_set(addr,a); a=old
         else: raise ValueError(f"unhandled opcode {op:02x} at {start:04x}")
     raise RuntimeError("instruction budget exhausted")
+
+def trace_startup(code):
+    # Main startup after C runtime memory initialization, stopping before
+    # the first copper/SerDes periodic maintenance call. ASIC read/write
+    # helpers retain the same mock boundary as the other replay cases.
+    log=execute(code,0x37e,{},startup=True)
+    assert [e for e in log if e[0]!="timer-boundary"]==[
+        ["asic-write",0x1336,0x0040],
+        ["asic-write",0x1336,0x0041],
+        ["asic-write",0x134a,0x00f8],
+    ],log
+    return log
+
 
 def trace(code, lane, mode, statuses, seed_a=0x9521, seed_b=0xa512):
     if lane not in (0,1):
@@ -212,5 +238,5 @@ if __name__=="__main__":
     if len(sys.argv)!=2:
         raise SystemExit("usage: trace-stock-recovery.py DW8051_BIN")
     code=Path(sys.argv[1]).read_bytes()
-    print(json.dumps({"serdes_recovery":checks(code),"copper_force":check_copper(code)},indent=2))
+    print(json.dumps({"startup":trace_startup(code),"serdes_recovery":checks(code),"copper_force":check_copper(code)},indent=2))
     print("STOCK_RECOVERY_TRACE_PASS",file=sys.stderr)

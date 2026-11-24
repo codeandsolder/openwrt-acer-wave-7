@@ -60,3 +60,22 @@ This is additional evidence that explicit SDK SerDes resets are not
 part of the RTL8367D stock host sequence, not evidence that its running
 DW8051 performs no corresponding initialization. Keep this separate
 from the lane-order and MAC force-order experiments.
+
+## MCU main-startup write sequence
+
+The DW8051 replay also executes the actual main startup path from 0x37e
+(after runtime initialization) to 0x3e2 (first periodic maintenance call).
+Elapsed-time routines at 0x0512, 0x04d5, 0x04d1 and 0x052e are the explicit
+timer boundary; the elapsed checks take the completed branch. ASIC helper
+0x05d5 remains the existing mock SMI write boundary. This produces exactly:
+
+- 0x1336 = 0x0040
+- 0x1336 = 0x0041
+- 0x134a = 0x00f8
+
+No indirect SDS-window access on that replayed path. This is not a full
+8051 interrupt simulation and does not establish the function of the
+registers, the real timing, or the consequences of the MCU being disabled.
+Do not add these undocumented writes to native Linux as part of either
+ordering candidate. Existing periodic recovery and exhaustive copper
+force replays still pass.
