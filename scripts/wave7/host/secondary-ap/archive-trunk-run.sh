@@ -6,12 +6,16 @@ base=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 [[ $(id -un) == jan && $# == 1 ]] || exit 2
 run=$(realpath -e "$1")
 case "$run" in
-  "$base"/trunk-health-dhcp-guard8/runs/*|"$base"/native-recovery-dhcp-guard8/runs/*)
+  "$base"/trunk-health-dhcp-guard8/runs/*|"$base"/native-recovery-dhcp-guard8/runs/*|"$base"/serial-speed-dhcp-guard8/runs/source-reboot-*|"$base"/mib-refresh-dhcp-guard8/runs/*|"$base"/mib-diag-dhcp-guard8/runs/*|"$base"/stock-order-dhcp-guard8/runs/*|"$base"/force-order-dhcp-guard8/runs/*)
     iface=enp4s0f4u2u4; addr=192.168.76.2 ;;
   "$base"/stock-poll-fifo-dhcp-guard8/runs/*|"$base"/conditional-relink-dhcp-guard8/runs/*|"$base"/stock-mac-order-dhcp-guard8/runs/*|"$base"/nsscc-parent-order-dhcp-guard8/runs/*|"$base"/instant-fifo-dhcp-guard8/runs/*|"$base"/independent-fifo-dhcp-guard8/runs/*|"$base"/down-mode-dhcp-guard8/runs/*|"$base"/serial-speed-dhcp-guard8/runs/*)
     iface=enp4s0f4u2u2u4; addr=192.168.76.250 ;;
   *) exit 2 ;;
 esac
+lock="$base/.lab-control.lock"
+[[ -f $lock && ! -L $lock && -O $lock ]]
+exec 8<>"$lock"
+flock -n 8 || { echo 'lab control held by another trial'; exit 2; }
 [[ $(cat "$run/status") == SOAK_PASS ]] || { echo 'not a completed soak'; exit 2; }
 [[ ! -e $run/evidence.sha256 ]] || { echo 'already archived'; exit 2; }
 boot=$(sed -n 's/^boot=//p' "$run/latest-state.txt")
@@ -34,7 +38,10 @@ done
 (
   cd "$run"
   files=(status observer.log trunk-counters.tsv latest-state.txt final-dmesg.txt final-hardware.txt report.json)
-  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log; do
+  if [[ -f outgoing-boot.sha256 ]]; then
+    sha256sum -c outgoing-boot.sha256
+  fi
+  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256; do
     if [[ -f $f ]]; then files+=("$f"); fi
   done
   sha256sum "${files[@]}" > evidence.sha256
