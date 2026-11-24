@@ -59,26 +59,11 @@ def send(count):
     return {"sent":count,"interface":DEV,"quanta":0,"frame":packet.hex()}
 
 
-def pause_stats(raw):
-    result={}
-    for port,prefix in (("cpu","s00_p06_"),("copper","")):
-        body=raw.split("=== CPU ===\n" if port=="cpu" else "=== COPPER ===\n",1)[1]
-        body=body.split("=== COPPER ===\n" if port=="cpu" else "=== DIRECT ===\n",1)[0]
-        vals={}
-        for l in body.splitlines():
-            m=re.fullmatch(r"\s*"+prefix+r"(\w+):\s+(\d+)",l)
-            if m and m[1] in PAUSE:
-                require(m[1] not in vals,"duplicate PAUSE counter")
-                vals[m[1]]=int(m[2])
-        require(set(vals)==set(PAUSE),"missing PAUSE counters")
-        result[port]=vals
-    return result
-
 
 def observe(out, name, variant, boot):
     r=bench["sample"](out,name,variant,boot)
     raw=(out/f"{name}.txt").read_text()
-    p=pause_stats(raw)
+    p=probe["pause_stats"](raw)
     return {port:{**r["counters"][port],**p[port]} for port in p},r["xgmac"]
 
 

@@ -118,6 +118,25 @@ def parse_xgmac(raw):
     return counters
 
 
+PAUSE = ("dot3InPauseFrames","dot3OutPauseFrames")
+
+
+def pause_stats(raw):
+    result={}
+    for port,prefix in (("cpu","s00_p06_"),("copper","")):
+        body=raw.split("=== CPU ===\n" if port=="cpu" else "=== COPPER ===\n",1)[1]
+        body=body.split("=== COPPER ===\n" if port=="cpu" else "=== DIRECT ===\n",1)[0]
+        vals={}
+        for l in body.splitlines():
+            m=re.fullmatch(r"\s*"+prefix+r"(\w+):\s+(\d+)",l)
+            if m and m[1] in PAUSE:
+                require(m[1] not in vals,"duplicate PAUSE counter")
+                vals[m[1]]=int(m[2])
+        require(set(vals)==set(PAUSE),"missing PAUSE counters")
+        result[port]=vals
+    return result
+
+
 def parse_snapshot(raw, variant):
     sections = {"cpu": {}, "copper": {}}
     fields = {}

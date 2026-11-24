@@ -37,10 +37,7 @@ def mac_bytes(raw):
     return fields
 
 
-def sample(out, name, variant, boot):
-    probe["routes"]()
-    raw = remote(COMMAND)
-    (out / f"{name}.txt").write_text(raw)
+def parse_sample(raw, variant, boot):
     state = probe["parse_snapshot"](raw, variant)
     require(state["fields"]["boot"] == boot and state["fields"]["noc"] == "0",
             "unexpected boot or NoC")
@@ -50,6 +47,15 @@ def sample(out, name, variant, boot):
         "switch": {**probe["parse_xgmac"](cpu), **mac_bytes(cpu)},
         "direct": {**probe["parse_xgmac"](direct), **mac_bytes(direct)},
     }
+    state["pause"] = probe["pause_stats"](raw)
+    return state
+
+
+def sample(out, name, variant, boot):
+    probe["routes"]()
+    raw = remote(COMMAND)
+    (out / f"{name}.txt").write_text(raw)
+    state = parse_sample(raw, variant, boot)
     state["host"] = {
         path: {k: int((Path("/sys/class/net") / dev / "statistics" / k).read_text())
                for k in ("rx_bytes", "tx_bytes")}
@@ -98,8 +104,21 @@ def assess(before, after, path, payload):
     macs = {p: changes(before["macs"][p], after["macs"][p]) for p in PATHS}
     host = {p: changes(before["host"][p], after["host"][p]) for p in PATHS}
     require(all(v >= 0 for row in mib.values() for v in row.values()), "RTL counter reset")
-    require(not any(row[k] for row in mib.values() for k in probe["ERRORS"]),
-            "RTL errors during TCP load")
+    pause = {p: changes(before["pause"][p], after["pause"][p])
+             for p in probe["MACS"]}
+    # Controlled 0/8/0/32/0/128/0 zero-quanta PAUSE witness, exact
+    # RTL_FORCE module and copper port: consumed PAUSE increments
+    # DropEvents one-for-one. No assumption about the CPU port or
+    # other module identities. Never discard unmatched increments.
+    qualified_pause = (before["fields"].get("module") ==
+                       after["fields"].get("module") == cohort["PINS"]["edma-sg-inheritance"][1])
+    raw_drop = mib["copper"]["etherStatsDropEvents"]
+    consumed = pause["copper"]["dot3InPauseFrames"] if qualified_pause else 0
+    require(raw_drop >= consumed, "copper PAUSE/drop counter accounting inconsistent")
+    residual = raw_drop - consumed
+    require(not any(mib["cpu"][k] for k in probe["ERRORS"]) and
+            not any(mib["copper"][k] for k in probe["ERRORS"][:2]) and residual == 0,
+            "RTL physical errors or unmatched copper drops during TCP load")
     require(not any(row[k] for row in macs.values() for k in ERRORS),
             "XGMAC errors during TCP load")
     other = "direct" if path == "switch" else "switch"
@@ -119,6 +138,10 @@ def assess(before, after, path, payload):
             require(mib["cpu"][cpu_key] < count and mib["copper"][copper_key] < count,
                     "direct control not isolated from Realtek payload")
     return {"payload_bytes": payload, "mib_delta": mib,
+            "pause_delta": pause, "copper_drop_accounting": {
+                "raw":raw_drop,"consumed_pause":consumed,"unmatched":residual,
+                "proof_report_sha256":"aeda9e5a4c7efee567adcf63c586ca48b4bb19b0e82093215fb941be75b0b27e"
+                if qualified_pause else None},
             "xgmac_delta": macs, "host_delta": host}
 
 
@@ -355,10 +378,46 @@ def bench(run, peers, modes, bitrate, profile, steering, streams, repeat):
         raise failure
 
 
+def replay(out):
+    """Requalify sealed evidence without changing its original report."""
+    subprocess.run(["sha256sum","-c","--status","SHA256SUMS"],cwd=out,check=True)
+    report=json.loads((out/"report.json").read_text())
+    record=cohort["load_run"](out.parent)
+    require(record is not None and record["outcome"]=="clean" and
+            record["boot"]==report["boot"] and record["variant"]==report["variant"],
+            "benchmark/parent identity mismatch")
+    result=[]
+    for case in report["cases"]:
+        name=case["name"]
+        path,mode=name.split("-",1)
+        require(path in PATHS and mode in ("forward","reverse","bidir"),"invalid case")
+        states=[]
+        for when in ("before","after"):
+            base=out/f"{name}-{when}"
+            st=parse_sample(base.with_suffix(".txt").read_text(),record["variant"],record["boot"])
+            stored=json.loads(base.with_suffix(".json").read_text())
+            for k in ("fields","counters","macs"):
+                require(st[k]==stored[k],f"stored {k} disagrees with raw sample")
+            st["host"]=stored["host"]
+            states.append(st)
+        payload=received_bytes(json.loads((out/f"{name}-client.json").read_text()),
+                               mode,json.loads((out/f"{name}-server.json").read_text()))
+        require(payload==case["payload_bytes"],"stored payload disagreement")
+        r={"name":name,"original_qualification":case["qualification"],
+           "receiver_mbps":case["receiver_mbps"]}
+        try:
+            r.update(assess(*states,path,payload),qualification="PASS")
+        except ValueError as exc:
+            r.update(qualification="FAILED",qualification_error=str(exc))
+        result.append(r)
+    return {"source":str(out),"boot":record["boot"],"cases":result}
+
+
 def selftest():
     def state(n):
         return {"fields":{"boot":"test","noc":"0","uptime":str(n)},
                 "counters":{p:{k:0 for k in probe["FIELDS"]} for p in probe["MACS"]},
+                "pause":{p:{k:0 for k in probe["PAUSE"]} for p in probe["MACS"]},
                 "macs":{p:{k:0 for k in (*probe["XGMAC"],*MAC_BYTES)} for p in PATHS},
                 "host":{p:{"rx_bytes":0,"tx_bytes":0} for p in PATHS}}
     before = state(0)
@@ -397,6 +456,19 @@ def selftest():
         except ValueError: pass
         else: raise AssertionError("wrong path or corruption accepted")
         row[key]=0
+    for st in (before,after):
+        st["fields"]["module"]=cohort["PINS"]["edma-sg-inheritance"][1]
+    after["counters"]["copper"]["etherStatsDropEvents"]=8
+    after["pause"]["copper"]["dot3InPauseFrames"]=8
+    assert assess(before,after,"switch",{"rx":100})["copper_drop_accounting"]["unmatched"]==0
+    for raw,pauses,module,cpu_drop in ((9,8,True,0),(7,8,True,0),(8,8,False,0),(8,8,True,1)):
+        after["counters"]["copper"]["etherStatsDropEvents"]=raw
+        after["pause"]["copper"]["dot3InPauseFrames"]=pauses
+        after["fields"]["module"]=before["fields"]["module"] if module else "unqualified"
+        after["counters"]["cpu"]["etherStatsDropEvents"]=cpu_drop
+        try: assess(before,after,"switch",{"rx":100})
+        except ValueError: pass
+        else: raise AssertionError("unqualified PAUSE accounting accepted")
     try: received_bytes(fake,"bidir",{"end":{"sum_received":{"bytes":99}}})
     except ValueError: pass
     else: raise AssertionError("inconsistent endpoint payload accepted")
@@ -407,6 +479,8 @@ if __name__ == "__main__":
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest="command",required=True)
     sub.add_parser("selftest")
+    r=sub.add_parser("replay")
+    r.add_argument("out",type=Path)
     b=sub.add_parser("bench")
     b.add_argument("run",type=Path)
     b.add_argument("--peer",choices=tuple(PATHS),action="append")
@@ -419,6 +493,8 @@ if __name__ == "__main__":
     args=parser.parse_args()
     if args.command=="selftest":
         selftest()
+    elif args.command=="replay":
+        print(json.dumps(replay(args.out.resolve()),indent=2))
     else:
         require(args.bitrate_mbps is None or 0 < args.bitrate_mbps <= 2500, "invalid bitrate")
         peers = tuple(args.peer or ("switch", "direct"))
