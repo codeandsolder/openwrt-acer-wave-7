@@ -18,13 +18,22 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-probe = runpy.run_path(str(HERE/"probe-mib-freshness.py"))
-bench = runpy.run_path(str(HERE/"bench-ordering.py"))
-require = probe["require"]
-IP, DEV, _, MAC, SPEED = probe["PATHS"]["switch"]
+# Root sender is standalone and never loads the unprivileged observer.
+IP, DEV, MAC, SPEED = "192.168.76.250", "enp4s0f4u2u2u4", "00:e0:4c:68:01:45", "1000"
+
+def require(ok, message):
+    if not ok:
+        raise ValueError(message)
+
+def load_observer():
+    global probe, bench, FIELDS
+    probe = runpy.run_path(str(HERE/"probe-mib-freshness.py"))
+    bench = runpy.run_path(str(HERE/"bench-ordering.py"))
+    assert (IP,DEV,MAC,SPEED)==tuple(probe["PATHS"]["switch"][i] for i in (0,1,3,4))
+    FIELDS = (*probe["FIELDS"], *PAUSE)
+
 COUNTS = (8, 32, 128)
 PAUSE = ("dot3InPauseFrames","dot3OutPauseFrames")
-FIELDS = (*probe["FIELDS"], *PAUSE)
 
 
 def frame():
@@ -37,7 +46,7 @@ def send(count):
     p=Path("/sys/class/net")/DEV
     for key, expected in (("address",MAC),("carrier","1"),("speed",SPEED)):
         require((p/key).read_text().strip()==expected, f"wrong lab interface {key}")
-    info=json.loads(probe["run"](["ip","-j","-4","addr","show","dev",DEV]))
+    info=json.loads(subprocess.check_output(["ip","-j","-4","addr","show","dev",DEV],text=True,timeout=5))
     require(len(info)==1 and any(a["local"]==IP for a in info[0]["addr_info"]),
             "wrong lab interface address")
     packet=frame()
@@ -118,7 +127,7 @@ def measure(run):
             for name in probe["PATHS"]:
                 data=probe["run"](["tshark","-n","-r",str(out/f"{name}.pcapng"),
                      "-T","fields","-e","eth.src","-e","eth.dst","-e","eth.type",
-                     "-e","eth.macctrl.opcode","-e","eth.macctrl.pause_time"],20)
+                     "-e","macc.opcode","-e","macc.pause_time"],20)
                 (out/f"{name}-frames.tsv").write_text(data)
                 rows=data.splitlines()
                 expected=sum(COUNTS) if name=="switch" else 0
@@ -164,6 +173,9 @@ if __name__=="__main__":
     action.add_argument("--run",type=Path)
     action.add_argument("--selftest",action="store_true")
     args=parser.parse_args()
-    if args.selftest:selftest()
-    elif args.send:send(args.send)
-    else:sys.exit(0 if measure(args.run.resolve()) else 1)
+    if args.send:
+        send(args.send)
+    else:
+        load_observer()
+        if args.selftest:selftest()
+        else:sys.exit(0 if measure(args.run.resolve()) else 1)
