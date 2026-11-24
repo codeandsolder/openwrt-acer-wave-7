@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -14,6 +14,8 @@ candidate_module_sha=''
 accepted_module_sha=''
 accepted_module_taint=''
 trunk_trial=0
+switch_module_trial=0
+candidate_switch_patch=''
 phy_trial=0
 relink_trial=0
 kernel_variant_trial=0
@@ -100,6 +102,58 @@ case "$profile" in
     accepted_builder=3d057f1f70b76a1bc3d032d3f16357b6a7f4dc0f
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
+    ;;
+  mib-refresh|stock-order|force-order)
+    trunk_trial=1
+    switch_module_trial=1
+    phy_trial=1
+    relink_trial=1
+    kernel_variant_trial=1
+    profile=dhcp
+    base="$guard8/$trial_kind-dhcp-guard8"
+    candidate_artifact="wave7-$trial_kind-dhcp-guard8-sysupgrade.bin"
+    case "$trial_kind" in
+      mib-refresh)
+        candidate_switch_patch=14a0f757e710d0173711dfc36145842a57d72313
+        candidate_builder=0961fc650bcfde5c0633e2a8291cc32ddd52c320
+        expected_candidate_sha=7df65578b5a444724d9aceb9cdd0e59924a76aeb63b3baa34e0d63888f40fdf9
+        candidate_module_sha=0675df8af2c490bb5957be5cc2d2124c6500cdcf01d09cef02b744d5e090a485
+        ;;
+      stock-order)
+        candidate_switch_patch=472043f203c17e74b7162f0b90c5d22b7653541c
+        candidate_builder=075501ec8774afc86304b4c0bd5cf5b1def78917
+        expected_candidate_sha=406208b55db26d1a8a43753711f469bd4f8739b829a2e7a5bb7fc8018ad9bf15
+        candidate_module_sha=2d0da46a3bb51ebc52d4b70c3e31a4808bcf3a82955bf1b4414375d407aff319
+        ;;
+      force-order)
+        candidate_switch_patch=b9db617b17b83895473247360832a8f4ed0256c9
+        candidate_builder=55c04ca358d57b7db68f7cf78bf67ea1b9760a13
+        expected_candidate_sha=eeeb7057cf93a0a9babbb7941ba086a8cc5519e8f8a8b14b680744af0f2f4bfd
+        candidate_module_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
+        ;;
+    esac
+    candidate_rev="r0+38346-${candidate_switch_patch:0:10}-ap-dhcp-guard8"
+    candidate_fit_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
+    candidate_phy_patch=0418bb7af25d13406bb896696eb78541ccd2aa00
+    candidate_relink_patch=''
+    candidate_pcs_sha=6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf
+    candidate_ppe_sha=1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0
+    candidate_serial_patch=f9aa3e1fa3a541bb52e11223c7297cbd4dbc0ecc
+    accepted="$guard8/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
+    accepted_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
+    accepted_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
+    accepted_builder=749c36c682119f223341d30e7a6d9992160966c0
+    accepted_mode=dhcp
+    accepted_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+    accepted_module_taint=O
+    accepted_phy_patch=$candidate_phy_patch
+    accepted_fit_sha=$candidate_fit_sha
+    accepted_phy_marker=1
+    accepted_pcs_sha=74bd3fddd9e35f543100073a4f7a85ebfe7aca503e5c48191dd3c2ee8190b473
+    accepted_ppe_sha=$candidate_ppe_sha
+    accepted_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
+    source_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
+    source_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
     ;;
   relink|mac-order|nsscc|instant|worker|down-mode|serial-speed)
     trunk_trial=1
@@ -242,7 +296,7 @@ direct_iface=enp4s0f4u2u4
 direct_ip=192.168.76.2
 peer_iface=$switch_iface
 peer_ip=$switch_ip
-if [[ $phy_trial == 1 ]]; then
+if [[ $phy_trial == 1 && $switch_module_trial == 0 ]]; then
   # QCA8081 is the DUT. Keep authenticated management on RTL8367D.
   peer_iface=$direct_iface
   peer_ip=$direct_ip
@@ -317,6 +371,7 @@ read_state() {
     echo "module_taint=$(cat /sys/module/rtl8365mb/taint 2>/dev/null)"
     echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
     echo "manifest_module_sha=$(sed -n "s/^trial_module_sha256=//p" /rom/etc/wave7-role-profile)"
+    echo "manifest_switch_patch=$(sed -n "s/^trial_kernel_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_phy_patch=$(sed -n "s/^trial_phy_kernel_patch_commit=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_fit_sha=$(sed -n "s/^trial_fit_sha256=//p" /rom/etc/wave7-role-profile)"
     echo "phy_poll_marker=$(dmesg | grep -q "fifo_action=stock_status_poll" && echo 1 || echo 0)"
@@ -353,7 +408,7 @@ read_state() {
     -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 -o ConnectionAttempts=1 \
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" "$host" \
     'printf "%s %s\n" "$(cat /proc/sys/kernel/random/boot_id)" "${SSH_CONNECTION%% *}"' 2>/dev/null) || peer=''
-  if [[ $phy_trial == 1 ]]; then
+  if [[ $phy_trial == 1 && $switch_module_trial == 0 ]]; then
     if [[ $(value "$s" management_peer) == "$switch_ip" ]]; then echo switch_verified=1; else echo switch_verified=0; fi
     if [[ $peer == "$boot $direct_ip" ]]; then echo direct_verified=1; else echo direct_verified=0; fi
   else
@@ -433,6 +488,9 @@ has_permanent_address() {
 # One definition of the healthy accepted baseline, used before the trial
 # and when checking that the rollback has actually booted successfully.
 baseline_healthy() {
+  if [[ $switch_module_trial == 1 ]]; then
+    grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" || return 1
+  fi
   role_healthy "$1" "$accepted_rev" "$accepted_mode" 2500 || return 1
   if [[ -n $accepted_builder ]]; then
     grep -Fxq "builder_commit=$accepted_builder" <<< "$1" || return 1
@@ -453,12 +511,29 @@ baseline_healthy() {
     kernel_variant_matches "$1" '' '' 0 '' 0 '' || return 1
   fi
 }
+# The source is the exact unapproved 0498 experiment, not the recovery image.
+switch_source_healthy() {
+  role_healthy "$1" "$source_rev" dhcp 2500 &&
+    grep -Fxq "builder_commit=$source_builder" <<< "$1" &&
+    grep -Fxq approval=0 <<< "$1" &&
+    grep -Fxq token=1 <<< "$1" &&
+    module_matches "$1" "$accepted_module_sha" O &&
+    grep -Fxq "manifest_module_sha=$accepted_module_sha" <<< "$1" &&
+    grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" &&
+    trunk_path_healthy "$1" &&
+    phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 &&
+    relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" '' '' "$candidate_serial_patch" &&
+    kernel_variant_matches "$1" '' '' 0 '' 0 ''
+}
 rollback_eligible() {
   local s=$1
   [[ $(value "$s" rev) == "$candidate_rev" &&
      $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 ]]
 }
 healthy() {
+  if [[ $switch_module_trial == 1 ]]; then
+    grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$1" || return 1
+  fi
   role_healthy "$1" "$candidate_rev" "$profile" "$candidate_direct_speed" &&
     grep -Fxq "builder_commit=$candidate_builder" <<< "$1" || return 1
   if [[ $trunk_trial == 1 ]]; then
@@ -499,6 +574,9 @@ upstream_ready() {
 }
 candidate_healthy() {
   healthy "$1" || return 1
+  if [[ $switch_module_trial == 1 ]]; then
+    grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1" || return 1
+  fi
   if [[ $profile == dhcp ]]; then
     systemctl is-active --quiet "$upstream_unit.service" && lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$(date +%s)"
   fi
@@ -512,7 +590,7 @@ autonomous_healthy() {
   candidate_healthy "$1" && autonomous_approval_ok "$1"
 }
 restore_profile() {
-  [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
+  [[ $switch_module_trial == 1 ]] || [[ $trial_kind == relink || $trial_kind == mac-order || $trial_kind == nsscc || $trial_kind == instant || $trial_kind == worker || $trial_kind == down-mode || $trial_kind == serial-speed ]]
 }
 reboot_source_valid() {
   [[ $reboot_1g == 1 && $trial_kind == serial-speed ]] &&
@@ -571,6 +649,20 @@ if [[ $mode == --selftest ]]; then
     if [[ -z $candidate_down_patch && -z $candidate_serial_patch ]]; then
       s=$(sed -e 's/^manifest_pcs_sha=.*/manifest_pcs_sha=/' -e 's/^manifest_ppe_sha=.*/manifest_ppe_sha=/' <<< "$s")
     fi
+  fi
+  if [[ $switch_module_trial == 1 ]]; then
+    s+=$(printf '\nmanifest_switch_patch=%s' "$candidate_switch_patch")
+    source=$(sed -e "s/^rev=.*/rev=$source_rev/" -e "s/^builder_commit=.*/builder_commit=$source_builder/" \
+      -e "s/^module_sha=.*/module_sha=$accepted_module_sha/" -e "s/^module_rom_sha=.*/module_rom_sha=$accepted_module_sha/" \
+      -e "s/^manifest_module_sha=.*/manifest_module_sha=$accepted_module_sha/" -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" <<< "$s")
+    source+=$'\napproval=0\ntoken=1'
+    switch_source_healthy "$source" || fatal 'valid provisional source rejected'
+    for change in approval=1 token=0 manifest_switch_patch=wrong manifest_serial_patch=wrong pcs_sha=wrong management_peer=192.168.76.250; do
+      if switch_source_healthy "$(sed "s/^${change%%=*}=.*/$change/" <<< "$source")"; then
+        fatal "bad provisional source accepted: $change"
+      fi
+    done
+    if healthy "$(sed '/^manifest_switch_patch=/d' <<< "$s")"; then fatal 'missing switch patch accepted'; fi
   fi
   healthy "$s" || fatal 'good state rejected'
   if [[ $phy_trial == 1 ]]; then
@@ -651,6 +743,17 @@ if [[ $mode == --selftest ]]; then
     if healthy "$bad"; then fatal 'wrong instantaneous FIFO marker accepted'; fi
     bad=$(sed "s/^fifo_worker_marker=.*/fifo_worker_marker=$((1-candidate_worker_marker))/" <<< "$s")
     if healthy "$bad"; then fatal 'wrong independent FIFO marker accepted'; fi
+  fi
+  if [[ $switch_module_trial == 1 ]]; then
+    baseline=$(sed "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" <<< "$baseline")
+    for change in manifest_switch_patch=wrong manifest_switch_patch=MISSING; do
+      if [[ $change == *=MISSING ]]; then
+        bad=$(sed '/^manifest_switch_patch=/d' <<< "$baseline")
+      else
+        bad=$(sed "s/^manifest_switch_patch=.*/$change/" <<< "$baseline")
+      fi
+      if baseline_healthy "$bad"; then fatal "wrong rollback switch identity accepted: $change"; fi
+    done
   fi
   baseline_healthy "$baseline" || fatal 'healthy restored baseline rejected'
   if [[ $reboot_1g == 1 ]]; then
@@ -838,7 +941,7 @@ if [[ $mode == --arm-reboot ]]; then
   }
   trap cleanup_arm EXIT
   systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=950 -- \
-    /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$trial_kind" --observe-reboot "$boot" "$out"
+    "$(realpath "$0")" "$trial_kind" --observe-reboot "$boot" "$out"
   systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1000 -- \
     /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
   await_observers "$guard" "$fallback" "$out"
@@ -915,7 +1018,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           restored_boot=$boot; restore_attested=0; last_restore_attest=0
           log "ROLLBACK_BOOT boot=$boot"
         fi
-        if [[ $mode != --watch-restore ]] &&
+        if [[ $mode != --watch-restore && $switch_module_trial == 0 ]] &&
            (( !restore_attested && now-last_restore_attest >= 4 )) && [[ $(value "$s" keep) == 0 ]]; then
           last_restore_attest=$now
           if "$attestor" --run 192.168.76.1 "$accepted_rev" "$management_iface" "$management_ip" "$known" > "$out/restore-attestation.log" 2>&1; then
@@ -923,7 +1026,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           fi
         fi
         if baseline_healthy "$s"; then
-          if [[ $mode == --watch-restore ]] &&
+          if [[ ( $mode == --watch-restore || $switch_module_trial == 1 ) ]] &&
              { ! restore_target_valid "$s" ||
                ! lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$now"; }; then
             log WAIT_RESTORED_APPROVAL_OR_LEASE
@@ -967,6 +1070,11 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           if [[ $trunk_trial == 1 ]] &&
              { [[ -n $rollback_cause ]] || ! module_matches "$s" "$candidate_module_sha" O || ! grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$s"; }; then
             log TRUNK_ATTESTATION_BLOCKED_MODULE_OR_REBOOT
+            sleep 3
+            continue
+          fi
+          if [[ $switch_module_trial == 1 ]] && ! grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$s"; then
+            log SWITCH_ATTESTATION_BLOCKED_IDENTITY
             sleep 3
             continue
           fi
@@ -1086,6 +1194,11 @@ elif [[ $reboot_1g == 1 ]]; then
     fatal 'missing stored 0491 approval'
   restore_record_matches "$record" "$boot" ||
     fatal 'stored 0491 approval identity or source boot mismatch'
+elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
+  switch_source_healthy "$s" || fatal "unhealthy or incorrect provisional source: $s"
+  record=$(remote 'set -eu; p=/overlay/wave7-ap-approved; test -f "$p"; test ! -L "$p"; set -- $(ls -ldn "$p"); test "$1" = -rw-------; test "$3" = 0; test "$4" = 0; sha256sum "$p"; cat /proc/sys/kernel/random/boot_id') ||
+    fatal 'missing stored 0491 approval'
+  restore_record_matches "$record" "$boot" || fatal 'stored 0491 approval identity or source boot mismatch'
 else
   baseline_healthy "$s" || fatal "unhealthy source: $s"
   if [[ $profile == dhcp ]]; then
@@ -1105,7 +1218,11 @@ fi
 for name in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
   systemctl --user is-active --quiet "$name.service" || fatal "$name inactive"
 done
-test -z "$(systemctl --user --no-pager --no-legend list-units --state=active 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*')" || fatal 'another supervisor active'
+test -z "$(systemctl --user --no-pager --no-legend list-units --state=active,activating 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-napi-supervisor-*' 'wave7-qdss-supervisor-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*')" || fatal 'another supervisor active'
+if [[ $switch_module_trial == 1 ]]; then
+  ip -4 route get 192.168.76.1 from "$direct_ip" | rg -Fq "dev $direct_iface " || fatal 'wrong direct route'
+  ip -4 route get 192.168.76.1 from "$switch_ip" | rg -Fq "dev $switch_iface " || fatal 'wrong switch route'
+fi
 echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
 [[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g ]] || exit 0
 if [[ $mode == --restore-baseline ]]; then
@@ -1149,7 +1266,7 @@ cleanup() {
 }
 trap cleanup EXIT
 systemd-run --user --quiet --unit="$guard" --property=RuntimeMaxSec=1500 -- \
-  /home/jan/scripts/wave7/secondary-ap-guard8/trial-ap.sh "$trial_kind" "$watch_mode" "$boot" "$out"
+  "$(realpath "$0")" "$trial_kind" "$watch_mode" "$boot" "$out"
 systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- \
   /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
 await_observers "$guard" "$fallback" "$out"
@@ -1183,3 +1300,11 @@ if ! grep -q 'Commencing upgrade\. Closing all shell sessions\.' "$out/sysupgrad
   fatal "sysupgrade did not reach its actual upgrade stage"
 fi
 echo "RUN_DIR=$out"
+if [[ $switch_module_trial == 1 ]]; then
+  # Keep fd 8 (lab-control lock) held until the independent supervisor
+  # reaches a terminal state, including any automatic rollback.
+  while systemctl --user is-active --quiet "$guard.service"; do sleep 3; done
+  status=$(cat "$out/status")
+  echo "SWITCH_TRIAL_STATUS=$status"
+  [[ $status == SOAK_PASS || $status == RESTORED ]]
+fi
