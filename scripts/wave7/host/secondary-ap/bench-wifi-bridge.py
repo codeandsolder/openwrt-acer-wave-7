@@ -73,10 +73,12 @@ def case(out,boot,width,policy,mode,pace):
                 time.sleep(.7)
             b.require(proc.returncode==0,"iperf failed")
         finally:
-            for p in (proc,ping):
-                if p.poll() is None:
-                    p.terminate()
-                    p.wait(timeout=5)
+            if proc.poll() is None:
+                proc.terminate()
+                proc.wait(timeout=5)
+            if ping.poll() is None:
+                ping.send_signal(signal.SIGINT)
+                ping.wait(timeout=5)
     after=b.snapshot(out,name+"-after",boot)
     radio_snapshot(out,name+"-radio-after",boot,width)
     raw=json.loads((out/(name+"-client.json")).read_text())
