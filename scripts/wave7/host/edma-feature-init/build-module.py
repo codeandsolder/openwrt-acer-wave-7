@@ -109,7 +109,7 @@ def main():
         run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         candidate,after,candidate_info=build(publish/"modules")
         assert before==after and base_info==candidate_info and sha(candidate)!=PPE_SHA
-        report={"experiment":"edma-sg-inheritance","parent_image_sha256":PARENT_SHA,
+        report={"experiment":"edma-dsa-feature-check","parent_image_sha256":PARENT_SHA,
                 "accepted_ppe_sha256":PPE_SHA,"unchanged_pcs_sha256":PCS_SHA,
                 "candidate_ppe_sha256":sha(candidate),"nand_config_sha256":sha(config),
                 "kernel_exports_sha256":sha(exports),"kernel_export_count":len(kernel_exports),
