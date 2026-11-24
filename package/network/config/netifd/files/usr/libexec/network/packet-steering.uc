@@ -267,14 +267,10 @@ for (let path in glob(`${dt}/*/phandle`, `${dt}/*/*/phandle`)) {
 	push(gic_phandles, be32(readfile(path), 0));
 }
 
-// Interrupts of a PCI device, or of a device tree node wired to a GIC
-function dev_irqs(path)
+// Interrupts of a device tree node wired to a GIC.
+function dt_irqs(node)
 {
-	let irqs = map(glob(`${path}/msi_irqs/*`), (v) => basename(v));
-	if (length(irqs) > 0)
-		return irqs;
-
-	let node = realpath(`${path}/of_node`);
+	let irqs = [];
 	let spec = node ? readfile(`${node}/interrupts`) : null;
 	if (!spec || length(spec) % 12)
 		return [];
@@ -298,6 +294,36 @@ function dev_irqs(path)
 		if (irq)
 			push(irqs, irq);
 	}
+	return irqs;
+}
+
+// The PPE owns its EDMA child in both IPQ5332 and IPQ9574 bindings.
+// The DMA interrupts are not attached to the parent platform device.
+function ppe_edma_node(path)
+{
+	let node = realpath(`${path}/of_node`);
+	if (!node)
+		return null;
+	let compatible = split(readfile(`${node}/compatible`) ?? "", "\x00");
+	if (index(compatible, "qcom,ipq5332-ppe") < 0 &&
+	    index(compatible, "qcom,ipq9574-ppe") < 0)
+		return null;
+	return `${node}/ethernet-dma`;
+}
+
+// Interrupts of a PCI device, or device-tree node(s) owned by its driver.
+function dev_irqs(path)
+{
+	let irqs = map(glob(`${path}/msi_irqs/*`), (v) => basename(v));
+	if (length(irqs) > 0)
+		return irqs;
+
+	irqs = dt_irqs(realpath(`${path}/of_node`));
+	let edma = ppe_edma_node(path);
+	if (edma)
+		for (let irq in dt_irqs(edma))
+			if (index(irqs, irq) < 0)
+				push(irqs, irq);
 	return irqs;
 }
 
