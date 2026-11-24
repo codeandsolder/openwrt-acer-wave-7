@@ -397,6 +397,33 @@ for (let devname in phys_devs) {
 		assign_dev_cpu(dev);
 }
 
+// On PPE conduits carrying an opaque DSA header, hardware receive
+// distribution cannot necessarily hash the inner transport flow. Steer
+// the DSA user port instead, after the tag has been removed. Do not
+// steer unrelated uppers (bridges, VLANs, bonds) or standalone PPE ports.
+for (let devname in phys_devs) {
+	let dev = phys_devs[devname];
+	if (!ppe_edma_node(dev.path))
+		continue;
+
+	for (let conduit in dev.netdev) {
+		let tag = trim(readfile(`/sys/class/net/${conduit}/dsa/tagging`));
+		if (tag != "rtl8_4" && tag != "rtl8_4t")
+			continue;
+
+		// Prefer native EDMA ring distribution. RPS before decapsulation
+		// would add a second software steering stage on the same flow.
+		set_netdev_cpu(conduit, null);
+		for (let path in glob(`/sys/class/net/${conduit}/upper_*`)) {
+			let user = substr(basename(path), 6);
+			let uevent = readfile(`/sys/class/net/${user}/uevent`) ?? "";
+			if (!match(uevent, /(^|\n)DEVTYPE=dsa(\n|$)/))
+				continue;
+			set_netdev_cpu(user, map(cpus, (cpu) => cpu.id));
+		}
+	}
+}
+
 // Add bias to avoid assigning other tasks to CPUs with ethernet NAPI
 for (let devname in phys_devs) {
 	let dev = phys_devs[devname];
