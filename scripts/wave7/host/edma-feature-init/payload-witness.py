@@ -71,6 +71,78 @@ def remote_peer(out, boot, binary):
         remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && rm -f {path}')
 
 
+def parse_xmit_trace(raw):
+    """The tracepoint observes skb state at ndo_start_xmit, not at queue entry."""
+    counts={}
+    entries=re.search(r"entries-in-buffer/entries-written:\s*(\d+)/(\d+)",raw)
+    require(entries and entries[1]==entries[2],"trace ring lost events")
+    rows=0
+    for line in raw.splitlines():
+        if "net_dev_start_xmit: " not in line:
+            continue
+        fields=dict(re.findall(r"(\w+)=([^ ]+)",line.split("net_dev_start_xmit: ",1)[1]))
+        dev=fields["dev"]
+        require(dev in ("lan1","switch","lan"),"unexpected traced device")
+        gso,csum,length,offset=map(int,(fields["gso_size"],fields["ip_summed"],fields["len"],fields["network_offset"]))
+        row=counts.setdefault(dev,{"packets":0,"gso":0,"checksum_partial":0,
+                                   "max_len":0,"network_offsets":{},"protocols":{}})
+        row["packets"]+=1
+        row["gso"]+=gso>0
+        row["checksum_partial"]+=csum==3
+        row["max_len"]=max(row["max_len"],length)
+        for key,value in (("network_offsets",str(offset)),("protocols",fields["protocol"])):
+            row[key][value]=row[key].get(value,0)+1
+        rows+=1
+    require(rows==int(entries[1]),"unparsed trace events")
+    return counts
+
+
+@contextmanager
+def trace_instance(out,boot,enabled):
+    if not enabled:
+        yield None
+        return
+    require(re.fullmatch(r"[a-f0-9-]{36}",boot),"invalid boot")
+    root=f"/sys/kernel/tracing/instances/wave7-payload-{boot}"
+    check=f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot}'
+    remote(f"set -e; {check}; test ! -e {root}; mkdir {root}")
+    try:
+        remote(f"""set -e; {check}
+echo 0 > {root}/tracing_on
+echo 2048 > {root}/buffer_size_kb
+echo 'name == "lan1" || name == "switch" || name == "lan"' > {root}/events/net/net_dev_start_xmit/filter
+echo 1 > {root}/events/net/net_dev_start_xmit/enable
+""")
+        (out/"trace-format.txt").write_text(remote(f"cat {root}/events/net/net_dev_start_xmit/format"))
+        def trace_case(tag,call):
+            remote(f"set -e; {check}; echo 0 > {root}/tracing_on; : > {root}/trace; echo 1 > {root}/tracing_on")
+            try:
+                record=call()
+            finally:
+                raw=remote(f"set -e; {check}; echo 0 > {root}/tracing_on; cat {root}/trace",timeout=30)
+                (out/f"{tag}-xmit.trace").write_text(raw)
+            record["xmit_trace"]=parse_xmit_trace(raw)
+            return record
+        yield trace_case
+    finally:
+        remote(f"set -e; {check}; echo 0 > {root}/tracing_on; echo 0 > {root}/events/net/net_dev_start_xmit/enable; rmdir {root}")
+
+
+def selftest():
+    header="# entries-in-buffer/entries-written: 2/2   #P:4\n"
+    def row(dev,gso,csum,length,offset):
+        return f"foo [001] 123.4: net_dev_start_xmit: dev={dev} gso_size={gso} ip_summed={csum} len={length} network_offset={offset} protocol=0x0800\n"
+    raw=header+row("lan1",1460,3,6000,14)+row("switch",0,0,1522,22)
+    result=parse_xmit_trace(raw)
+    assert result["lan1"]["gso"]==1 and result["switch"]["gso"]==0
+    assert result["switch"]["network_offsets"]=={"22":1}
+    for invalid in (raw.replace("2/2","2/3"),raw.replace("dev=lan1","dev=other"),raw.replace("2/2","3/3")):
+        try:parse_xmit_trace(invalid)
+        except ValueError:pass
+        else:raise AssertionError("invalid trace accepted")
+    print("PAYLOAD_XMIT_TRACE_SELFTEST_PASS")
+
+
 def exact_read(sock, size):
     data = bytearray(size)
     view = memoryview(data)
@@ -178,18 +250,24 @@ def run_case(out, path, family, mode, mss, binary, variant, boot, payload):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("run", type=Path)
-    parser.add_argument("binary", type=Path)
+    parser.add_argument("run", type=Path, nargs="?")
+    parser.add_argument("binary", type=Path, nargs="?")
+    parser.add_argument("--trace", action="store_true")
+    parser.add_argument("--selftest", action="store_true")
     parser.add_argument("--peer", choices=tuple(PATHS), action="append")
     parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
+    if args.selftest:
+        selftest()
+        return
+    require(args.run and args.binary,"run and binary required")
     record = cohort["load_run"](args.run.resolve())
-    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init", "edma-sg-inheritance") and
+    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init", "edma-sg-inheritance", "edma-dsa-feature-check") and
             record["outcome"] == "clean", "requires sealed clean EDMA or ordering boot")
     variant, boot = record["variant"], record["boot"]
     peers = tuple(args.peer or PATHS)
     require(len(set(peers)) == len(peers) and args.repeat > 0, "invalid peer/repeat")
-    out = args.run.resolve() / ("payload-" + "-".join(peers) + f"-r{args.repeat}")
+    out = args.run.resolve() / ("payload-" + "-".join(peers) + ("-trace" if args.trace else "") + f"-r{args.repeat}")
     payload = pattern(0, LENGTH)
     report = {"boot": boot, "variant": variant, "tcp_payload_sha256": hashlib.sha256(payload).hexdigest(),
               "tcp_length": LENGTH, "udp_datagrams": DATAGRAMS, "cases": []}
@@ -199,15 +277,18 @@ def main():
             bench["sample"](out, "initial", variant, boot)
             (out / "features.txt").write_text(remote(
                 'for d in switch lan1 lan br-lan; do echo "=== $d ==="; ethtool -k "$d"; done'))
-            with remote_peer(out, boot, args.binary.resolve()) as binary:
+            with remote_peer(out, boot, args.binary.resolve()) as binary, trace_instance(out,boot,args.trace) as trace:
+                def execute(peer,family,mode,mss):
+                    def call():
+                        return run_case(out,peer,family,mode,mss,binary,variant,boot,payload)
+                    tag=f'{peer}-v{4 if family==socket.AF_INET else 6}-{mode}-mss{mss or "default"}'
+                    return trace(tag,call) if trace and mode=="tcp-send" else call()
                 for peer in peers:
                     for family in (socket.AF_INET, socket.AF_INET6):
                         for mss in (0, 512):
                             for mode in ("tcp-send", "tcp-receive"):
-                                report["cases"].append(run_case(out, peer, family, mode, mss,
-                                                                binary, variant, boot, payload))
-                        report["cases"].append(run_case(out, peer, family, "udp", 0,
-                                                        binary, variant, boot, payload))
+                                report["cases"].append(execute(peer,family,mode,mss))
+                        report["cases"].append(execute(peer,family,"udp",0))
             report["status"] = "PASS" if all(c["qualification"] == "PASS" for c in report["cases"]) else "FAILED"
             if report["status"] == "FAILED":
                 failure = ValueError("one or more payload qualification cases failed")
