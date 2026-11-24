@@ -938,14 +938,14 @@ healthy() {
   fi
 }
 # A reboot-only recovery never authorizes flashing a degraded predecessor.
-# Require exact identity, live direct management and a real switched miss,
+# Require exact identity, live direct management and a switched miss or dirty drop count,
 # with no observed physical corruption. The next boot still must pass
 # the full independent switched-path and soak gates.
 recover_source_valid() {
   [[ $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]] &&
     candidate_identity_ready "$1" &&
     grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1" &&
-    grep -Fxq switch_verified=0 <<< "$1" &&
+    { grep -Fxq switch_verified=0 <<< "$1" || [[ $(value "$1" cpu_drops) =~ ^[1-9][0-9]*$ ]]; } &&
     grep -Fxq cpu_fcs=0 <<< "$1" && grep -Fxq cpu_fragments=0 <<< "$1"
 }
 role_healthy() {
@@ -1234,6 +1234,7 @@ if [[ $mode == --selftest ]]; then
     if [[ $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]]; then
       degraded=$(sed -e 's/^switch_verified=.*/switch_verified=0/' -e 's/^cpu_drops=.*/cpu_drops=46/' <<< "$repeat_source")
       recover_source_valid "$degraded" || fatal 'exact degraded recovery source rejected'
+      recover_source_valid "$(sed 's/^switch_verified=.*/switch_verified=1/' <<< "$degraded")" || fatal 'exact dirty recovery source rejected'
       if recover_source_valid "$repeat_source" || healthy "$degraded" || repeat_source_valid "$degraded"; then
         fatal 'recovery accepted as normal repeat or healthy source'
       fi
