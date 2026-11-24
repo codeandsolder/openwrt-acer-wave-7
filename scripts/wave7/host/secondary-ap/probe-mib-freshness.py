@@ -276,12 +276,18 @@ def extract(out,name):
 
 
 @contextmanager
-def lab_session(out):
+def lab_session(out, *, lock_fd=None):
     require(os.getuid()!=0,"run as jan")
     lockpath=BASE/".lab-control.lock"
     require(lockpath.is_file() and not lockpath.is_symlink() and lockpath.stat().st_uid==os.getuid(),
             "invalid lab lock")
-    with lockpath.open("r+") as lock:
+    if lock_fd is not None:
+        inherited = os.fstat(lock_fd)
+        expected = lockpath.stat()
+        require((inherited.st_dev, inherited.st_ino) == (expected.st_dev, expected.st_ino),
+                "inherited descriptor is not the lab lock")
+    lock_handle = lockpath.open("r+") if lock_fd is None else os.fdopen(os.dup(lock_fd), "r+")
+    with lock_handle as lock:
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         runtime=f"/run/user/{os.getuid()}"
         bus=dict(os.environ,XDG_RUNTIME_DIR=runtime,DBUS_SESSION_BUS_ADDRESS=f"unix:path={runtime}/bus")
