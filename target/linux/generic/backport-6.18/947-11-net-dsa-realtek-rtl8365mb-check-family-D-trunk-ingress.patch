@@ -1,0 +1,287 @@
+From: Wave7 development <wave7-test@localhost>
+Subject: [PATCH] net: dsa: realtek: rtl8365mb: detect corrupt-only family D trunk ingress
+
+Acer Wave 7 RTL8367D has exhibited fixed 2500base-x link up while
+the CPU-facing switch port receives only FCS errors and fragments.
+The opposite direction still forwards frames. The existing re-latch
+worker stops retrying when the SerDes link bit is set.
+
+Sample the actual EXT0 CPU port's good-frame and physical error
+counters under the existing MIB lock. Reuse the bounded re-latch edge
+only after repeated corrupt-only samples; idle, valid ingress,
+counter reset/wrap or read failure invalidate the evidence. A successful
+link-bit sample always retains the normal slow polling interval.
+Invalidate the sample at every edge and conduit reconfiguration.
+This is a candidate recovery, not yet a hardware-proven correction.
+
+Signed-off-by: Wave7 development <wave7-test@localhost>
+---
+--- a/drivers/net/dsa/realtek/rtl8365mb_main.c
++++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
+@@ -977,6 +977,22 @@
+ 	struct delayed_work mib_work;
+ };
+ 
++/* Family D's fixed-link status can remain asserted while ingress frames
++ * are corrupt. Only infer a fault from repeated corrupt-only intervals.
++ */
++struct rtl8365mb_sds_rx_sample {
++	u32 good[3];
++	u32 fcs;
++	u32 fragments;
++};
++
++struct rtl8365mb_sds_rx_health {
++	struct rtl8365mb_sds_rx_sample last;
++	u64 bad_events;
++	unsigned int bad_intervals;
++	bool valid;
++};
++
+ /**
+  * struct rtl8365mb - driver private data
+  * @priv: pointer to parent realtek_priv data
+@@ -1000,6 +1016,7 @@
+  * @sds_misc_target_val: SDS_MISC_CFG_MASK fields the re-latch work restores
+  * @sds_relatch_armed: pcs_config() set up 2500base-x; the re-latch work may run
+  * @sds_conduit_up: the CPU port conduit is admin and oper up
++ * @sds_rx_health: CPU trunk ingress samples owned by the re-latch worker
+  *
+  * Private data for this driver.
+  */
+@@ -1020,6 +1037,7 @@
+ 	u32 sds_misc_target_val;
+ 	bool sds_relatch_armed;
+ 	bool sds_conduit_up;
++	struct rtl8365mb_sds_rx_health sds_rx_health;
+ };
+ 
+ #define pcs_to_rtl8365mb(_pcs) container_of((_pcs), struct rtl8365mb, pcs)
+@@ -1530,8 +1548,112 @@
+ 				  RTL8365MB_PORT6_EGRESSBW_CTRL1_MASK);
+ }
+ 
++static int rtl8365mb_mib_counter_read(struct realtek_priv *priv, int port,
++				      u32 offset, u32 length, u64 *mibvalue);
++
++#define RTL8365MB_D_SDS_RX_MIN_ERRORS	8
++#define RTL8365MB_D_SDS_RX_MIN_INTERVALS	2
++
++static bool
++rtl8365mb_sds_rx_fault(struct rtl8365mb_sds_rx_health *h,
++		       const struct rtl8365mb_sds_rx_sample *new)
++{
++	struct rtl8365mb_sds_rx_sample old = h->last;
++	bool good = false;
++	bool reset = !h->valid;
++	u64 errors;
++	int i;
++
++	h->last = *new;
++	h->valid = true;
++	for (i = 0; i < ARRAY_SIZE(new->good); i++) {
++		reset |= new->good[i] < old.good[i];
++		good |= new->good[i] != old.good[i];
++	}
++	reset |= new->fcs < old.fcs || new->fragments < old.fragments;
++
++	/* A hardware reset or 32-bit wrap re-establishes the baseline.
++	 * An idle interval or any valid ingress breaks the fault episode.
++	 */
++	errors = reset ? 0 : (u64)(new->fcs - old.fcs) +
++				      (new->fragments - old.fragments);
++	if (reset || good || !errors) {
++		h->bad_events = 0;
++		h->bad_intervals = 0;
++		return false;
++	}
++
++	h->bad_events += errors;
++	h->bad_intervals++;
++	return h->bad_events >= RTL8365MB_D_SDS_RX_MIN_ERRORS &&
++	       h->bad_intervals >= RTL8365MB_D_SDS_RX_MIN_INTERVALS;
++}
++
++static bool rtl8365mb_sds_rx_unhealthy(struct rtl8365mb *mb)
++{
++	static const enum rtl8365mb_mib_counter_index counters[] = {
++		RTL8365MB_MIB_ifInUcastPkts,
++		RTL8365MB_MIB_ifInMulticastPkts,
++		RTL8365MB_MIB_ifInBroadcastPkts,
++		RTL8365MB_MIB_dot3StatsFCSErrors,
++		RTL8365MB_MIB_etherStatsFragments,
++	};
++	struct rtl8365mb_sds_rx_sample sample;
++	struct realtek_priv *priv = mb->priv;
++	u64 values[ARRAY_SIZE(counters)];
++	int ret, i, port = -1;
++
++	/* Locate the actual family D EXT0 lane, not an arbitrary CPU port.
++	 * No traffic-based inference for a non-CPU SerDes.
++	 */
++	for (i = 0; i < RTL8365MB_MAX_NUM_EXTINTS; i++) {
++		const struct rtl8365mb_extint *ext = &mb->chip_info->extints[i];
++
++		if (ext->supported_interfaces && ext->id == 0) {
++			port = ext->port;
++			break;
++		}
++	}
++	if (port < 0 || !dsa_is_cpu_port(&priv->ds, port))
++		return false;
++
++	mutex_lock(&mb->mib_lock);
++	for (i = 0; i < ARRAY_SIZE(counters); i++) {
++		const struct rtl8365mb_mib_counter *mib =
++			&rtl8365mb_mib_counters[counters[i]];
++
++		ret = rtl8365mb_mib_counter_read(priv, port, mib->offset,
++						 mib->length, &values[i]);
++		if (ret)
++			break;
++	}
++	mutex_unlock(&mb->mib_lock);
++	if (ret) {
++		mb->sds_rx_health.valid = false;
++		dev_dbg(priv->dev, "SerDes CPU port %d MIB read failed: %pe\n",
++			port, ERR_PTR(ret));
++		return false;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(sample.good); i++)
++		sample.good[i] = values[i];
++	sample.fcs = values[3];
++	sample.fragments = values[4];
++
++	if (!rtl8365mb_sds_rx_fault(&mb->sds_rx_health, &sample))
++		return false;
++
++	dev_warn_ratelimited(priv->dev,
++			     "SerDes CPU port %d corrupt-only ingress: %llu errors in %u intervals; re-latching\n",
++			     port, mb->sds_rx_health.bad_events,
++			     mb->sds_rx_health.bad_intervals);
++	return true;
++}
++
+ static void rtl8365mb_sds_relatch_start(struct rtl8365mb *mb)
+ {
++	/* Callers cancel the old worker synchronously before starting it. */
++	mb->sds_rx_health.valid = false;
+ 	WRITE_ONCE(mb->sds_relatch_count, 1);
+ 	schedule_delayed_work(&mb->sds_relatch, 0);
+ }
+@@ -1818,6 +1940,7 @@
+ 	 */
+ 	ret = regmap_read(priv->map, RTL8365MB_SDS_MISC_REG, &misc);
+ 	if (ret) {
++		mb->sds_rx_health.valid = false;
+ 		dev_err_ratelimited(priv->dev,
+ 				    "failed to read SDS_MISC: %pe\n",
+ 				    ERR_PTR(ret));
+@@ -1825,6 +1948,7 @@
+ 	}
+ 	if ((misc & RTL8365MB_D_SDS_MISC_MODE_FIELD_MASK) ==
+ 	    RTL8365MB_D_PORT_SDS_MODE_DISABLE) {
++		mb->sds_rx_health.valid = false;
+ 		rtl8365mb_sds_relatch_restore(mb);
+ 		goto rearm;
+ 	}
+@@ -1837,18 +1961,26 @@
+ 	ret = rtl8365mb_sds_read(priv, RTL8365MB_D_SDS_EXT0_INDEX,
+ 				 RTL8365MB_SDS_REG_LINK_STATUS, &status);
+ 	if (ret) {
++		mb->sds_rx_health.valid = false;
+ 		dev_err_ratelimited(priv->dev,
+ 				    "failed to read SerDes link status: %pe\n",
+ 				    ERR_PTR(ret));
+ 		goto rearm;
+ 	}
+ 	if (status & RTL8365MB_SDS_LINK_STATUS_LINK_MASK) {
+-		/* Latched: end the episode, keep watching for a later loss. */
++		/* A link bit is not proof of frame integrity. Use the slow
++		 * poll cadence for corrupt-only ingress, even after an edge.
++		 */
+ 		WRITE_ONCE(mb->sds_relatch_count, 0);
+ 		delay = RTL8365MB_D_SDS_HEALTHCHECK_INTERVAL;
+-		goto rearm;
+-	}
+-
++		if (!rtl8365mb_sds_rx_unhealthy(mb))
++			goto rearm;
++
++		attempts = 1;
++		goto park_lane;
++	}
++
++	mb->sds_rx_health.valid = false;
+ 	attempts = READ_ONCE(mb->sds_relatch_count);
+ 	if (!attempts) {
+ 		dev_warn(priv->dev,
+@@ -1878,6 +2010,9 @@
+ 		 */
+ 		delay = RTL8365MB_D_SDS_HEALTHCHECK_INTERVAL;
+ 
++park_lane:
++	/* Never compare post-edge samples to the pre-edge baseline. */
++	mb->sds_rx_health.valid = false;
+ 	ret = regmap_update_bits(priv->map, RTL8365MB_SDS_MISC_REG,
+ 				 RTL8365MB_D_SDS_MISC_CFG_MASK, park);
+ 	if (ret) {
+@@ -3175,19 +3310,11 @@
+ 	spin_unlock(&p->stats_lock);
+ }
+ 
+-static int rtl8365mb_stats_setup(struct realtek_priv *priv)
++static void rtl8365mb_stats_setup(struct realtek_priv *priv)
+ {
+ 	struct rtl8365mb *mb = priv->chip_data;
+ 	struct dsa_switch *ds = &priv->ds;
+ 	struct dsa_port *dp;
+-	int ret;
+-
+-	/* Per-chip global mutex to protect MIB counter access, since doing
+-	 * so requires accessing a series of registers in a particular order.
+-	 */
+-	ret = devm_mutex_init(priv->dev, &mb->mib_lock);
+-	if (ret)
+-		return ret;
+ 
+ 	dsa_switch_for_each_available_port(dp, ds) {
+ 		struct rtl8365mb_port *p = &mb->ports[dp->index];
+@@ -3200,8 +3327,6 @@
+ 		 */
+ 		INIT_DELAYED_WORK(&p->mib_work, rtl8365mb_stats_poll);
+ 	}
+-
+-	return 0;
+ }
+ 
+ static void rtl8365mb_stats_teardown(struct realtek_priv *priv)
+@@ -3784,12 +3909,7 @@
+ 	}
+ 
+ 	/* Start statistics counter polling */
+-	ret = rtl8365mb_stats_setup(priv);
+-	if (ret) {
+-		dev_err(priv->dev, "failed to setup stats: %pe\n",
+-			ERR_PTR(ret));
+-		goto out_teardown_irq;
+-	}
++	rtl8365mb_stats_setup(priv);
+ 
+ 	return 0;
+ 
+@@ -3899,6 +4019,13 @@
+ 		priv->num_ports = RTL8365MB_MAX_NUM_PORTS;
+ 
+ 	mb->priv = priv;
++
++	/* The re-latch worker also reads MIB counters. Register its cleanup
++	 * after the mutex so teardown cannot destroy a live worker's lock.
++	 */
++	ret = devm_mutex_init(priv->dev, &mb->mib_lock);
++	if (ret)
++		return ret;
+ 
+ 	ret = devm_mutex_init(priv->dev, &mb->sds_lock);
+ 	if (ret)
