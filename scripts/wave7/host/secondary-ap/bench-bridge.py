@@ -202,7 +202,8 @@ def case(out,boot,policy,streams,mode,pace):
 def replay(out):
     run(["sha256sum","-c","--status","SHA256SUMS"],cwd=out)
     report=json.loads((out/"report.json").read_text())
-    require(report["status"]=="PASS","cannot replay incomplete cohort")
+    require(report["status"] in ("PASS","FAILED") and report["cases"],
+            "no completed cases to replay")
     for row in report["cases"]:
         name=row["case"]
         before=(out/(name+"-before.txt")).read_text()
@@ -224,10 +225,16 @@ def main():
     p.add_argument("run",type=Path)
     p.add_argument("label")
     p.add_argument("--policy",choices=POLICIES,action="append",required=True)
+    p.add_argument("--case",nargs=3,action="append",metavar=("STREAMS","MODE","MBPS"),
+                   help="repeatable explicit case; MBPS=0 is unpaced")
     args=p.parse_args()
+    specs=[(int(n),mode,int(pace)) for n,mode,pace in args.case] if args.case else [
+        (4,"forward",0),(4,"reverse",0),(4,"bidir",0),(4,"bidir",800),(4,"bidir",900)]
+    require(len(specs)==len(set(specs)) and all(1<=n<=8 and mode in MODES and 0<=pace<=2500
+                                              for n,mode,pace in specs),"invalid test cases")
     require(os.getuid()==0,"run on Asus as root")
-    # Interrupt the bounded benchmark, not its cleanup. A second signal
-    # after this one retains the normal process-exit behavior.
+    # Interrupt the bounded benchmark, not its cleanup. Ignore a repeated
+    # identical signal while unwinding the owned temporary resources.
     def interrupted(signum, _frame):
         signal.signal(signum, signal.SIG_IGN)
         raise InterruptedError(f"received signal {signum}")
@@ -247,13 +254,13 @@ def main():
         out=run_dir/("bridge-throughput-"+args.label)
         out.mkdir(mode=0o700)
         report={"boot":boot,"policies":args.policy,"cases":[],"status":"RUNNING",
-                "source_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+                "source_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "specs":specs}
         try:
             with endpoint():
                 for policy in args.policy:
                     with steering(boot,policy):
-                        for streams,mode,pace in ((4,"forward",0),(4,"reverse",0),(4,"bidir",0),
-                                                  (4,"bidir",800),(4,"bidir",900)):
+                        for streams,mode,pace in specs:
                             report["cases"].append(case(out,boot,policy,streams,mode,pace))
             report["status"]="PASS"
         except BaseException as exc:
