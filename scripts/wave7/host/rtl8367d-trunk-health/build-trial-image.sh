@@ -3,7 +3,7 @@
 # one kernel module and identity metadata only. No router access.
 set -euo pipefail
 umask 077
-[[ $# == 5 ]] || { echo 'usage: build-trial-image.sh trunk|native|mib-refresh PARENT MODULE MODULE_SHA OUTPUT_DIR' >&2; exit 2; }
+[[ $# == 5 ]] || { echo 'usage: build-trial-image.sh trunk|native|mib-refresh|mib-diag PARENT MODULE MODULE_SHA OUTPUT_DIR' >&2; exit 2; }
 variant=$1; shift
 parent=$(realpath -e "$1")
 module=$(realpath -e "$2")
@@ -26,9 +26,14 @@ case "$variant" in
     patch_commit=0e69b8931cb9639367b293f825842703c0f39d29
     image_kind=native-recovery
     ;;
-  mib-refresh)
-    patch_commit=14a0f757e7
-    image_kind=mib-refresh
+  mib-refresh|mib-diag)
+    if [[ $variant == mib-diag ]]; then
+      patch_commit=022d0978e9
+      image_kind=mib-diag
+    else
+      patch_commit=14a0f757e7
+      image_kind=mib-refresh
+    fi
     parent_sha=ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516
     parent_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
     kernel_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
@@ -74,7 +79,18 @@ for field in name vermagic depends import_ns license alias; do
   diff -u <(modinfo -F "$field" "$root/$rel" | sort) <(modinfo -F "$field" "$work/candidate.ko" | sort) || fail "module $field"
 done
 imports() { readelf -Ws "$1" | awk '$7=="UND" && $8!="" {print $8}' | LC_ALL=C sort -u; }
-diff -u <(imports "$root/$rel") <(imports "$work/candidate.ko") || fail 'undefined symbol delta'
+if [[ $variant == mib-diag ]]; then
+  # The lab-only one-shot parameter and boottime timestamp are the only
+  # allowed import additions. Both are exports in this exact kernel.
+  diff -u <( { imports "$root/$rel"; printf '%s\n' ktime_get_with_offset param_ops_bool; } | LC_ALL=C sort -u) \
+    <(imports "$work/candidate.ko") || fail 'diagnostic undefined symbol delta'
+  [[ $(modinfo -F parm "$work/candidate.ko") == mib_same_row_probe:bool ]] || fail 'diagnostic parameter'
+  strings "$work/candidate.ko" | rg -F 'wave7-mib-probe port=' >/dev/null
+  import_report=exact_diagnostic_additions_ktime_get_with_offset_param_ops_bool
+else
+  diff -u <(imports "$root/$rel") <(imports "$work/candidate.ko") || fail 'undefined symbol delta'
+  import_report=identical
+fi
 readelf -h "$work/candidate.ko" | rg -q 'Machine:.*AArch64'
 strings "$work/candidate.ko" | rg 'SerDes CPU port %d corrupt-only ingress:' >/dev/null
 if [[ $variant != trunk ]]; then
@@ -140,7 +156,7 @@ original_module_sha256=$old_module_sha
 unstripped_candidate_sha256=$module_sha
 module_sha256=$stripped_sha
 module_intree=$(modinfo -F intree "$work/candidate.ko")
-module_abi_imports=identical
+module_abi_imports=$import_report
 root_delta=module_and_five_identity_files
 root_modes_owners=identical
 root_roundtrip=identical
