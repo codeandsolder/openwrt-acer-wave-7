@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -103,7 +103,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order)
+  mib-refresh|stock-order|force-order|mib-diag)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -113,6 +113,12 @@ case "$profile" in
     base="$guard8/$trial_kind-dhcp-guard8"
     candidate_artifact="wave7-$trial_kind-dhcp-guard8-sysupgrade.bin"
     case "$trial_kind" in
+      mib-diag)
+        candidate_switch_patch=022d0978e9b87af26926addd237841ca57f698dc
+        candidate_builder=bda16e3e49634bee83a8bff6939e9dab46dd9460
+        expected_candidate_sha=66ddeeb9c3263ca50877b6bb8c0750d2f030482d3a2d2724a68fe4b3df2b9449
+        candidate_module_sha=192835d8344c5341b4f5dc7bdb43da000d4568252b78a064c39c82dc7e5c995e
+        ;;
       mib-refresh)
         candidate_switch_patch=14a0f757e710d0173711dfc36145842a57d72313
         candidate_builder=0961fc650bcfde5c0633e2a8291cc32ddd52c320
@@ -369,6 +375,7 @@ read_state() {
     echo "module_rom_sha=$(sha256sum /rom/$p 2>/dev/null | cut -d" " -f1)"
     echo "module_live=$(test "$(cat /sys/module/rtl8365mb/initstate 2>/dev/null)" = live && echo 1 || echo 0)"
     echo "module_taint=$(cat /sys/module/rtl8365mb/taint 2>/dev/null)"
+    echo "mib_probe=$(cat /sys/module/rtl8365mb/parameters/mib_same_row_probe 2>/dev/null || echo absent)"
     echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
     echo "manifest_module_sha=$(sed -n "s/^trial_module_sha256=//p" /rom/etc/wave7-role-profile)"
     echo "manifest_switch_patch=$(sed -n "s/^trial_kernel_patch_commit=//p" /rom/etc/wave7-role-profile)"
@@ -534,6 +541,9 @@ healthy() {
   if [[ $switch_module_trial == 1 ]]; then
     grep -Fxq "manifest_switch_patch=$candidate_switch_patch" <<< "$1" || return 1
   fi
+  if [[ $trial_kind == mib-diag ]]; then
+    grep -Fxq mib_probe=N <<< "$1" || return 1
+  fi
   role_healthy "$1" "$candidate_rev" "$profile" "$candidate_direct_speed" &&
     grep -Fxq "builder_commit=$candidate_builder" <<< "$1" || return 1
   if [[ $trunk_trial == 1 ]]; then
@@ -663,6 +673,13 @@ if [[ $mode == --selftest ]]; then
       fi
     done
     if healthy "$(sed '/^manifest_switch_patch=/d' <<< "$s")"; then fatal 'missing switch patch accepted'; fi
+  fi
+  if [[ $trial_kind == mib-diag ]]; then
+    s+=$'\nmib_probe=N'
+    if healthy "$(sed 's/^mib_probe=.*/mib_probe=Y/' <<< "$s")" ||
+       healthy "$(sed '/^mib_probe=/d' <<< "$s")"; then
+      fatal 'armed or missing diagnostic parameter accepted'
+    fi
   fi
   healthy "$s" || fatal 'good state rejected'
   if [[ $phy_trial == 1 ]]; then
