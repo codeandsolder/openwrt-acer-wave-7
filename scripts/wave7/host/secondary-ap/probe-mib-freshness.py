@@ -72,6 +72,7 @@ for item in pcs:pcs-qcom-ipq9574:pcs_qcom_ipq9574 ppe:qcom-ppe:qcom_ppe; do
 done
 echo "manifest_handoff_patch=$(sed -n 's/^trial_pcs0_handoff_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "manifest_feature_patch=$(sed -n 's/^trial_edma_feature_init_patch_commit=//p' /rom/etc/wave7-role-profile)"
+echo "manifest_queue_patch=$(sed -n 's/^trial_edma_tx_queue_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "manifest_fixed_patch=$(sed -n 's/^trial_pcs0_\(stock_mode\|force_only\|stock_analog\)_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
 echo '=== CPU ==='
@@ -165,9 +166,10 @@ def parse_snapshot(raw, variant):
                 "pcs_sha":pcs, "pcs_rom_sha":pcs, "pcs_live":"live", "pcs_taint":"",
                 "ppe_sha":ppe, "ppe_rom_sha":ppe, "ppe_live":"live", "ppe_taint":"",
                 "manifest_handoff_patch":handoff, "manifest_feature_patch":feature,
+                "manifest_queue_patch":COHORT["QUEUE_PINS"].get(variant,""),
                 "manifest_fixed_patch":COHORT["FIXED_MODE_PINS"].get(variant,"")}
     require(BOOT.fullmatch(fields["boot"]) and fields["end_boot"] == fields["boot"], "mixed boot")
-    require(all(fields.get(k, "" if k=="manifest_fixed_patch" else None)==v for k,v in expected.items()), "snapshot identity or link mismatch")
+    require(all(fields.get(k, "" if k in ("manifest_fixed_patch","manifest_queue_patch") else None)==v for k,v in expected.items()), "snapshot identity or link mismatch")
     require(fields["noc"].isdecimal(), "invalid NoC count")
     for port in MACS:
         require(set(sections[port]) == set(FIELDS), f"missing {port} MIB fields")

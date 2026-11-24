@@ -332,7 +332,7 @@ def temporary_steering(out, boot, mode):
 
 def bench(run, peers, modes, bitrate, profile, steering, streams, repeat):
     record = cohort["load_run"](run)
-    require(record is not None and record["variant"] in ("stock-order", "force-order", "edma-feature-init", "edma-sg-inheritance", "edma-dsa-feature-check", "edma-tso-limits", "pcs0-analog-on-tso")
+    require(record is not None and record["variant"] in ("stock-order", "force-order", "edma-feature-init", "edma-sg-inheritance", "edma-dsa-feature-check", "edma-tso-limits", "pcs0-analog-on-tso", "edma-tx-queue")
             and record["outcome"] == "clean" and record["direct_mbps"] == 2500,
             "requires sealed clean ordering boot at 2.5GbE direct")
     variant, boot = record["variant"], record["boot"]

@@ -26,10 +26,12 @@ PINS = {
     "edma-dsa-feature-check": ("88d0753b1b", RTL_FORCE, PCS_0498, "fe7809a89dee4ccc128fe825d975aa567b781989a4dd1ce20670b06f641af1f8", "", "88d0753b1b952e9707004585bcbed79fba9fd5f7"),
     "edma-tso-limits": ("c9e53ed451", RTL_FORCE, PCS_0498, "6a3df3cd632e4a4aa14016b1d4ea2a72dc0adb191a483aa522f24be427bbe825", "", "c9e53ed451f64e24b0b840e462c548cd26268a37"),
     "pcs0-analog-on-tso": ("327395f186", RTL_FORCE, "330c24eddf25e7605f63f2a8f6b5bb7783e3d6c9bebce3390b541a3ae7e4cb38", "6a3df3cd632e4a4aa14016b1d4ea2a72dc0adb191a483aa522f24be427bbe825", "", "c9e53ed451f64e24b0b840e462c548cd26268a37"),
+    "edma-tx-queue": ("7898745869", RTL_FORCE, "330c24eddf25e7605f63f2a8f6b5bb7783e3d6c9bebce3390b541a3ae7e4cb38", "9b501b82525105b23cc52c3eb35dbefefad329a1b2e3d8d66449d01af640b145", "", "c9e53ed451f64e24b0b840e462c548cd26268a37"),
     "pcs0-stock-analog": ("1595883d9c", RTL_0498, "330c24eddf25e7605f63f2a8f6b5bb7783e3d6c9bebce3390b541a3ae7e4cb38", PPE_0498, "", ""),
     "edma-sg-inheritance": ("5d080c941b", RTL_FORCE, PCS_0498, "d916e3e68e6fa057bce328eba94baba30c695d8087a890bc925f281b6c08554c", "", "5d080c941b8905d8e8f4a22c1292856ef63791fc"),
 }
-FIXED_MODE_PINS = {"pcs0-analog-on-tso": "327395f186c9589581b3ee5c5a99e2c5b66ca12f", "pcs0-stock-analog": "1595883d9c22dd3d178e7c2e31d55a3bfbb5072c", "pcs0-force-only": "de047a2e97ab6fa330deeb2f3661e4a11e16ce75", "pcs0-stock-mode": "5685b30aa28384ae9a9fe00a889639b618bd57a5"}
+QUEUE_PINS = {"edma-tx-queue": "78987458699d492a2fe4ca5c406768b7f578448d"}
+FIXED_MODE_PINS = {"edma-tx-queue": "327395f186c9589581b3ee5c5a99e2c5b66ca12f", "pcs0-analog-on-tso": "327395f186c9589581b3ee5c5a99e2c5b66ca12f", "pcs0-stock-analog": "1595883d9c22dd3d178e7c2e31d55a3bfbb5072c", "pcs0-force-only": "de047a2e97ab6fa330deeb2f3661e4a11e16ce75", "pcs0-stock-mode": "5685b30aa28384ae9a9fe00a889639b618bd57a5"}
 COMMON = {
     "manifest_fit_sha": "c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e",
     "manifest_phy_patch": "0418bb7af25d13406bb896696eb78541ccd2aa00",
@@ -101,6 +103,8 @@ def load_run(run):
         raise ValueError(f"{run}: wrong experiment manifest")
     if state.get("manifest_fixed_patch", "") != FIXED_MODE_PINS.get(variant, ""):
         raise ValueError(f"{run}: wrong fixed PCS experiment manifest")
+    if state.get("manifest_queue_patch", "") != QUEUE_PINS.get(variant, ""):
+        raise ValueError(f"{run}: wrong TX queue experiment manifest")
     if any(state.get(f"{prefix}_live") != "live" or state.get(f"{prefix}_taint") != ""
            for prefix in ("pcs", "ppe")):
         raise ValueError(f"{run}: PCS/PPE not verified live")
