@@ -442,7 +442,10 @@ read_state() {
       $1=="s00_p06_ifInUcastPkts:"{print "cpu_ucast=" $2}
       $1=="s00_p06_ifInMulticastPkts:"{print "cpu_mcast=" $2}
       $1=="s00_p06_ifInBroadcastPkts:"{print "cpu_bcast=" $2}
-      $1=="s00_p06_etherStatsDropEvents:"{print "cpu_drops=" $2}'\''
+      $1=="s00_p06_etherStatsDropEvents:"{print "cpu_drops=" $2}
+      $1 ~ /^(rx_frames|tx_frames|rx_unicast_g|tx_unicast|rx_pause|tx_pause|rx_crc_err|rx_frag_err|rx_jabber_err|rx_len_err|rx_fifo_overflow|rx_drop_frames|tx_underflow_err):$/ {
+        name=$1; sub(/:$/, "", name); print "xgmac_" name "=" $2
+      }'\''
   ') || return 1
   [[ $(value "$extra" sample_boot) == "$boot" ]] || return 1
   printf '%s\n' "$extra"
@@ -508,6 +511,56 @@ trunk_counter_row() {
     printf '\t%s' "$(value "$s" "$field")"
   done
   printf '\n'
+}
+# XGMAC and RTL MIB come from the same existing ethtool -S switch
+# invocation; no extra MDIO transaction or observer round-trip.
+xgmac_fields='rx_frames tx_frames rx_unicast_g tx_unicast rx_pause tx_pause rx_crc_err rx_frag_err rx_jabber_err rx_len_err rx_fifo_overflow rx_drop_frames tx_underflow_err'
+xgmac_counter_header() {
+  printf 'wall_epoch\tboot\tuptime'
+  local field
+  for field in $xgmac_fields; do printf '\t%s' "$field"; done
+  printf '\n'
+}
+xgmac_counter_row() {
+  awk -F= -v fields="$xgmac_fields" -v now="$2" -v boot="$3" '
+    BEGIN {n=split(fields,keys," ")}
+    $1=="uptime" || $1 ~ /^xgmac_/ {
+      if (++seen[$1]!=1 || $2 !~ /^[0-9]+$/ || NF!=2) bad=1
+      vals[$1]=$2
+    }
+    END {
+      if (bad || seen["uptime"]!=1) exit 1
+      for (i=1;i<=n;i++) if (seen["xgmac_" keys[i]]!=1) exit 1
+      printf "%s\t%s\t%s",now,boot,vals["uptime"]
+      for (i=1;i<=n;i++) printf "\t%s",vals["xgmac_" keys[i]]
+      printf "\n"
+    }' <<< "$1"
+}
+# Compare consecutive samples within one boot. A hardware counter reset
+# or new valid ingress ends a corrupt-only episode. No new traffic
+# preserves an already observed episode until independently recovered.
+trunk_fault_episode() {
+  local previous=$1 current=$2 active=$3
+  awk -F= -v active="$active" '
+    FNR==NR {old[$1]=$2; next}
+    {new[$1]=$2}
+    END {
+      n=split("cpu_fcs cpu_fragments cpu_drops cpu_ucast cpu_mcast cpu_bcast", keys, " ")
+      for(i=1;i<=n;i++) {
+        k=keys[i]
+        if(new[k] !~ /^[0-9]+$/ || (old["boot"]==new["boot"] && old[k] !~ /^[0-9]+$/)) {print 0; exit}
+      }
+      if(old["boot"]!=new["boot"]) {
+        print (new["cpu_ucast"]+new["cpu_mcast"]+new["cpu_bcast"]==0 &&
+               new["cpu_fcs"]+new["cpu_fragments"]>0) ? 1 : 0
+        exit
+      }
+      for(i=1;i<=n;i++) if(new[keys[i]]<old[keys[i]]) {print 0; exit}
+      if(new["cpu_ucast"]>old["cpu_ucast"] || new["cpu_mcast"]>old["cpu_mcast"] ||
+         new["cpu_bcast"]>old["cpu_bcast"]) {print 0; exit}
+      print (active==1 || new["cpu_fcs"]>old["cpu_fcs"] ||
+             new["cpu_fragments"]>old["cpu_fragments"]) ? 1 : 0
+    }' <(printf '%s\n' "$previous") <(printf '%s\n' "$current")
 }
 trunk_error_key() {
   printf '%s:%s:%s\n' "$(value "$1" cpu_fcs)" "$(value "$1" cpu_fragments)" "$(value "$1" cpu_drops)"
@@ -913,6 +966,26 @@ if [[ $mode == --selftest ]]; then
     [[ $(trunk_error_key "$sample") == 0:0:0 ]] || fatal 'counter key mismatch'
     bad=$(sed 's/^cpu_fcs=.*/cpu_fcs=missing/' <<< "$sample")
     if trunk_counter_row "$bad" 123 boot >/dev/null; then fatal 'malformed counter accepted'; fi
+    mac_sample=$sample
+    mac_row=$'123\tboot\t42'
+    for field in $xgmac_fields; do
+      mac_sample+=$'\n'"xgmac_$field=7"
+      mac_row+=$'\t7'
+    done
+    [[ $(xgmac_counter_row "$mac_sample" 123 boot) == "$mac_row" ]] || fatal 'XGMAC row mismatch'
+    if xgmac_counter_row "$mac_sample"$'\nxgmac_rx_frames=8' 123 boot >/dev/null ||
+       xgmac_counter_row "$(sed '/^xgmac_rx_frames=/d' <<< "$mac_sample")" 123 boot >/dev/null; then
+      fatal 'ambiguous or missing XGMAC counter accepted'
+    fi
+    base_fault=$'boot=A\ncpu_fcs=0\ncpu_fragments=0\ncpu_drops=0\ncpu_ucast=3\ncpu_mcast=2\ncpu_bcast=1'
+    more_error=$(sed 's/^cpu_fcs=0/cpu_fcs=1/' <<< "$base_fault")
+    good_again=$(sed 's/^cpu_ucast=3/cpu_ucast=4/' <<< "$more_error")
+    [[ $(trunk_fault_episode "$base_fault" "$more_error" 0) == 1 &&
+       $(trunk_fault_episode "$more_error" "$more_error" 1) == 1 &&
+       $(trunk_fault_episode "$more_error" "$good_again" 1) == 0 &&
+       $(trunk_fault_episode "$more_error" "$base_fault" 1) == 0 &&
+       $(trunk_fault_episode "$more_error" "$(sed 's/^boot=A/boot=B/' <<< "$more_error")" 1) == 0 ]] ||
+      fatal 'corrupt-only episode detection mismatch'
   fi
   if restore_profile; then
     restore_source_valid "$s"$'\napproval=0' || fatal 'failed experiment restore source rejected'
@@ -972,6 +1045,7 @@ if [[ $mode == --observe-reboot ]]; then
   last_errors=''
   if [[ $trunk_trial == 1 ]]; then
     trunk_counter_header > "$out/trunk-counters.tsv"
+    xgmac_counter_header > "$out/trunk-xgmac.tsv"
   fi
   deadline=$(( $(date +%s) + 900 ))
   until (( $(date +%s) >= deadline )); do
@@ -995,6 +1069,7 @@ if [[ $mode == --observe-reboot ]]; then
         [[ $(value "$s" noc) == 0 ]] || finish NOC_FATAL 5
         now=$(date +%s)
         if [[ $trunk_trial == 1 ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
+          xgmac_counter_row "$s" "$now" "$boot" >> "$out/trunk-xgmac.tsv" || log XGMAC_SAMPLE_MISSING
           errors=$(trunk_error_key "$s")
           if [[ -n $last_errors && $errors != "$last_errors" ]]; then
             log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
@@ -1090,8 +1165,11 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
   last_errors=''
   if [[ $trunk_trial == 1 ]]; then
     trunk_counter_header > "$out/trunk-counters.tsv"
+    xgmac_counter_header > "$out/trunk-xgmac.tsv"
   fi
   fault_snapshot_boot=''
+  previous_trunk_state=''
+  fault_episode=0
   restore() {
     local cause=$1 state=$2 check
     (( rollback == 0 )) || return 0
@@ -1169,6 +1247,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
         fi
         printf '%s\n' "$s" > "$out/latest-state.txt"
         if [[ $trunk_trial == 1 ]] && trunk_counter_row "$s" "$now" "$boot" >> "$out/trunk-counters.tsv"; then
+          xgmac_counter_row "$s" "$now" "$boot" >> "$out/trunk-xgmac.tsv" || log XGMAC_SAMPLE_MISSING
           errors=$(trunk_error_key "$s")
           if [[ -n $last_errors && $errors != "$last_errors" ]]; then
             log "TRUNK_ERROR_COUNTER_CHANGE $last_errors->$errors"
@@ -1178,12 +1257,14 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
         fi
         # Capture only after autonomous commitment, so attestation and
         # the firstboot watchdog are unaffected. At most one bounded sample.
+        if [[ $switch_module_trial == 1 ]]; then
+          fault_episode=$(trunk_fault_episode "$previous_trunk_state" "$s" "$fault_episode")
+          previous_trunk_state=$s
+        fi
         if [[ $switch_module_trial == 1 && $fault_snapshot_boot != "$boot" &&
               $(value "$s" keep) == 1 && $(value "$s" bootfail) == 0 &&
               $(value "$s" switch_verified) == 0 && $(value "$s" direct_verified) == 1 &&
-              $(value "$s" noc) == 0 && -n $last_errors && $last_errors != 0:0:0 &&
-              $(value "$s" cpu_ucast) == 0 && $(value "$s" cpu_mcast) == 0 &&
-              $(value "$s" cpu_bcast) == 0 ]]; then
+              $(value "$s" noc) == 0 && $fault_episode == 1 ]]; then
           fault_snapshot_boot=$boot
           if timeout 8 uv run --no-project --offline --python /usr/bin/python3 python "$(dirname "$(realpath "$0")")/snapshot-trunk-pcs.py" supervised "$boot" "$rev" > "$out/fault-pcs-$boot.json" 2> "$out/fault-pcs-$boot.log"; then
             log "TRUNK_FAULT_PCS_CAPTURED boot=$boot"
