@@ -56,7 +56,15 @@ def wait_radio(boot,width,timeout,station=False):
         if (re.search(r"channel \d+ \(5\d+ MHz\), width: "+str(width)+r" MHz,",raw)
                 and re.search(r"link ID\s+1\b",raw,re.I) and re.search(r"link ID\s+0\b",raw,re.I)
                 and (not station or "Station " in raw)):
-            return raw
+            try:
+                h=json.loads(b.remote("ubus call hostapd.ap-mld0 get_status"))
+                w=json.loads(b.remote("ubus call network.wireless status"))["radio1"]
+            except (ValueError, KeyError, subprocess.CalledProcessError):
+                time.sleep(2)
+                continue
+            if (h.get("status")=="ENABLED" and not h.get("dfs",{}).get("cac_active",True)
+                    and w.get("up") and not w.get("pending")):
+                return raw+"\n"+json.dumps({"hostapd":h,"radio1_up":w.get("up"),"radio1_pending":w.get("pending")})+"\n"
         time.sleep(2)
     raise TimeoutError(f"radio did not reach {width} MHz, station={station}")
 
