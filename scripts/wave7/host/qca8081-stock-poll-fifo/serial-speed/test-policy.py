@@ -17,11 +17,15 @@ names=("ipq_pcs_wave7_serial_speed","ipq_pcs_config_mode","ipq_pcs_config_sgmii"
        "ipq_pcs_link_up_config_2500basex","ipq_pcs_config","ipq_pcs_link_up")
 if "static void ipq_pcs_wave7_handoff(" in pcs:
     names=("ipq_pcs_wave7_handoff",)+names
+if "static bool ipq_pcs_wave7_fixed_2500(" in pcs:
+    names=("ipq_pcs_wave7_fixed_2500","ipq_pcs_wave7_fixed_prepare")+names
 # Derive register offsets/bit definitions from the actual driver rather than restating them.
 definitions=["#define HAS_HANDOFF 1\n"] if "ipq_pcs_wave7_handoff" in names else []
+if "ipq_pcs_wave7_fixed_2500" in names:
+    definitions.append("#define HAS_FIXED_2500 1\n")
 continuation=False
 for line in pcs.splitlines(keepends=True):
-    if continuation or re.match(r"^#define (PCS_(MII_|MODE_|MISC2|VCO_CAL|PLL_RESET|ANA_SW_RESET|CALIBRATION|LINK_DETECT|DETECT_LOS|CLKOUT|QP_USXG)|XPCS_)",line):
+    if continuation or re.match(r"^#define (PCS_(MPPE_FIXED_|MII_|MODE_|MISC2|VCO_CAL|PLL_RESET|ANA_SW_RESET|CALIBRATION|LINK_DETECT|DETECT_LOS|CLKOUT|QP_USXG)|XPCS_)",line):
         definitions.append(line)
         continuation=line.rstrip().endswith("\\")
 fixture=Path(__file__).with_name("fixture.c").read_text()

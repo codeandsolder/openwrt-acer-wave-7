@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild byte-identical 0498, then the read-only PCS0 handoff probe."""
+"""Rebuild byte-identical 0498, then the isolated fixed PCS0 policy."""
 import argparse
 import hashlib
 import json
@@ -48,14 +48,19 @@ def main():
     patches=REPO/"target/linux/qualcommbe/patches-6.18"
     phy_patch=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
     serial_patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
-    patch=patches/"0499-net-pcs-wave7-observe-pcs0-handoff.patch"
+    handoff=patches/"0499-net-pcs-wave7-observe-pcs0-handoff.patch"
+    patch=patches/"0500-net-pcs-wave7-test-stock-fixed-2500-mode.patch"
     config=old/"linked/.config"
     exports=old/"linked/vmlinux.symvers"
     assert sha(config)==CONFIG_SHA and sha(exports)==EXPORTS_SHA
     kernel_exports=exports.read_text().splitlines()
+    rustc=subprocess.check_output(["rustup","which","--toolchain",
+        "nightly-2026-11-19","rustc"],text=True).strip()
+    version=subprocess.check_output([rustc,"-vV"],text=True)
+    assert "release: 1.102.0-nightly" in version and "LLVM version: 23.1.6" in version
     argv=json.loads((old/"build-argv.json").read_text())
     assert argv[0]=="make" and argv[-1]=="Image" and argv[2]=="-C"
-    with tempfile.TemporaryDirectory(prefix=".pcs0-handoff-module-",dir=out.parent) as work_:
+    with tempfile.TemporaryDirectory(prefix=".pcs0-stock-mode-module-",dir=out.parent) as work_:
         work=Path(work_)
         k=work/"kernel"
         publish=work/"publish"
@@ -63,7 +68,7 @@ def main():
         run(["cp","-a","--reflink=always",str(SOURCE),str(k)])
         shutil.copyfile(config,k/".config")
         argv[3]=str(k)
-        argv=argv[:-1]+["HOSTCC=sccache gcc"]
+        argv=argv[:-1]+["HOSTCC=sccache gcc",f"RUSTC={rustc}"]
         run(["patch","-p1","--fuzz=0","-i",str(phy_patch)],cwd=k)
         assert (k/"drivers/net/phy/qcom/qca808x.c").read_bytes()==(old/"qca808x.c").read_bytes()
         run([*argv,"olddefconfig"])
@@ -86,11 +91,12 @@ def main():
         base,before,base_info=build(work/"baseline")
         assert sha(base)==PCS_SHA
         print("EXACT_0498_PCS_PASS",flush=True)
+        run(["patch","-p1","--fuzz=0","-i",str(handoff)],cwd=k)
         run(["patch","-p1","--fuzz=0","-i",str(patch)],cwd=k)
         run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         candidate,after,candidate_info=build(publish/"modules")
         assert before==after and base_info==candidate_info and sha(candidate)!=PCS_SHA
-        report={"experiment":"pcs0-handoff","parent_image_sha256":PARENT_SHA,
+        report={"experiment":"pcs0-stock-mode","parent_image_sha256":PARENT_SHA,
                 "accepted_pcs_sha256":PCS_SHA,"unchanged_ppe_sha256":PPE_SHA,
                 "candidate_pcs_sha256":sha(candidate),"nand_config_sha256":sha(config),
                 "kernel_exports_sha256":sha(exports),"kernel_export_count":len(kernel_exports),
@@ -100,6 +106,6 @@ def main():
         (publish/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (publish/"SHA256SUMS").write_text("".join(f"{sha(f)}  {f.relative_to(publish)}\n" for f in sorted(publish.rglob("*")) if f.is_file() and f.name!="SHA256SUMS"))
         publish.rename(out)
-        print("PCS0_HANDOFF_MODULE_BUILD_PASS",json.dumps(report),flush=True)
+        print("PCS0_STOCK_MODE_MODULE_BUILD_PASS",json.dumps(report),flush=True)
 if __name__=="__main__":
     main()

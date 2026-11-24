@@ -55,6 +55,11 @@ static unsigned writes,fail_at,mode_writes,force_writes,speed_writes,pulses,cal_
 static unsigned logs,post_logs,errors,reads,fail_read_at;
 static unsigned last_force_write,last_cal_start,last_cal_stop,last_pulse;
 static bool require_serial;
+#ifdef HAS_FIXED_2500
+static unsigned event_addr[32],event_val[32],event_mask[32];
+static unsigned force_phys_writes;
+static bool bad_latch;
+#endif
 static bool of_machine_is_compatible(const char *s){assert(!strcmp(s,"acer,wave7"));return board;}
 static void *to_platform_device(void *d){return d;}
 static struct resource *platform_get_resource(void *d,int type,int i){assert(d==&dev&&type==IORESOURCE_MEM&&!i);return resource_present?&res:NULL;}
@@ -75,6 +80,10 @@ static bool of_property_read_bool(void *node,const char *name){return false;}
 static int regmap_update_bits(void *r,unsigned a,unsigned mask,unsigned val){
     assert(r==&regs&&a<sizeof(regs)&&!(a%4));
     if(++writes==fail_at)return -EIO;
+#ifdef HAS_FIXED_2500
+    assert(writes<=32);
+    event_addr[writes-1]=a;event_val[writes-1]=val;event_mask[writes-1]=mask;
+#endif
     if(a==PCS_MODE_CTRL)mode_writes++;
     if(a==PCS_MII_CTRL(0)){
         if(mask&PCS_MII_FORCE_MODE){force_writes++;last_force_write=writes;}
@@ -97,7 +106,16 @@ static int regmap_update_bits(void *r,unsigned a,unsigned mask,unsigned val){
 static int regmap_set_bits(void*r,unsigned a,unsigned mask){return regmap_update_bits(r,a,mask,mask);}
 static int regmap_clear_bits(void*r,unsigned a,unsigned mask){return regmap_update_bits(r,a,mask,0);}
 static int regmap_write(void*r,unsigned a,unsigned val){return regmap_update_bits(r,a,~0U,val);}
-static int regmap_read(void*r,unsigned a,unsigned*v){assert(r==&regs&&a<sizeof(regs)&&!(a%4));if(++reads==fail_read_at)return -EIO;*v=regs[a/4];return 0;}
+#ifdef HAS_FIXED_2500
+static int regmap_write_bits(void*r,unsigned a,unsigned mask,unsigned val){
+    force_phys_writes++;return regmap_update_bits(r,a,mask,val);
+}
+#endif
+static int regmap_read(void*r,unsigned a,unsigned*v){assert(r==&regs&&a<sizeof(regs)&&!(a%4));if(++reads==fail_read_at)return -EIO;*v=regs[a/4];
+#ifdef HAS_FIXED_2500
+    if(bad_latch&&a==PCS_MODE_CTRL&&reads>5)*v|=PCS_MODE_2500BASEX;
+#endif
+    return 0;}
 #define regmap_read_poll_timeout(r,a,v,cond,interval,timeout) ((v=PCS_CALIBRATION_DONE),(cond)?0:-ETIMEDOUT)
 static int ipq_pcs_config_usxgmii(struct ipq_pcs*qpcs,int idx,int interface){return 0;}
 static int ipq_pcs_config_10gbaser(struct ipq_pcs*qpcs){return 0;}
@@ -110,6 +128,9 @@ static void init(int interface){
     writes=fail_at=mode_writes=force_writes=speed_writes=pulses=cal_starts=cal_stops=clock_off=clock_on=0;
     logs=post_logs=errors=reads=fail_read_at=last_force_write=last_cal_start=last_cal_stop=last_pulse=0;
     require_serial=false;
+#ifdef HAS_FIXED_2500
+    force_phys_writes=0;bad_latch=false;
+#endif
     regs[PCS_MODE_CTRL/4]=0x421;
     regs[PCS_MII_CTRL(0)/4]=0x84e; /* deliberately distinct previous speed */
     regs[PCS_MII_STS(0)/4]=0x60; /* explicitly PCS carrier zero */
@@ -194,8 +215,64 @@ int main(void){
     }
     init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;
     assert(!ipq_pcs_config_2500basex(&q));
+    #ifdef HAS_FIXED_2500
+    assert(reads==8&&q.interface==PHY_INTERFACE_MODE_2500BASEX&&clock_off==1&&clock_on==1);
+    assert(!ipq_pcs_config_2500basex(&q)&&reads==8);cases++;
+#else
     assert(reads==5&&q.interface==PHY_INTERFACE_MODE_2500BASEX&&clock_off==1&&clock_on==1);
     assert(!ipq_pcs_config_2500basex(&q)&&reads==5);cases++;
+#endif
+#endif
+#ifdef HAS_FIXED_2500
+    for(int b=0;b<2;b++)for(int mppe=0;mppe<2;mppe++)
+    for(int present=0;present<2;present++)for(int addr=0;addr<2;addr++)
+    for(int zero=0;zero<2;zero++)for(int multi=0;multi<2;multi++)
+    for(int mode=0;mode<=8;mode++){
+        init(PHY_INTERFACE_MODE_NA);board=b;q.mppe=mppe;resource_present=present;
+        res.start=addr?0x7a00000:0x7a10000;
+        if(!zero)q.qpcs_mii[0]=NULL;
+        if(multi)q.qpcs_mii[1]=&other;
+        assert(ipq_pcs_wave7_fixed_2500(&q,mode)==
+               (b&&mppe&&present&&addr&&zero&&!multi&&mode==PHY_INTERFACE_MODE_2500BASEX));
+        cases++;
+    }
+    unsigned modes[]={0x1021,0x821,0xa5a5f8ff};
+    unsigned ctrls[]={0x844,0x84c,0xa5a58844};
+    for(unsigned i=0;i<3;i++)for(unsigned j=0;j<3;j++){
+        init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;
+        regs[PCS_MODE_CTRL/4]=modes[i];regs[PCS_MII_CTRL(0)/4]=ctrls[j];
+        regs[PCS_MISC2/4]=0xffffffff;
+        assert(!ipq_pcs_config_2500basex(&q));
+        assert(writes==6&&force_phys_writes==2&&reads==8);
+        assert(event_addr[0]==PCS_MPPE_FIXED_CTRL&&event_val[0]==PCS_MPPE_FIXED_CTRL_2500);
+        assert(event_addr[1]==PCS_MII_CTRL(0)&&event_mask[1]==PCS_MII_FORCE_MODE);
+        assert(event_addr[2]==PCS_MISC2&&event_val[2]==PCS_MISC2_MODE_SGMII_PLUS);
+        assert(event_addr[3]==PCS_MODE_CTRL&&event_mask[3]==(PCS_MODE_SEL_MASK|PCS_MODE_AUTONEG_ATH));
+        assert(regs[PCS_MODE_CTRL/4]==(modes[i]&~(PCS_MODE_SEL_MASK|PCS_MODE_AUTONEG_ATH)));
+        assert(regs[PCS_MII_CTRL(0)/4]==(ctrls[j]|PCS_MII_FORCE_MODE));
+        assert(regs[PCS_MISC2/4]==PCS_MISC2_MODE_SGMII_PLUS);
+        assert(last_force_write<last_cal_start&&last_cal_start<last_cal_stop);
+        assert(clock_off==1&&clock_on==1);
+        assert(!ipq_pcs_config_2500basex(&q)&&writes==6);
+        ipq_pcs_link_up(&m.pcs,PHYLINK_PCS_NEG_OUTBAND,PHY_INTERFACE_MODE_2500BASEX,2500,1);
+        assert(pulses==2&&(regs[PCS_MII_CTRL(0)/4]&PCS_MII_FORCE_MODE));
+        cases++;
+    }
+    for(unsigned f=1;f<=6;f++){
+        init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;fail_at=f;
+        assert(ipq_pcs_config_2500basex(&q)==-EIO);
+        assert(q.interface==PHY_INTERFACE_MODE_NA&&writes==f);
+        assert(clock_off==clock_on&&clock_off==(f>3));cases++;
+    }
+    for(unsigned f=6;f<=8;f++){
+        init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;fail_read_at=f;
+        assert(ipq_pcs_config_2500basex(&q)==-EIO);
+        assert(q.interface==PHY_INTERFACE_MODE_NA&&clock_off==1&&clock_on==1);
+        cases++;
+    }
+    init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;bad_latch=true;
+    assert(ipq_pcs_config_2500basex(&q)==-EIO);
+    assert(q.interface==PHY_INTERFACE_MODE_NA&&clock_off==1&&clock_on==1);cases++;
 #endif
     printf("SERIAL_SPEED_POLICY_PASS: %u actual callback/scope cases\n",cases);
 }
