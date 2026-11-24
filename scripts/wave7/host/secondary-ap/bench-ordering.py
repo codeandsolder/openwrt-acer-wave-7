@@ -254,7 +254,52 @@ def run_case(out, path, mode, runtime_dir, variant, boot, bitrate, profile=False
             "iperf_end": client["end"]}
 
 
-def bench(run, peers, modes, bitrate, profile=False):
+RPS_PATHS = tuple(f"/sys/class/net/switch/queues/rx-{i}/rps_cpus"
+                  for i in range(4)) + ("/sys/class/net/lan1/queues/rx-0/rps_cpus",)
+
+
+def rps_state():
+    values = remote(" ".join(["cat", *RPS_PATHS])).splitlines()
+    require(len(values) == len(RPS_PATHS) and
+            all(re.fullmatch(r"[0-9a-f]+", v) for v in values), "invalid RPS state")
+    return dict(zip(RPS_PATHS, values))
+
+
+@contextmanager
+def temporary_steering(out, boot, mode):
+    """Change only receive steering of the isolated switched path, then restore."""
+    if mode == "baseline":
+        yield
+        return
+    initial = rps_state()
+    require(list(initial.values()) == ["1"] * 4 + ["0"], "unexpected initial RPS policy")
+    desired = dict(initial)
+    desired[RPS_PATHS[-1]] = "e"
+    if mode == "post-tag-native":
+        desired.update({path: "0" for path in RPS_PATHS[:-1]})
+    (out / "rps-before.json").write_text(json.dumps(initial, indent=2)+"\n")
+    (out / "rps-test.json").write_text(json.dumps(desired, indent=2)+"\n")
+
+    def apply(values):
+        # All paths are fixed allowlisted sysfs queue files; never touch
+        # the independent direct management path or persistent configuration.
+        require(re.fullmatch(r"[0-9a-f-]{36}", boot) is not None, "invalid boot")
+        require(values.keys() == initial.keys(), "invalid steering target")
+        require(all(re.fullmatch(r"[0-9a-f]+", v) for v in values.values()), "invalid mask")
+        steps = [f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot}']
+        steps.extend(f"printf '%s' {v} > {path}" for path, v in values.items())
+        remote("set -e; " + "; ".join(steps))
+        require(rps_state() == values, "RPS readback differs")
+    try:
+        apply(desired)
+        yield
+        require(rps_state() == desired, "RPS policy changed during measurement")
+    finally:
+        apply(initial)
+        (out / "rps-restored.json").write_text(json.dumps(rps_state(), indent=2)+"\n")
+
+
+def bench(run, peers, modes, bitrate, profile=False, steering="baseline"):
     record = cohort["load_run"](run)
     require(record is not None and record["variant"] in ("stock-order", "force-order")
             and record["outcome"] == "clean" and record["direct_mbps"] == 2500,
@@ -265,10 +310,12 @@ def bench(run, peers, modes, bitrate, profile=False):
         suffix += "-" + "-".join(peers) + "-" + "-".join(modes)
     if profile:
         suffix += "-profile"
+    if steering != "baseline":
+        suffix += "-" + steering
     out = run / ("throughput" + suffix)
     report = {"boot": boot, "variant": variant, "duration": DURATION,
               "offered_mbps_per_direction": bitrate, "omit_seconds": 0,
-              "peers": peers, "modes": modes, "cpu_profile": profile, "cases": []}
+              "peers": peers, "modes": modes, "cpu_profile": profile, "steering": steering, "cases": []}
     failure = None
     with probe["lab_session"](out):
         try:
@@ -278,7 +325,7 @@ def bench(run, peers, modes, bitrate, profile=False):
                     and not any(row[k] for row in initial["macs"].values()
                                 for k in ERRORS if k not in ("rx_fifo_overflow", "rx_drop_frames")),
                     "initial hardware corruption counters are not zero")
-            with runtime(boot) as path:
+            with temporary_steering(out, boot, steering), runtime(boot) as path:
                 (out / "version.txt").write_text(remote(
                     f"LD_LIBRARY_PATH='{path}' '{path}/iperf3' --version"))
                 for peer in peers:
@@ -355,6 +402,7 @@ if __name__ == "__main__":
     b.add_argument("--mode",choices=("forward", "reverse", "bidir"),action="append")
     b.add_argument("--bitrate-mbps",type=int)
     b.add_argument("--profile",action="store_true",help="sample per-core CPU and network backlog")
+    b.add_argument("--steering", choices=("baseline", "post-tag", "post-tag-native"), default="baseline")
     args=parser.parse_args()
     if args.command=="selftest":
         selftest()
@@ -363,4 +411,5 @@ if __name__ == "__main__":
         peers = tuple(args.peer or ("switch", "direct"))
         modes = tuple(args.mode or ("forward", "reverse", "bidir"))
         require(len(set(peers))==len(peers) and len(set(modes))==len(modes), "duplicate case selection")
-        bench(args.run.resolve(), peers, modes, args.bitrate_mbps, args.profile)
+        require(args.steering == "baseline" or peers == ("switch",), "steering experiment only on switched path")
+        bench(args.run.resolve(), peers, modes, args.bitrate_mbps, args.profile, args.steering)
