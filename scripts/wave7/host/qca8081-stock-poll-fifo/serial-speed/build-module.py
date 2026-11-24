@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rebuild the byte-identical approved 0491 PCS then the isolated 0498 module."""
+"""Rebuild byte-identical 0498, then the read-only PCS0 handoff probe."""
 import argparse
 import hashlib
 import json
@@ -10,8 +10,8 @@ import subprocess
 import sys
 import tempfile
 
-PARENT_SHA="3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9"
-PCS_SHA="74bd3fddd9e35f543100073a4f7a85ebfe7aca503e5c48191dd3c2ee8190b473"
+PARENT_SHA="ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516"
+PCS_SHA="6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf"
 PPE_SHA="1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0"
 CONFIG_SHA="541c909b5c40aeb38d418d0f2b1fbd1e166b2dc2ac357d420b50958df1615987"
 EXPORTS_SHA="e850879b87726135c25faf20f095a640563b3e5883a67aa2708d0d0aa1ea0c81"
@@ -47,14 +47,15 @@ def main():
     assert shutil.disk_usage(out.parent).free>3*1024**3
     patches=REPO/"target/linux/qualcommbe/patches-6.18"
     phy_patch=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
-    patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
+    serial_patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
+    patch=patches/"0499-net-pcs-wave7-observe-pcs0-handoff.patch"
     config=old/"linked/.config"
     exports=old/"linked/vmlinux.symvers"
     assert sha(config)==CONFIG_SHA and sha(exports)==EXPORTS_SHA
     kernel_exports=exports.read_text().splitlines()
     argv=json.loads((old/"build-argv.json").read_text())
     assert argv[0]=="make" and argv[-1]=="Image" and argv[2]=="-C"
-    with tempfile.TemporaryDirectory(prefix=".serial-speed-module-",dir=out.parent) as work_:
+    with tempfile.TemporaryDirectory(prefix=".pcs0-handoff-module-",dir=out.parent) as work_:
         work=Path(work_)
         k=work/"kernel"
         publish=work/"publish"
@@ -80,14 +81,16 @@ def main():
             info=subprocess.check_output(["modinfo",str(f)],text=True)
             assert "intree:         Y" in info and "6.18.60 SMP mod_unload aarch64" in info
             return f,set(sym),info.splitlines()[1:]
+        run(["patch","-p1","--fuzz=0","-i",str(serial_patch)],cwd=k)
+        run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         base,before,base_info=build(work/"baseline")
         assert sha(base)==PCS_SHA
-        print("EXACT_0491_PCS_PASS",flush=True)
+        print("EXACT_0498_PCS_PASS",flush=True)
         run(["patch","-p1","--fuzz=0","-i",str(patch)],cwd=k)
         run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         candidate,after,candidate_info=build(publish/"modules")
         assert before==after and base_info==candidate_info and sha(candidate)!=PCS_SHA
-        report={"experiment":"serial-speed","parent_image_sha256":PARENT_SHA,
+        report={"experiment":"pcs0-handoff","parent_image_sha256":PARENT_SHA,
                 "accepted_pcs_sha256":PCS_SHA,"unchanged_ppe_sha256":PPE_SHA,
                 "candidate_pcs_sha256":sha(candidate),"nand_config_sha256":sha(config),
                 "kernel_exports_sha256":sha(exports),"kernel_export_count":len(kernel_exports),
@@ -97,6 +100,6 @@ def main():
         (publish/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (publish/"SHA256SUMS").write_text("".join(f"{sha(f)}  {f.relative_to(publish)}\n" for f in sorted(publish.rglob("*")) if f.is_file() and f.name!="SHA256SUMS"))
         publish.rename(out)
-        print("SERIAL_SPEED_MODULE_BUILD_PASS",json.dumps(report),flush=True)
+        print("PCS0_HANDOFF_MODULE_BUILD_PASS",json.dumps(report),flush=True)
 if __name__=="__main__":
     main()
