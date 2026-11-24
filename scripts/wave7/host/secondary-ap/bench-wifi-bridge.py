@@ -55,7 +55,7 @@ def wait_radio(boot,width,timeout,station=False):
         b.require(raw.splitlines()[0]==boot,"boot changed during radio setup")
         if (re.search(r"channel \d+ \(5\d+ MHz\), width: "+str(width)+r" MHz,",raw)
                 and re.search(r"link ID\s+1\b",raw,re.I) and re.search(r"link ID\s+0\b",raw,re.I)
-                and (not station or "Station " in raw)):
+                and (not station or ("Station " in raw and re.search(r"authorized:\s+yes",raw) and re.search(r"associated:\s+yes",raw)))):
             try:
                 h=json.loads(b.remote("ubus call hostapd.ap-mld0 get_status"))
                 w=json.loads(b.remote("ubus call network.wireless status"))["radio1"]
@@ -90,7 +90,13 @@ def radio_width(out,boot,width):
         print("EHT160_READY",flush=True)
         # No client before the regulatory CAC has completed. The operator
         # starts the independent wired-managed endpoint after this marker.
-        (out/"radio-client-ready.txt").write_text(wait_radio(boot,160,100,station=True))
+        deadline=time.monotonic()+120
+        marker=out/"endpoint-ready.txt"
+        while not marker.is_file() and time.monotonic()<deadline:
+            time.sleep(1)
+        b.require(marker.is_file() and marker.read_text().splitlines()[0]==PEER,
+                  "wired-managed endpoint did not attest listening address")
+        (out/"radio-client-ready.txt").write_text(wait_radio(boot,160,30,station=True))
         yield
     finally:
         b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
