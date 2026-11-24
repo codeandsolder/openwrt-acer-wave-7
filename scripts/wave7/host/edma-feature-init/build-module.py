@@ -55,6 +55,13 @@ def main():
     exports=old/"linked/vmlinux.symvers"
     assert sha(config)==CONFIG_SHA and sha(exports)==EXPORTS_SHA
     kernel_exports=exports.read_text().splitlines()
+    # Kconfig records rustc/LLVM versions even for this C-only module
+    # rebuild. Reproduce the accepted NAND config independent of the
+    # host's current default Rust toolchain.
+    rustc=subprocess.check_output(["rustup","which","--toolchain",
+        "nightly-2026-11-19","rustc"],text=True).strip()
+    version=subprocess.check_output([rustc,"-vV"],text=True)
+    assert "release: 1.102.0-nightly" in version and "LLVM version: 23.1.6" in version
     argv=json.loads((old/"build-argv.json").read_text())
     assert argv[0]=="make" and argv[-1]=="Image" and argv[2]=="-C"
     with tempfile.TemporaryDirectory(prefix=".edma-feature-init-module-",dir=out.parent) as work_:
@@ -65,7 +72,7 @@ def main():
         run(["cp","-a","--reflink=always",str(SOURCE),str(k)])
         shutil.copyfile(config,k/".config")
         argv[3]=str(k)
-        argv=argv[:-1]+["HOSTCC=sccache gcc"]
+        argv=argv[:-1]+["HOSTCC=sccache gcc",f"RUSTC={rustc}"]
         run(["patch","-p1","--fuzz=0","-i",str(phy_patch)],cwd=k)
         assert (k/"drivers/net/phy/qcom/qca808x.c").read_bytes()==(old/"qca808x.c").read_bytes()
         run([*argv,"olddefconfig"])
