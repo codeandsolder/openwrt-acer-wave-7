@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|pcs0-force-only|edma-feature-init|edma-sg-inheritance|edma-dsa-feature-check|edma-tso-limits|pcs0-analog-on-tso|edma-tx-queue|pcs0-stock-analog|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|pcs0-handoff|pcs0-stock-mode|pcs0-force-only|edma-feature-init|edma-sg-inheritance|edma-dsa-feature-check|edma-tso-limits|pcs0-analog-on-tso|edma-tx-queue|pcs0-stock-analog|source-reboot|return-0498 --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g|--check-reboot-current|--reboot-current|--check-recover-current|--recover-current" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -22,6 +22,7 @@ kernel_variant_trial=0
 candidate_direct_speed=2500
 reboot_1g=0
 repeat_candidate=0
+recover_candidate=0
 candidate_clock_patch=''
 candidate_instant_patch=''
 candidate_instant_marker=0
@@ -459,6 +460,13 @@ if [[ ( $trial_kind == down-mode || $trial_kind == serial-speed ) && $mode != --
   done
 fi
 case "$mode" in
+  --check-recover-current|--recover-current)
+    [[ $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]] ||
+      { echo 'degraded same-image recovery restricted to exact EDMA candidates' >&2; exit 2; }
+    recover_candidate=1
+    repeat_candidate=1
+    if [[ $mode == --check-recover-current ]]; then mode=--check-reboot-current; else mode=--reboot-current; fi
+    ;;
   --check-reboot-current|--reboot-current)
     [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode || $trial_kind == pcs0-force-only || $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]] ||
       { echo 'same-image repeats restricted to pinned ordering or PCS0 candidates' >&2; exit 2; }
@@ -893,7 +901,7 @@ fixed_mode_marker_valid() {
      (BASH_REMATCH[2] & 8) != 0 &&
      BASH_REMATCH[3] == 0x50 ))
 }
-healthy() {
+candidate_identity_ready() {
   if [[ -n $candidate_fixed_patch ]]; then
     fixed_mode_marker_valid "$1" || return 1
   fi
@@ -909,7 +917,9 @@ healthy() {
   if [[ $trunk_trial == 1 ]]; then
     module_matches "$1" "$candidate_module_sha" O &&
       grep -Fxq "manifest_module_sha=$candidate_module_sha" <<< "$1" &&
-      trunk_path_healthy "$1" || return 1
+      grep -Fxq direct_verified=1 <<< "$1" &&
+      grep -Fxq local_ready=1 <<< "$1" &&
+      trunk_counters_valid "$1" || return 1
   fi
   if [[ $phy_trial == 1 ]]; then
     phy_matches "$1" "$candidate_phy_patch" "$candidate_fit_sha" 1 || return 1
@@ -920,6 +930,23 @@ healthy() {
   if [[ $kernel_variant_trial == 1 ]]; then
     kernel_variant_matches "$1" "$candidate_clock_patch" "$candidate_instant_patch" "$candidate_instant_marker" "$candidate_worker_patch" "$candidate_worker_marker" "$candidate_down_patch" || return 1
   fi
+}
+healthy() {
+  candidate_identity_ready "$1" || return 1
+  if [[ $trunk_trial == 1 ]]; then
+    trunk_path_healthy "$1" || return 1
+  fi
+}
+# A reboot-only recovery never authorizes flashing a degraded predecessor.
+# Require exact identity, live direct management and a real switched miss,
+# with no observed physical corruption. The next boot still must pass
+# the full independent switched-path and soak gates.
+recover_source_valid() {
+  [[ $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]] &&
+    candidate_identity_ready "$1" &&
+    grep -Fxq approval=0 <<< "$1" && grep -Fxq token=1 <<< "$1" &&
+    grep -Fxq switch_verified=0 <<< "$1" &&
+    grep -Fxq cpu_fcs=0 <<< "$1" && grep -Fxq cpu_fragments=0 <<< "$1"
 }
 role_healthy() {
   local s=$1 expected_revision=$2 expected_mode=$3 expected_direct_speed=$4
@@ -1204,6 +1231,18 @@ if [[ $mode == --selftest ]]; then
   if [[ $trial_kind == stock-order || $trial_kind == force-order || $trial_kind == pcs0-handoff || $trial_kind == pcs0-stock-mode || $trial_kind == pcs0-force-only || $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]]; then
     repeat_source="$s"$'\napproval=0\ntoken=1'
     repeat_source_valid "$repeat_source" || fatal 'valid ordering repeat source rejected'
+    if [[ $trial_kind == pcs0-analog-on-tso || $trial_kind == edma-tx-queue ]]; then
+      degraded=$(sed -e 's/^switch_verified=.*/switch_verified=0/' -e 's/^cpu_drops=.*/cpu_drops=46/' <<< "$repeat_source")
+      recover_source_valid "$degraded" || fatal 'exact degraded recovery source rejected'
+      if recover_source_valid "$repeat_source" || healthy "$degraded" || repeat_source_valid "$degraded"; then
+        fatal 'recovery accepted as normal repeat or healthy source'
+      fi
+      for change in direct_verified=0 local_ready=0 noc=1 cpu_fcs=1 cpu_fragments=1 manifest_queue_patch=wrong ppe_sha=wrong approval=1 token=0; do
+        if recover_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$degraded")"; then
+          fatal "invalid degraded recovery source accepted: $change"
+        fi
+      done
+    fi
     for change in approval=1 token=0 noc=1 cpu_fcs=1 cpu_fragments=1 cpu_drops=1 module_sha=wrong; do
       if repeat_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$repeat_source")"; then
         fatal "invalid ordering repeat source accepted: $change"
@@ -1816,6 +1855,8 @@ elif [[ $reboot_1g == 1 ]]; then
 elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
   if [[ $trial_kind == source-reboot ]]; then
     reboot_history_source_valid "$s" || fatal "incorrect reboot-only source: $s"
+  elif [[ $recover_candidate == 1 ]]; then
+    recover_source_valid "$s" || fatal "incorrect degraded same-image recovery source: $s"
   elif [[ $repeat_candidate == 1 ]]; then
     repeat_source_valid "$s" || fatal "incorrect same-image repeat source: $s"
   elif approved_experiment_source_valid "$s"; then
