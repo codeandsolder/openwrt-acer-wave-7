@@ -12,7 +12,7 @@ tools="$prod/staging_dir/host/bin"
 parent_sha=eeeb7057cf93a0a9babbb7941ba086a8cc5519e8f8a8b14b680744af0f2f4bfd
 parent_rev=r0+38346-b9db617b17-ap-dhcp-guard8
 kernel_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
-patch_commit=88d0753b1b952e9707004585bcbed79fba9fd5f7
+patch_commit=c9e53ed451f64e24b0b840e462c548cd26268a37
 switch_sha=bea25a2aafd1bc236740ad089bc9500b4f064034fd11cec959abd9bb208d322e
 parent_pcs=6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf
 parent_ppe=1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0
@@ -33,8 +33,10 @@ git -C "$repo" merge-base --is-ancestor "$patch_commit" "$module_builder"
 git -C "$repo" merge-base --is-ancestor "$module_builder" HEAD
 patch=target/linux/qualcommbe/patches-6.18/0499-net-ethernet-qualcomm-edma-init-features-before-register.patch
 [[ $(digest "$repo/$patch") == "$(jq -er .patch_sha256 "$report")" ]] || fail 'patch provenance'
+tso_patch=target/linux/qualcommbe/patches-6.18/0500-net-ethernet-qualcomm-edma-validate-tso-and-sg-limits.patch
+[[ $(digest "$repo/$tso_patch") == "$(jq -er .tso_patch_sha256 "$report")" ]] || fail 'TSO patch provenance'
 experiment=$(jq -er .experiment "$report")
-[[ $experiment == edma-dsa-feature-check ]] || fail 'wrong experiment'
+[[ $experiment == edma-tso-limits ]] || fail 'wrong experiment'
 [[ $(jq -er .module_exports_identical "$report") == true &&
    $(jq -er .module_metadata_identical "$report") == true &&
    $(jq -er .fixture_pass "$report") == true &&
