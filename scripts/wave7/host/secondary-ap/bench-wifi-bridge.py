@@ -38,6 +38,48 @@ def steering(boot,policy):
             apply(old)
 
 
+def wait_radio(boot,width,timeout,station=False):
+    deadline=time.monotonic()+timeout
+    while time.monotonic()<deadline:
+        raw=b.remote("cat /proc/sys/kernel/random/boot_id; iw dev ap-mld0 info; iw dev ap-mld0 station dump")
+        b.require(raw.splitlines()[0]==boot,"boot changed during radio setup")
+        if (re.search(r"channel \d+ \(5\d+ MHz\), width: "+str(width)+r" MHz,",raw)
+                and re.search(r"link ID\s+1\b",raw,re.I) and re.search(r"link ID\s+0\b",raw,re.I)
+                and (not station or "Station " in raw)):
+            return raw
+        time.sleep(2)
+    raise TimeoutError(f"radio did not reach {width} MHz, station={station}")
+
+
+@contextmanager
+def radio_width(out,boot,width):
+    if width==80:
+        yield
+        return
+    initial=b.remote("cat /proc/sys/kernel/random/boot_id; uci get wireless.radio1.country; "
+                     "uci get wireless.radio1.channel; uci get wireless.radio1.htmode; "
+                     "uci changes wireless; iw dev ap-mld0 station dump")
+    b.require(initial.splitlines()==[boot,"PL","36","EHT80"],
+              "temporary width test requires idle channel-36 PL EHT80 lab AP and no UCI changes")
+    (out/"radio-config-before.txt").write_text(initial)
+    wait_radio(boot,80,15)
+    try:
+        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
+                 'uci set wireless.radio1.htmode=EHT160 && wifi reload')
+        ready=wait_radio(boot,160,180)
+        (out/"radio-width-ready.txt").write_text(ready)
+        print("EHT160_READY",flush=True)
+        # No client before the regulatory CAC has completed. The operator
+        # starts the independent wired-managed endpoint after this marker.
+        (out/"radio-client-ready.txt").write_text(wait_radio(boot,160,100,station=True))
+        yield
+    finally:
+        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
+                 'uci revert wireless.radio1.htmode && wifi reload')
+        (out/"radio-config-restored.txt").write_text(wait_radio(boot,80,120))
+        b.require(b.remote("uci changes wireless").strip()=="","wireless changes remain")
+
+
 def radio_snapshot(out,name,boot,width):
     raw=b.remote(
         "cat /proc/sys/kernel/random/boot_id; iw dev ap-mld0 info; "
@@ -124,10 +166,11 @@ def main():
         report={"boot":boot,"width_mhz":args.width,"cases":[],"status":"RUNNING"}
         try:
             b.require(f"dev {b.DIRECT} " in b.run(["ip","route","get",PEER,"from",b.DIRECT_IP]),"wrong route")
-            for policy in args.policy:
-                with steering(boot,policy):
-                    for mode,pace in specs:
-                        report["cases"].append(case(out,boot,args.width,policy,mode,pace))
+            with radio_width(out,boot,args.width):
+                for policy in args.policy:
+                    with steering(boot,policy):
+                        for mode,pace in specs:
+                            report["cases"].append(case(out,boot,args.width,policy,mode,pace))
             report["status"]="PASS"
         except BaseException as exc:
             report.update(status="FAILED",error=str(exc))
