@@ -67,7 +67,7 @@ def wire_report(raw, other, requested, length):
     segments = []
     for line in raw.splitlines():
         src, dst, s, a, size, mss, seq = line.split("\t")
-        if int(dst) == pw.PORT and s == "1" and a == "0":
+        if int(dst) == pw.PORT and s == "True" and a == "False":
             syn.append((int(src), int(mss)))
         if int(src) == pw.PORT and int(size) > 0:
             segments.append((int(dst), int(seq), int(size)))
@@ -155,7 +155,7 @@ def selftest():
     raw = "# entries-in-buffer/entries-written: 2/2\n" + queue + "\n" + xmit
     assert trace_report(raw, socket.AF_INET, 256)["matching_gso"] == 1
     assert trace_report(raw.replace("gso_size=256", "gso_size=0"), socket.AF_INET, 255)["matching_gso"] == 0
-    tcp = "35000\t52228\t1\t0\t0\t256\t0\n52228\t35000\t0\t1\t256\t\t1\n52228\t35000\t0\t1\t1\t\t257\n"
+    tcp = "35000\t52228\tTrue\tFalse\t0\t256\t0\n52228\t35000\tFalse\tTrue\t256\t\t1\n52228\t35000\tFalse\tTrue\t1\t\t257\n"
     assert wire_report(tcp, "", 256, 257)["wire_mss"] == 256
     for invalid in (raw.replace("gso_size=256", "gso_size=255"), raw.replace("2/2","2/3"),
                     raw.replace("len=4000","len=400"), raw.replace("ip_summed=3","ip_summed=0")):
