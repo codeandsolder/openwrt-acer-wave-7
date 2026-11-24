@@ -1,0 +1,146 @@
+From: codeandsolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] net: ethernet: qualcomm: validate EDMA TSO and scatter-gather limits
+
+Never silently change the requested MSS or submit an unsupported GSO
+type. Request software segmentation through the feature callback and
+retain a defensive preparation path before descriptor submission.
+Linearize non-GSO packets exceeding the descriptor walk, including
+nested fraglists that the hardware mapping path does not handle.
+Software-segment oversized GSO packets without SG to guarantee each
+result fits. Keep the ordinary SG and supported TSO fast path.
+
+Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
+---
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+@@ -181,6 +181,12 @@
+ 	 */
+ 	if (netdev_uses_dsa(netdev))
+ 		features &= ~(NETIF_F_CSUM_MASK | NETIF_F_GSO_MASK);
++
++	/* Do not silently clamp the negotiated TCP segment size or submit a
++	 * GSO type for which the descriptor has no implementation.
++	 */
++	if (skb_is_gso(skb) && !edma_tx_tso_supported(skb))
++		features &= ~NETIF_F_GSO_MASK;
+ 
+ 	return vlan_features_check(skb, features);
+ }
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_tx.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_tx.c
+@@ -40,6 +40,10 @@
+ 
+ 		skb_walk_frags(skb, iter_skb) {
+ 			u32 nr_frags = skb_shinfo(iter_skb)->nr_frags;
++
++			/* The descriptor walk handles one frag_list level only. */
++			if (skb_has_frag_list(iter_skb))
++				return EDMA_TX_TSO_SEG_MAX + 1;
+ 
+ 			WARN_ON_ONCE(nr_frags > MAX_SKB_FRAGS);
+ 			num_tx_desc_needed += (1 + nr_frags);
+@@ -62,19 +66,25 @@
+ enum edma_tx_gso_status edma_tx_gso_segment(struct sk_buff *skb,
+ 					    struct net_device *netdev, struct sk_buff **segs)
+ {
+-	u32 num_tx_desc_needed;
+-
+-	/* Check is skb is non-linear to proceed. */
+-	if (likely(!skb_is_nonlinear(skb)))
++	netdev_features_t features;
++	bool oversized = skb_is_nonlinear(skb) &&
++			 edma_tx_num_descs_for_sg(skb) > EDMA_TX_TSO_SEG_MAX;
++
++	if (likely(!skb_is_gso(skb))) {
++		/* A non-GSO skb cannot be passed to the GSO segmenter. */
++		if (unlikely(oversized) && skb_linearize(skb))
++			return EDMA_TX_GSO_FAIL;
+ 		return EDMA_TX_GSO_NOT_NEEDED;
+-
+-	num_tx_desc_needed = edma_tx_num_descs_for_sg(skb);
+-	if (likely(num_tx_desc_needed <= EDMA_TX_TSO_SEG_MAX))
++	}
++
++	if (likely(!oversized && edma_tx_tso_supported(skb)))
+ 		return EDMA_TX_GSO_NOT_NEEDED;
+ 
+-	/* GSO segmentation of the skb into multiple segments. */
+-	*segs = skb_gso_segment(skb, netdev->features
+-		& ~(NETIF_F_TSO | NETIF_F_TSO6));
++	features = netif_skb_features(skb) & ~NETIF_F_GSO_MASK;
++	/* A segment produced by software must also fit the DMA walk. */
++	if (oversized)
++		features &= ~(NETIF_F_SG | NETIF_F_FRAGLIST);
++	*segs = skb_gso_segment(skb, features);
+ 
+ 	/* Check for error in GSO segmentation. */
+ 	if (IS_ERR_OR_NULL(*segs)) {
+@@ -403,27 +413,12 @@
+ 	 * This will be mostly true for SG packets.
+ 	 */
+ 	if (unlikely(skb_is_gso(skb))) {
+-		if ((skb_shinfo(skb)->gso_type == SKB_GSO_TCPV4) ||
+-		    (skb_shinfo(skb)->gso_type == SKB_GSO_TCPV6)) {
+-			u32 mss = skb_shinfo(skb)->gso_size;
+-
+-			/* If MSS<256, HW will do TSO using MSS=256,
+-			 * if MSS>10K, HW will do TSO using MSS=10K,
+-			 * else HW will report error 0x200000 in Tx Cmpl.
+-			 */
+-			if (mss < EDMA_TX_TSO_MSS_MIN)
+-				mss = EDMA_TX_TSO_MSS_MIN;
+-			else if (mss > EDMA_TX_TSO_MSS_MAX)
+-				mss = EDMA_TX_TSO_MSS_MAX;
+-
+-			EDMA_TXDESC_TSO_ENABLE_SET(txd, 1);
+-			EDMA_TXDESC_MSS_SET(txd, mss);
+-
+-			/* Update tso stats. */
+-			u64_stats_update_begin(&stats->syncp);
+-			stats->tx_tso_pkts++;
+-			u64_stats_update_end(&stats->syncp);
+-		}
++		EDMA_TXDESC_TSO_ENABLE_SET(txd, 1);
++		EDMA_TXDESC_MSS_SET(txd, skb_shinfo(skb)->gso_size);
++
++		u64_stats_update_begin(&stats->syncp);
++		stats->tx_tso_pkts++;
++		u64_stats_update_end(&stats->syncp);
+ 	}
+ 
+ 	/* Set destination information in the descriptor. */
+@@ -702,6 +697,13 @@
+ 		}
+ 	}
+ 
++	if (unlikely(skb_is_gso(skb) && !edma_tx_tso_supported(skb))) {
++		u64_stats_update_begin(&stats->syncp);
++		stats->tx_tso_drop_pkts++;
++		u64_stats_update_end(&stats->syncp);
++		return EDMA_TX_FAIL;
++	}
++
+ 	/* Process head skb for linear skb.
+ 	 * Process head skb + nr_frags + fraglist for non linear skb.
+ 	 */
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_tx.h
+@@ -31,6 +31,18 @@
+ /* HW defined low and high MSS size. */
+ #define EDMA_TX_TSO_MSS_MIN		256
+ #define EDMA_TX_TSO_MSS_MAX		10240
++
++/* The descriptor supports these exact TCP GSO types and MSS bounds. */
++static inline bool edma_tx_tso_supported(const struct sk_buff *skb)
++{
++	const struct skb_shared_info *shinfo = skb_shinfo(skb);
++
++	return skb->ip_summed == CHECKSUM_PARTIAL &&
++	       (shinfo->gso_type == SKB_GSO_TCPV4 ||
++		shinfo->gso_type == SKB_GSO_TCPV6) &&
++	       shinfo->gso_size >= EDMA_TX_TSO_MSS_MIN &&
++	       shinfo->gso_size <= EDMA_TX_TSO_MSS_MAX;
++}
+ 
+ #define EDMA_DST_PORT_TYPE		2
+ #define EDMA_DST_PORT_TYPE_SHIFT	28
