@@ -14,8 +14,9 @@ start = s.index("int edma_port_prepare(")
 end = s.index("int edma_port_register(", start)
 prepare = s[start:end]
 statements = re.findall(r"netdev->(features|hw_features|vlan_features|wanted_features)\s*\|=\s*EDMA_NETDEV_FEATURES;", prepare)
-assert statements == ["features", "hw_features", "vlan_features"]
-assert prepare.index("netdev->vlan_features |= EDMA_NETDEV_FEATURES;") < prepare.index("ppe_port_phylink_setup(")
+assert statements == ["features", "hw_features"]
+assert re.search(r"netdev->vlan_features \|= EDMA_NETDEV_FEATURES &\s*~\(NETIF_F_CSUM_MASK \| NETIF_F_GSO_MASK\);", prepare)
+assert prepare.index("netdev->vlan_features |= EDMA_NETDEV_FEATURES &") < prepare.index("ppe_port_phylink_setup(")
 register = s[end:s.index("\n}", end)]
 assert "register_netdev(netdev)" in register
 assert s.count("netdev->wanted_features |= EDMA_NETDEV_FEATURES;") == 0
