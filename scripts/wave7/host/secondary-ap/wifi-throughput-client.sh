@@ -2,9 +2,10 @@
 # Bounded temporary Wi-Fi endpoint; independent Ethernet management.
 set -euo pipefail
 umask 077
-[[ $# == 2 && $1 =~ ^[a-zA-Z0-9-]+$ && $2 =~ ^[0-9]+$ && $2 -ge 60 && $2 -le 900 ]]
+[[ ( $# == 2 || ( $# == 3 && $3 == standalone ) ) && $1 =~ ^[a-zA-Z0-9-]+$ && $2 =~ ^[0-9]+$ && $2 -ge 60 && $2 -le 900 ]]
 tag=$1
 seconds=$2
+mode=${3:-mlo}
 out="/home/jan/firmware/wave7/client-validation/$tag"
 mkdir -m 700 "$out"
 tmp="w7-$tag"
@@ -31,9 +32,15 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 trap 'exit 129' HUP
 [[ $(nmcli -t -f GENERAL.STATE device show "$iface") == *'30 (disconnected)' ]]
-sudo -n nmcli connection clone Wave7-MLO-Lab "$tmp" > "$out/clone.txt"
+profile=Wave7-MLO-Lab
+bssid=4e:5a:6f:5a:bb:16
+if [[ $mode == standalone ]]; then
+    profile=Wave7-5G-Lab
+    bssid=''
+fi
+sudo -n nmcli connection clone "$profile" "$tmp" > "$out/clone.txt"
 cloned=1
-sudo -n nmcli connection modify "$tmp" connection.autoconnect no 802-11-wireless.bssid 4e:5a:6f:5a:bb:16 \
+sudo -n nmcli connection modify "$tmp" connection.autoconnect no 802-11-wireless.bssid "$bssid" \
     ipv4.method manual ipv4.addresses "$addr/24" ipv4.never-default yes ipv4.ignore-auto-dns yes \
     ipv6.method link-local ipv6.never-default yes ipv6.ignore-auto-dns yes
 sudo -n nmcli --wait 50 connection up "$tmp" ifname "$iface" > "$out/association.txt"
@@ -47,7 +54,13 @@ for f in active_links valid_links dormant_links; do
     sudo -n cat "/sys/kernel/debug/ieee80211/phy0/netdev:$iface/$f"
 done > "$out/masks-before.txt"
 iw dev "$iface" station dump > "$out/station-before.txt"
-grep -Eq 'Link 1 BSSID 4e:5a:6f:5a:bb:16' "$out/link-before.txt"
+if [[ $mode == standalone ]]; then
+    grep -Fq 'SSID: Wave7-5G-Lab' "$out/link-before.txt"
+    grep -Eq 'freq: 5180([.]0)?$' "$out/link-before.txt"
+    ! grep -q 'MLD .* stats:' "$out/link-before.txt"
+else
+    grep -Eq 'Link 1 BSSID 4e:5a:6f:5a:bb:16' "$out/link-before.txt"
+fi
 ping -I "$addr" -c 5 -W 1 192.168.76.2 > "$out/ping.txt" || :
 timeout "$seconds" iperf3 -s -B "$addr" -p 52229 > "$out/server.txt" 2>&1 &
 server=$!

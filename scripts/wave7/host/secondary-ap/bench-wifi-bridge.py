@@ -105,10 +105,11 @@ def radio_width(out,boot,width):
         b.require(b.remote("uci changes wireless").strip()=="","wireless changes remain")
 
 
-def radio_snapshot(out,name,boot,width):
+def radio_snapshot(out,name,boot,width,iface="ap-mld0"):
+    b.require(re.fullmatch(r"[a-zA-Z0-9_.-]+",iface),"invalid AP interface")
     raw=b.remote(
-        "cat /proc/sys/kernel/random/boot_id; iw dev ap-mld0 info; "
-        "iw dev ap-mld0 station dump; cat /proc/stat | head -5; cat /proc/softirqs; "
+        f"cat /proc/sys/kernel/random/boot_id; iw dev {iface} info; "
+        f"iw dev {iface} station dump; cat /proc/stat | head -5; cat /proc/softirqs; "
         "cat /proc/interrupts; for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do "
         "echo ==== $f; cat $f; done; cat /sys/kernel/debug/ieee80211/phy0/aql_pending; "
         "cat /proc/sys/kernel/random/boot_id; dmesg | grep -c 'NOC ERROR DETECTED' || :")

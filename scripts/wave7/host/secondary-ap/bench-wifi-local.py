@@ -1,6 +1,8 @@
 #!/usr/bin/env -S uv run --no-project python
 """Matched local/bridge Wi-Fi TCP measurements on one association."""
 import argparse
+from contextlib import contextmanager, nullcontext
+import re
 import fcntl
 import hashlib
 import json
@@ -13,13 +15,62 @@ import time
 
 w=runpy.run_path(str(Path(__file__).with_name("bench-wifi-bridge.py")))
 b=w["b"]
+@contextmanager
+def standalone(out,boot,enabled):
+    if not enabled:
+        yield "ap-mld0"
+        return
+    initial=b.remote("cat /proc/sys/kernel/random/boot_id; "
+                     "uci get wireless.radio1.channel; uci get wireless.radio1.htmode; "
+                     "uci get wireless.wave7_mlo_lab.device; uci get wireless.wave7_mlo_lab.mlo; "
+                     "uci get wireless.wave7_mlo_lab.ssid; uci changes wireless; iw dev ap-mld0 station dump")
+    b.require(initial.splitlines()==[boot,"36","EHT80","radio0 radio1","1","Wave7-MLO-Lab"],
+              "requires idle exact MLO baseline")
+    (out/"radio-before.txt").write_text(initial)
+    try:
+        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
+                 'uci set wireless.wave7_mlo_lab.device=radio1 && '
+                 'uci delete wireless.wave7_mlo_lab.mlo && '
+                 'uci set wireless.wave7_mlo_lab.ssid=Wave7-5G-Lab && wifi reload')
+        deadline=time.monotonic()+50
+        iface=None
+        while time.monotonic()<deadline:
+            raw=b.remote("iw dev")
+            matches=re.findall(r"Interface ([a-zA-Z0-9_.-]+)",raw)
+            if len(matches)==1 and "ssid Wave7-5G-Lab" in raw and "channel 36 (5180 MHz), width: 80 MHz" in raw and "MLD with links:" not in raw:
+                candidate=matches[0]
+                try:
+                    status=json.loads(b.remote(f"ubus call hostapd.{candidate} get_status"))
+                    if status.get("status")=="ENABLED":
+                        iface=candidate
+                        break
+                except (ValueError,subprocess.CalledProcessError):
+                    pass
+            time.sleep(1)
+        b.require(iface,"standalone AP did not become ready")
+        (out/"standalone-ready.txt").write_text(raw)
+        deadline=time.monotonic()+110
+        marker=out/"endpoint-ready.txt"
+        while not marker.is_file() and time.monotonic()<deadline:
+            time.sleep(1)
+        b.require(marker.is_file() and marker.read_text().strip()==w["PEER"],"client not ready")
+        yield iface
+    finally:
+        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && '
+                 'uci revert wireless.wave7_mlo_lab && wifi reload')
+        (out/"radio-restored.txt").write_text(w["wait_radio"](boot,80,120))
+        b.require(b.remote("uci changes wireless").strip()=="","wireless changes remain")
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("run",type=Path)
     p.add_argument("label")
     p.add_argument("--policy",choices=w["POLICIES"],default="baseline")
     p.add_argument("--local-only",action="store_true")
+    p.add_argument("--standalone",action="store_true")
     args=p.parse_args()
+    b.require(not args.standalone or (args.local_only and args.policy=="baseline"),"standalone baseline only")
     b.require(os.getuid()==0 and args.label.isalnum(),"invalid invocation")
     run=args.run.resolve(strict=True)
     b.require(run.is_relative_to(b.BASE),"outside lab")
@@ -38,7 +89,7 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         out=run/("wifi-local-"+args.label)
         out.mkdir(mode=0o700)
-        report={"boot":boot,"policy":args.policy,"cases":[],"status":"RUNNING"}
+        report={"boot":boot,"policy":args.policy,"standalone":args.standalone,"cases":[],"status":"RUNNING"}
         created=False
         try:
             b.require(b.remote("cat /proc/sys/kernel/random/boot_id").strip()==boot,"wrong boot")
@@ -51,11 +102,11 @@ def main():
             (out/"runtime-version.txt").write_text(b.remote(f"LD_LIBRARY_PATH={remote_dir} {remote_dir}/iperf3 --version"))
             (out/"route.txt").write_text(b.remote("ip route get 192.168.76.248 from 192.168.76.1; bridge fdb show 2>/dev/null || :; iw dev ap-mld0 survey dump"))
             cases=(("local","reverse"),("local","forward")) if args.local_only else (("local","reverse"),("bridge","reverse"),("local","forward"),("bridge","forward"),("local","reverse"),("local","forward"))
-            with w["steering"](boot,args.policy):
+            with standalone(out,boot,args.standalone) as iface, (nullcontext() if args.standalone else w["steering"](boot,args.policy)):
                 for i,(path,mode) in enumerate(cases):
                     name=f"{i}-{path}-{mode}"
                     before=b.snapshot(out,name+"-before",boot)
-                    w["radio_snapshot"](out,name+"-radio-before",boot,80)
+                    w["radio_snapshot"](out,name+"-radio-before",boot,80,iface)
                     flags=["-R"] if mode=="reverse" else []
                     if path=="local":
                         cmd=f"timeout 22 env LD_LIBRARY_PATH={remote_dir} {remote_dir}/iperf3 -c 192.168.76.248 -B 192.168.76.1 -p 52229 -P 4 -t 12 --connect-timeout 4000 -J "+" ".join(flags)
@@ -69,7 +120,7 @@ def main():
                             deadline=time.monotonic()+28
                             while child.poll() is None:
                                 b.require(time.monotonic()<deadline,"iperf timeout")
-                                w["radio_snapshot"](out,f"{name}-sample-{idx:02}",boot,80)
+                                w["radio_snapshot"](out,f"{name}-sample-{idx:02}",boot,80,iface)
                                 idx+=1
                                 time.sleep(0.8)
                             b.require(child.returncode==0,"iperf failed")
@@ -78,7 +129,7 @@ def main():
                                 child.terminate()
                                 child.wait(timeout=5)
                     after=b.snapshot(out,name+"-after",boot)
-                    w["radio_snapshot"](out,name+"-radio-after",boot,80)
+                    w["radio_snapshot"](out,name+"-radio-after",boot,80,iface)
                     r=json.loads((out/(name+".json")).read_text())
                     row=r["end"]["sum_received"]
                     result=b.analyze(before,after,{})
