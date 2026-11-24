@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Rebuild byte-identical PPE, then the isolated feature lifecycle fix."""
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -66,7 +67,11 @@ def main():
         run(["patch","-p1","--fuzz=0","-i",str(phy_patch)],cwd=k)
         assert (k/"drivers/net/phy/qcom/qca808x.c").read_bytes()==(old/"qca808x.c").read_bytes()
         run([*argv,"olddefconfig"])
-        assert (k/".config").read_bytes()==config.read_bytes()
+        if (k/".config").read_bytes()!=config.read_bytes():
+            diff="".join(difflib.unified_diff(config.read_text().splitlines(True),
+                (k/".config").read_text().splitlines(True),fromfile="accepted",tofile="regenerated"))
+            (out.parent/"config-mismatch.diff").write_text(diff)
+            raise RuntimeError("Regenerated config differs from accepted config; see config-mismatch.diff")
         def build(dest):
             assert shutil.disk_usage(work).free>3*1024**3
             run([*argv,TARGET])
