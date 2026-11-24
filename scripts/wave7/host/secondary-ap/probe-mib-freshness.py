@@ -72,7 +72,7 @@ for item in pcs:pcs-qcom-ipq9574:pcs_qcom_ipq9574 ppe:qcom-ppe:qcom_ppe; do
 done
 echo "manifest_handoff_patch=$(sed -n 's/^trial_pcs0_handoff_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "manifest_feature_patch=$(sed -n 's/^trial_edma_feature_init_patch_commit=//p' /rom/etc/wave7-role-profile)"
-echo "manifest_fixed_patch=$(sed -n 's/^trial_pcs0_\(stock_mode\|force_only\)_patch_commit=//p' /rom/etc/wave7-role-profile)"
+echo "manifest_fixed_patch=$(sed -n 's/^trial_pcs0_\(stock_mode\|force_only\|stock_analog\)_patch_commit=//p' /rom/etc/wave7-role-profile)"
 echo "module_upper_clear=$(test ! -e /overlay/upper/lib/modules && test ! -L /overlay/upper/lib/modules && echo 1 || echo 0)"
 echo '=== CPU ==='
 ethtool -S switch

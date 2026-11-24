@@ -23,9 +23,11 @@ PINS = {
     "pcs0-stock-mode": ("5685b30aa2", RTL_0498, "3b36b616128110c64cbc3dd384e8b1615f9c237a41aa5a5678e4a3c01022350e", PPE_0498, "", ""),
     "pcs0-handoff": ("6eeae4dd45", RTL_0498, "44e34472f0edab4aae5b8349a7c8b3f42396ecb102ac12803e82ff1c03c8338a", PPE_0498, "6eeae4dd45ab4ebb7c9cb296dc45d53470677c5b", ""),
     "edma-feature-init": ("7ea0722a9a", RTL_FORCE, PCS_0498, "54d77cdbdce44a435afd767c16861fa7ce7fca3a8e754d3b4694f1dfdfd05876", "", "7ea0722a9af6bd078005052ed1c209f07b739aaf"),
+    "edma-dsa-feature-check": ("88d0753b1b", RTL_FORCE, PCS_0498, "fe7809a89dee4ccc128fe825d975aa567b781989a4dd1ce20670b06f641af1f8", "", "88d0753b1b952e9707004585bcbed79fba9fd5f7"),
+    "pcs0-stock-analog": ("1595883d9c", RTL_0498, "330c24eddf25e7605f63f2a8f6b5bb7783e3d6c9bebce3390b541a3ae7e4cb38", PPE_0498, "", ""),
     "edma-sg-inheritance": ("5d080c941b", RTL_FORCE, PCS_0498, "d916e3e68e6fa057bce328eba94baba30c695d8087a890bc925f281b6c08554c", "", "5d080c941b8905d8e8f4a22c1292856ef63791fc"),
 }
-FIXED_MODE_PINS = {"pcs0-force-only": "de047a2e97ab6fa330deeb2f3661e4a11e16ce75", "pcs0-stock-mode": "5685b30aa28384ae9a9fe00a889639b618bd57a5"}
+FIXED_MODE_PINS = {"pcs0-stock-analog": "1595883d9c22dd3d178e7c2e31d55a3bfbb5072c", "pcs0-force-only": "de047a2e97ab6fa330deeb2f3661e4a11e16ce75", "pcs0-stock-mode": "5685b30aa28384ae9a9fe00a889639b618bd57a5"}
 COMMON = {
     "manifest_fit_sha": "c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e",
     "manifest_phy_patch": "0418bb7af25d13406bb896696eb78541ccd2aa00",
