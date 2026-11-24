@@ -184,8 +184,8 @@ def main():
     parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args()
     record = cohort["load_run"](args.run.resolve())
-    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init") and
-            record["outcome"] == "clean", "requires sealed clean ordering boot")
+    require(record and record["variant"] in ("force-order", "stock-order", "edma-feature-init", "edma-sg-inheritance") and
+            record["outcome"] == "clean", "requires sealed clean EDMA or ordering boot")
     variant, boot = record["variant"], record["boot"]
     peers = tuple(args.peer or PATHS)
     require(len(set(peers)) == len(peers) and args.repeat > 0, "invalid peer/repeat")
