@@ -60,6 +60,9 @@ static void *to_platform_device(void *d){return d;}
 static struct resource *platform_get_resource(void *d,int type,int i){assert(d==&dev&&type==IORESOURCE_MEM&&!i);return resource_present?&res:NULL;}
 static const char *phy_modes(int i){return "mode";}
 static void dev_info(struct device *d,const char *fmt,...){assert(d==&dev);logs++;if(strstr(fmt,"serial-speed"))post_logs++;}
+#ifdef HAS_HANDOFF
+static void dev_warn(struct device *d,const char *fmt,...){assert(d==&dev);errors++;}
+#endif
 static void dev_err(struct device *d,const char *fmt,...){assert(d==&dev);errors++;}
 static void ipq_pcs_disable_port_clks(struct ipq_pcs *qpcs,int i){assert(qpcs==&q);clock_off++;}
 static int ipq_pcs_restore_port_clks(struct ipq_pcs *qpcs,int i){assert(qpcs==&q);clock_on++;return 0;}
@@ -172,5 +175,27 @@ int main(void){
     assert(regs[PCS_MODE_CTRL/4]&PCS_MODE_AUTONEG_ATH);
     assert(regs[PCS_MII_CTRL(0)/4]&PCS_MII_FORCE_MODE);
     assert(!speed_writes&&pulses==2&&!post_logs);cases++;
+#ifdef HAS_HANDOFF
+    /* Exact PCS0 scope; never modify registers or clock/reset state. */
+    for(int b=0;b<2;b++)for(int mppe=0;mppe<2;mppe++)
+    for(int present=0;present<2;present++)for(int addr=0;addr<2;addr++){
+        init(PHY_INTERFACE_MODE_NA);board=b;q.mppe=mppe;resource_present=present;
+        res.start=addr?0x7a00000:0x7a10000;
+        bool expected=b&&mppe&&present&&addr;
+        ipq_pcs_wave7_handoff(&q,"probe");
+        assert(reads==(expected?5:0)&&logs==(expected?1:0));
+        assert(!errors&&!writes&&!clock_off&&!clock_on);cases++;
+    }
+    for(unsigned fail=1;fail<=5;fail++){
+        init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;fail_read_at=fail;
+        ipq_pcs_wave7_handoff(&q,"before-mode");
+        assert(reads==fail&&!logs&&errors==1);
+        assert(!writes&&!clock_off&&!clock_on);cases++;
+    }
+    init(PHY_INTERFACE_MODE_NA);res.start=0x7a00000;
+    assert(!ipq_pcs_config_2500basex(&q));
+    assert(reads==5&&q.interface==PHY_INTERFACE_MODE_2500BASEX&&clock_off==1&&clock_on==1);
+    assert(!ipq_pcs_config_2500basex(&q)&&reads==5);cases++;
+#endif
     printf("SERIAL_SPEED_POLICY_PASS: %u actual callback/scope cases\n",cases);
 }
