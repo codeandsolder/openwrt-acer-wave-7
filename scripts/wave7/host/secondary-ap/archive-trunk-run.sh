@@ -35,13 +35,34 @@ uv run --no-project --offline --python /usr/bin/python3 python "$script_dir/repo
 for f in final-dmesg.txt final-hardware.txt report.json; do
   mv "$tmp/$f" "$run/$f"
 done
+# This run has a sealed same-boot SOAK_PASS observation. Retire only
+# its fallback collector before releasing the shared lab lock.
+tag=${run##*/}
+[[ $tag =~ ^[a-zA-Z0-9-]+$ ]] || exit 2
+if [[ $run == "$base"/serial-speed-dhcp-guard8/runs/source-reboot-* ||
+      $run == "$base"/mib-*-dhcp-guard8/runs/* ||
+      $run == "$base"/stock-order-dhcp-guard8/runs/* ||
+      $run == "$base"/force-order-dhcp-guard8/runs/* ]]; then
+  export XDG_RUNTIME_DIR=/run/user/$(id -u)
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+  if systemctl --user is-active --quiet "wave7-fallback-watch-$tag.service"; then
+    systemctl --user stop "wave7-fallback-watch-$tag.service"
+  fi
+  for suffix in fallback-watch.log pstore.txt ramoops-raw.bin; do
+    f="/tmp/wave7-$tag-$suffix"
+    if [[ -f $f && ! -L $f && -O $f ]]; then
+      [[ ! -e $run/$suffix ]]
+      mv -- "$f" "$run/$suffix"
+    fi
+  done
+fi
 (
   cd "$run"
   files=(status observer.log trunk-counters.tsv latest-state.txt final-dmesg.txt final-hardware.txt report.json)
   if [[ -f outgoing-boot.sha256 ]]; then
     sha256sum -c outgoing-boot.sha256
   fi
-  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256; do
+  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256 fallback-watch.log pstore.txt ramoops-raw.bin; do
     if [[ -f $f ]]; then files+=("$f"); fi
   done
   sha256sum "${files[@]}" > evidence.sha256
