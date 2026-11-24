@@ -17,6 +17,7 @@ PPE_SHA="1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0"
 CONFIG_SHA="541c909b5c40aeb38d418d0f2b1fbd1e166b2dc2ac357d420b50958df1615987"
 EXPORTS_SHA="e850879b87726135c25faf20f095a640563b3e5883a67aa2708d0d0aa1ea0c81"
 TARGET="drivers/net/ethernet/qualcomm/ppe/qcom-ppe.ko"
+PCS_TARGET="drivers/net/pcs/pcs-qcom-ipq9574.ko"
 REPO=Path(__file__).resolve().parents[4]
 PROD=Path("/home/jan/build/wave7/prod-integrated")
 SOURCE=PROD/"build_dir/target-aarch64_cortex-a53_musl/linux-qualcommbe_ipq53xx/linux-6.18.60"
@@ -48,6 +49,7 @@ def main():
     assert shutil.disk_usage(out.parent).free>3*1024**3
     patches=REPO/"target/linux/qualcommbe/patches-6.18"
     phy_patch=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
+    serial_patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
     patch=patches/"0499-net-ethernet-qualcomm-edma-init-features-before-register.patch"
     config=old/"linked/.config"
     exports=old/"linked/vmlinux.symvers"
@@ -74,7 +76,7 @@ def main():
             raise RuntimeError("Regenerated config differs from accepted config; see config-mismatch.diff")
         def build(dest):
             assert shutil.disk_usage(work).free>3*1024**3
-            run([*argv,TARGET])
+            run([*argv,PCS_TARGET,TARGET])
             assert (k/".config").read_bytes()==config.read_bytes()
             sym=(k/"Module.symvers").read_text().splitlines()
             assert sorted(l for l in sym if l.split("\t")[2]=="vmlinux")==sorted(kernel_exports)
@@ -82,9 +84,17 @@ def main():
             f=dest/Path(TARGET).name
             shutil.copyfile(k/TARGET,f)
             run(["env",f"CROSS={CROSS}","NO_RENAME=1",str(REPO/"scripts/strip-kmod.sh"),str(f)])
+            # Resolve actual PCS module exports in the same modpost run and
+            # verify the dependency is the exact module in the live parent.
+            pcs=dest/Path(PCS_TARGET).name
+            shutil.copyfile(k/PCS_TARGET,pcs)
+            run(["env",f"CROSS={CROSS}","NO_RENAME=1",str(REPO/"scripts/strip-kmod.sh"),str(pcs)])
+            assert sha(pcs)==PCS_SHA
+            pcs.unlink()
             info=subprocess.check_output(["modinfo",str(f)],text=True)
             assert "intree:         Y" in info and "6.18.60 SMP mod_unload aarch64" in info
             return f,set(sym),info.splitlines()[1:]
+        run(["patch","-p1","--fuzz=0","-i",str(serial_patch)],cwd=k)
         base,before,base_info=build(work/"baseline")
         assert sha(base)==PPE_SHA
         print("EXACT_PARENT_PPE_PASS",flush=True)
