@@ -2,7 +2,7 @@
 # Independent Asus guarded native trial; explicit candidate role.
 set -Eeuo pipefail
 umask 077
-(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
+(( $# >= 2 )) || { echo "usage: $0 static|dhcp|trunk|native|phy|relink|mac-order|nsscc|instant|worker|down-mode|serial-speed|mib-refresh|stock-order|force-order|mib-diag|source-reboot --selftest|--check|--check-baseline|--run|--arm-reboot|--restore-baseline|--check-reboot-1g|--reboot-1g|--selftest-reboot-1g" >&2; exit 2; }
 trial_kind=$1; profile=$1; mode=$2; shift 2
 root=/home/jan/firmware/wave7/trials
 guard8="$root/20261120-secondary-ap-guard8"
@@ -103,7 +103,7 @@ case "$profile" in
     accepted_module_sha=$candidate_module_sha
     accepted_module_taint=O
     ;;
-  mib-refresh|stock-order|force-order|mib-diag)
+  mib-refresh|stock-order|force-order|mib-diag|source-reboot)
     trunk_trial=1
     switch_module_trial=1
     phy_trial=1
@@ -113,6 +113,14 @@ case "$profile" in
     base="$guard8/$trial_kind-dhcp-guard8"
     candidate_artifact="wave7-$trial_kind-dhcp-guard8-sysupgrade.bin"
     case "$trial_kind" in
+      source-reboot)
+        candidate_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
+        candidate_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
+        expected_candidate_sha=ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516
+        candidate_module_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
+        base="$guard8/serial-speed-dhcp-guard8"
+        candidate_artifact=wave7-serial-speed-dhcp-guard8-sysupgrade.bin
+        ;;
       mib-diag)
         candidate_switch_patch=022d0978e9b87af26926addd237841ca57f698dc
         candidate_builder=bda16e3e49634bee83a8bff6939e9dab46dd9460
@@ -160,6 +168,11 @@ case "$profile" in
     accepted_switch_patch=0e69b8931cb9639367b293f825842703c0f39d29
     source_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
     source_builder=bcaae0c7eac821a46fdfdecd1dad4f6ad13adbf9
+    if [[ $trial_kind == source-reboot ]]; then
+      candidate_rev=$source_rev
+      [[ $mode == --selftest || $mode == --check || $mode == --run || $mode == --watch ]] ||
+        { echo 'source-reboot permits only reboot or observation' >&2; exit 2; }
+    fi
     ;;
   relink|mac-order|nsscc|instant|worker|down-mode|serial-speed)
     trunk_trial=1
@@ -370,6 +383,23 @@ read_state() {
   boot=$(value "$s" boot)
   extra=$(remote '
     echo "sample_boot=$(cat /proc/sys/kernel/random/boot_id)"
+    echo "local_policy_without_noc=$(if (
+      set -e
+      test -e /tmp/wave7-ap-overlay-ready || exit 1
+      . /rom/lib/wave7/overlay-reset.sh || exit 1
+      wave7_ap_policy_matches_lower / || exit 1
+      for port in lan lan1 lan2 game ap-mld0; do
+        test -e "/sys/class/net/br-lan/brif/$port" || exit 1
+      done
+      for pd in 0 1 2; do
+        test "$(cat "/sys/class/remoteproc/remoteproc$pd/state")" = running || exit 1
+      done
+      info=$(iw dev ap-mld0 info) || exit 1
+      for link in 0 1; do
+        printf "%s\n" "$info" | grep -Eq "link ID[[:space:]]+$link([[:space:]]|$)" || exit 1
+      done
+      ) >/dev/null 2>&1; then echo 1; else echo 0; fi)"
+
     p=lib/modules/6.18.60/rtl8365mb.ko
     echo "module_sha=$(sha256sum /$p 2>/dev/null | cut -d" " -f1)"
     echo "module_rom_sha=$(sha256sum /rom/$p 2>/dev/null | cut -d" " -f1)"
@@ -532,6 +562,20 @@ switch_source_healthy() {
     relink_matches "$1" "$candidate_pcs_sha" "$candidate_ppe_sha" '' '' "$candidate_serial_patch" &&
     kernel_variant_matches "$1" '' '' 0 '' 0 ''
 }
+# Historical NoC is tolerated exclusively for rebooting the same
+# exact firmware. It never qualifies any image for a flash or soak.
+reboot_history_source_valid() {
+  local s=$1
+  [[ $trial_kind == source-reboot ]] || return 1
+  [[ $(value "$s" noc) =~ ^[0-9]+$ ]] || return 1
+  if [[ $(value "$s" noc) == 0 ]]; then
+    switch_source_healthy "$s"
+  else
+    grep -Fxq local_ready=0 <<< "$s" &&
+      grep -Fxq local_policy_without_noc=1 <<< "$s" &&
+      switch_source_healthy "$(sed -e 's/^noc=.*/noc=0/' -e 's/^local_ready=.*/local_ready=1/' <<< "$s")"
+  fi
+}
 rollback_eligible() {
   local s=$1
   [[ $(value "$s" rev) == "$candidate_rev" &&
@@ -667,6 +711,17 @@ if [[ $mode == --selftest ]]; then
       -e "s/^manifest_module_sha=.*/manifest_module_sha=$accepted_module_sha/" -e "s/^manifest_switch_patch=.*/manifest_switch_patch=$accepted_switch_patch/" <<< "$s")
     source+=$'\napproval=0\ntoken=1'
     switch_source_healthy "$source" || fatal 'valid provisional source rejected'
+    if [[ $trial_kind == source-reboot ]]; then
+      history=$(sed -e 's/^noc=.*/noc=4/' -e 's/^local_ready=.*/local_ready=0/' <<< "$source")
+      history+=$'\nlocal_policy_without_noc=1'
+      reboot_history_source_valid "$history" || fatal 'exact historical-fault reboot source rejected'
+      if switch_source_healthy "$history" || healthy "$history"; then fatal 'historical fault accepted for flash/soak'; fi
+      for change in local_policy_without_noc=0 q6=2 bootfail=1 keep=0 manifest_switch_patch=wrong approval=1 token=0; do
+        if reboot_history_source_valid "$(sed "s/^${change%%=*}=.*/$change/" <<< "$history")"; then
+          fatal "bad reboot source accepted: $change"
+        fi
+      done
+    fi
     for change in approval=1 token=0 manifest_switch_patch=wrong manifest_serial_patch=wrong pcs_sha=wrong management_peer=192.168.76.250; do
       if switch_source_healthy "$(sed "s/^${change%%=*}=.*/$change/" <<< "$source")"; then
         fatal "bad provisional source accepted: $change"
@@ -1217,7 +1272,11 @@ elif [[ $reboot_1g == 1 ]]; then
   restore_record_matches "$record" "$boot" ||
     fatal 'stored 0491 approval identity or source boot mismatch'
 elif [[ $switch_module_trial == 1 && $mode != --check-baseline ]]; then
-  switch_source_healthy "$s" || fatal "unhealthy or incorrect provisional source: $s"
+  if [[ $trial_kind == source-reboot ]]; then
+    reboot_history_source_valid "$s" || fatal "incorrect reboot-only source: $s"
+  else
+    switch_source_healthy "$s" || fatal "unhealthy or incorrect provisional source: $s"
+  fi
   record=$(remote 'set -eu; p=/overlay/wave7-ap-approved; test -f "$p"; test ! -L "$p"; set -- $(ls -ldn "$p"); test "$1" = -rw-------; test "$3" = 0; test "$4" = 0; sha256sum "$p"; cat /proc/sys/kernel/random/boot_id') ||
     fatal 'missing stored 0491 approval'
   restore_record_matches "$record" "$boot" || fatal 'stored 0491 approval identity or source boot mismatch'
@@ -1247,7 +1306,9 @@ if [[ $switch_module_trial == 1 ]]; then
 fi
 echo "PREFLIGHT_PASS predecessor=$boot candidate=$candidate_sha mode=$mode"
 [[ $mode == --run || $mode == --restore-baseline || $mode == --reboot-1g ]] || exit 0
-if [[ $mode == --restore-baseline ]]; then
+if [[ $trial_kind == source-reboot ]]; then
+  tag=source-reboot-$(date +%Y%m%d-%H%M%S)
+elif [[ $mode == --restore-baseline ]]; then
   tag=restore-0491-$(date +%Y%m%d-%H%M%S)
 elif [[ $mode == --reboot-1g ]]; then
   tag=reboot-1g-$(date +%Y%m%d-%H%M%S)
@@ -1265,7 +1326,13 @@ if [[ $mode == --restore-baseline ]]; then
   flash_image=/tmp/wave7-secondary-ap-restore.bin
   pairs=("$accepted|$flash_image|$accepted_sha")
 fi
-if [[ $mode == --reboot-1g ]]; then
+if [[ $trial_kind == source-reboot ]]; then
+  pairs=("$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha")
+  # Preserve this exact boot before the restart; no disruptive stats APIs.
+  remote 'set -e; echo ====BOOT====; cat /proc/sys/kernel/random/boot_id; echo ====DMESG====; dmesg; echo ====LOGREAD====; logread; echo ====IW====; iw dev ap-mld0 info; echo ====END_BOOT====; cat /proc/sys/kernel/random/boot_id' > "$out/outgoing-boot.txt"
+  [[ $(grep -Fxc "$boot" "$out/outgoing-boot.txt") == 2 ]] || fatal 'mixed outgoing archive boot'
+  sha256sum "$out/outgoing-boot.txt" > "$out/outgoing-boot.sha256"
+elif [[ $mode == --reboot-1g ]]; then
   # Reboot the exact already-running candidate; do not rewrite NAND.
   pairs=("$accepted|/tmp/wave7-secondary-ap-baseline.bin|$accepted_sha")
   watch_mode=--watch-reboot-1g
@@ -1300,7 +1367,13 @@ if [[ $mode == --reboot-1g ]]; then
     fatal 'peer window changed before reboot'
 fi
 flash_started=1
-if [[ $mode == --reboot-1g ]]; then
+if [[ $trial_kind == source-reboot ]]; then
+  set +e
+  remote_timed 'sync; /sbin/reboot' > "$out/reboot.log" 2>&1
+  rc=$?
+  set -e
+  echo "REBOOT_SSH_RC=$rc" | tee -a "$out/reboot.log"
+elif [[ $mode == --reboot-1g ]]; then
   # Until both guards are armed, the only operation is a verified
   # rollback upload. Observe a new boot, never persist approval.
   set +e
@@ -1310,7 +1383,7 @@ if [[ $mode == --reboot-1g ]]; then
   echo "REBOOT_SSH_RC=$rc" | tee -a "$out/reboot.log"
   echo "RUN_DIR=$out"
   exit 0
-fi
+else
 set +e
 remote_timed "/sbin/sysupgrade -n '$flash_image'" > "$out/sysupgrade.log" 2>&1
 rc=$?
@@ -1320,6 +1393,7 @@ if ! grep -q 'Commencing upgrade\. Closing all shell sessions\.' "$out/sysupgrad
   # A refused upgrade must not be treated as an attempted flash.
   flash_started=0
   fatal "sysupgrade did not reach its actual upgrade stage"
+fi
 fi
 echo "RUN_DIR=$out"
 if [[ $switch_module_trial == 1 ]]; then
