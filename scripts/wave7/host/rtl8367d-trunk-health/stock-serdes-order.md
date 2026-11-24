@@ -46,3 +46,17 @@ Independent potential experiment dimensions:
 
 Equal final registers are not evidence of equal transition sequences.
 No physical receiver lock, clock waveform or CRC outcome is modeled.
+
+## Stock reset API dispatch (2026-11-24)
+
+The stock module contains a generic `rtk_port_sds_reset` wrapper at
+0x52f4, but the actual RTL8367D mapper getter at 0x8790 returns .data
+offset 0xf5c. The wrapper's callback slot at +0x2ec (.data 0x1248)
+is zero and has no relocation. The replay now executes the actual
+getter and wrapper with the installed mapper, demonstrating return
+18 for ports 0, 16, 17 and 0xffffffff without calling a reset routine.
+There are no direct CALL/JUMP24 relocations to the reset wrapper.
+This is additional evidence that explicit SDK SerDes resets are not
+part of the RTL8367D stock host sequence, not evidence that its running
+DW8051 performs no corresponding initialization. Keep this separate
+from the lane-order and MAC force-order experiments.

@@ -197,6 +197,53 @@ class Replay:
         return nway, split, events, bus, failed
 
 
+
+def verify_reset_api(original):
+    """Follow the real mapper getter and reset API; prove the missing callback."""
+    assert hashlib.sha256(original).hexdigest() == SHA
+    elf = ELFFile(BytesIO(original))
+    symbols = elf.get_section_by_name(".symtab")
+    def symbol(name):
+        return symbols.get_symbol_by_name(name)[0]
+    code = bytearray(elf.get_section_by_name(".text").data())
+    data = elf.get_section_by_name(".data").data()
+    getter = symbol("dal_rtl8367d_mapper_get")["st_value"]
+    reset = symbol("rtk_port_sds_reset")["st_value"]
+    mapper, = struct.unpack_from("<I", code, getter + 8)
+    # The getter loads a relocated .data pointer. The wrapper loads
+    # pMgmt_node, then Mgmt_node, then the callback at offset 0x2ec.
+    rels = {r["r_offset"]: symbols.get_symbol(r["r_info_sym"]).name
+            for r in elf.get_section_by_name(".rel.text").iter_relocations()}
+    assert rels[reset + 0x24] == "pMgmt_node"
+    callback = mapper + 0x2ec
+    assert struct.unpack_from("<I", data, callback)[0] == 0
+    assert callback not in {r["r_offset"] for r in
+                            elf.get_section_by_name(".rel.data").iter_relocations()}
+    data_base = 0x500000
+    node = MOCK + 0x200
+    pointer = MOCK + 0x204
+    struct.pack_into("<I", code, getter + 8, data_base + mapper)
+    struct.pack_into("<I", code, reset + 0x24, pointer)
+    uc = Uc(UC_ARCH_ARM, UC_MODE_ARM)
+    for addr, size in ((TEXT, 0x20000), (data_base, 0x2000), (MOCK, 0x4000)):
+        uc.mem_map(addr, size)
+    uc.mem_write(TEXT, bytes(code))
+    uc.mem_write(data_base, data)
+    uc.mem_write(pointer, struct.pack("<I", node))
+    def call(entry, port):
+        uc.reg_write(UC_ARM_REG_R0, port)
+        uc.reg_write(UC_ARM_REG_LR, STOP)
+        uc.emu_start(TEXT + entry, STOP, count=100)
+        assert uc.reg_read(UC_ARM_REG_PC) == STOP
+        return uc.reg_read(UC_ARM_REG_R0)
+    assert call(getter, 0) == data_base + mapper
+    uc.mem_write(node, struct.pack("<I", data_base + mapper))
+    for port in (0, 16, 17, 0xffffffff):
+        assert call(reset, port) == 18
+    return {"mapper_offset": hex(mapper), "reset_slot": hex(callback),
+            "callback": None, "api_return": 18, "cases": 4}
+
+
 def verify(events, split, mode, misc, nway, enable):
     # Exact tuning table for the two interface modes was independently
     # verified by compare-stock-tuning.py. Validate the order around it.
@@ -230,7 +277,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("module", type=Path)
     args = parser.parse_args()
-    replay = Replay(args.module.read_bytes())
+    original = args.module.read_bytes()
+    reset_api = verify_reset_api(original)
+    replay = Replay(original)
     count = 0
     for mode in (9, 10):
         for misc in (0, 0x1f, 0x0e12, 0xa5a5, 0xffff):
@@ -265,7 +314,7 @@ def main():
     print(json.dumps({"module_sha256": SHA, "cases": count, "mac_force_cases": force_count,
                       "hsgmii_initialization": events[:split],
                       "hsgmii_nway_disable": events[split:],
-                      "smi_transactions": len(bus)}, indent=2))
+                      "smi_transactions": len(bus), "reset_api": reset_api}, indent=2))
 
 
 if __name__ == "__main__":
