@@ -1,0 +1,223 @@
+name: Wave 7 validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/wave7-kernel.yml'
+      - '.github/workflows/scripts/wave7-*.sh'
+      - '.github/workflows/scripts/test-wave7-ci.sh'
+      - 'Makefile'
+      - 'rules.mk'
+      - 'Config.in'
+      - 'feeds.conf.default'
+      - 'config/**'
+      - 'include/**'
+      - 'package/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - 'toolchain/**'
+      - 'target/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/wave7-kernel.yml'
+      - '.github/workflows/scripts/wave7-*.sh'
+      - '.github/workflows/scripts/test-wave7-ci.sh'
+      - 'Makefile'
+      - 'rules.mk'
+      - 'Config.in'
+      - 'feeds.conf.default'
+      - 'config/**'
+      - 'include/**'
+      - 'package/**'
+      - 'scripts/**'
+      - 'tools/**'
+      - 'toolchain/**'
+      - 'target/**'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Validation scope (full upstream is explicitly opt-in)
+        type: choice
+        default: kernel
+        options: [kernel, packages, prebuild, upstream-kernel, upstream-packages]
+      source-ref:
+        description: Optional trusted refs/heads/wave7-* source to build from main
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.source-ref || '' }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    if: github.event_name != 'workflow_dispatch' || !startsWith(inputs.mode, 'upstream-')
+    runs-on: ubuntu-slim
+    outputs:
+      sha: ${{ steps.plan.outputs.sha }}
+      mode: ${{ steps.plan.outputs.mode }}
+      packages: ${{ steps.plan.outputs.packages }}
+    steps:
+      - name: Validate explicitly requested source
+        shell: bash
+        env:
+          SOURCE_REF: ${{ inputs.source-ref }}
+        run: |
+          if [[ -n "$SOURCE_REF" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == refs/heads/main ]]
+            [[ "$SOURCE_REF" == refs/heads/wave7-* ]]
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci
+          sparse-checkout: .github/workflows/scripts
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.source-ref || github.sha }}
+          path: openwrt
+          fetch-depth: 2
+          sparse-checkout: target/linux/qualcommbe/ipq53xx
+          persist-credentials: false
+      - name: Test validation scope and cache provenance
+        run: bash ci/.github/workflows/scripts/test-wave7-ci.sh
+      - name: Resolve exact board source and affected scope
+        id: plan
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+          MODE: ${{ inputs.mode }}
+        run: bash ci/.github/workflows/scripts/wave7-ci-plan.sh openwrt "$GITHUB_EVENT_NAME" "$MODE" "$BEFORE" "$GITHUB_OUTPUT"
+
+  board:
+    name: Validate qualcommbe/ipq53xx
+    needs: plan
+    if: needs.plan.outputs.mode != 'none'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/openwrt/buildbot/buildworker-v3.11.8@sha256:3d9edeb63c9bee5151b314f9620d9565657abba6e1450b2959e66bdeade286fe
+      options: --privileged --pid=host
+    steps:
+      - name: Free unused SDK space on ephemeral hosted runner
+        shell: sh -c "nsenter -t 1 -a sh -e /home/runner/$(echo {0} | sed s#^/__w#work#)"
+        run: |
+          mkdir -p /empty
+          for dir in /usr/local/lib/android /usr/local/.ghcup /usr/share/dotnet /usr/share/swift; do
+            if [ -d "$dir" ]; then sudo rsync -a --delete /empty/ "$dir"; fi
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: ci
+          sparse-checkout: .github/workflows/scripts
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          path: openwrt
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare source ownership
+        run: chown -R buildbot:buildbot openwrt ci
+      - name: Resolve canonical compiler configuration and provenance
+        id: toolchain
+        working-directory: openwrt
+        shell: bash
+        run: |
+          output=$(mktemp)
+          chown buildbot:buildbot "$output"
+          su buildbot -c "bash ../ci/.github/workflows/scripts/wave7-ci-build.sh identity '$output'"
+          cat "$output" >> "$GITHUB_OUTPUT"
+          rm -f "$output"
+      - name: Restore exact source-matched toolchain
+        id: prebuilt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: openwrt/.wave7-toolchain-cache
+          key: wave7-toolchain-v2-${{ steps.toolchain.outputs.key }}
+      - name: Prepare source-matched host tools and compiler
+        working-directory: openwrt
+        shell: bash
+        env:
+          TOOLCHAIN_KEY: ${{ steps.toolchain.outputs.key }}
+          CACHE_HIT: ${{ steps.prebuilt.outputs.cache-hit }}
+        run: |
+          if [ -d .wave7-toolchain-cache ]; then chown -R buildbot:buildbot .wave7-toolchain-cache; fi
+          su buildbot -c "bash ../ci/.github/workflows/scripts/wave7-ci-build.sh prepare '$TOOLCHAIN_KEY' '$CACHE_HIT'"
+      - name: Save trusted immutable toolchain
+        if: steps.prebuilt.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: openwrt/.wave7-toolchain-cache
+          key: wave7-toolchain-v2-${{ steps.toolchain.outputs.key }}
+      - name: Restore compiler object cache
+        if: needs.plan.outputs.mode != 'prebuild'
+        id: ccache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: openwrt/.ccache
+          key: wave7-ccache-v2-${{ steps.toolchain.outputs.key }}-${{ needs.plan.outputs.sha }}
+          restore-keys: |
+            wave7-ccache-v2-${{ steps.toolchain.outputs.key }}-
+      - name: Check packages and patches, build kernel/modules and requested packages
+        if: needs.plan.outputs.mode != 'prebuild'
+        working-directory: openwrt
+        shell: bash
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          PACKAGES: ${{ needs.plan.outputs.packages }}
+        run: |
+          if [ -d .ccache ]; then chown -R buildbot:buildbot .ccache; fi
+          [[ "$MODE" == kernel || "$MODE" == packages ]]
+          [[ "$PACKAGES" =~ ^[-A-Za-z0-9_.+[:blank:]]*$ ]]
+          su buildbot -c "bash ../ci/.github/workflows/scripts/wave7-ci-build.sh validate '$MODE' '$PACKAGES'"
+      - name: Save trusted compiler object cache
+        if: needs.plan.outputs.mode != 'prebuild' && steps.ccache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: openwrt/.ccache
+          key: wave7-ccache-v2-${{ steps.toolchain.outputs.key }}-${{ needs.plan.outputs.sha }}
+      - name: Upload failure details and source fixups
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: wave7-validation-failure
+          path: |
+            openwrt/logs
+            openwrt/qualcommbe-ipq53xx-refreshed
+            openwrt/packages-fixed
+          retention-days: 7
+
+  full-kernel-matrix:
+    name: Explicit upstream kernel matrix
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'upstream-kernel' && inputs.source-ref == ''
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    secrets:
+      ccache_s3_endpoint: ${{ secrets.CCACHE_S3_ENDPOINT }}
+      ccache_s3_bucket: ${{ secrets.CCACHE_S3_BUCKET }}
+      ccache_s3_access_key: ${{ secrets.CCACHE_S3_ACCESS_KEY }}
+      ccache_s3_secret_key: ${{ secrets.CCACHE_S3_SECRET_KEY }}
+    uses: openwrt/actions-shared-workflows/.github/workflows/kernel.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+
+  full-package-matrix:
+    name: Explicit upstream reference packages
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'upstream-packages' && inputs.source-ref == ''
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    secrets:
+      ccache_s3_endpoint: ${{ secrets.CCACHE_S3_ENDPOINT }}
+      ccache_s3_bucket: ${{ secrets.CCACHE_S3_BUCKET }}
+      ccache_s3_access_key: ${{ secrets.CCACHE_S3_ACCESS_KEY }}
+      ccache_s3_secret_key: ${{ secrets.CCACHE_S3_SECRET_KEY }}
+    uses: openwrt/actions-shared-workflows/.github/workflows/packages.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
