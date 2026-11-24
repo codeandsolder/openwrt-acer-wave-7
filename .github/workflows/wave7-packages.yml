@@ -7,7 +7,6 @@ on:
       - 'config/**'
       - 'include/**'
       - 'package/**'
-      - 'target/linux/generic/**'
       - 'toolchain/**'
   push:
     paths:
@@ -15,7 +14,6 @@ on:
       - 'config/**'
       - 'include/**'
       - 'package/**'
-      - 'target/linux/generic/**'
       - 'toolchain/**'
     branches: [main]
   workflow_dispatch:

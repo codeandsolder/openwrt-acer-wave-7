@@ -1,0 +1,12 @@
+# Reserved legacy workflow identity. Keep this file on main and the
+# workflow disabled at repository level; older branches contain automatic
+# upstream-wide triggers at this path. Never re-enable this identity.
+name: Retired upstream package matrix
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  retired:
+    runs-on: ubuntu-slim
+    steps:
+      - run: echo "Retired workflow identity; use the Wave 7 workflow instead." && exit 1
