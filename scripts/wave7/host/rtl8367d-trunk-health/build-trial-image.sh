@@ -84,7 +84,7 @@ if [[ $variant == mib-diag ]]; then
   # allowed import additions. Both are exports in this exact kernel.
   diff -u <( { imports "$root/$rel"; printf '%s\n' ktime_get_with_offset param_ops_bool; } | LC_ALL=C sort -u) \
     <(imports "$work/candidate.ko") || fail 'diagnostic undefined symbol delta'
-  [[ $(modinfo -F parm "$work/candidate.ko") == mib_same_row_probe:bool ]] || fail 'diagnostic parameter'
+  [[ $(modinfo -F parmtype "$work/candidate.ko") == mib_same_row_probe:bool ]] || fail 'diagnostic parameter'
   strings "$work/candidate.ko" | rg -F 'wave7-mib-probe port=' >/dev/null
   import_report=exact_diagnostic_additions_ktime_get_with_offset_param_ops_bool
 else
