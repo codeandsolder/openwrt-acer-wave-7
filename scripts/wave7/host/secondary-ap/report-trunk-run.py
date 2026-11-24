@@ -17,8 +17,8 @@ XGMAC_ERRORS = ("rx_crc_err","rx_frag_err","rx_jabber_err","rx_len_err",
 XGMAC = ("rx_frames","tx_frames","rx_unicast_g","tx_unicast","rx_pause","tx_pause",*XGMAC_ERRORS)
 XGMAC_HEADER = ("wall_epoch","boot","uptime",*XGMAC)
 
-def xgmac_report(run, mib_rows):
-    path = run / "trunk-xgmac.tsv"
+def xgmac_report(run, mib_rows, filename="trunk-xgmac.tsv"):
+    path = run / filename
     if not path.exists():
         return None
     def identity(row):
@@ -75,41 +75,8 @@ def xgmac_report(run, mib_rows):
             "hardware_error_intervals":[r["end_uptime"] for r in intervals if not r["reset"] and any(r["xgmac"][k] for k in XGMAC_ERRORS)],
             "intervals":intervals}
 
-def planned_restore_report(run):
-    """A deliberate return to 0491 is not a candidate soak or fault."""
-    def state(name):
-        return dict(line.split("=", 1) for line in
-                    (run / name).read_text().splitlines() if "=" in line)
-    source = state("preflight.txt")
-    restored = state("restored-state.txt")
-    boot = source.get("boot", "")
-    target = restored.get("boot", "")
-    if (not BOOT_RE.fullmatch(boot) or not BOOT_RE.fullmatch(target)
-            or boot == target or not all(restored.get(k) == v for k, v in {
-                "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
-                "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
-                "token": "0", "local_ready": "1", "switch_verified": "1",
-                "direct_verified": "1",
-            }.items())):
-        raise ValueError("missing verified restored 0491 identity")
-    log = (run / "observer.log").read_text()
-    if f"ARMED predecessor={boot}" not in log or f"ACCEPTED_IMAGE_BOOT_HEALTHY boot={target}" not in log:
-        raise ValueError("restoration observer identity mismatch")
-    with (run / "trunk-counters.tsv").open() as f:
-        if list(csv.reader(f, delimiter="\t")) != [list(HEADER)]:
-            raise ValueError("planned restoration contains candidate samples")
-    return {"boot": boot, "source_revision": source.get("rev"),
-            "restored_boot": target, "restored_revision": restored["rev"],
-            "status": "RESTORED", "classification": "PLANNED_APPROVED_RESTORE",
-            "samples": 0, "soak_seconds": 0}
-
-
-def report(run, *, candidate_only=False):
-    if ((run / "status").read_text().strip() == "RESTORED"
-            and not (run / "latest-state.txt").exists()
-            and (run / "preflight.txt").exists()):
-        return planned_restore_report(run)
-    with (run / "trunk-counters.tsv").open(newline="") as f:
+def read_mib_rows(path):
+    with path.open(newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
         if tuple(reader.fieldnames or ()) != HEADER:
             raise ValueError("unexpected counter columns")
@@ -127,6 +94,99 @@ def report(run, *, candidate_only=False):
         raise ValueError("negative sample")
     if any(r[k] not in (0, 1) for r in rows for k in ("keep", "switch")):
         raise ValueError("invalid binary sample")
+    return rows
+
+
+def rollback_evidence(run, restored, status):
+    boot = restored["boot"]
+    counters = run / f"rollback-{boot}-trunk-counters.tsv"
+    errors = {k: int(restored[f"cpu_{k}"]) for k in ERRORS
+              if f"cpu_{k}" in restored}
+    result = {"boot": boot, "status": status, "switch_verified": restored["switch_verified"],
+              "final_errors": errors, "timeline_present": counters.exists()}
+    if not counters.exists():
+        if status == "RESTORED_DEGRADED":
+            raise ValueError("degraded rollback missing its own timeline")
+        result["quality"] = "ERRORS_OBSERVED" if any(errors.values()) else "LEGACY_SINGLE_OBSERVATION"
+        return result
+    rows = read_mib_rows(counters)
+    if rows[0]["boot"] != boot or rows[-1]["uptime"] != int(restored["uptime"]):
+        raise ValueError("rollback timeline identity or final sample mismatch")
+    if any(rows[-1][k] != v for k,v in errors.items()):
+        raise ValueError("rollback final counters mismatch")
+    if any(b["uptime"] <= a["uptime"] or b["wall_epoch"] <= a["wall_epoch"]
+           for a,b in zip(rows,rows[1:])):
+        raise ValueError("rollback timeline not monotonic")
+    mac = xgmac_report(run, rows, f"rollback-{boot}-xgmac.tsv")
+    resets = any(b[k] < a[k] for a,b in zip(rows,rows[1:]) for k in COUNTERS)
+    dirty = any(r[k] for r in rows for k in ERRORS) or resets
+    clean_seconds = 0
+    for i in range(len(rows)-1, -1, -1):
+        r = rows[i]
+        if not r["switch"] or not r["keep"] or any(r[k] for k in ERRORS):
+            break
+        if i+1 < len(rows) and rows[i+1]["wall_epoch"]-r["wall_epoch"] > 12:
+            break
+        clean_seconds = rows[-1]["wall_epoch"]-r["wall_epoch"]
+    qualified = (not dirty and mac is not None and mac["clean"] and clean_seconds >= 30)
+    if status=="RESTORED" and not qualified:
+        raise ValueError("rollback clean status contradicted by paired timeline")
+    result.update(samples=len(rows), clean_tail_seconds=clean_seconds,
+                  quality="CLEAN" if qualified else "DEGRADED",
+                  xgmac=mac)
+    return result
+
+
+def restored_identity(run, source_boot, status):
+    restored = dict(line.split("=", 1) for line in
+                    (run / "restored-state.txt").read_text().splitlines() if "=" in line)
+    boot = restored.get("boot", "")
+    if (not BOOT_RE.fullmatch(boot) or boot == source_boot or
+        not all(restored.get(k) == v for k, v in {
+            "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
+            "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
+            "token": "0", "local_ready": "1", "direct_verified": "1",
+        }.items())):
+        raise ValueError("missing verified restored 0491 identity")
+    log = (run / "observer.log").read_text()
+    if status == "RESTORED":
+        if restored.get("switch_verified") != "1" or f"ACCEPTED_IMAGE_BOOT_HEALTHY boot={boot}" not in log:
+            raise ValueError("missing restored switched path verification")
+    elif status == "RESTORED_DEGRADED":
+        if restored.get("switch_verified") not in ("0","1") or f"ACCEPTED_IMAGE_BOOT_DEGRADED boot={boot} " not in log:
+            raise ValueError("missing degraded rollback observation")
+    else:
+        raise ValueError("invalid restore status")
+    return restored
+
+
+def planned_restore_report(run):
+    """A deliberate return to 0491 is not a candidate soak or fault."""
+    source = dict(line.split("=",1) for line in
+                  (run / "preflight.txt").read_text().splitlines() if "=" in line)
+    boot = source.get("boot", "")
+    status = (run / "status").read_text().strip()
+    if not BOOT_RE.fullmatch(boot) or f"ARMED predecessor={boot}" not in (run / "observer.log").read_text():
+        raise ValueError("restoration predecessor mismatch")
+    restored = restored_identity(run, boot, status)
+    target = restored["boot"]
+    with (run / "trunk-counters.tsv").open() as f:
+        if list(csv.reader(f, delimiter="\t")) != [list(HEADER)]:
+            raise ValueError("planned restoration contains candidate samples")
+    return {"boot": boot, "source_revision": source.get("rev"),
+            "restored_boot": target, "restored_revision": restored["rev"],
+            "rollback": rollback_evidence(run, restored, status),
+            "status": status, "classification": "PLANNED_APPROVED_RESTORE" if status=="RESTORED" else "PLANNED_APPROVED_RESTORE_DEGRADED",
+            "samples": 0, "soak_seconds": 0}
+
+
+def report(run, *, candidate_only=False):
+    if ((run / "status").read_text().strip() in ("RESTORED", "RESTORED_DEGRADED")
+            and not (run / "latest-state.txt").exists()
+            and (run / "preflight.txt").exists()):
+        return planned_restore_report(run)
+    rows = read_mib_rows(run / "trunk-counters.tsv")
+    boot = rows[0]["boot"]
     resets = []
     corrupt_only = []
     errors = []
@@ -155,10 +215,11 @@ def report(run, *, candidate_only=False):
     match = re.search(r"\b(?:AUTONOMOUS_)?SOAK_PASS seconds=(\d+)\b", log)
     soak_seconds = int(match[1]) if match else 0
     restored_boot = None
-    if candidate_only and (status not in ("RESTORE_ISSUED","RESTORED","TIMEOUT") or
+    rollback = None
+    if candidate_only and (status not in ("RESTORE_ISSUED","RESTORED","RESTORED_DEGRADED","TIMEOUT") or
                            "RESTORE_NATIVE_SYSUPGRADE" not in log):
         raise ValueError("candidate-only report requires an issued native restore")
-    if status == "RESTORED" or candidate_only:
+    if status in ("RESTORED", "RESTORED_DEGRADED") or candidate_only:
         raw = (run / "pre-rollback.txt").read_text()
         marker = f"====BOOT====\n{boot}\n====DMESG====\n"
         if not raw.startswith(marker) or "====ETHERNET====\n" not in raw:
@@ -166,18 +227,10 @@ def report(run, *, candidate_only=False):
         dmesg, tail = raw[len(marker):].split("====ETHERNET====\n", 1)
         if "====END_BOOT====\n" in tail and not tail.endswith(f"====END_BOOT====\n{boot}\n"):
             raise ValueError("pre-rollback boot changed")
-        if status == "RESTORED":
-            restored = dict(line.split("=", 1) for line in
-                            (run / "restored-state.txt").read_text().splitlines() if "=" in line)
-            restored_boot = restored.get("boot")
-            if (not restored_boot or not BOOT_RE.fullmatch(restored_boot) or restored_boot == boot or
-                not all(restored.get(k) == v for k, v in {
-                    "rev": "r0+38346-0418bb7af2-ap-dhcp-guard8",
-                    "bootfail": "0", "keep": "1", "noc": "0", "approval": "1",
-                    "token": "0", "local_ready": "1", "switch_verified": "1",
-                    "direct_verified": "1",
-                }.items())):
-                raise ValueError("missing verified restored 0491 identity")
+        if status in ("RESTORED", "RESTORED_DEGRADED"):
+            restored = restored_identity(run, boot, status)
+            restored_boot = restored["boot"]
+            rollback = rollback_evidence(run, restored, status)
     elif status == "SOAK_PASS":
         dmesg = (run / "final-dmesg.txt").read_text()
     else:
@@ -207,7 +260,7 @@ def report(run, *, candidate_only=False):
              and (xgmac is None or xgmac["clean"]))
     return {
         "boot": boot, "status": status, "soak_seconds": soak_seconds,
-        "restored_boot": restored_boot,
+        "restored_boot": restored_boot, "rollback": rollback,
         "xgmac": xgmac,
         "autonomous": autonomous, "samples": len(rows), "first_uptime": rows[0]["uptime"],
         "last_uptime": rows[-1]["uptime"],

@@ -17,10 +17,10 @@ lock="$base/.lab-control.lock"
 exec 8<>"$lock"
 flock -n 8 || { echo 'lab control held by another trial'; exit 2; }
 status=$(cat "$run/status")
-[[ $status == SOAK_PASS || $status == RESTORED ]] || { echo 'not a terminal qualified/restored trial'; exit 2; }
+[[ $status == SOAK_PASS || $status == RESTORED || $status == RESTORED_DEGRADED ]] || { echo 'not a terminal qualified/restored trial'; exit 2; }
 [[ ! -e $run/evidence.sha256 ]] || { echo 'already archived'; exit 2; }
 planned_restore=0
-if [[ $status == RESTORED && ${run##*/} == restore-0491-* ]]; then
+if [[ ( $status == RESTORED || $status == RESTORED_DEGRADED ) && ${run##*/} == restore-0491-* ]]; then
   planned_restore=1
 fi
 source_state=latest-state.txt
@@ -39,7 +39,7 @@ tmp=$(mktemp -d "$run/.archive.XXXXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 capture_boot=$boot
 prefix=final
-if [[ $status == RESTORED ]]; then
+if [[ $status == RESTORED || $status == RESTORED_DEGRADED ]]; then
   [[ $addr == 192.168.76.2 ]] || { echo 'restored-run archival requires independent direct management'; exit 2; }
   capture_boot=$(sed -n 's/^boot=//p' "$run/restored-state.txt")
   [[ $capture_boot =~ ^[a-f0-9-]{36}$ && $capture_boot != "$boot" ]]
@@ -54,6 +54,9 @@ remote "set -e; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boo
 cp "$run"/{status,observer.log,trunk-counters.tsv} "$tmp/"
 cp "$run/$source_state" "$tmp/$source_state"
 if [[ -f $run/trunk-xgmac.tsv ]]; then cp "$run/trunk-xgmac.tsv" "$tmp/"; fi
+for f in "$run"/rollback-*-trunk-counters.tsv "$run"/rollback-*-xgmac.tsv; do
+  if [[ -f $f ]]; then cp "$f" "$tmp/"; fi
+done
 uv run --no-project --offline --python /usr/bin/python3 python "$script_dir/report-trunk-run.py" "$tmp" > "$tmp/report.json"
 for f in "$prefix-dmesg.txt" "$prefix-hardware.txt" report.json; do
   mv "$tmp/$f" "$run/$f"
@@ -72,7 +75,8 @@ if [[ $run == "$base"/serial-speed-dhcp-guard8/runs/source-reboot-* ||
       $run == "$base"/pcs0-handoff-dhcp-guard8/runs/* ||
       $run == "$base"/edma-feature-init-dhcp-guard8/runs/* ||
       $run == "$base"/edma-sg-inheritance-dhcp-guard8/runs/* ]]; then
-  export XDG_RUNTIME_DIR=/run/user/$(id -u)
+  XDG_RUNTIME_DIR=/run/user/$(id -u)
+  export XDG_RUNTIME_DIR
   export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
   if systemctl --user is-active --quiet "wave7-fallback-watch-$tag.service"; then
     systemctl --user stop "wave7-fallback-watch-$tag.service"
@@ -94,7 +98,7 @@ fi
   for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256 fallback-watch.log pstore.txt ramoops-raw.bin pre-rollback.txt unhealthy-state.txt restored-state.txt restore.log attestation-latest.log trunk-xgmac.tsv; do
     if [[ -f $f && $f != "$source_state" ]]; then files+=("$f"); fi
   done
-  for f in fault-pcs-*.json fault-pcs-*.log; do
+  for f in fault-pcs-*.json fault-pcs-*.log rollback-*-trunk-counters.tsv rollback-*-xgmac.tsv; do
     if [[ -f $f ]]; then files+=("$f"); fi
   done
   sha256sum "${files[@]}" > evidence.sha256

@@ -699,9 +699,10 @@ has_permanent_address() {
     END {exit !found}
   ' <<< "$addresses"
 }
-# One definition of the healthy accepted baseline, used before the trial
-# and when checking that the rollback has actually booted successfully.
-baseline_healthy() {
+# Separate the exact approved, locally ready image from the health of
+# its independent switched path. A successful restore is not a clean boot
+# just because the image identity is correct.
+baseline_ready() {
   if [[ $switch_module_trial == 1 ]]; then
     grep -Fxq "manifest_switch_patch=$accepted_switch_patch" <<< "$1" &&
       experiment_matches "$1" '' '' '' || return 1
@@ -711,7 +712,10 @@ baseline_healthy() {
     grep -Fxq "builder_commit=$accepted_builder" <<< "$1" || return 1
   fi
   if [[ $trunk_trial == 1 ]]; then
-    module_matches "$1" "$accepted_module_sha" "$accepted_module_taint" && trunk_path_healthy "$1" || return 1
+    module_matches "$1" "$accepted_module_sha" "$accepted_module_taint" &&
+      grep -Fxq direct_verified=1 <<< "$1" &&
+      grep -Fxq local_ready=1 <<< "$1" &&
+      trunk_counters_valid "$1" || return 1
     if [[ -n $accepted_module_taint ]]; then
       grep -Fxq "manifest_module_sha=$accepted_module_sha" <<< "$1" || return 1
     fi
@@ -724,6 +728,12 @@ baseline_healthy() {
   fi
   if [[ $kernel_variant_trial == 1 ]]; then
     kernel_variant_matches "$1" '' '' 0 '' 0 '' || return 1
+  fi
+}
+baseline_healthy() {
+  baseline_ready "$1" || return 1
+  if [[ $trunk_trial == 1 ]]; then
+    grep -Fxq switch_verified=1 <<< "$1" || return 1
   fi
 }
 # The source is a separately pinned provisional experiment, not the
@@ -875,6 +885,18 @@ restore_record_matches() {
 restore_target_valid() {
   baseline_healthy "$1" && autonomous_approval_ok "$1"
 }
+restore_target_ready() {
+  baseline_ready "$1" && autonomous_approval_ok "$1"
+}
+restore_clean_sample() {
+  restore_target_valid "$1" && [[ $(trunk_error_key "$1") == 0:0:0 ]] &&
+    xgmac_counter_row "$1" 0 "$(value "$1" boot)" >/dev/null || return 1
+  local field
+  for field in rx_crc_err rx_frag_err rx_jabber_err rx_len_err rx_fifo_overflow rx_drop_frames tx_underflow_err; do
+    grep -Fxq "xgmac_$field=0" <<< "$1" || return 1
+  done
+}
+
 XDG_RUNTIME_DIR=/run/user/$(id -u)
 export XDG_RUNTIME_DIR
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
@@ -1185,6 +1207,18 @@ if [[ $mode == --selftest ]]; then
       fatal 'incorrect approval accepted'
     fi
     restore_target_valid "$baseline"$'\napproval=1\ntoken=0' || fatal 'autonomous restore rejected'
+    if [[ $switch_module_trial == 1 ]]; then
+      ready="$baseline"$'\napproval=1\ntoken=0\nuptime=60'
+      for field in $xgmac_fields; do ready+=$'\n'"xgmac_$field=0"; done
+      restore_target_ready "$ready" && restore_clean_sample "$ready" || fatal 'clean restore rejected'
+      missed=$(sed 's/^switch_verified=1$/switch_verified=0/' <<< "$ready")
+      restore_target_ready "$missed" || fatal 'degraded rollback identity rejected'
+      if restore_clean_sample "$missed" || restore_clean_sample "$(sed 's/^cpu_fcs=0$/cpu_fcs=1/' <<< "$ready")" ||
+         restore_clean_sample "$(sed 's/^xgmac_rx_crc_err=0$/xgmac_rx_crc_err=1/' <<< "$ready")" ||
+         restore_clean_sample "$(sed '/^xgmac_rx_frames=/d' <<< "$ready")"; then fatal 'dirty restored state qualified clean'; fi
+      if restore_target_ready "$(sed 's/^direct_verified=1$/direct_verified=0/' <<< "$ready")"; then fatal 'unverified rollback identity accepted'; fi
+    fi
+
     if restore_target_valid "$baseline"$'\napproval=0\ntoken=0' ||
        restore_target_valid "$baseline"$'\napproval=1\ntoken=1' ||
        restore_target_valid "$s"$'\napproval=1\ntoken=0'; then
@@ -1345,6 +1379,12 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
   rollback_cause=''
   last_restore_attempt=0
   restored_boot=""
+  restored_ready_since=0
+  restored_clean_since=0
+  restored_dirty=0
+  restored_clean_last=0
+  restored_previous=''
+  restored_fault_episode=0
   restore_attested=0
   last_restore_attest=0
   last_errors=''
@@ -1393,6 +1433,12 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
       elif [[ $rev == "$accepted_rev" ]]; then
         if [[ $restored_boot != "$boot" ]]; then
           restored_boot=$boot; restore_attested=0; last_restore_attest=0
+          restored_ready_since=0; restored_clean_since=0; restored_dirty=0; restored_clean_last=0
+          restored_previous=''; restored_fault_episode=0
+          if [[ $switch_module_trial == 1 ]]; then
+            trunk_counter_header > "$out/rollback-$boot-trunk-counters.tsv"
+            xgmac_counter_header > "$out/rollback-$boot-xgmac.tsv"
+          fi
           log "ROLLBACK_BOOT boot=$boot"
         fi
         if [[ $mode != --watch-restore && $switch_module_trial == 0 ]] &&
@@ -1401,6 +1447,73 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           if "$attestor" --run 192.168.76.1 "$accepted_rev" "$management_iface" "$management_ip" "$known" > "$out/restore-attestation.log" 2>&1; then
             restore_attested=1; log "ROLLBACK_MANAGEMENT_ATTESTED boot=$boot"
           fi
+        fi
+        if [[ $switch_module_trial == 1 ]]; then
+          if trunk_counter_row "$s" "$now" "$boot" >> "$out/rollback-$boot-trunk-counters.tsv"; then
+            if ! xgmac_counter_row "$s" "$now" "$boot" >> "$out/rollback-$boot-xgmac.tsv"; then
+              log ROLLBACK_XGMAC_SAMPLE_MISSING
+              restored_dirty=1
+            fi
+            # Preserve evidence of any reset rather than qualifying a
+            # later all-zero sample after counter history was lost.
+            for field in cpu_fcs cpu_fragments cpu_drops cpu_ucast cpu_mcast cpu_bcast; do
+              previous=$(value "$restored_previous" "$field")
+              current=$(value "$s" "$field")
+              if [[ $previous =~ ^[0-9]+$ && $current =~ ^[0-9]+$ ]] &&
+                 (( current < previous )); then restored_dirty=1; fi
+            done
+            for field in $xgmac_fields; do
+              previous=$(value "$restored_previous" "xgmac_$field")
+              current=$(value "$s" "xgmac_$field")
+              if [[ $previous =~ ^[0-9]+$ && $current =~ ^[0-9]+$ ]] &&
+                 (( current < previous )); then restored_dirty=1; fi
+            done
+            if [[ $(trunk_error_key "$s") != 0:0:0 ]]; then
+              restored_dirty=1
+            fi
+            for field in rx_crc_err rx_frag_err rx_jabber_err rx_len_err rx_fifo_overflow rx_drop_frames tx_underflow_err; do
+              if [[ $(value "$s" "xgmac_$field") =~ ^[1-9][0-9]*$ ]]; then restored_dirty=1; fi
+            done
+          fi
+          restored_fault_episode=$(trunk_fault_episode "$restored_previous" "$s" "$restored_fault_episode")
+          fault_class=$(trunk_fault_class "$restored_previous" "$s" "$restored_fault_episode")
+          restored_previous=$s
+          if [[ -n $fault_class && ! ${fault_snapshots[$boot-$fault_class]+seen} ]]; then
+            fault_snapshots[$boot-$fault_class]=1
+            fault_path="$out/fault-pcs-$boot-$fault_class"
+            if timeout 8 uv run --no-project --offline --python /usr/bin/python3 python "$(dirname "$(realpath "$0")")/snapshot-trunk-pcs.py" supervised "$boot" "$rev" > "$fault_path.json" 2> "$fault_path.log"; then
+              log "ROLLBACK_FAULT_PCS_CAPTURED boot=$boot class=$fault_class"
+            else
+              log "ROLLBACK_FAULT_PCS_CAPTURE_FAILED boot=$boot class=$fault_class"
+            fi
+            now=$(date +%s)
+          fi
+          if restore_target_ready "$s" && lease_valid "$(cat "$leasefile" 2>/dev/null || :)" "$now"; then
+            if (( restored_ready_since == 0 )); then restored_ready_since=$now; fi
+            if restore_clean_sample "$s" && (( !restored_dirty )); then
+              if (( restored_clean_since == 0 || now-restored_clean_last > 12 )); then restored_clean_since=$now; fi
+              restored_clean_last=$now
+              if (( now-restored_clean_since >= 30 )); then
+                printf '%s\n' "$s" > "$out/restored-state.txt"
+                log "ACCEPTED_IMAGE_BOOT_HEALTHY boot=$boot"
+                echo RESTORED > "$out/status"
+                exit 0
+              fi
+            else
+              restored_clean_since=0
+            fi
+            if (( now-restored_ready_since >= 120 )); then
+              printf '%s\n' "$s" > "$out/restored-state.txt"
+              log "ACCEPTED_IMAGE_BOOT_DEGRADED boot=$boot errors=$(trunk_error_key "$s") switch=$(value "$s" switch_verified)"
+              echo RESTORED_DEGRADED > "$out/status"
+              exit 7
+            fi
+          else
+            restored_ready_since=0; restored_clean_since=0
+          fi
+          (( i % 5 )) || log "WAIT_RESTORED_BASELINE_READY boot=$boot"
+          sleep 3
+          continue
         fi
         if baseline_healthy "$s"; then
           if [[ ( $mode == --watch-restore || $switch_module_trial == 1 ) ]] &&
@@ -1549,6 +1662,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
       fi
     else
       healthy_since=0
+      restored_ready_since=0; restored_clean_since=0
       (( i % 10 )) || log ROUTER_UNREACHABLE
     fi
     sleep 3

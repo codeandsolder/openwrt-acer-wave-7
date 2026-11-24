@@ -71,8 +71,8 @@ def load_run(run):
     status = (run / "status").read_text().strip()
     if status != report["status"]:
         raise ValueError(f"{run}: report status mismatch")
-    if report["classification"] == "PLANNED_APPROVED_RESTORE":
-        if status != "RESTORED" or report["samples"] != 0:
+    if report["classification"] in ("PLANNED_APPROVED_RESTORE","PLANNED_APPROVED_RESTORE_DEGRADED"):
+        if status not in ("RESTORED","RESTORED_DEGRADED") or report["samples"] != 0:
             raise ValueError(f"{run}: malformed deliberate restore")
         return None
     if "latest-state.txt" not in names:
@@ -106,7 +106,7 @@ def load_run(run):
     copper = int(state["speed"])
     if direct not in (1000, 2500) or copper != 1000:
         raise ValueError(f"{run}: unsupported peer speed")
-    if status not in ("SOAK_PASS", "RESTORED"):
+    if status not in ("SOAK_PASS", "RESTORED", "RESTORED_DEGRADED"):
         raise ValueError(f"{run}: not a terminal candidate boot")
     classification = report["classification"]
     if classification == CLEAN:

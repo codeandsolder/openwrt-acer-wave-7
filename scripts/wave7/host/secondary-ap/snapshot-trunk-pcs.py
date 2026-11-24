@@ -293,7 +293,7 @@ if __name__=="__main__":
         selftest()
     elif args.cmd=="supervised":
         require(probe["BOOT"].fullmatch(args.boot),"invalid expected boot")
-        require(args.revision in {f"r0+38346-{c}-ap-dhcp-guard8" for c,_ in PINS.values()},
+        require(args.revision in {"r0+38346-0418bb7af2-ap-dhcp-guard8", *(f"r0+38346-{c}-ap-dhcp-guard8" for c,_ in PINS.values())},
                 "unpinned revision")
         # Preserve partial stdout/stderr even when the transport fails or
         # an individual debugfs record cannot be read. Never treat it as

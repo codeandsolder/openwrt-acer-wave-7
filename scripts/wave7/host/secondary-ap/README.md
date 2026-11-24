@@ -937,3 +937,19 @@ qualified its own switched path, report-trunk-run.py RUN_DIR
 pre-rollback evidence. It does not certify a successful rollback.
 Keep the independently observed rollback fault under its own boot ID.
 Normal terminal archival still requires SOAK_PASS or a verified RESTORED.
+
+### Rollback qualification (switch-module profiles)
+
+Approved firmware identity, autonomous commitment and independently
+authenticated direct management qualify the *restored image*, not the
+switch path. Retain the approved boot's separate MIB/XGMAC timelines
+and capture its persistent fault classes as for candidate boots.
+RESTORED now requires 30 continuous seconds of both verified paths,
+zero observed errors, complete paired counters and no counter resets
+(maximum 12-second sample gap in the clean window). A locally ready
+approved rollback that cannot qualify within 120 seconds is terminal
+RESTORED_DEGRADED; do not reflash it automatically or count it as clean.
+The archive validates and seals both boot identities and timelines.
+Reports distinguish historical single-observation archives from the
+new paired clean qualification and exclude deliberate restores from
+candidate cohorts regardless of rollback quality.
