@@ -12,12 +12,12 @@ tools="$prod/staging_dir/host/bin"
 parent_sha=ec5e99d208cbc811f4ce5536f4fb3f7ff2a66eea728d497ab6397e76c1dfc516
 parent_rev=r0+38346-f9aa3e1fa3-ap-dhcp-guard8
 kernel_sha=c289598628e75f7a603ec127dbb5cbd1fdcf6128ba15cea6c4fe9b0aa0232b8e
-patch_commit=5685b30aa28384ae9a9fe00a889639b618bd57a5
+patch_commit=de047a2e97ab6fa330deeb2f3661e4a11e16ce75
 switch_sha=ff6b4c93d9ce2cb71b2b8dfd0053df70cc4a3ad4960bd49c099eceea85d7fe91
 parent_pcs=6e1293e83985caf4eb352e163036d050de5eb2d3f4272ca8a2a71667833658bf
 parent_ppe=1ff7a7d590f7ef45bdaf794a3e5dfeb66ffe9a0f9eed24cf4dd8df5a7c0b5fc0
 digest() { sha256sum "$1" | cut -d' ' -f1; }
-fail() { echo "PCS0_STOCK_MODE_IMAGE_FAIL $*" >&2; exit 1; }
+fail() { echo "PCS0_FORCE_ONLY_IMAGE_FAIL $*" >&2; exit 1; }
 [[ ! -e $out && -d $(dirname "$out") ]] || fail 'output must not exist'
 [[ -z $(git -C "$repo" status --porcelain) ]] || fail 'dirty source'
 git -C "$repo" merge-base --is-ancestor "$patch_commit" HEAD
@@ -31,10 +31,10 @@ module_builder=$(jq -er .builder_commit "$report")
 [[ $module_builder =~ ^[0-9a-f]{40}$ ]] || fail 'module builder'
 git -C "$repo" merge-base --is-ancestor "$patch_commit" "$module_builder"
 git -C "$repo" merge-base --is-ancestor "$module_builder" HEAD
-patch=target/linux/qualcommbe/patches-6.18/0500-net-pcs-wave7-test-stock-fixed-2500-mode.patch
+patch=target/linux/qualcommbe/patches-6.18/0500-net-pcs-wave7-test-fixed-2500-force-only.patch
 [[ $(digest "$repo/$patch") == "$(jq -er .patch_sha256 "$report")" ]] || fail 'patch provenance'
 experiment=$(jq -er .experiment "$report")
-[[ $experiment == pcs0-stock-mode ]] || fail 'wrong experiment'
+[[ $experiment == pcs0-force-only ]] || fail 'wrong experiment'
 [[ $(jq -er .module_exports_identical "$report") == true &&
    $(jq -er .module_metadata_identical "$report") == true &&
    $(jq -er .fixture_pass "$report") == true &&
@@ -48,7 +48,7 @@ ppe_sha=$parent_ppe
 [[ $pcs_sha =~ ^[0-9a-f]{64}$ && $pcs_sha != "$parent_pcs" ]] || fail 'candidate digest'
 [[ $(digest "$modules/modules/pcs-qcom-ipq9574.ko") == "$pcs_sha" ]] || fail 'candidate module digest'
 [[ $(tar xOf "$parent" sysupgrade-acer_wave7/CONTROL) == BOARD=acer_wave7 ]] || fail 'board'
-work=$(mktemp -d "$(dirname "$out")/.wave7-pcs0-stock-mode.XXXXXXXX")
+work=$(mktemp -d "$(dirname "$out")/.wave7-pcs0-force-only.XXXXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkdir "$work/publish"
 tar xOf "$parent" sysupgrade-acer_wave7/kernel > "$work/kernel.itb"
@@ -83,7 +83,7 @@ sed -i -e "s/^source_revision=.*/source_revision=$parent_rev/" \
        -e "s/^base_image_sha256=.*/base_image_sha256=$parent_sha/" "$m"
 rg -Fxq "trial_pcs_sha256=$parent_pcs" "$m"
 sed -i "s/^trial_pcs_sha256=.*/trial_pcs_sha256=$pcs_sha/" "$m"
-printf 'trial_pcs0_stock_mode_patch_commit=%s\n' "$patch_commit" >> "$m"
+printf 'trial_pcs0_force_only_patch_commit=%s\n' "$patch_commit" >> "$m"
 chmod --reference="$work/orig/etc/wave7-role-profile" "$m"
 sh -c '. "$1"; wave7_ap_check_image "$2"' sh "$root/lib/wave7/overlay-reset.sh" "$root"
 rsync -aincO --delete --out-format='%n' "$work/orig/" "$root/" | LC_ALL=C sort > "$work/delta"
@@ -109,7 +109,7 @@ rsync -aincO --delete --out-format='%n' "$root/" "$work/roundtrip/" > "$work/rou
 image="$work/publish/wave7-${experiment}-dhcp-guard8-sysupgrade.bin"
 sh "$repo/scripts/sysupgrade-tar.sh" --board acer_wave7 --kernel "$work/kernel.itb" --rootfs "$work/new.sq" "$image"
 jq --arg rev "$new_rev" --arg parent "$parent_sha" --arg patch "$patch_commit" --arg pcs "$pcs_sha" --arg ppe "$ppe_sha" \
-  '.version.revision=$rev | .wave7_parent_image_sha256=$parent | .wave7_trial_pcs0_stock_mode_patch_commit=$patch | .wave7_trial_pcs_sha256=$pcs | .wave7_trial_ppe_sha256=$ppe' "$work/old-metadata.json" > "$work/metadata"
+  '.version.revision=$rev | .wave7_parent_image_sha256=$parent | .wave7_trial_pcs0_force_only_patch_commit=$patch | .wave7_trial_pcs_sha256=$pcs | .wave7_trial_ppe_sha256=$ppe' "$work/old-metadata.json" > "$work/metadata"
 "$tools/fwtool" -I "$work/metadata" "$image"
 "$tools/fwtool" -i "$work/verified-metadata" "$image"
 diff -u <(jq -S . "$work/metadata") <(jq -S . "$work/verified-metadata")
@@ -125,7 +125,7 @@ parent_sha256=$parent_sha
 revision=$new_rev
 builder_commit=$builder
 module_builder_commit=$module_builder
-pcs0_stock_mode_patch_commit=$patch_commit
+pcs0_force_only_patch_commit=$patch_commit
 kernel_sha256=$kernel_sha
 kernel_fit=BYTE_IDENTICAL_PARENT
 native_switch_module_sha256=$switch_sha
@@ -141,5 +141,5 @@ cp "$work/delta" "$work/publish/root-delta.txt"
 cp "$report" "$work/publish/module-build-report.json"
 (cd "$work/publish"; sha256sum ./*sysupgrade.bin report.txt root-delta.txt module-build-report.json > SHA256SUMS)
 mv "$work/publish" "$out"
-echo PCS0_STOCK_MODE_IMAGE_OFFLINE_PASS
+echo PCS0_FORCE_ONLY_IMAGE_OFFLINE_PASS
 cat "$out/report.txt"

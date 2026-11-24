@@ -49,7 +49,7 @@ def main():
     phy_patch=patches/"0491-net-phy-qca8081-test-stock-status-poll-fifo-level.patch"
     serial_patch=patches/"0498-net-pcs-wave7-test-stock-serial-speed.patch"
     handoff=patches/"0499-net-pcs-wave7-observe-pcs0-handoff.patch"
-    patch=patches/"0500-net-pcs-wave7-test-stock-fixed-2500-mode.patch"
+    patch=patches/"0500-net-pcs-wave7-test-fixed-2500-force-only.patch"
     config=old/"linked/.config"
     exports=old/"linked/vmlinux.symvers"
     assert sha(config)==CONFIG_SHA and sha(exports)==EXPORTS_SHA
@@ -60,7 +60,7 @@ def main():
     assert "release: 1.102.0-nightly" in version and "LLVM version: 23.1.6" in version
     argv=json.loads((old/"build-argv.json").read_text())
     assert argv[0]=="make" and argv[-1]=="Image" and argv[2]=="-C"
-    with tempfile.TemporaryDirectory(prefix=".pcs0-stock-mode-module-",dir=out.parent) as work_:
+    with tempfile.TemporaryDirectory(prefix=".pcs0-force-only-module-",dir=out.parent) as work_:
         work=Path(work_)
         k=work/"kernel"
         publish=work/"publish"
@@ -96,7 +96,7 @@ def main():
         run([sys.executable,str(Path(__file__).with_name("test-policy.py")),str(k)])
         candidate,after,candidate_info=build(publish/"modules")
         assert before==after and base_info==candidate_info and sha(candidate)!=PCS_SHA
-        report={"experiment":"pcs0-stock-mode","parent_image_sha256":PARENT_SHA,
+        report={"experiment":"pcs0-force-only","parent_image_sha256":PARENT_SHA,
                 "accepted_pcs_sha256":PCS_SHA,"unchanged_ppe_sha256":PPE_SHA,
                 "candidate_pcs_sha256":sha(candidate),"nand_config_sha256":sha(config),
                 "kernel_exports_sha256":sha(exports),"kernel_export_count":len(kernel_exports),
@@ -106,6 +106,6 @@ def main():
         (publish/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (publish/"SHA256SUMS").write_text("".join(f"{sha(f)}  {f.relative_to(publish)}\n" for f in sorted(publish.rglob("*")) if f.is_file() and f.name!="SHA256SUMS"))
         publish.rename(out)
-        print("PCS0_STOCK_MODE_MODULE_BUILD_PASS",json.dumps(report),flush=True)
+        print("PCS0_FORCE_ONLY_MODULE_BUILD_PASS",json.dumps(report),flush=True)
 if __name__=="__main__":
     main()
