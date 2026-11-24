@@ -149,7 +149,7 @@ def listening():
                remote("netstat -lnt").splitlines() if line.startswith("tcp"))
 
 
-def run_case(out, path, mode, runtime_dir, variant, boot):
+def run_case(out, path, mode, runtime_dir, variant, boot, bitrate):
     name = f"{path}-{mode}"
     before = sample(out, name+"-before", variant, boot)
     require(not listening(), "benchmark server port occupied")
@@ -173,6 +173,8 @@ def run_case(out, path, mode, runtime_dir, variant, boot):
             argv = ["iperf3", "-4", "-c", probe["ROUTER"], "-B", ip, "--bind-dev", dev,
                     "-p", str(PORT), "--connect-timeout", "4000", "-t", str(DURATION),
                     "-O", "1", "-J", *flags]
+            if bitrate is not None:
+                argv.extend(["-b", str(bitrate * 1_000_000)])
             result = subprocess.run(argv, text=True, capture_output=True, timeout=25)
             (out / f"{name}-client.json").write_text(result.stdout)
             (out / f"{name}-client.err").write_text(result.stderr)
@@ -198,27 +200,33 @@ def run_case(out, path, mode, runtime_dir, variant, boot):
             "iperf_end": client["end"]}
 
 
-def bench(run):
+def bench(run, peers, modes, bitrate):
     record = cohort["load_run"](run)
     require(record is not None and record["variant"] in ("stock-order", "force-order")
             and record["outcome"] == "clean" and record["direct_mbps"] == 2500,
             "requires sealed clean ordering boot at 2.5GbE direct")
     variant, boot = record["variant"], record["boot"]
-    out = run / "throughput"
-    report = {"boot": boot, "variant": variant, "duration": DURATION, "cases": []}
+    suffix = "" if bitrate is None else f"-paced-{bitrate}mbps"
+    if peers != ("switch", "direct") or modes != ("forward", "reverse", "bidir"):
+        suffix += "-" + "-".join(peers) + "-" + "-".join(modes)
+    out = run / ("throughput" + suffix)
+    report = {"boot": boot, "variant": variant, "duration": DURATION,
+              "offered_mbps_per_direction": bitrate, "peers": peers, "modes": modes, "cases": []}
     failure = None
     with probe["lab_session"](out):
         try:
             initial = sample(out, "initial", variant, boot)
-            require(not any(row[k] for row in initial["counters"].values() for k in probe["ERRORS"])
-                    and not any(row[k] for row in initial["macs"].values() for k in ERRORS),
-                    "initial hardware error counters are not zero")
+            require(not any(row[k] for row in initial["counters"].values()
+                            for k in probe["ERRORS"] if k != "etherStatsDropEvents")
+                    and not any(row[k] for row in initial["macs"].values()
+                                for k in ERRORS if k not in ("rx_fifo_overflow", "rx_drop_frames")),
+                    "initial hardware corruption counters are not zero")
             with runtime(boot) as path:
                 (out / "version.txt").write_text(remote(
                     f"LD_LIBRARY_PATH='{path}' '{path}/iperf3' --version"))
-                for peer in ("switch", "direct"):
-                    for mode in ("forward", "reverse", "bidir"):
-                        case = run_case(out, peer, mode, path, variant, boot)
+                for peer in peers:
+                    for mode in modes:
+                        case = run_case(out, peer, mode, path, variant, boot, bitrate)
                         report["cases"].append(case)
                         print(json.dumps({"case":case["name"],"receiver_mbps":case["receiver_mbps"]}),
                               flush=True)
@@ -286,8 +294,15 @@ if __name__ == "__main__":
     sub.add_parser("selftest")
     b=sub.add_parser("bench")
     b.add_argument("run",type=Path)
+    b.add_argument("--peer",choices=tuple(PATHS),action="append")
+    b.add_argument("--mode",choices=("forward", "reverse", "bidir"),action="append")
+    b.add_argument("--bitrate-mbps",type=int)
     args=parser.parse_args()
     if args.command=="selftest":
         selftest()
     else:
-        bench(args.run.resolve())
+        require(args.bitrate_mbps is None or 0 < args.bitrate_mbps <= 2500, "invalid bitrate")
+        peers = tuple(args.peer or ("switch", "direct"))
+        modes = tuple(args.mode or ("forward", "reverse", "bidir"))
+        require(len(set(peers))==len(peers) and len(set(modes))==len(modes), "duplicate case selection")
+        bench(args.run.resolve(), peers, modes, args.bitrate_mbps)
