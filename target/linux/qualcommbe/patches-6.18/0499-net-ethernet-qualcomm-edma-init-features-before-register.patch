@@ -1,0 +1,47 @@
+From: codeandsolder <codeandsolder@users.noreply.github.com>
+Subject: [PATCH] net: ethernet: qualcomm: initialize EDMA features before registration
+
+DSA and other stacked netdevices inherit capabilities when they are
+registered. EDMA currently publishes them only at ndo_open, which is
+too late. Reopening also overrides features disabled by the user.
+Initialize the capability masks when preparing the netdevice and let
+register_netdevice initialize wanted_features.
+
+This isolates the lifecycle fix. Validate the parser/offload behavior
+of each DSA tag protocol separately before using the result in production.
+
+Signed-off-by: codeandsolder <codeandsolder@users.noreply.github.com>
+---
+--- a/drivers/net/ethernet/qualcomm/ppe/edma_port.c
++++ b/drivers/net/ethernet/qualcomm/ppe/edma_port.c
+@@ -99,15 +99,6 @@
+ 
+ 	if (!port_priv)
+ 		return -EINVAL;
+-
+-	/* Inform the Linux Networking stack about the hardware capability of
+-	 * checksum offloading and other features. Each port is
+-	 * responsible to maintain the feature set it supports.
+-	 */
+-	netdev->features |= EDMA_NETDEV_FEATURES;
+-	netdev->hw_features |= EDMA_NETDEV_FEATURES;
+-	netdev->vlan_features |= EDMA_NETDEV_FEATURES;
+-	netdev->wanted_features |= EDMA_NETDEV_FEATURES;
+ 
+ 	ppe_port  = port_priv->ppe_port;
+ 	port_id = ppe_port->port_id;
+@@ -398,6 +389,14 @@
+ 	netdev->watchdog_timeo = 5 * HZ;
+ 	netdev->priv_flags |= IFF_LIVE_ADDR_CHANGE;
+ 	netdev->netdev_ops = &edma_port_netdev_ops;
++
++	/* Publish capabilities before registration, so upper devices can
++	 * inherit them. The netdev core initializes wanted_features.
++	 * Reopening a port must not reset user-selected features.
++	 */
++	netdev->features |= EDMA_NETDEV_FEATURES;
++	netdev->hw_features |= EDMA_NETDEV_FEATURES;
++	netdev->vlan_features |= EDMA_NETDEV_FEATURES;
+ 	netdev->gso_max_segs = GSO_MAX_SEGS;
+ 	edma_set_ethtool_ops(netdev);
+ 
