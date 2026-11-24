@@ -149,7 +149,60 @@ def listening():
                remote("netstat -lnt").splitlines() if line.startswith("tcp"))
 
 
-def run_case(out, path, mode, runtime_dir, variant, boot, bitrate):
+# A finite read-only sampler, running once per second on each endpoint.
+# Use boot IDs and monotonic uptime, not wall clock assumptions.
+PROFILE_COMMAND = r"""set -eu
+echo "boot=$(cat /proc/sys/kernel/random/boot_id)"
+i=0
+while [ "$i" -lt 15 ]; do
+    echo "=== SAMPLE $i ==="
+    cat /proc/uptime
+    sed -n '/^cpu[0-9]/p' /proc/stat
+    echo SOFTNET
+    cat /proc/net/softnet_stat
+    echo SOFTIRQS
+    sed -n '/NET_RX:/p; /NET_TX:/p' /proc/softirqs
+    echo FREQ
+    for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+        [ ! -r "$f" ] || printf '%s %s\n' "$f" "$(cat "$f")"
+    done
+    echo END_SAMPLE
+    i=$((i+1))
+    sleep 1
+done
+echo "end_boot=$(cat /proc/sys/kernel/random/boot_id)"
+"""
+
+
+@contextmanager
+def profile_load(out, name, boot, enabled):
+    if not enabled:
+        yield
+        return
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        jobs = []
+        for endpoint, cmd in (("router", probe["ssh_args"](PROFILE_COMMAND)),
+                              ("host", ["sh", "-c", PROFILE_COMMAND])):
+            stdout = stack.enter_context((out / f"{name}-{endpoint}-cpu.txt").open("x"))
+            stderr = stack.enter_context((out / f"{name}-{endpoint}-cpu.err").open("x"))
+            jobs.append(subprocess.Popen(cmd, stdout=stdout, stderr=stderr))
+        try:
+            yield
+        finally:
+            for job in jobs:
+                try:
+                    job.wait(timeout=20)
+                except subprocess.TimeoutExpired:
+                    job.terminate()
+                    job.wait(timeout=5)
+            require(all(job.returncode == 0 for job in jobs), "CPU sampler failed")
+    raw = (out / f"{name}-router-cpu.txt").read_text()
+    require(raw.startswith(f"boot={boot}\n") and raw.endswith(f"end_boot={boot}\n"),
+            "CPU sampler boot mismatch")
+
+
+def run_case(out, path, mode, runtime_dir, variant, boot, bitrate, profile=False):
     name = f"{path}-{mode}"
     before = sample(out, name+"-before", variant, boot)
     require(not listening(), "benchmark server port occupied")
@@ -175,7 +228,8 @@ def run_case(out, path, mode, runtime_dir, variant, boot, bitrate):
                     "-J", *flags]
             if bitrate is not None:
                 argv.extend(["-b", str(bitrate * 1_000_000)])
-            result = subprocess.run(argv, text=True, capture_output=True, timeout=25)
+            with profile_load(out, name, boot, profile):
+                result = subprocess.run(argv, text=True, capture_output=True, timeout=25)
             (out / f"{name}-client.json").write_text(result.stdout)
             (out / f"{name}-client.err").write_text(result.stderr)
             result.check_returncode()
@@ -200,7 +254,7 @@ def run_case(out, path, mode, runtime_dir, variant, boot, bitrate):
             "iperf_end": client["end"]}
 
 
-def bench(run, peers, modes, bitrate):
+def bench(run, peers, modes, bitrate, profile=False):
     record = cohort["load_run"](run)
     require(record is not None and record["variant"] in ("stock-order", "force-order")
             and record["outcome"] == "clean" and record["direct_mbps"] == 2500,
@@ -209,10 +263,12 @@ def bench(run, peers, modes, bitrate):
     suffix = "-no-omit" + ("" if bitrate is None else f"-paced-{bitrate}mbps")
     if peers != ("switch", "direct") or modes != ("forward", "reverse", "bidir"):
         suffix += "-" + "-".join(peers) + "-" + "-".join(modes)
+    if profile:
+        suffix += "-profile"
     out = run / ("throughput" + suffix)
     report = {"boot": boot, "variant": variant, "duration": DURATION,
               "offered_mbps_per_direction": bitrate, "omit_seconds": 0,
-              "peers": peers, "modes": modes, "cases": []}
+              "peers": peers, "modes": modes, "cpu_profile": profile, "cases": []}
     failure = None
     with probe["lab_session"](out):
         try:
@@ -227,7 +283,7 @@ def bench(run, peers, modes, bitrate):
                     f"LD_LIBRARY_PATH='{path}' '{path}/iperf3' --version"))
                 for peer in peers:
                     for mode in modes:
-                        case = run_case(out, peer, mode, path, variant, boot, bitrate)
+                        case = run_case(out, peer, mode, path, variant, boot, bitrate, profile)
                         report["cases"].append(case)
                         print(json.dumps({"case":case["name"],"receiver_mbps":case["receiver_mbps"]}),
                               flush=True)
@@ -298,6 +354,7 @@ if __name__ == "__main__":
     b.add_argument("--peer",choices=tuple(PATHS),action="append")
     b.add_argument("--mode",choices=("forward", "reverse", "bidir"),action="append")
     b.add_argument("--bitrate-mbps",type=int)
+    b.add_argument("--profile",action="store_true",help="sample per-core CPU and network backlog")
     args=parser.parse_args()
     if args.command=="selftest":
         selftest()
@@ -306,4 +363,4 @@ if __name__ == "__main__":
         peers = tuple(args.peer or ("switch", "direct"))
         modes = tuple(args.mode or ("forward", "reverse", "bidir"))
         require(len(set(peers))==len(peers) and len(set(modes))==len(modes), "duplicate case selection")
-        bench(args.run.resolve(), peers, modes, args.bitrate_mbps)
+        bench(args.run.resolve(), peers, modes, args.bitrate_mbps, args.profile)
