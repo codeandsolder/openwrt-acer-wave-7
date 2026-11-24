@@ -332,9 +332,13 @@ function dev_irqs(path)
 function dev_irq_cpus(path)
 {
 	let pinned = {};
+	let edma = ppe_edma_node(path);
 	for (let irq in dev_irqs(path)) {
-		let name = readfile(`/sys/kernel/irq/${irq}/actions`) ?? "";
-		if (match(name, /tx/i) && !match(name, /rx/i))
+		let name = trim(readfile(`/sys/kernel/irq/${irq}/actions`) ?? "");
+		// Miscellaneous EDMA interrupts do not establish RX ring coverage.
+		if (edma && !match(name, /(^|,)rxdesc_[0-9]+(,|$)/))
+			continue;
+		if (!edma && match(name, /tx/i) && !match(name, /rx/i))
 			continue;
 
 		let cpu = trim(readfile(`/proc/irq/${irq}/effective_affinity_list`));
