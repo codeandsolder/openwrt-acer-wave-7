@@ -63,6 +63,7 @@ def wait_radio(boot,width,timeout,station=False):
                 time.sleep(2)
                 continue
             if (h.get("status")=="ENABLED" and not h.get("dfs",{}).get("cac_active",True)
+                    and {link.get("link_id") for link in h.get("links",[])}=={0,1}
                     and w.get("up") and not w.get("pending")):
                 return raw+"\n"+json.dumps({"hostapd":h,"radio1_up":w.get("up"),"radio1_pending":w.get("pending")})+"\n"
         time.sleep(2)
