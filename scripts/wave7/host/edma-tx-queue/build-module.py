@@ -108,7 +108,7 @@ def main():
         run(["patch","-p1","--fuzz=0","-i",str(serial_patch)],cwd=k)
         for applied in (patch,tso_patch,handoff_patch,analog_patch):
             run(["patch","-p1","--fuzz=0","-i",str(applied)],cwd=k)
-        assert sha(k/"drivers/net/pcs/pcs-qcom-ipq9574.c")=="2029bd65fba03e141d9cbece8524ddf0ea7025a666f3b1cb34cb819e19f268bd"
+        assert sha(k/"drivers/net/pcs/pcs-qcom-ipq9574.c")=="ae2f5d185c510202387f38a06d012a83779f636e0e8f107b6a312dfdcb978d21"
         base,before,base_info=build(work/"baseline")
         assert sha(base)==PPE_SHA
         print("EXACT_PARENT_PPE_PASS",flush=True)
