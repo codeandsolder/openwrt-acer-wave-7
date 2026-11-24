@@ -12,6 +12,55 @@ COUNTERS = ("fcs", "fragments", "ucast", "mcast", "bcast", "drops")
 ERRORS = ("fcs", "fragments", "drops")
 BOOT_RE = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
+XGMAC_ERRORS = ("rx_crc_err","rx_frag_err","rx_jabber_err","rx_len_err",
+                "rx_fifo_overflow","rx_drop_frames","tx_underflow_err")
+XGMAC = ("rx_frames","tx_frames","rx_unicast_g","tx_unicast","rx_pause","tx_pause",*XGMAC_ERRORS)
+XGMAC_HEADER = ("wall_epoch","boot","uptime",*XGMAC)
+
+def xgmac_report(run, mib_rows):
+    path = run / "trunk-xgmac.tsv"
+    if not path.exists():
+        return None
+    def identity(row):
+        return (row["wall_epoch"],row["boot"],row["uptime"])
+    expected = {identity(r):r for r in mib_rows}
+    rows = []
+    seen = set()
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        if tuple(reader.fieldnames or ()) != XGMAC_HEADER:
+            raise ValueError("unexpected XGMAC columns")
+        for raw in reader:
+            if None in raw or any(v is None for v in raw.values()):
+                raise ValueError("malformed XGMAC row")
+            row = {k:v if k=="boot" else int(v) for k,v in raw.items()}
+            key = identity(row)
+            if key not in expected or key in seen or any(row[k]<0 for k in XGMAC):
+                raise ValueError("unmatched, duplicate or invalid XGMAC sample")
+            if rows and row["uptime"]<=rows[-1]["uptime"]:
+                raise ValueError("non-increasing XGMAC sample clocks")
+            seen.add(key)
+            rows.append(row)
+    intervals=[]
+    for a,b in zip(rows,rows[1:]):
+        md0,md1=expected[identity(a)],expected[identity(b)]
+        mac={k:b[k]-a[k] for k in XGMAC}
+        mib={k:md1[k]-md0[k] for k in COUNTERS}
+        reset=any(v<0 for v in (*mac.values(),*mib.values()))
+        corrupt=not reset and mib["fcs"]+mib["fragments"]>0 and not any(mib[k] for k in ("ucast","mcast","bcast"))
+        intervals.append({"start_uptime":a["uptime"],"end_uptime":b["uptime"],
+                          "reset":reset,"corrupt_only":corrupt,"mib":mib,"xgmac":mac})
+    corrupt=[r for r in intervals if r["corrupt_only"]]
+    return {"samples":len(rows),"missing_samples":len(expected)-len(rows),
+            "complete":len(rows)==len(expected),
+            "initial":{k:rows[0][k] for k in XGMAC} if rows else None,
+            "final":{k:rows[-1][k] for k in XGMAC} if rows else None,
+            "resets":[r["end_uptime"] for r in intervals if r["reset"]],
+            "corrupt_only_with_mac_tx_unicast":[r["end_uptime"] for r in corrupt if r["xgmac"]["tx_unicast"]>0],
+            "corrupt_only_with_mac_tx_frames":[r["end_uptime"] for r in corrupt if r["xgmac"]["tx_frames"]>0],
+            "hardware_error_intervals":[r["end_uptime"] for r in intervals if not r["reset"] and any(r["xgmac"][k] for k in XGMAC_ERRORS)],
+            "intervals":intervals}
+
 def report(run):
     with (run / "trunk-counters.tsv").open(newline="") as f:
         reader = csv.DictReader(f, delimiter="\t")
@@ -106,6 +155,7 @@ def report(run):
     return {
         "boot": boot, "status": status, "soak_seconds": soak_seconds,
         "restored_boot": restored_boot,
+        "xgmac": xgmac_report(run, rows),
         "autonomous": autonomous, "samples": len(rows), "first_uptime": rows[0]["uptime"],
         "last_uptime": rows[-1]["uptime"],
         "first_accepted_uptime": accepted[0]["uptime"] if accepted else None,

@@ -41,6 +41,7 @@ fi
 remote "set -e; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'; dmesg; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'" > "$tmp/$prefix-dmesg.txt"
 remote "set -e; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'; cat /proc/sys/kernel/random/boot_id /proc/uptime /etc/openwrt_version; fw_printenv -n bootfail; ethtool -S switch; ethtool -S lan1; ethtool -S lan; iw dev ap-mld0 info; . /rom/lib/wave7/role-firstboot.sh; wave7_secondary_ap_local_ready && echo LOCAL_READY; test \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$capture_boot'" > "$tmp/$prefix-hardware.txt"
 cp "$run"/{status,observer.log,trunk-counters.tsv,latest-state.txt} "$tmp/"
+if [[ -f $run/trunk-xgmac.tsv ]]; then cp "$run/trunk-xgmac.tsv" "$tmp/"; fi
 uv run --no-project --offline --python /usr/bin/python3 python "$script_dir/report-trunk-run.py" "$tmp" > "$tmp/report.json"
 for f in "$prefix-dmesg.txt" "$prefix-hardware.txt" report.json; do
   mv "$tmp/$f" "$run/$f"
@@ -73,7 +74,7 @@ fi
   if [[ -f outgoing-boot.sha256 ]]; then
     sha256sum -c outgoing-boot.sha256
   fi
-  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256 fallback-watch.log pstore.txt ramoops-raw.bin pre-rollback.txt unhealthy-state.txt restored-state.txt restore.log attestation-latest.log; do
+  for f in preflight.txt sysupgrade.log reboot.log attestation-success.log outgoing-boot.txt outgoing-boot.sha256 fallback-watch.log pstore.txt ramoops-raw.bin pre-rollback.txt unhealthy-state.txt restored-state.txt restore.log attestation-latest.log trunk-xgmac.tsv; do
     if [[ -f $f ]]; then files+=("$f"); fi
   done
   for f in fault-pcs-*.json fault-pcs-*.log; do
