@@ -274,8 +274,8 @@ def temporary_steering(out, boot, mode):
     initial = rps_state()
     require(list(initial.values()) == ["1"] * 4 + ["0"], "unexpected initial RPS policy")
     desired = dict(initial)
-    desired[RPS_PATHS[-1]] = "e"
-    if mode == "post-tag-native":
+    desired[RPS_PATHS[-1]] = {"native-only":"0", "post-tag-native-all":"f"}.get(mode, "e")
+    if mode != "post-tag":
         desired.update({path: "0" for path in RPS_PATHS[:-1]})
     (out / "rps-before.json").write_text(json.dumps(initial, indent=2)+"\n")
     (out / "rps-test.json").write_text(json.dumps(desired, indent=2)+"\n")
@@ -402,7 +402,7 @@ if __name__ == "__main__":
     b.add_argument("--mode",choices=("forward", "reverse", "bidir"),action="append")
     b.add_argument("--bitrate-mbps",type=int)
     b.add_argument("--profile",action="store_true",help="sample per-core CPU and network backlog")
-    b.add_argument("--steering", choices=("baseline", "post-tag", "post-tag-native"), default="baseline")
+    b.add_argument("--steering", choices=("baseline", "post-tag", "post-tag-native", "native-only", "post-tag-native-all"), default="baseline")
     args=parser.parse_args()
     if args.command=="selftest":
         selftest()
