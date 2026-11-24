@@ -1,0 +1,35 @@
+name: Explicit upstream maintenance
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Upstream-wide maintenance (not routine Wave 7 CI)
+        type: choice
+        options:
+          - host-tools
+          - toolchains
+          - publish-containers
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.operation }}
+  cancel-in-progress: false
+jobs:
+  tools:
+    if: inputs.operation == 'host-tools'
+    uses: openwrt/actions-shared-workflows/.github/workflows/tools.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+  toolchains:
+    if: inputs.operation == 'toolchains'
+    permissions:
+      contents: read
+      packages: read
+      actions: write
+    uses: openwrt/actions-shared-workflows/.github/workflows/toolchain.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
+  containers:
+    if: inputs.operation == 'publish-containers'
+    permissions:
+      contents: read
+      packages: write
+      actions: write
+    uses: openwrt/actions-shared-workflows/.github/workflows/push-containers.yml@146858c0e56cca16c97ad67fbe2ea44ebe8a2e9a
