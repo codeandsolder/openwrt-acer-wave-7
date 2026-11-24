@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import time
 
@@ -95,10 +96,11 @@ def endpoint():
             "test neighbor already exists")
     require(not Path("/sys/class/net/"+DEV).exists(), "test interface already exists")
     made=False
+    link_made=False
     neighbor=False
     try:
         run(["ip","netns","add",NS]); made=True
-        run(["ip","link","add","link",SWITCH,"name",DEV,"address",MAC,"type","macvlan","mode","bridge"])
+        run(["ip","link","add","link",SWITCH,"name",DEV,"address",MAC,"type","macvlan","mode","bridge"]); link_made=True
         run(["ip","link","set",DEV,"netns",NS])
         for dev in ("lo",DEV):
             run(["ip","-n",NS,"link","set",dev,"up"])
@@ -116,7 +118,10 @@ def endpoint():
             run(["ip","neigh","del",PEER,"dev",DIRECT])
         if made:
             run(["ip","netns","del",NS])
-        require(not namespace_exists(),"namespace cleanup failed")
+        if link_made and Path("/sys/class/net/"+DEV).exists():
+            run(["ip","link","del",DEV])
+        require(not namespace_exists() and not Path("/sys/class/net/"+DEV).exists(),
+                "namespace cleanup failed")
 
 
 def snapshot(out, name, boot):
@@ -194,13 +199,40 @@ def case(out,boot,policy,streams,mode,pace):
     return result
 
 
+def replay(out):
+    run(["sha256sum","-c","--status","SHA256SUMS"],cwd=out)
+    report=json.loads((out/"report.json").read_text())
+    require(report["status"]=="PASS","cannot replay incomplete cohort")
+    for row in report["cases"]:
+        name=row["case"]
+        before=(out/(name+"-before.txt")).read_text()
+        after=(out/(name+"-after.txt")).read_text()
+        require(before.splitlines()[0]==after.splitlines()[0]==report["boot"],
+                "replay boot mismatch")
+        data=analyze(before,after,row["payload"])
+        require(data["mac_delta"]==row["mac_delta"] and data["cpu"]==row["cpu"],
+                "replay mismatch")
+    print(f"REPLAY_PASS cases={len(report['cases'])}")
+
+
 def main():
+    import sys
+    if len(sys.argv)==3 and sys.argv[1]=="--replay":
+        replay(Path(sys.argv[2]).resolve(strict=True))
+        return
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("run",type=Path)
     p.add_argument("label")
     p.add_argument("--policy",choices=POLICIES,action="append",required=True)
     args=p.parse_args()
     require(os.getuid()==0,"run on Asus as root")
+    # Interrupt the bounded benchmark, not its cleanup. A second signal
+    # after this one retains the normal process-exit behavior.
+    def interrupted(signum, _frame):
+        signal.signal(signum, signal.SIG_IGN)
+        raise InterruptedError(f"received signal {signum}")
+    for signum in (signal.SIGHUP,signal.SIGTERM,signal.SIGINT):
+        signal.signal(signum,interrupted)
     require(re.fullmatch(r"[a-zA-Z0-9-]+",args.label),"invalid label")
     run_dir=args.run.resolve(strict=True)
     require(run_dir.is_relative_to(BASE),"run outside lab")
@@ -214,7 +246,8 @@ def main():
         fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         out=run_dir/("bridge-throughput-"+args.label)
         out.mkdir(mode=0o700)
-        report={"boot":boot,"cases":[],"status":"RUNNING"}
+        report={"boot":boot,"policies":args.policy,"cases":[],"status":"RUNNING",
+                "source_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
         try:
             with endpoint():
                 for policy in args.policy:
