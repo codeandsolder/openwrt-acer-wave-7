@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* || $2 == --early-load-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -84,6 +84,7 @@ early_only=0
 early_tap=0
 early_dual=0
 early_soak=0
+early_load=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -102,8 +103,13 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*|--early-soak-upstream-*)
-        if [[ $2 == --early-soak-upstream-* ]]; then
+    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*|--early-soak-upstream-*|--early-load-upstream-*)
+        if [[ $2 == --early-load-upstream-* ]]; then
+            early_only=1
+            early_dual=1
+            early_load=1
+            upstream_stack_variant=${2#--early-load-}
+        elif [[ $2 == --early-soak-upstream-* ]]; then
             early_only=1
             early_dual=1
             early_soak=1
@@ -191,6 +197,7 @@ scope_pid=''
 trace_pid=''
 early_pid=''
 neigh_pid=''
+load_pid=''
 pings=()
 ping_names=()
 ping_counts=()
@@ -323,6 +330,10 @@ probe() {
 cleanup() {
     local rc=$?
     trap - EXIT
+    if [[ -n $load_pid ]]; then
+        kill -TERM -- "-$load_pid" 2>/dev/null || kill -TERM "$load_pid" 2>/dev/null || :
+        wait "$load_pid" 2>/dev/null || :
+    fi
     # Every active PID is GNU timeout's process-group leader.
     # Reap all group members before closing the checksum manifest.
     for pid in "${pings[@]}"; do
@@ -657,6 +668,53 @@ if (( early_only )); then
             rg -qx 'mac80211_valid_links=0x3' "$out/$f" || short_failed=1
         done
         printf 'short_dual_hold_pass=%s\n' "$((1 - short_failed))" > "$out/short-dual-hold-result.txt"
+        if (( early_load && !short_failed )); then
+            load_failed=0
+            path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+            load_link() {
+                local a v d
+                a=$(rootcmd cat "$path/active_links") || return 1
+                v=$(rootcmd cat "$path/valid_links") || return 1
+                d=$(rootcmd cat "$path/dormant_links") || return 1
+                printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
+                [[ $a == 0x3 && $v == 0x3 ]]
+            }
+            for mode in uplink downlink bidirectional; do
+                load_link > "$out/load-$mode-before.txt" || exit 3
+                ip -4 route get 192.168.76.2 from "$v4" oif "$iface" >> "$out/load-$mode-before.txt" || exit 3
+                args=()
+                case $mode in
+                    downlink) args=(-R) ;;
+                    bidirectional) args=(--bidir) ;;
+                esac
+                probe_start "load-$mode-latency-v4" 80 "$v4" 192.168.76.2 -4
+                probe_start "load-$mode-latency-v6" 80 "$v6" fd76:7::2 -6
+                timeout --signal=TERM --kill-after=2s 30s iperf3 -4 -c 192.168.76.2 \
+                    -B "$v4" --bind-dev "$iface" -p 52231 -P 4 -t 15 -O 2 \
+                    --connect-timeout 4000 -J "${args[@]}" > "$out/load-$mode.json.txt" \
+                    2>"$out/load-$mode-errors.txt" &
+                load_pid=$!
+                load_rc=0
+                wait "$load_pid" || load_rc=$?
+                load_pid=''
+                printf '%s\n' "$load_rc" > "$out/load-$mode-exit.txt"
+                for index in "${!pings[@]}"; do
+                    # Saturated-load latency/loss is a measurement, not
+                    # an unloaded zero-loss acceptance criterion.
+                    probe_wait_one "$index" || :
+                done
+                load_link > "$out/load-$mode-after.txt" || exit 3
+                (( load_rc == 0 )) || { load_failed=1; break; }
+            done
+            for target in 192.168.76.1 192.168.76.2; do
+                probe_start "post-load-${target##*.}" 100 "$v4" "$target" -4
+            done
+            probe_start post-load-v6 100 "$v6" fd76:7::2 -6
+            for index in "${!pings[@]}"; do probe_wait_one "$index" || load_failed=1; done
+            load_link > "$out/load-final.txt" || load_failed=1
+            printf 'dual_stack_load_pass=%s\n' "$((1 - load_failed))" > "$out/dual-stack-load-result.txt"
+            exit "$load_failed"
+        fi
         echo EARLY_DUAL_STACK_DIAGNOSTIC_COMPLETE
         exit "$short_failed"
     fi
