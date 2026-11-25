@@ -88,7 +88,8 @@ def trace_summary(path):
 
 
 NDP_COUNTERS = ("Icmp6OutRouterSolicits", "Icmp6InRouterAdvertisements",
-                "Icmp6OutNeighborSolicits", "Icmp6InNeighborAdvertisements")
+                "Icmp6OutNeighborSolicits", "Icmp6InNeighborAdvertisements",
+                "Icmp6InNeighborSolicits", "Icmp6OutNeighborAdvertisements")
 
 
 def ndp_summary(prefix):
@@ -145,16 +146,30 @@ def ndp_summary(prefix):
     capture = prefix.with_suffix(".wired-ndp.txt")
     if capture.exists():
         status = prefix.with_suffix(".wired-ndp-status.txt").read_text()
-        if not re.search(r"Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 "
-                         r"\(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)", status):
+        interfaces = re.findall(r"Packets received/dropped on interface '([^']+)': [0-9]+/0 "
+                                r"\(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)", status)
+        if "enp4s0f4u2u4" not in interfaces:
             raise ValueError("incomplete or dropped wired capture")
         events = []
         for line in capture.read_text().splitlines():
-            epoch, mac_src, mac_dst, src, dst, kind = line.split("\t")
-            if kind not in ("133", "134"):
+            fields = line.split("\t")
+            epoch, mac_src, mac_dst, src, dst, kind = fields[:6]
+            if kind not in ("133", "134", "135", "136"):
                 raise ValueError("unexpected NDP type")
-            events.append({"epoch": float(epoch), "mac_src": mac_src, "mac_dst": mac_dst,
-                           "src": src, "dst": dst, "type": int(kind)})
+            event = {"epoch": float(epoch), "mac_src": mac_src, "mac_dst": mac_dst,
+                     "src": src, "dst": dst, "type": int(kind)}
+            if len(fields) == 11:
+                interface, hlim, ns_target, na_target, linkaddr = fields[6:]
+                if interface not in interfaces or len(interfaces) != 2:
+                    raise ValueError("incomplete dual-interface capture")
+                event.update(interface=interface, hop_limit=int(hlim),
+                             target=ns_target or na_target or None, link_address=linkaddr or None)
+            elif len(fields) == 6:
+                event["interface"] = "enp4s0f4u2u4"
+            else:
+                raise ValueError("unexpected NDP record width")
+            events.append(event)
+        result["capture_interfaces"] = interfaces
         result["wired_events"] = events
         result["wired_counts"] = dict(Counter(str(e["type"]) for e in events))
     return result
