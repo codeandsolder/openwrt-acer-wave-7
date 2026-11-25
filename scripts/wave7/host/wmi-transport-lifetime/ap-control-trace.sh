@@ -6,7 +6,7 @@ set -eu
 boot=$1
 tag=$2
 seconds=$3
-case "$seconds" in 90|150) ;; *) exit 2 ;; esac
+case "$seconds" in 90|150|300) ;; *) exit 2 ;; esac
 case "$tag" in *[!a-zA-Z0-9_-]*|'') exit 2 ;; esac
 [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot" ]
 root=/sys/kernel/tracing

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 [[ $EUID == 0 && $# == 4 &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ &&
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
-   $4 =~ ^(90|150)$ ]]
+   $4 =~ ^(90|150|300)$ ]]
 case $3 in
     --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group) ;;
     *) exit 2 ;;

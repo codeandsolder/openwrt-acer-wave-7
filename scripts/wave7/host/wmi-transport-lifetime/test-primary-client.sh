@@ -16,6 +16,7 @@ bands=(5 24)
 wired_capture=none
 ip6_observe=0
 dual_hold=0
+dual_soak=0
 client_rx_arg=--none
 for arg in "$@"; do
     case "$arg" in
@@ -29,6 +30,7 @@ for arg in "$@"; do
             wired_capture=ndp ;;
         --client-ip6-observe) ip6_observe=1 ;;
         --client-dual-hold) dual_hold=1 ;;
+        --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
@@ -53,6 +55,7 @@ for arg in "$@"; do
         *) fail 'invalid argument' ;;
     esac
 done
+if (( dual_soak && ${#bands[@]} != 1 )); then fail "select one band per soak"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -191,6 +194,8 @@ fi
 # statistics before/after a healthy test, never during firmware teardown.
 cases_failed=0
 observe_seconds=150
+client_seconds=75
+if (( dual_soak )); then observe_seconds=300; client_seconds=225; fi
 for band in "${bands[@]}"; do
     guard || fail 'AP health before association'
     tag=0498-$(date +%Y%m%d-%H%M%S)
@@ -284,8 +289,9 @@ for band in "${bands[@]}"; do
     printf 'ALL_OBSERVERS_READY epoch=%s\n' "$(date +%s.%N)" > "$prefix.observers-ready.txt"
     mode=early-only
     if (( dual_hold )); then mode=early-dual; fi
+    if (( dual_soak )); then mode=early-soak; fi
     rc=0
-    wyse "timeout 75 bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+    wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
     # Let the bounded independent observers complete even if a client fault
     # interrupts the association; keep the evidence before any restore.
