@@ -1,0 +1,382 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -796,6 +796,7 @@
+ 	MT7925_LAB_WTBL_POST_ASSOC,
+ 	MT7925_LAB_WTBL_POST_MLD,
+ 	MT7925_LAB_WTBL_POST_KEYS,
++	MT7925_LAB_CNM_PRE_ASSOC = 10,
+ };
+ 
+ /*
+@@ -843,6 +844,51 @@
+ 	}
+ }
+ 
++static int mt7925_lab_cnm_snapshot(struct mt792x_dev *dev,
++				  struct ieee80211_vif *vif, u8 stage)
++{
++	struct mt792x_vif *mvif = (void *)vif->drv_priv;
++	struct mt7925_lab_cnm_info *info;
++	unsigned long links = mvif->valid_links;
++	unsigned int link;
++	int ret;
++
++	if (!trace_mt7925_lab_cnm_bss_enabled() ||
++	    vif->type != NL80211_IFTYPE_STATION ||
++	    !ieee80211_vif_is_mld(vif))
++		return 0;
++
++	info = kzalloc(sizeof(*info), GFP_KERNEL);
++	if (!info)
++		return -ENOMEM;
++	ret = mt7925_lab_cnm_get_info(dev, info);
++	trace_mt7925_lab_cnm_result(stage, ret, ret ? 0 : info->count);
++	if (ret)
++		goto out;
++
++	for_each_set_bit(link, &links, IEEE80211_MLD_MAX_NUM_LINKS) {
++		struct mt792x_bss_conf *mconf = mt792x_vif_to_link(mvif, link);
++		const struct mt7925_lab_cnm_bss *b;
++		u8 idx;
++
++		if (!mconf)
++			continue;
++		idx = mconf->mt76.idx;
++		if (idx >= info->count) {
++			ret = -EPROTO;
++			break;
++		}
++		b = &info->bss[idx];
++		trace_mt7925_lab_cnm_bss(stage, idx, mconf->mt76.band_idx,
++					b->inuse, b->active, b->connected,
++					b->channel, b->band, b->omac,
++					b->omac_band, b->tx_nss, b->rx_nss);
++	}
++out:
++	kfree(info);
++	return ret;
++}
++
+ static int mt7925_set_link_key(struct ieee80211_hw *hw, enum set_key_cmd cmd,
+ 			       struct ieee80211_vif *vif, struct ieee80211_sta *sta,
+ 			       struct ieee80211_key_conf *key, int link_id,
+@@ -2883,6 +2929,11 @@
+ 
+ 	if (add)
+ 		mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_PRE_REFRESH);
++	if (add) {
++		err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_WTBL_PRE_REFRESH);
++		if (err)
++			goto out;
++	}
+ 
+ 	/* The primary peer is still associated under its original WCID.
+ 	 * Fix a changed band before programming newly added peer links.
+@@ -2912,12 +2963,22 @@
+ 
+ 	if (add)
+ 		mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_REFRESH);
++	if (add) {
++		err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_WTBL_POST_REFRESH);
++		if (err)
++			goto out;
++	}
+ 	err = mt7925_mac_sta_add_links(dev, vif, sta, add);
+ 	if (err < 0)
+ 		goto out;
+ 
+ 	if (add)
+ 		mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_ADD);
++	if (add) {
++		err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_WTBL_POST_ADD);
++		if (err)
++			goto out;
++	}
+ 
+ 	/* Lab variant: connect the newly registered BSS without changing
+ 	 * its STATE_NONE STAREC or refreshing the primary MLD membership.
+@@ -2947,6 +3008,10 @@
+ 			if (err)
+ 				goto out;
+ 
++			err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_CNM_PRE_ASSOC);
++			if (err)
++				goto out;
++
+ 			/* Associate each new non-primary link in place, without
+ 			 * refreshing the already-associated primary STAREC.
+ 			 */
+@@ -2968,6 +3033,11 @@
+ 		if (add)
+ 			mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_ASSOC);
+ 		if (add) {
++			err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_WTBL_POST_ASSOC);
++			if (err)
++				goto out;
++		}
++		if (add) {
+ 			struct mt792x_sta *msta = (void *)sta->drv_priv;
+ 			unsigned int primary_id = msta->deflink_id;
+ 			struct mt792x_link_sta *primary;
+@@ -2993,6 +3063,11 @@
+ 		if (add)
+ 			mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_MLD);
+ 		if (add) {
++			err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_WTBL_POST_MLD);
++			if (err)
++				goto out;
++		}
++		if (add) {
+ 			struct mt7925_set_links_key_iter it = {
+ 				.sta = sta,
+ 				.links = add,
+@@ -3003,6 +3078,8 @@
+ 			err = it.err;
+ 			if (!err)
+ 				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_KEYS);
++			if (!err)
++				err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_WTBL_POST_KEYS);
+ 		}
+ 	}
+ 
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -125,6 +125,10 @@
+ 			return -EAGAIN;
+ 	}
+ 
++	if (cmd == MCU_WM_UNI_CMD_QUERY(ROC) &&
++	    rxd->eid != MCU_UNI_EVENT_ROC)
++		return -EPROTO;
++
+ 	if (cmd == MCU_CMD(PATCH_SEM_CONTROL) ||
+ 	    cmd == MCU_CMD(PATCH_FINISH_REQ)) {
+ 		skb_pull(skb, sizeof(*rxd) - 4);
+@@ -1190,6 +1194,76 @@
+ 	return ret;
+ }
+ 
++/* Vendor gen4m 6bceb1b8e344: CNM GET_INFO, BSS_INFO event tag 2.
++ * Validate the complete TLV stream before publishing any BSS metadata.
++ */
++static int
++mt7925_lab_cnm_decode(const u8 *data, size_t len,
++		      struct mt7925_lab_cnm_info *info)
++{
++	const struct tlv *tlv;
++	bool found = false;
++	u32 rem;
++
++	if (len < 4 || len - 4 > U32_MAX)
++		return -EPROTO;
++
++	rem = len - 4;
++	tlv = (const void *)(data + 4);
++	while (rem) {
++		u16 size;
++
++		if (!mt7925_mcu_tlv_valid(tlv, rem))
++			return -EPROTO;
++		size = le16_to_cpu(tlv->len);
++		if (le16_to_cpu(tlv->tag) == 2) {
++			const u8 *payload = (const u8 *)tlv + sizeof(*tlv);
++			u8 count;
++
++			if (found || size < sizeof(*tlv) + 4)
++				return -EPROTO;
++			count = payload[0];
++			if (size != sizeof(*tlv) + 4 +
++				    count * sizeof(info->bss[0]))
++				return -EPROTO;
++			info->count = count;
++			memcpy(info->bss, payload + 4,
++			       count * sizeof(info->bss[0]));
++			found = true;
++		}
++		rem -= size;
++		tlv = (const void *)((const u8 *)tlv + size);
++	}
++	return found ? 0 : -ENODATA;
++}
++
++int mt7925_lab_cnm_get_info(struct mt792x_dev *dev,
++			   struct mt7925_lab_cnm_info *info)
++{
++	struct {
++		u8 reserved[4];
++		__le16 tag, len;
++	} __packed req = {
++		.tag = cpu_to_le16(2),
++		.len = cpu_to_le16(sizeof(struct tlv)),
++	};
++	struct sk_buff *skb = NULL;
++	int ret;
++
++	lockdep_assert_held(&dev->mt76.mutex);
++	if (!is_mt7925(&dev->mt76) || !mt76_is_mmio(&dev->mt76))
++		return -EOPNOTSUPP;
++
++	ret = mt76_mcu_send_and_get_msg(&dev->mt76,
++					MCU_WM_UNI_CMD_QUERY(ROC),
++					&req, sizeof(req), true, &skb);
++	if (!ret)
++		ret = skb ? mt7925_lab_cnm_decode(skb->data, skb->len, info) :
++			    -ENODATA;
++	dev_kfree_skb(skb);
++	return ret;
++}
++
+ int mt7925_mcu_get_temperature(struct mt792x_phy *phy)
+ {
+ 	struct {
+--- a/mt7925/mcu.h
++++ b/mt7925/mcu.h
+@@ -702,7 +702,7 @@
+ }
+ 
+ static inline bool
+-mt7925_mcu_tlv_valid(struct tlv *tlv, u32 rem)
++mt7925_mcu_tlv_valid(const struct tlv *tlv, u32 rem)
+ {
+ 	u16 len;
+ 
+@@ -720,6 +720,21 @@
+ 	     (rem) -= le16_to_cpu((tlv)->len),				\
+ 	     (tlv) = (struct tlv *)((u8 *)(tlv) + le16_to_cpu((tlv)->len)))
+ 
++/* Vendor CNM GET_INFO: tag 2, 12-byte BSS records indexed by BSS ID. */
++struct mt7925_lab_cnm_bss {
++	u8 type, inuse, active, connected;
++	u8 channel, band, omac, omac_band;
++	u8 tx_nss, rx_nss, reserved[2];
++} __packed;
++
++struct mt7925_lab_cnm_info {
++	u8 count;
++	struct mt7925_lab_cnm_bss bss[U8_MAX];
++};
++
++int mt7925_lab_cnm_get_info(struct mt792x_dev *dev,
++			   struct mt7925_lab_cnm_info *info);
++
+ int mt7925_mcu_set_dbdc(struct mt76_phy *phy, bool enable);
+ int mt7925_mcu_hw_scan(struct mt76_phy *phy, struct ieee80211_vif *vif,
+ 		       struct ieee80211_scan_request *scan_req);
+--- a/mt7925/debugfs.c
++++ b/mt7925/debugfs.c
+@@ -4,6 +4,37 @@
+ #include "mt7925.h"
+ #include "mcu.h"
+ 
++/* A guarded, read-only probe for firmware query compatibility. */
++static int mt7925_lab_cnm_show(struct seq_file *s, void *unused)
++{
++	struct mt792x_dev *dev = s->private;
++	struct mt7925_lab_cnm_info *info;
++	unsigned int i;
++	int ret;
++
++	info = kzalloc(sizeof(*info), GFP_KERNEL);
++	if (!info)
++		return -ENOMEM;
++	mt792x_mutex_acquire(dev);
++	ret = mt7925_lab_cnm_get_info(dev, info);
++	mt792x_mutex_release(dev);
++	if (ret)
++		goto out;
++	seq_printf(s, "CNM_GET_INFO count=%u\n", info->count);
++	for (i = 0; i < info->count; i++) {
++		const struct mt7925_lab_cnm_bss *b = &info->bss[i];
++
++		seq_printf(s, "bss=%u type=%u inuse=%u active=%u connected=%u channel=%u band=%u omac=%u omac_band=%u tx_nss=%u rx_nss=%u\n",
++			   i, b->type, b->inuse, b->active, b->connected,
++			   b->channel, b->band, b->omac, b->omac_band,
++			   b->tx_nss, b->rx_nss);
++	}
++out:
++	kfree(info);
++	return ret;
++}
++DEFINE_SHOW_ATTRIBUTE(mt7925_lab_cnm);
++
+ static int
+ mt7925_reg_set(void *data, u64 val)
+ {
+@@ -305,6 +336,9 @@
+ 				    mt7925_txpwr);
+ 	debugfs_create_file("tx_stats", 0400, dir, dev, &mt792x_tx_stats_fops);
+ 	debugfs_create_file("fw_debug", 0600, dir, dev, &fops_fw_debug);
++	if (is_mt7925(&dev->mt76) && mt76_is_mmio(&dev->mt76))
++		debugfs_create_file("lab_cnm", 0400, dir, dev,
++				    &mt7925_lab_cnm_fops);
+ 	debugfs_create_file("runtime-pm", 0600, dir, dev, &fops_pm);
+ 	debugfs_create_file("idle-timeout", 0600, dir, dev,
+ 			    &fops_pm_idle_timeout);
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -663,6 +663,65 @@
+ 		  __entry->cipher, __entry->dw28, __entry->mld)
+ );
+ 
++TRACE_EVENT(mt7925_lab_cnm_bss,
++	TP_PROTO(u8 stage, u8 index, u8 host_band, u8 inuse,
++		 u8 active, u8 connected, u8 channel, u8 band,
++		 u8 omac, u8 omac_band, u8 tx_nss, u8 rx_nss),
++	TP_ARGS(stage, index, host_band, inuse, active, connected,
++		channel, band, omac, omac_band, tx_nss, rx_nss),
++	TP_STRUCT__entry(
++		__field(u8, stage)
++		__field(u8, index)
++		__field(u8, host_band)
++		__field(u8, inuse)
++		__field(u8, active)
++		__field(u8, connected)
++		__field(u8, channel)
++		__field(u8, band)
++		__field(u8, omac)
++		__field(u8, omac_band)
++		__field(u8, tx_nss)
++		__field(u8, rx_nss)
++	),
++	TP_fast_assign(
++		__entry->stage = stage;
++		__entry->index = index;
++		__entry->host_band = host_band;
++		__entry->inuse = inuse;
++		__entry->active = active;
++		__entry->connected = connected;
++		__entry->channel = channel;
++		__entry->band = band;
++		__entry->omac = omac;
++		__entry->omac_band = omac_band;
++		__entry->tx_nss = tx_nss;
++		__entry->rx_nss = rx_nss;
++	),
++	TP_printk("stage=%u bss=%u host_band=%u inuse=%u active=%u connected=%u channel=%u band=%u omac=%u omac_band=%u tx_nss=%u rx_nss=%u",
++		  __entry->stage, __entry->index, __entry->host_band,
++		  __entry->inuse, __entry->active,
++		  __entry->connected, __entry->channel, __entry->band,
++		  __entry->omac, __entry->omac_band, __entry->tx_nss,
++		  __entry->rx_nss)
++);
++
++TRACE_EVENT(mt7925_lab_cnm_result,
++	TP_PROTO(u8 stage, int ret, u8 count),
++	TP_ARGS(stage, ret, count),
++	TP_STRUCT__entry(
++		__field(u8, stage)
++		__field(int, ret)
++		__field(u8, count)
++	),
++	TP_fast_assign(
++		__entry->stage = stage;
++		__entry->ret = ret;
++		__entry->count = count;
++	),
++	TP_printk("stage=%u ret=%d count=%u",
++		  __entry->stage, __entry->ret, __entry->count)
++);
++
+ TRACE_EVENT(mt7925_lab_txs_peer_data,
+ 	TP_PROTO(u16 wcid, u8 link, bool valid, u8 band, u8 pid,
+ 		 u8 format, u8 ack_error, bool encap, u32 length),
