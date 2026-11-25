@@ -1,0 +1,90 @@
+--- a/mt7925/pci_mac.c
++++ b/mt7925/pci_mac.c
+@@ -8,7 +8,8 @@
+ 
+ /* For the lab band-primary variant, use the firmware MLD primary for
+  * automatically routed, encrypted Ethernet data.  Do not change explicit
+- * link transmissions, management, control-port, or host station ownership.
++ * 802.11 link-specific frames, management, control-port, or host ownership.
++ * mac80211 does not define MLO_LINK for HW-encapsulated 802.3 frames.
+  */
+ static struct mt76_wcid *
+ mt7925_lab_band_primary_tx_wcid(struct mt76_dev *dev, struct mt76_wcid *wcid,
+@@ -29,9 +30,7 @@
+ 	    !(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
+ 	    (info->flags & IEEE80211_TX_CTL_TX_OFFCHAN) ||
+ 	    skb->protocol == cpu_to_be16(ETH_P_PAE) ||
+-	    !key || !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE) ||
+-	    u32_get_bits(info->control.flags, IEEE80211_TX_CTRL_MLO_LINK) <
+-		    IEEE80211_LINK_UNSPECIFIED)
++	    !key || !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
+ 		return wcid;
+ 
+ 	mvif = (struct mt792x_vif *)vif->drv_priv;
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -880,6 +880,16 @@
+ 	}
+ 
+ 	mt7925_p2p_txwi_override(dev, txwi, skb);
++
++	if (is_8023 && wcid->sta && vif && ieee80211_vif_is_mld(vif))
++		trace_mt7925_lab_tx_descriptor(
++			wcid->idx, wcid->link_id, band_idx,
++			le32_get_bits(txwi[1], MT_TXD1_TGID),
++			le32_get_bits(txwi[1], MT_TXD1_WLAN_IDX),
++			pid, !!(txwi[3] & cpu_to_le32(MT_TXD3_PROTECT_FRAME)),
++			key && (key->flags & IEEE80211_KEY_FLAG_PAIRWISE),
++			key ? key->keyidx : U8_MAX, READ_ONCE(vif->active_links),
++			skb->len);
+ }
+ EXPORT_SYMBOL_GPL(mt7925_mac_write_txwi);
+ 
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -722,6 +722,45 @@
+ 		  __entry->stage, __entry->ret, __entry->count)
+ );
+ 
++TRACE_EVENT(mt7925_lab_tx_descriptor,
++	TP_PROTO(u16 wcid, u8 link, u8 band, u8 tgid, u16 wlan_idx,
++		 u8 pid, bool protect, bool pairwise, u8 keyidx,
++		 u16 active, u32 length),
++	TP_ARGS(wcid, link, band, tgid, wlan_idx, pid, protect, pairwise,
++		keyidx, active, length),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u8, link)
++		__field(u8, band)
++		__field(u8, tgid)
++		__field(u16, wlan_idx)
++		__field(u8, pid)
++		__field(bool, protect)
++		__field(bool, pairwise)
++		__field(u8, keyidx)
++		__field(u16, active)
++		__field(u32, length)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->link = link;
++		__entry->band = band;
++		__entry->tgid = tgid;
++		__entry->wlan_idx = wlan_idx;
++		__entry->pid = pid;
++		__entry->protect = protect;
++		__entry->pairwise = pairwise;
++		__entry->keyidx = keyidx;
++		__entry->active = active;
++		__entry->length = length;
++	),
++	TP_printk("wcid=%u link=%u band=%u tgid=%u wlan_idx=%u pid=%u protect=%u pairwise=%u keyidx=%u active=%x length=%u",
++		  __entry->wcid, __entry->link, __entry->band, __entry->tgid,
++		  __entry->wlan_idx, __entry->pid, __entry->protect,
++		  __entry->pairwise, __entry->keyidx, __entry->active,
++		  __entry->length)
++);
++
+ TRACE_EVENT(mt7925_lab_txs_peer_data,
+ 	TP_PROTO(u16 wcid, u8 link, bool valid, u8 band, u8 pid,
+ 		 u8 format, u8 ack_error, bool encap, u32 length),
