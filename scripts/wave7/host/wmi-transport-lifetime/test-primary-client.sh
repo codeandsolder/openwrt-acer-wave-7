@@ -9,7 +9,17 @@ variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# == 1 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $# -le 2 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+bands=(5 24)
+if [[ $# == 2 ]]; then
+    case "$2" in
+        --band=5) bands=(5) ;;
+        --band=24) bands=(24) ;;
+        *) fail 'invalid band' ;;
+    esac
+fi
+helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
+[[ -r $helper ]] || fail 'missing AP trace helper'
 run=$1
 [[ $(cat "$run/status") == SOAK_PASS ]] || fail 'trial not soaked'
 exec 8<>"$lab/.lab-control.lock"
@@ -46,11 +56,13 @@ remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out
 active=0
 trace_pid=''
 sample_pid=''
+ap_trace_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
     if [[ -n $trace_pid ]]; then wait "$trace_pid" || :; fi
     if [[ -n $sample_pid ]]; then wait "$sample_pid" || :; fi
+    if [[ -n $ap_trace_pid ]]; then wait "$ap_trace_pid" || :; fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -68,7 +80,8 @@ client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
 [[ $client_boot =~ ^[0-9a-f-]{36}$ ]] || fail 'client boot'
 # Per-case independent trace and passive Q6 samples. Only query station
 # statistics before/after a healthy test, never during firmware teardown.
-for band in 5 24; do
+cases_failed=0
+for band in "${bands[@]}"; do
     guard || fail 'AP health before association'
     tag=0498-$(date +%Y%m%d-%H%M%S)
     prefix="$out/band-$band"
@@ -97,6 +110,14 @@ for band in 5 24; do
         sleep .2
     done
     [[ -s $prefix.ap-passive.txt ]] || fail 'AP observer not armed'
+    remote_stream "sh -s -- $boot $tag" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
+    ap_trace_pid=$!
+    for _ in {1..60}; do
+        kill -0 "$ap_trace_pid" 2>/dev/null || fail 'AP trace exited'
+        grep -q '^AP_CONTROL_TRACE_READY ' "$prefix.ap-control-trace.txt" && break
+        sleep .25
+    done
+    grep -q '^AP_CONTROL_TRACE_READY ' "$prefix.ap-control-trace.txt" || fail 'AP trace not armed'
     rc=0
     wyse "timeout 75 bash $client/client-sustained.sh $tag --early-only-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
@@ -106,12 +127,19 @@ for band in 5 24; do
     trace_pid=''
     wait "$sample_pid" || :
     sample_pid=''
+    wait "$ap_trace_pid" || cases_failed=1
+    ap_trace_pid=''
     wyse "tar -C $client_data -cf - $tag" > "$prefix.client.tar" 2>"$prefix.client-archive-error.txt" || :
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg' > "$prefix.ap-after.txt" 2>&1 || :
     if ! guard; then
         echo "AP_FAULT_AFTER_BAND_$band"
         exit 1
     fi
-    printf 'CASE_COMPLETE band=%s client_rc=%s tag=%s\n' "$band" "$rc" "$tag"
+    result=$(tar -xOf "$prefix.client.tar" "$tag/short-hold-result.txt" 2>/dev/null || :)
+    if [[ $rc != 0 || $result != short_hold_all_replies=1 ]]; then
+        cases_failed=1
+    fi
+    printf 'CASE_COMPLETE band=%s client_rc=%s hold=%s tag=%s\n' "$band" "$rc" "$result" "$tag"
 done
 echo PRIMARY_CLIENT_CASES_COMPLETE
+exit "$cases_failed"
