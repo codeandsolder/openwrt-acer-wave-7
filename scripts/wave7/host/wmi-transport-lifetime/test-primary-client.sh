@@ -94,9 +94,27 @@ remote_stream(){
         -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$run/known_hosts" root@192.168.76.1 "$@"
 }
 remote(){ remote_stream "$@" </dev/null; }
+# Keep a single authenticated Asus->Acer transport for the duration of
+# the trial. Each command still uses its own SSH channel and exit status.
+# A busy Acer must not require a new TCP handshake for every observer.
+ssh_dir=''
+ssh_socket=''
+open_wyse_transport(){
+    local runtime
+    runtime="/run/user/$(id -u)"
+    [[ -d $runtime && -O $runtime ]] || fail 'missing user runtime directory'
+    ssh_dir=$(mktemp -d "$runtime/wave7-ssh.XXXXXXXX")
+    ssh_socket="$ssh_dir/control"
+    ssh -MNf -S "$ssh_socket" -o ControlPersist=no \
+        -o BatchMode=yes -o ConnectTimeout=20 \
+        -o ServerAliveInterval=10 -o ServerAliveCountMax=3 acer
+    ssh -S "$ssh_socket" -O check acer
+}
 wyse(){
-    ssh -nT -o BatchMode=yes -o ConnectTimeout=4 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 acer \
-        "ssh -nT -o BatchMode=yes -o ConnectTimeout=4 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 wyse-eth $(printf '%q' "$1")"
+    ssh -nT -S "$ssh_socket" -o ControlMaster=no \
+        -o BatchMode=yes -o ConnectTimeout=20 \
+        -o ServerAliveInterval=10 -o ServerAliveCountMax=3 acer \
+        "ssh -nT -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 wyse-eth $(printf '%q' "$1")"
 }
 guard(){
     local s
@@ -121,8 +139,6 @@ snapshot_icmp(){
 }
 guard || fail 'router no longer healthy'
 systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream'
-wyse "sudo -n bash $client/client-module-stack.sh $variant --check-original" > "$out/client-original.txt"
-remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out/ap-before.txt"
 active=0
 trace_pid=''
 sample_pid=''
@@ -142,6 +158,12 @@ cleanup(){
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
+    if [[ -n $ssh_socket ]]; then
+        ssh -S "$ssh_socket" -O exit acer > "$out/ssh-control-close.txt" 2>&1 || :
+    fi
+    if [[ -n $ssh_dir ]]; then
+        rmdir "$ssh_dir" || rc=1
+    fi
     printf 'exit=%s\n' "$rc" > "$out/status"
     (cd "$out"; find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS)
     printf 'PRIMARY_CLIENT_TEST_DIR=%s\n' "$out"
@@ -150,6 +172,9 @@ cleanup(){
 trap cleanup EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
+open_wyse_transport > "$out/ssh-control-open.txt" 2>&1
+wyse "sudo -n bash $client/client-module-stack.sh $variant --check-original" > "$out/client-original.txt"
+remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out/ap-before.txt"
 active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
 client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
