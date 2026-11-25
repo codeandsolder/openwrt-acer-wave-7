@@ -9,7 +9,7 @@ variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $# -le 3 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $# -le 4 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
 run=$1
 shift
 bands=(5 24)
@@ -19,6 +19,8 @@ for arg in "$@"; do
         --band=5) bands=(5) ;;
         --band=24) bands=(24) ;;
         --wired-capture) wired_capture=1 ;;
+        --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
+        --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -34,6 +36,7 @@ rev=$(jq -r .revision "$base/report.json")
 [[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-65f3c6bcfc-ap-dhcp-guard8 ]] || fail 'trial identity'
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
+printf "%s\n" "$variant" > "$out/client-variant.txt"
 remote_stream(){
     ssh -T -i /home/jan/.ssh/wave7-root-rsa \
         -o BindInterface=enp4s0f4u2u4 -o BindAddress=192.168.76.2 \
