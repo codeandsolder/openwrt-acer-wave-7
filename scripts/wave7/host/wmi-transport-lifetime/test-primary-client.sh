@@ -9,11 +9,11 @@ variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $# -le 5 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
 run=$1
 shift
 bands=(5 24)
-wired_capture=0
+wired_capture=none
 ip6_observe=0
 dual_hold=0
 client_rx_arg=''
@@ -21,7 +21,12 @@ for arg in "$@"; do
     case "$arg" in
         --band=5) bands=(5) ;;
         --band=24) bands=(24) ;;
-        --wired-capture) wired_capture=1 ;;
+        --wired-capture)
+            [[ $wired_capture == none ]] || fail 'one wired capture profile'
+            wired_capture=icmp ;;
+        --wired-ndp)
+            [[ $wired_capture == none ]] || fail 'one wired capture profile'
+            wired_capture=ndp ;;
         --client-ip6-observe) ip6_observe=1 ;;
         --client-dual-hold) dual_hold=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
@@ -205,16 +210,24 @@ for band in "${bands[@]}"; do
         sleep .25
     done
     grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" || fail 'client control trace not armed'
-    if (( wired_capture )); then
-        # Only ICMP header summaries on the isolated wired lab interface.
-        timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96         -i enp4s0f4u2u4 'icmp and host 192.168.76.2 and not host 192.168.76.1'         > "$prefix.wired-icmp.txt" 2> "$prefix.wired-icmp-status.txt" &
+    if [[ $wired_capture != none ]]; then
+        # Header summaries only, no payload or promiscuous capture.
+        # The NDP profile identifies solicitations reaching the Asus RA
+        # server and advertisements actually leaving its isolated NIC.
+        case $wired_capture in
+            icmp) filter='icmp and host 192.168.76.2 and not host 192.168.76.1' ;;
+            ndp) filter='icmp6 and (ip6[40] == 133 or ip6[40] == 134)' ;;
+        esac
+        timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -e -s 96 \
+            -i enp4s0f4u2u4 "$filter" \
+            > "$prefix.wired-$wired_capture.txt" 2> "$prefix.wired-$wired_capture-status.txt" &
         wired_capture_pid=$!
         for _ in {1..40}; do
             kill -0 "$wired_capture_pid" 2>/dev/null || fail 'wired capture exited'
-            grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" && break
+            rg -q 'listening on enp4s0f4u2u4' "$prefix.wired-$wired_capture-status.txt" && break
             sleep .25
         done
-        grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" || fail 'wired capture not armed'
+        rg -q 'listening on enp4s0f4u2u4' "$prefix.wired-$wired_capture-status.txt" || fail 'wired capture not armed'
     fi
     if (( ip6_observe )); then
         wyse "bash $client/client-ip6-observe.sh $tag $client_boot 90" > "$prefix.client-ip6.txt" 2>&1 &
@@ -246,12 +259,12 @@ for band in "${bands[@]}"; do
         ip6_pid=''
         rg -qx 'CLIENT_IP6_OBSERVER_END samples=91' "$prefix.client-ip6.txt" || cases_failed=1
     fi
-    if (( wired_capture )); then
+    if [[ $wired_capture != none ]]; then
         capture_rc=0
         wait "$wired_capture_pid" || capture_rc=$?
         wired_capture_pid=''
         if [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
-           ! grep -Eq '^0 packets dropped by kernel$' "$prefix.wired-icmp-status.txt"; then
+           ! rg -qx '0 packets dropped by kernel' "$prefix.wired-$wired_capture-status.txt"; then
             cases_failed=1
         fi
     fi
