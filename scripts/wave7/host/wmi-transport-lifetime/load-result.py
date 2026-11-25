@@ -86,6 +86,22 @@ def iperf(text, server_text, mode, target, *, source="192.168.76.2", port=52231,
     end = raw["end"]
     server_end = server["end"]
 
+    def by_port(connected, report, port_field):
+        sockets = {c["socket"]: c[port_field] for c in connected}
+        result = {}
+        for stream in report["streams"]:
+            sender = stream["sender"]
+            receiver = stream["receiver"]
+            require(sender["socket"] == receiver["socket"], "stream socket mismatch")
+            port = sockets[sender["socket"]]
+            require(port not in result, "duplicate stream")
+            result[port] = stream
+        require(len(result) == count, "incomplete stream report")
+        return result
+
+    client_streams = by_port(conn, end, "local_port")
+    server_streams = by_port(server_conn, server_end, "remote_port")
+
     def direction(suffix, uplink):
         sent = end["sum_sent" + suffix]
         recv = end["sum_received" + suffix]
@@ -95,16 +111,36 @@ def iperf(text, server_text, mode, target, *, source="192.168.76.2", port=52231,
                 and math.isfinite(rate) and rate > 0 and recv["bytes"] > 0
                 and math.isclose(rate, recv["bytes"] * 8 / secs, rel_tol=.001)
                 and sent["retransmits"] >= 0, "invalid TCP receiver statistics")
-        # Wyse's independently archived server JSON witnesses its actual
-        # send (uplink) or receive (downlink) byte counts.
+        field = "sender" if uplink else "receiver"
+        peer_total = sent if uplink else recv
         observed = server_end[("sum_sent" if uplink else "sum_received") + suffix]
-        require(observed["bytes"] == (sent if uplink else recv)["bytes"],
-                "independent server byte count mismatch")
-        if uplink:
-            require(observed["retransmits"] == sent["retransmits"],
-                    "independent server retransmit count mismatch")
+        matched = []
+        for port, client_stream in client_streams.items():
+            if client_stream["sender"]["sender"] == uplink:
+                continue
+            server_stream = server_streams[port]
+            require(server_stream["sender"]["sender"] == uplink, "stream direction mismatch")
+            before = server_stream[field]["bytes"]
+            after = client_stream[field]["bytes"]
+            # iperf 3.22 TEST_END reports the server snapshot before
+            # EXCHANGE_RESULTS, without joining its stream threads first.
+            # A final successful write/read can advance the exchanged
+            # counter. Check monotonicity per connection, not equality
+            # of snapshots taken at different instants.
+            require(0 <= before <= after, "peer counter regressed across result exchange")
+            matched.append((before, after))
+            if uplink:
+                require(0 <= server_stream[field]["retransmits"] <= client_stream[field]["retransmits"],
+                        "peer retransmit counter regressed")
+        require(len(matched) == streams and
+                sum(b for b, _ in matched) == observed["bytes"] and
+                sum(a for _, a in matched) == peer_total["bytes"],
+                "stream totals do not match summaries")
         return {"receiver_mbps": rate / 1e6, "receiver_bytes": recv["bytes"],
-                "seconds": secs, "sender_retransmits": sent["retransmits"]}
+                "seconds": secs, "sender_retransmits": sent["retransmits"],
+                "server_snapshot_bytes": observed["bytes"],
+                "exchanged_server_bytes": peer_total["bytes"],
+                "server_snapshot_delta_bytes": peer_total["bytes"] - observed["bytes"]}
 
     result = {("uplink" if mode == "uplink" else "downlink"):
               direction("", mode == "uplink")}
