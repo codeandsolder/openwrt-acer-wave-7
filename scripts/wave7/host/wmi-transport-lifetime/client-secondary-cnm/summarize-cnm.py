@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 
 STAGES = {2: "pre_refresh", 3: "post_refresh", 4: "post_add",
-          10: "pre_assoc", 5: "post_assoc", 6: "post_mld", 7: "post_keys"}
+          10: "pre_assoc", 5: "post_assoc", 6: "post_mld", 7: "post_keys",
+          11: "assoc_without_mld", 12: "secondary_mld", 13: "secondary_eht_mld"}
 EVENT = re.compile(r"(\d+\.\d+): mt7925_lab_(cnm_bss|cnm_result|wtbl_peer): (.*)")
 FIELD = re.compile(r"(\w+)=(0x[0-9a-f]+|-?\d+)")
 
