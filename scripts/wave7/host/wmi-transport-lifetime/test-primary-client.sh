@@ -35,7 +35,7 @@ guard(){
     local s
     s=$(remote 'cat /proc/sys/kernel/random/boot_id; cat /rom/etc/openwrt_version; fw_printenv -n bootfail; for p in 0 1 2; do cat /sys/class/remoteproc/remoteproc$p/state; done; dmesg | grep -c "NOC ERROR DETECTED" || :')
     [[ $s == "$(printf '%s\n%s\n0\nrunning\nrunning\nrunning\n0' "$boot" "$rev")" ]] || return 1
-    ping -I 192.168.76.2 -c 1 -W 1 192.168.76.1 >/dev/null
+    ping -I 192.168.76.2 -c 1 -W 1 192.168.76.1 >/dev/null &&
     ping -I 192.168.76.250 -c 1 -W 1 192.168.76.1 >/dev/null
 }
 guard || fail 'router no longer healthy'
