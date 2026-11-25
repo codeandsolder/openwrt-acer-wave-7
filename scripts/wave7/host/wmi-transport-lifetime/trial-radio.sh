@@ -2,14 +2,14 @@
 # Independent guarded stock->Guard8 radio experiment. Run on the isolated Asus lab.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261125-netgear-wmi-dhcp-fixed
+base=/home/jan/firmware/wave7/trials/20261125-netgear-primary-dhcp-fixed
 guard8=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
-native="$base/wave7-netgear-wmi-dhcp-guard8-sysupgrade.bin"
+native="$base/wave7-netgear-primary-umac-dhcp-guard8-sysupgrade.bin"
 ota="$base/wave7-nand-squashfs-vendor-ota.bin"
-native_sha=49c3cff80589d4a727c106398131256e452fb11c6c7071e8c13669913243c589
-ota_sha=61b25521af478ff1b5d48bfcccc4fb0604de6f9731b994be1191b4b445be45d0
-rev=r0+38346-b6733bd5c8-ap-dhcp-guard8
-builder=b6733bd5c850e9bc9ffa70de0d1d79d6b4125648
+native_sha=9f1a3848378e1b5a9433ce400cf71b99f0651eea2fad9e9c316a41eddf7784d6
+ota_sha=c00e9b70bd0b10d78449edea1f62298c438a612316ae35e2ac4e7468504e60d3
+rev=r0+38346-77d7fa1171-ap-dhcp-guard8
+builder=77d7fa1171920e94a980a02f6e8e610b7e45f7c5
 rollback="$guard8/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
 rollback_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
 rollback_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
@@ -161,7 +161,7 @@ case "${1:-}" in
     exec 8<>"$lock"
     flock -n 8 || fail 'lab already reserved'
     preflight
-    tag=netgear-wmi-dhcp-fixed-$(date +%Y%m%d-%H%M%S)
+    tag=netgear-primary-dhcp-fixed-$(date +%Y%m%d-%H%M%S)
     out="$base/runs/$tag"
     mkdir -p "$out"
     stock 'cat /proc/sys/kernel/random/boot_id' > "$out/stock-boot"
@@ -176,7 +176,7 @@ case "${1:-}" in
         fail 'observer not armed'
     fi
     printf 'GUARD_ARMED %s\n' "$out"
-    if ! "$stock_flasher" "$tag" "$ota" 6.18.60 b6733bd5c8 > "$out/flash.log" 2>&1; then
+    if ! "$stock_flasher" "$tag" "$ota" 6.18.60 77d7fa1171 > "$out/flash.log" 2>&1; then
         cat "$out/flash.log"
         systemctl --user stop "$unit.service" || :
         fail 'stock upgrade refused'
@@ -188,7 +188,7 @@ case "${1:-}" in
     [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
     ;;
 --watch)
-    [[ $# == 2 && $2 == "$base"/runs/netgear-wmi-* ]] || fail 'invalid run'
+    [[ $# == 2 && $2 == "$base"/runs/netgear-primary-* ]] || fail 'invalid run'
     out=$2
     known="$out/known_hosts"
     exec 9>"$out/.watch.lock"
