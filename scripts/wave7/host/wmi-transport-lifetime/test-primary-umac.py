@@ -7,7 +7,7 @@ import subprocess
 
 
 def function(text, name):
-    match = re.search(r"(?m)^static (?:u8|int) " + name + r"\(", text)
+    match = re.search(r"(?m)^(?:static )?(?:u8|int|void) " + name + r"\(", text)
     if not match:
         raise ValueError(name)
     pos = text.index("{", match.start())
@@ -33,6 +33,20 @@ def main():
     generated.write_text(fixture.replace("/* EXTRACTED BODIES */", bodies))
     obj = args.output / "primary-umac.o"
     exe = args.output / "primary-umac"
+    subprocess.run(["/usr/local/bin/sccache", "cc", "-std=gnu11", "-O2",
+                    "-Wall", "-Wextra", "-Werror", "-c", str(generated),
+                    "-o", str(obj)], check=True)
+    subprocess.run(["cc", str(obj), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+    text = (args.source / "dp.c").read_text()
+    fixture = Path(__file__).with_name("primary-umac-dp-fixture.c").read_text()
+    bodies = "\n".join(function(text, name) for name in (
+        "ath12k_dp_peer_set_default_routing", "ath12k_dp_peer_setup",
+        "ath12k_dp_peer_cleanup"))
+    generated = args.output / "primary-umac-dp-expanded.c"
+    generated.write_text(fixture.replace("/* EXTRACTED BODIES */", bodies))
+    obj = args.output / "primary-umac-dp.o"
+    exe = args.output / "primary-umac-dp"
     subprocess.run(["/usr/local/bin/sccache", "cc", "-std=gnu11", "-O2",
                     "-Wall", "-Wextra", "-Werror", "-c", str(generated),
                     "-o", str(obj)], check=True)
