@@ -17,14 +17,14 @@ spec=importlib.util.spec_from_file_location("bridge_bench",Path(__file__).resolv
 b=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
 WIFI_RPS="/sys/class/net/ap-mld0/queues/rx-0/rps_cpus"
-POLICIES={"baseline":("baseline","0"),"native":("native","0"),"distributed":("native","e"),"irq-distributed":("native","e")}
+POLICIES={"baseline":("baseline","0"),"native":("native","0"),"distributed":("native","e"),"irq-distributed":("native","e"),"irq-native":("native","0"),"irq-edma":("native-posttag-irq","e"),"irq-edma-native":("native-posttag-irq","0")}
 PEER="192.168.76.248"
 PORT=52229
 
 
 @contextmanager
 def radio_irq_affinity(boot,policy):
-    if policy!="irq-distributed":
+    if not policy.startswith("irq-"):
         yield
         return
     with b.irq_affinity(boot,r"pci2_wlan_dp_(\d+)",range(12),lambda group:1+group%3):
@@ -32,13 +32,15 @@ def radio_irq_affinity(boot,policy):
 
 
 @contextmanager
-def steering(boot,policy):
+def steering(boot,policy,iface="ap-mld0"):
     wired,wifi=POLICIES[policy]
-    old=b.remote("cat "+WIFI_RPS).strip()
+    b.require(re.fullmatch(r"[a-zA-Z0-9_.-]+",iface),"invalid AP interface")
+    rps=f"/sys/class/net/{iface}/queues/rx-0/rps_cpus"
+    old=b.remote("cat "+rps).strip()
     b.require(old=="0","unexpected Wi-Fi RPS starting state")
     def apply(value):
-        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && printf %s {value} > {WIFI_RPS}')
-        b.require(b.remote("cat "+WIFI_RPS).strip()==value,"Wi-Fi RPS readback mismatch")
+        b.remote(f'test "$(cat /proc/sys/kernel/random/boot_id)" = {boot} && printf %s {value} > {rps}')
+        b.require(b.remote("cat "+rps).strip()==value,"Wi-Fi RPS readback mismatch")
     with b.steering(boot,wired):
         try:
             apply(wifi)
