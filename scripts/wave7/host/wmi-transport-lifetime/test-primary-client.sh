@@ -180,6 +180,12 @@ trap 'exit 130' INT
 open_wyse_transport > "$out/ssh-control-open.txt" 2>&1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --check-original" > "$out/client-original.txt"
 remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out/ap-before.txt"
+# A stale authorized MFP station may trigger SA Query on reassociation.
+# Record the old station state rather than forcibly deleting it.
+remote 'iw dev ap-mld0 station dump' > "$out/ap-stations-before.txt"
+if (( dual_soak )); then
+    [[ ! -s $out/ap-stations-before.txt ]] || fail 'extended hold requires an empty AP station table'
+fi
 active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
 client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
