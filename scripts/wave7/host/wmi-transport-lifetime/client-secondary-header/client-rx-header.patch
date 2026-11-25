@@ -1,0 +1,127 @@
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -562,6 +562,72 @@
+ 		  __entry->wcid, __entry->freq, __entry->fc, __entry->raw_bss, __entry->encap, __entry->u2m, __entry->data)
+ );
+ 
++/* Lab-only MAC-header metadata; never capture frame bodies. */
++TRACE_EVENT(mt7925_lab_rx_header,
++	TP_PROTO(u16 wcid, u16 freq, u16 fc, u16 seq, u8 raw_bss,
++			 u8 cm, u8 sec, const u8 *ra, const u8 *ta, const u8 *a3),
++	TP_ARGS(wcid, freq, fc, seq, raw_bss, cm, sec, ra, ta, a3),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u16, freq)
++		__field(u16, fc)
++		__field(u16, seq)
++		__field(u8, raw_bss)
++		__field(u8, cm)
++		__field(u8, sec)
++		__array(u8, ra, 6)
++		__array(u8, ta, 6)
++		__array(u8, a3, 6)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->freq = freq;
++		__entry->fc = fc;
++		__entry->seq = seq;
++		__entry->raw_bss = raw_bss;
++		__entry->cm = cm;
++		__entry->sec = sec;
++		memcpy(__entry->ra, ra, 6);
++		memcpy(__entry->ta, ta, 6);
++		memcpy(__entry->a3, a3, 6);
++	),
++	TP_printk("wcid=%u freq=%u fc=0x%04x seq=%u raw_bss=%u cm=%u sec=%u ra=%pM ta=%pM a3=%pM",
++			  __entry->wcid, __entry->freq, __entry->fc, __entry->seq,
++			  __entry->raw_bss, __entry->cm, __entry->sec,
++			  __entry->ra, __entry->ta, __entry->a3)
++);
++
++TRACE_EVENT(mt7925_lab_link_addr,
++	TP_PROTO(u8 bss, u8 link, u16 wcid, const u8 *own,
++			 const u8 *peer, const u8 *bssid,
++			 const u8 *own_mld, const u8 *peer_mld),
++	TP_ARGS(bss, link, wcid, own, peer, bssid, own_mld, peer_mld),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u16, wcid)
++		__array(u8, own, 6)
++		__array(u8, peer, 6)
++		__array(u8, bssid, 6)
++		__array(u8, own_mld, 6)
++		__array(u8, peer_mld, 6)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->wcid = wcid;
++		memcpy(__entry->own, own, 6);
++		memcpy(__entry->peer, peer, 6);
++		memcpy(__entry->bssid, bssid, 6);
++		memcpy(__entry->own_mld, own_mld, 6);
++		memcpy(__entry->peer_mld, peer_mld, 6);
++	),
++	TP_printk("bss=%u link=%u wcid=%u own=%pM peer=%pM bssid=%pM own_mld=%pM peer_mld=%pM",
++			  __entry->bss, __entry->link, __entry->wcid,
++			  __entry->own, __entry->peer, __entry->bssid,
++			  __entry->own_mld, __entry->peer_mld)
++);
++
+ TRACE_EVENT(mt7925_lab_txs_peer_data,
+ 	TP_PROTO(u16 wcid, u8 link, bool valid, u8 band, u8 pid,
+ 		 u8 format, u8 ack_error, bool encap, u32 length),
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -610,6 +610,18 @@
+ 			qos_ctl = *ieee80211_get_qos_ctl(hdr);
+ 		}
+ 		skb_set_mac_header(skb, (unsigned char *)hdr - skb->data);
++		/* The actual MAC header is still at skb->data here. EHT/HE
++		 * radiotap prefixes are added below. Restrict to unicast data.
++		 */
++		if (trace_mt7925_lab_rx_header_enabled() && unicast &&
++		    ieee80211_is_data(fc) &&
++		    skb_headlen(skb) >= ieee80211_hdrlen(fc))
++			trace_mt7925_lab_rx_header(idx, status->freq,
++				le16_to_cpu(fc), le16_to_cpu(hdr->seq_ctrl),
++				FIELD_GET(MT_RXD2_NORMAL_BSSID, rxd2),
++				!!(rxd1 & MT_RXD1_NORMAL_CM),
++				FIELD_GET(MT_RXD2_NORMAL_SEC_MODE, rxd2),
++				hdr->addr1, hdr->addr2, hdr->addr3);
+ 	} else {
+ 		status->flag |= RX_FLAG_8023;
+ 	}
+@@ -1517,8 +1529,13 @@
+ 
+ 			/* No payload or address: only accepted RX metadata. */
+ 			if (observe && trace_mt7925_lab_rx_frame_enabled()) {
+-				u16 fc = !encap && skb_headlen(skb) >= 2 ?
+-					get_unaligned_le16(skb->data) : U16_MAX;
++				u16 fc = U16_MAX;
++
++				if (!encap && skb_mac_header_was_set(skb) &&
++				    skb_mac_header(skb) >= skb->data &&
++				    skb_tail_pointer(skb) - skb_mac_header(skb) >=
++				    (ptrdiff_t)sizeof(__le16))
++					fc = get_unaligned_le16(skb_mac_header(skb));
+ 
+ 				trace_mt7925_lab_rx_frame(
+ 					FIELD_GET(MT_RXD1_NORMAL_WLAN_IDX, word1),
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3171,6 +3171,12 @@
+ 	basic_req->band_idx = READ_ONCE(mconf->mt76.band_idx);
+ 	basic_req->wmm_idx = mconf->mt76.wmm_idx;
+ 	basic_req->conn_state = !enable;
++	if (trace_mt7925_lab_link_addr_enabled() &&
++	    vif->type == NL80211_IFTYPE_STATION && link_sta &&
++	    link_conf->bssid)
++		trace_mt7925_lab_link_addr(mconf->mt76.idx, link_conf->link_id,
++			sta_wlan_idx, link_conf->addr, link_sta->addr,
++			link_conf->bssid, vif->addr, link_sta->sta->addr);
+ 
+ 	switch (vif->type) {
+ 	case NL80211_IFTYPE_MESH_POINT:

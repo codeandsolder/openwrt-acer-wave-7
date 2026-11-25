@@ -24,9 +24,13 @@ for arg in "$@"; do
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
         --client-delayed-links-fw20261016) variant=upstream-prefix22-authorize-delayed-links-fw20261016 ;;
+        --client-header-trace) variant=upstream-prefix22-authorize-delayed-links-header-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
+if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
+    client_rx_arg=--rx-header
+fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
 [[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'

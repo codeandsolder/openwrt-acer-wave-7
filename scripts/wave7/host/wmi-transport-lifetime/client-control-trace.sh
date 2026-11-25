@@ -1,7 +1,7 @@
 #!/bin/bash
 # Capture control-port and optional data-path metadata, never packet payloads.
 set -Eeuo pipefail
-[[ $EUID == 0 && ( $# == 2 || ( $# == 3 && $3 == --rx-data ) ) &&
+[[ $EUID == 0 && ( $# == 2 || ( $# == 3 && ( $3 == --rx-data || $3 == --rx-header ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ &&
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]]
 [[ $(cat /proc/sys/kernel/random/boot_id) == "$2" ]]
@@ -11,11 +11,17 @@ events=(cfg80211/rdev_tx_control_port
         cfg80211/cfg80211_rx_control_port
         cfg80211/cfg80211_control_port_tx_status)
 rx_data=0
-if [[ ${3:-} == --rx-data ]]; then
+rx_header=0
+if [[ ${3:-} == --rx-data || ${3:-} == --rx-header ]]; then
     rx_data=1
     events+=(mt7925_lab/mt7925_lab_rxdesc
              mt7925_lab/mt7925_lab_rx_frame
              mt7925_lab/mt7925_lab_txs_peer_data)
+fi
+if [[ ${3:-} == --rx-header ]]; then
+    rx_header=1
+    events+=(mt7925_lab/mt7925_lab_rx_header
+             mt7925_lab/mt7925_lab_link_addr)
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
@@ -45,7 +51,7 @@ else
 fi
 for e in "${events[@]}"; do echo 1 > "$inst/events/$e/enable"; done
 echo 1 > "$inst/tracing_on"
-echo "CLIENT_CONTROL_TRACE_READY boot=$2 rx_data=$rx_data"
+echo "CLIENT_CONTROL_TRACE_READY boot=$2 rx_data=$rx_data rx_header=$rx_header"
 rc=0
 timeout 90s cat "$inst/trace_pipe" || rc=$?
 [[ $rc == 124 ]]
