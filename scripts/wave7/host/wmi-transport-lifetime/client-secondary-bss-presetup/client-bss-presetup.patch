@@ -1,0 +1,72 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -2802,6 +2802,26 @@
+ 
+ 	/* A single MLO request after all selected BSSes have been registered. */
+ 	if (secondary_added) {
++		unsigned long selected = vif->active_links;
++
++		/* Vendor MLD pre-setup can establish the BSS group before
++		 * peer association. Ensure both active BSSes are affiliated
++		 * before asking firmware to assign their hardware bands.
++		 */
++		if (vif->type == NL80211_IFTYPE_STATION &&
++		    ieee80211_vif_is_mld(vif)) {
++			for_each_set_bit(link_id, &selected, IEEE80211_MLD_MAX_NUM_LINKS) {
++				link_conf = mt792x_vif_to_bss_conf(vif, link_id);
++				if (!link_conf) {
++					err = -EINVAL;
++					goto unwind;
++				}
++				err = mt7925_mcu_presetup_bss_mld(dev, link_conf);
++				if (err)
++					goto unwind;
++			}
++		}
++
+ 		err = mt7925_set_mlo_roc(phy, &mvif->bss_conf, vif->active_links);
+ 		if (err)
+ 			goto unwind;
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3345,6 +3345,29 @@
+ 		vif->valid_links, vif->active_links);
+ }
+ 
++/* Program MLD membership before negotiating the affiliated ROC bands.
++ * Do not rewrite BASIC, timing, keys or the existing primary STAREC.
++ */
++int mt7925_mcu_presetup_bss_mld(struct mt792x_dev *dev,
++			       struct ieee80211_bss_conf *link_conf)
++{
++	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
++	struct sk_buff *skb;
++
++	lockdep_assert_held(&dev->mt76.mutex);
++	if (!mconf->dev_active || !link_conf->chanreq.oper.chan)
++		return -EINVAL;
++	skb = __mt7925_mcu_alloc_bss_req(&dev->mt76, &mconf->mt76,
++					 sizeof(struct bss_req_hdr) +
++					 sizeof(struct bss_mld_tlv));
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++
++	mt7925_mcu_bss_mld_tlv(skb, link_conf);
++	return mt76_mcu_skb_send_msg(&dev->mt76, skb,
++				    MCU_UNI_CMD(BSS_INFO_UPDATE), true);
++}
++
+ static void
+ mt7925_mcu_bss_qos_tlv(struct sk_buff *skb, struct ieee80211_bss_conf *link_conf)
+ {
+--- a/mt7925/mcu.h
++++ b/mt7925/mcu.h
+@@ -737,6 +737,8 @@
+ 			    struct ieee80211_bss_conf *link_conf,
+ 			    struct ieee80211_link_sta *link_sta,
+ 			    int enable);
++int mt7925_mcu_presetup_bss_mld(struct mt792x_dev *dev,
++			       struct ieee80211_bss_conf *link_conf);
+ int mt7925_mcu_refresh_peer_band(struct mt792x_phy *phy,
+ 				 struct ieee80211_bss_conf *link_conf,
+ 				 struct ieee80211_link_sta *link_sta);
