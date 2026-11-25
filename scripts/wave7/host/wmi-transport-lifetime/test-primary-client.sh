@@ -9,16 +9,18 @@ variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $# -le 4 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $# -le 5 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
 run=$1
 shift
 bands=(5 24)
 wired_capture=0
+client_rx_arg=''
 for arg in "$@"; do
     case "$arg" in
         --band=5) bands=(5) ;;
         --band=24) bands=(24) ;;
         --wired-capture) wired_capture=1 ;;
+        --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
         *) fail 'invalid argument' ;;
@@ -145,7 +147,7 @@ for band in "${bands[@]}"; do
         sleep .25
     done
     grep -q '^AP_CONTROL_TRACE_READY ' "$prefix.ap-control-trace.txt" || fail 'AP trace not armed'
-    wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot" > "$prefix.client-control-trace.txt" 2>&1 &
+    wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot $client_rx_arg" > "$prefix.client-control-trace.txt" 2>&1 &
     client_control_pid=$!
     for _ in {1..60}; do
         kill -0 "$client_control_pid" 2>/dev/null || fail 'client control trace exited'
