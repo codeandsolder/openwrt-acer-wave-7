@@ -136,10 +136,9 @@ ready(){
     done
     systemctl is-active --quiet wave7-lab-upstream-guard8.service || return 1
 }
-preflight(){
+common_preflight(){
     verify_artifacts
     [[ $(id -un) == jan && -r $key ]] || fail 'Asus identity'
-    [[ $(stock 'uname -r; fw_printenv -n bootfail; cat /sys/class/net/br-lan/address') == $'5.4.213\n0\n70:5a:6f:5a:bb:14' ]] || fail 'vendor identity'
     physical_peer || fail 'lab physical peer'
     for nic in "$direct" "$iface"; do
         [[ $(cat "/sys/class/net/$nic/carrier") == 1 ]] || fail 'carrier'
@@ -153,8 +152,76 @@ preflight(){
     [[ -z $(systemctl --user --no-pager --no-legend list-units --state=active,activating 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*' 'wave7-qdss-supervisor-*') ]] || fail 'another active observer'
     (cd /home/jan/firmware/wave7/captures/20261125-vendor-fallback && sha256sum -c SHA256SUMS)
 }
+preflight(){
+    common_preflight
+    [[ $(stock 'uname -r; fw_printenv -n bootfail; cat /sys/class/net/br-lan/address') == $'5.4.213\n0\n70:5a:6f:5a:bb:14' ]] || fail 'vendor identity'
+}
+
 case "${1:-}" in
 --check) preflight; echo RADIO_TRIAL_PREFLIGHT_PASS ;;
+--run-native)
+    [[ $# == 2 ]] || fail 'expected predecessor run'
+    lock="$guard8/.lab-control.lock"
+    [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'invalid lab lock'
+    exec 8<>"$lock"
+    flock -n 8 || fail 'lab already reserved'
+    common_preflight
+    predecessor="$2"
+    [[ $predecessor == /home/jan/firmware/wave7/trials/20261125-netgear-wmi-dhcp-fixed/runs/netgear-wmi-dhcp-fixed-* ]] || fail 'unexpected predecessor run'
+    case "$(cat "$predecessor/status")" in
+        SOAK_PASS) source_rev=r0+38346-b6733bd5c8-ap-dhcp-guard8 ;;
+        ROLLED_BACK) source_rev=$rollback_rev ;;
+        *) fail 'predecessor has not completed guarded soak' ;;
+    esac
+    known="$predecessor/known_hosts"
+    source_boot=$(value "$(cat "$predecessor/last-state.txt")" boot)
+    state=$(read_state)
+    [[ $(value "$state" boot) == "$source_boot" && $(value "$state" rev) == "$source_rev" && $(value "$state" merged_rev) == "$source_rev" ]] || fail 'predecessor identity changed'
+    ready "$state" || fail 'predecessor unhealthy'
+    tag=netgear-primary-native-$(date +%Y%m%d-%H%M%S)
+    out="$base/runs/$tag"
+    mkdir -p "$out"
+    printf '%s\n' "$source_boot" > "$out/stock-boot"
+    printf '%s\n' "$state" > "$out/predecessor-state.txt"
+    remote 'cat /proc/sys/kernel/random/boot_id; dmesg; logread' > "$out/predecessor-capture.txt"
+    dest=/tmp/wave7-radio-primary-native.bin
+    upload "$native" "$dest"
+    result=$(remote "sha256sum '$dest'; /sbin/sysupgrade -T -n '$dest'") || fail 'native image validation'
+    [[ $result == "$native_sha  $dest"* ]] || fail 'native image hash'
+    unit="wave7-secondary-ap-supervisor-$tag"
+    fallback="wave7-fallback-watch-$tag"
+    flash_started=0
+    cleanup_native(){
+        local rc=$?
+        if (( rc != 0 && ! flash_started )); then
+            systemctl --user stop "$unit.service" "$fallback.service" >/dev/null 2>&1 || :
+            echo ABORTED_PRE_FLASH > "$out/status"
+        fi
+    }
+    trap cleanup_native EXIT
+    systemd-run --user --quiet --unit="$unit" --property=RuntimeMaxSec=1500 -- "$(realpath "$0")" --watch "$out"
+    systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
+    for _ in {1..15}; do
+        [[ -r $out/status && $(cat "$out/status") == ARMED ]] && break
+        sleep 1
+    done
+    [[ -r $out/status && $(cat "$out/status") == ARMED ]] || fail 'observer not armed'
+    systemctl --user is-active --quiet "$unit.service" || fail 'observer inactive'
+    systemctl --user is-active --quiet "$fallback.service" || fail 'fallback inactive'
+    [[ $(remote 'cat /proc/sys/kernel/random/boot_id') == "$source_boot" ]] || fail 'source rebooted'
+    flash_started=1
+    echo FLASHING_NOW > "$out/flash.log"
+    timeout 135 ssh -n -T -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip" \
+        -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
+        -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 \
+        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+        "root@$router" "/sbin/sysupgrade -n '$dest'" >> "$out/flash.log" 2>&1 || :
+    grep -Fq 'Commencing upgrade. Closing all shell sessions.' "$out/flash.log" || { flash_started=0; fail 'native upgrade did not start'; }
+    echo "RUN_DIR=$out"
+    while systemctl --user is-active --quiet "$unit.service"; do sleep 5; done
+    cat "$out/status" "$out/observer.log"
+    [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
+    ;;
 --run)
     lock="$guard8/.lab-control.lock"
     [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'invalid lab lock'
@@ -281,5 +348,5 @@ case "${1:-}" in
     done
     finish WATCH_TIMEOUT 2
     ;;
-*) echo 'usage: trial-radio.sh --check|--run|--watch OUT' >&2; exit 2 ;;
+*) echo 'usage: trial-radio.sh --check|--run|--run-native PREDECESSOR_RUN|--watch OUT' >&2; exit 2 ;;
 esac
