@@ -220,15 +220,20 @@ for band in "${bands[@]}"; do
     if [[ $wired_capture != none ]]; then
         # Header summaries only, no payload or promiscuous capture.
         # The NDP profile uses the host's existing Wireshark capture-group
-        # access; decode only the six explicitly selected metadata fields.
+        # access; decode only explicitly selected discovery metadata.
         if [[ $wired_capture == ndp ]]; then
             (
-                dumpcap -i enp4s0f4u2u4 -p -s 96 \
-                    -f 'icmp6 and (ip6[40] == 133 or ip6[40] == 134)' \
+                dumpcap -i enp4s0f4u2u4 -p -s 128 \
+                    -f 'icmp6 and ip6[40] >= 133 and ip6[40] <= 136' \
+                    -i enp4s0f4u2u2u4 -p -s 128 \
+                    -f 'icmp6 and ip6[40] >= 133 and ip6[40] <= 136' \
                     -a "duration:$observe_seconds" -w - 2>"$prefix.wired-ndp-status.txt" |
                     tshark -n -l -r - -T fields \
                         -e frame.time_epoch -e eth.src -e eth.dst \
                         -e ipv6.src -e ipv6.dst -e icmpv6.type \
+                        -e frame.interface_name -e ipv6.hlim \
+                        -e icmpv6.nd.ns.target_address -e icmpv6.nd.na.target_address \
+                        -e icmpv6.opt.linkaddr \
                         >"$prefix.wired-ndp.txt" 2>"$prefix.wired-ndp-decode.txt"
             ) &
             capture_ready='^File: -$'
@@ -301,7 +306,8 @@ for band in "${bands[@]}"; do
         wired_capture_pid=''
         if [[ $wired_capture == ndp ]]; then
             if [[ $capture_rc != 0 ]] ||
-               ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt"; then
+               ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt" ||
+               ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt"; then
                 cases_failed=1
             fi
         elif [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
