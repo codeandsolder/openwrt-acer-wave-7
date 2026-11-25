@@ -145,6 +145,34 @@ snapshot_icmp(){
         cat /proc/uptime
         cat /proc/net/snmp'
 }
+snapshot_load(){
+    # Never query station firmware after an SSR. This executes at the
+    # edges of each TCP case, not in the saturated packet path.
+    remote "set -eu
+        [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]
+        for p in 0 1 2; do
+            [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
+        done
+        [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        cat /proc/sys/kernel/random/boot_id
+        cat /proc/uptime
+        echo ==== CPU
+        cat /proc/stat
+        echo ==== SOFTIRQ
+        cat /proc/softirqs
+        echo ==== IRQ
+        cat /proc/interrupts
+        echo ==== STATION
+        iw dev ap-mld0 station dump
+        echo ==== AQL
+        cat /sys/kernel/debug/ieee80211/phy0/aql_pending
+        for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do
+            echo ==== \"\$f\"
+            cat \"\$f\"
+        done
+        echo ==== END
+        cat /proc/sys/kernel/random/boot_id"
+}
 guard || fail 'router no longer healthy'
 systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream'
 active=0
@@ -337,6 +365,7 @@ for band in "${bands[@]}"; do
                 cases_failed=1
                 break
             fi
+            snapshot_load > "$prefix.load-$direction-ap-before.txt" || { cases_failed=1; break; }
             args=()
             case $direction in
                 uplink) args=(-R) ;;
@@ -349,6 +378,7 @@ for band in "${bands[@]}"; do
                 2>"$prefix.load-$direction-errors.txt" || load_rc=$?
             printf '%s\n' "$load_rc" > "$prefix.load-$direction-exit.txt"
             if (( load_rc )); then cases_failed=1; break; fi
+            snapshot_load > "$prefix.load-$direction-ap-after.txt" || { cases_failed=1; break; }
         done
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
