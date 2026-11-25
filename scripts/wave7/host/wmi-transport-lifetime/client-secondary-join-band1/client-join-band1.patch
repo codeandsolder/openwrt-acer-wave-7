@@ -1,0 +1,25 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -1960,6 +1960,22 @@
+ 	int center_ch, pri40_freq;
+ 	u8 bw;
+ 
++	/* Lab: avoid moving the association peer between DBDC bands when
++	 * a 2.4 GHz MLD joins before its 5 GHz member is activated.
++	 * Ordinary single-link and non-JOIN requests stay AUTO.
++	 */
++	if (is_mt7925(&dev->mt76) && type == MT7925_ROC_REQ_JOIN &&
++	    chan->band == NL80211_BAND_2GHZ &&
++	    mconf->vif && mconf == &mconf->vif->bss_conf) {
++		struct ieee80211_vif *vif;
++
++		vif = container_of((void *)mconf->vif,
++				   struct ieee80211_vif, drv_priv);
++		if (vif->type == NL80211_IFTYPE_STATION &&
++		    ieee80211_vif_is_mld(vif))
++			req.roc.dbdcband = MT792x_BAND_1;
++	}
++
+ 	mt7925_mcu_roc_chandef(mconf, chan, type, &chandef);
+ 	center_ch = ieee80211_frequency_to_channel(chandef.center_freq1);
+ 	bw = mt7925_chandef_to_cw(&chandef);
