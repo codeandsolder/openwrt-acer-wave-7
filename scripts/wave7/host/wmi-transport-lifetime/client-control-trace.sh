@@ -42,6 +42,9 @@ if [[ $profile == --rx-cnm || $profile == --rx-txd ]]; then
     events+=(mt7925_lab/mt7925_lab_cnm_bss
              mt7925_lab/mt7925_lab_cnm_result)
 fi
+if (( group )); then
+    events+=(mt7925_lab/mt7925_lab_decap_config)
+fi
 if [[ $profile == --rx-txd ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_descriptor)
 fi
