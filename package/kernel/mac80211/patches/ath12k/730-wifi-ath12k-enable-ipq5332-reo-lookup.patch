@@ -1,0 +1,38 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: enable IPQ5332 REO queue lookup
+
+The IPQ5332 register map lacks two REO LUT control registers,
+and the driver disables LUT support despite the vendor hardware
+implementation using the same REO LUT protocol as QCN6432.
+
+Restore the two register definitions together with the capability.
+This makes the hybrid MLO chips use the same queue lookup protocol.
+
+Reference: Qualcomm TIP wlan-ap 9ac0a9822c6abaf7b0e93746a895b7d5489d189d,
+wifi7/hal_qcn9274.c and wifi7/hw.c. Experimental hardware validation
+is still required for the exact WBE1.4 firmware family.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -708,7 +708,7 @@
+ 		.download_calib = true,
+ 		.supports_suspend = false,
+ 		.tcl_ring_retry = true,
+-		.reoq_lut_support = false,
++		.reoq_lut_support = true,
+ 		.supports_shadow_regs = false,
+ 
+ 		.num_tcl_banks = 48,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_qcn9274.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_qcn9274.c
+@@ -422,6 +422,8 @@
+ 	.reo1_sw_cookie_cfg1 = 0x00000070,
+ 	.reo1_qdesc_lut_base0 = 0x00000074,
+ 	.reo1_qdesc_lut_base1 = 0x00000078,
++	.reo1_qdesc_addr = 0x0000007c,
++	.reo1_qdesc_max_peerid = 0x00000088,
+ 	.reo1_ring_base_lsb = 0x00000500,
+ 	.reo1_ring_base_msb = 0x00000504,
+ 	.reo1_ring_id = 0x00000508,
