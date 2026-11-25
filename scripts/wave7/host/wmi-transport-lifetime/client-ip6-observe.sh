@@ -4,7 +4,7 @@
 set -Eeuo pipefail
 [[ $# == 3 && $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ &&
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
-   $3 =~ ^([1-9][0-9]?|1[01][0-9]|120)$ ]]
+   $3 =~ ^([1-9][0-9]?|1[0-7][0-9]|180)$ ]]
 iface=wlp2s0
 stats=/proc/net/dev_snmp6/$iface
 boot=/proc/sys/kernel/random/boot_id

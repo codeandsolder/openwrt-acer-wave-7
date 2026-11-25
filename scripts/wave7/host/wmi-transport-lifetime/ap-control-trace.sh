@@ -2,9 +2,11 @@
 # Bounded, private ftrace instance. Control-port tracepoints expose only
 # metadata (protocol, length, link, acknowledgement), not payloads or keys.
 set -eu
-[ "$#" -eq 2 ]
+[ "$#" -eq 3 ]
 boot=$1
 tag=$2
+seconds=$3
+case "$seconds" in 90|150) ;; *) exit 2 ;; esac
 case "$tag" in *[!a-zA-Z0-9_-]*|'') exit 2 ;; esac
 [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot" ]
 root=/sys/kernel/tracing
@@ -39,7 +41,7 @@ trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
 echo 0 > "$inst/tracing_on"
 echo mono > "$inst/trace_clock"
-echo 512 > "$inst/buffer_size_kb"
+echo 1024 > "$inst/buffer_size_kb"
 echo "$functions" > "$inst/set_ftrace_filter"
 echo function > "$inst/current_tracer"
 for ev in $events; do
@@ -49,7 +51,7 @@ echo 1 > "$inst/tracing_on"
 printf 'AP_CONTROL_TRACE_READY boot=%s\n' "$boot"
 # No fractional sleep on this BusyBox. Keep the interval bounded even if
 # the observer connection is lost, and always remove this instance.
-sleep 90
+sleep "$seconds"
 echo 0 > "$inst/tracing_on"
 cat "$inst/trace"
 for stats in "$inst"/per_cpu/cpu*/stats; do
