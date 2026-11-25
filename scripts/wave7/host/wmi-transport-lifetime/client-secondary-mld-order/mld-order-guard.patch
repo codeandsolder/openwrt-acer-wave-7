@@ -1,0 +1,73 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -33,6 +33,7 @@
+     [upstream-prefix22-authorize-delayed-links-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-header-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-wtbl-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-mld-order-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -493,6 +494,29 @@
+     [mt7925e]=05b4c80fa7bf779d5ee6ac1d91c0a4605ef65e92
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-mld-order-trace)
++declare -A candidate_hash=(
++    [mt76]=ffb6b169685e64b9c1cec8de68c630e0ab414655e392b66f6f97db9fa4294bef
++    [mt76_connac_lib]=125afc654fa8ca17e51228751d67b711f968d3c02de61ed6cb921039f950b94d
++    [mt792x_lib]=4f3f9d750bd8f65407dea10710de22b797ddc1b6c353a7d0f91cc3f982c85f05
++    [mt7925_common]=05ef94938e687d6e7aed6c6702be239b7460e9526c277d7225c465c1f90a7fab
++    [mt7925e]=e43919abca6de0f01aadea7dcf8d14efbbf451bb67a537ce5fc41543120268a4
++)
++declare -A candidate_version=(
++    [mt76]=DEF56EC1D966C3C1D7AC35A
++    [mt76_connac_lib]=749A4015F0F3E1F3C96A6C9
++    [mt792x_lib]=A681310C17DD1275877F354
++    [mt7925_common]=5293041817E5E4A4475E6EE
++    [mt7925e]=9987F1D81F5F315E616BA00
++)
++declare -A candidate_id=(
++    [mt76]=a97dd5defc14c2491db74c4c5db6ddd36b47ced2
++    [mt76_connac_lib]=5081d427298d91cdab11163579a45bd42e9ad179
++    [mt792x_lib]=70338cba2c29c6b94065670e34b312be266b7947
++    [mt7925_common]=ece8af95d7e0de3b2ef18de9c0547c1e5f4a12ff
++    [mt7925e]=05b4c80fa7bf779d5ee6ac1d91c0a4605ef65e92
++)
++;;
+ upstream-prefix22-authorize-single-link-trace)
+ declare -A candidate_hash=(
+     [mt76]=9755bbdb8bcb58f86f23893b01d89033384589480913cfb88898493dab271430
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -63,7 +63,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-fw20261016 ||
+       $variant == upstream-prefix22-authorize-delayed-links-header-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-mld-order-trace ]]; then
+     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
+ fi
+ if [[ $variant == upstream-prefix22-lifecycle-trace ||
+@@ -81,7 +82,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-fw20261016 ||
+       $variant == upstream-prefix22-authorize-delayed-links-header-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-mld-order-trace ]]; then
+     # BTF field fetching avoids hard-coded structures/offsets. Register only
+     # these two named probes and remove the exact definitions at cleanup.
+     [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
+--- a/client-trace-window.sh
++++ b/client-trace-window.sh
+@@ -183,7 +183,7 @@
+ # Preserve the existing association evidence and capture where manual
+ # nl80211 requests fail before reaching the HW scan callback.
+ case "${2:-}" in
+-    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace|--upstream-prefix22-authorize-links-trace|--upstream-prefix22-authorize-bss-band-trace|--upstream-prefix22-authorize-primary-mld-trace|--upstream-prefix22-postscan-txroute-trace|--upstream-prefix22-postscan-txroute-fw20261016|--upstream-prefix22-postscan-roc-reacquire-trace|--upstream-prefix22-postscan-link-park-trace|--upstream-prefix22-force-secondary-data-trace|--upstream-prefix22-secondary-txq-route-trace|--upstream-prefix22-authorize-single-link-trace|--upstream-prefix22-authorize-delayed-links-trace|--upstream-prefix22-authorize-delayed-links-fw20261016|--upstream-prefix22-authorize-delayed-links-header-trace|--upstream-prefix22-authorize-delayed-links-wtbl-trace)
++    --upstream-prefix22-lifecycle-trace|--upstream-prefix22-primary-bss-band-trace|--upstream-prefix22-authorize-links-trace|--upstream-prefix22-authorize-bss-band-trace|--upstream-prefix22-authorize-primary-mld-trace|--upstream-prefix22-postscan-txroute-trace|--upstream-prefix22-postscan-txroute-fw20261016|--upstream-prefix22-postscan-roc-reacquire-trace|--upstream-prefix22-postscan-link-park-trace|--upstream-prefix22-force-secondary-data-trace|--upstream-prefix22-secondary-txq-route-trace|--upstream-prefix22-authorize-single-link-trace|--upstream-prefix22-authorize-delayed-links-trace|--upstream-prefix22-authorize-delayed-links-fw20261016|--upstream-prefix22-authorize-delayed-links-header-trace|--upstream-prefix22-authorize-delayed-links-wtbl-trace|--upstream-prefix22-authorize-delayed-links-mld-order-trace)
+         events+=(cfg80211/rdev_scan cfg80211/rdev_return_int mac80211/drv_return_int)
+         [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/cfg80211 ]]
+         # Only scalar return values: no payload, pointers or keys.
