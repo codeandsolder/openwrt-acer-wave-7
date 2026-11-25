@@ -39,6 +39,7 @@ for arg in "$@"; do
         --client-band-primary-tx-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ;;
         --client-join-band1-trace) variant=upstream-prefix22-authorize-delayed-links-join-band1-trace ;;
         --client-band-primary-txd-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-txd-trace ;;
+        --client-band-primary-immediate-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -57,7 +58,8 @@ elif [[ $variant == upstream-prefix22-authorize-delayed-links-cnm-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-eht-first-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-band-primary-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ||
-        $variant == upstream-prefix22-authorize-delayed-links-join-band1-trace ]]; then
+        $variant == upstream-prefix22-authorize-delayed-links-join-band1-trace ||
+        $variant == upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace ]]; then
     client_rx_arg=--rx-cnm
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-band-primary-txd-trace ]]; then
     client_rx_arg=--rx-txd
