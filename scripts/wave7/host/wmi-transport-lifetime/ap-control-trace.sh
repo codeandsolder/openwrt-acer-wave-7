@@ -26,28 +26,28 @@ mkdir "$inst"
 cleanup(){
     rc=$?
     trap - EXIT HUP INT TERM
-    printf '0\n' > "$inst/tracing_on" || rc=1
-    printf 'nop\n' > "$inst/current_tracer" || rc=1
+    echo 0 > "$inst/tracing_on" || rc=1
+    echo nop > "$inst/current_tracer" || rc=1
     rmdir "$inst" || rc=1
     printf 'AP_CONTROL_TRACE_END rc=%s\n' "$rc"
     exit "$rc"
 }
 trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
-printf '0\n' > "$inst/tracing_on"
-printf 'mono\n' > "$inst/trace_clock"
-printf '512\n' > "$inst/buffer_size_kb"
-printf '%s\n' "$functions" > "$inst/set_ftrace_filter"
+echo 0 > "$inst/tracing_on"
+echo mono > "$inst/trace_clock"
+echo 512 > "$inst/buffer_size_kb"
+echo "$functions" > "$inst/set_ftrace_filter"
 printf 'function\n' > "$inst/current_tracer"
 for ev in $events; do
-    printf '1\n' > "$inst/events/$ev/enable"
+    echo 1 > "$inst/events/$ev/enable"
 done
-printf '1\n' > "$inst/tracing_on"
+echo 1 > "$inst/tracing_on"
 printf 'AP_CONTROL_TRACE_READY boot=%s\n' "$boot"
 # No fractional sleep on this BusyBox. Keep the interval bounded even if
 # the observer connection is lost, and always remove this instance.
 sleep 90
-printf '0\n' > "$inst/tracing_on"
+echo 0 > "$inst/tracing_on"
 cat "$inst/trace"
 for stats in "$inst"/per_cpu/cpu*/stats; do
     printf '%s\n' "$stats"
