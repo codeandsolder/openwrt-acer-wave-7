@@ -17,6 +17,7 @@ wired_capture=none
 ip6_observe=0
 dual_hold=0
 dual_soak=0
+dual_load=0
 client_rx_arg=--none
 for arg in "$@"; do
     case "$arg" in
@@ -31,6 +32,7 @@ for arg in "$@"; do
         --client-ip6-observe) ip6_observe=1 ;;
         --client-dual-hold) dual_hold=1 ;;
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
+        --client-load) dual_hold=1; dual_load=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
@@ -55,7 +57,8 @@ for arg in "$@"; do
         *) fail 'invalid argument' ;;
     esac
 done
-if (( dual_soak && ${#bands[@]} != 1 )); then fail "select one band per soak"; fi
+if (( (dual_soak || dual_load) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
+if (( dual_soak && dual_load )); then fail "select one extended trial mode"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -151,9 +154,14 @@ ap_trace_pid=''
 client_control_pid=''
 wired_capture_pid=''
 ip6_pid=''
+server_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
+    if [[ -n $server_pid ]]; then
+        kill -TERM -- "-$server_pid" 2>/dev/null || kill -TERM "$server_pid" 2>/dev/null || :
+        wait "$server_pid" 2>/dev/null || :
+    fi
     if [[ -n $trace_pid ]]; then wait "$trace_pid" || :; fi
     if [[ -n $sample_pid ]]; then wait "$sample_pid" || :; fi
     if [[ -n $ap_trace_pid ]]; then wait "$ap_trace_pid" || :; fi
@@ -183,7 +191,7 @@ remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out
 # A stale authorized MFP station may trigger SA Query on reassociation.
 # Record the old station state rather than forcibly deleting it.
 remote 'iw dev ap-mld0 station dump' > "$out/ap-stations-before.txt"
-if (( dual_soak )); then
+if (( dual_soak || dual_load )); then
     [[ ! -s $out/ap-stations-before.txt ]] || fail 'extended hold requires an empty AP station table'
 fi
 active=1
@@ -201,7 +209,7 @@ fi
 cases_failed=0
 observe_seconds=150
 client_seconds=75
-if (( dual_soak )); then observe_seconds=300; client_seconds=225; fi
+if (( dual_soak || dual_load )); then observe_seconds=300; client_seconds=225; fi
 for band in "${bands[@]}"; do
     guard || fail 'AP health before association'
     tag=0498-$(date +%Y%m%d-%H%M%S)
@@ -209,6 +217,20 @@ for band in "${bands[@]}"; do
     printf '%s\n' "$tag" > "$prefix.tag"
     snapshot_rx > "$prefix.rx-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
+    if (( dual_load )); then
+        [[ -z $(ss -H -ltn 'sport = :52231') ]] || fail 'load port already used'
+        timeout --signal=TERM --kill-after=2s 320s iperf3 -s -4 -B 192.168.76.2 \
+            --bind-dev enp4s0f4u2u4 -p 52231 --server-max-duration 25 --forceflush \
+            >"$prefix.iperf-server.txt" 2>&1 &
+        server_pid=$!
+        for _ in {1..40}; do
+            kill -0 "$server_pid" 2>/dev/null || fail 'load server exited'
+            if ss -H -ltn 'sport = :52231' | rg -q '192[.]168[.]76[.]2(%enp4s0f4u2u4)?:52231'; then break; fi
+            sleep .25
+        done
+        ss -H -ltn 'sport = :52231' > "$prefix.iperf-listener.txt"
+        rg -q '192[.]168[.]76[.]2(%enp4s0f4u2u4)?:52231' "$prefix.iperf-listener.txt" || fail 'load listener not ready'
+    fi
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
     (
@@ -222,9 +244,12 @@ for band in "${bands[@]}"; do
         printf "\n"
     done' > "$prefix.ap-passive.txt" 2>&1 &
     sample_pid=$!
-    remote_stream "sh -s -- $boot $tag $observe_seconds" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
+    ap_profile=full
+    if (( dual_load )); then ap_profile=control; fi
+    remote_stream "sh -s -- $boot $tag $observe_seconds $ap_profile" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
     ap_trace_pid=$!
     control_profile=$client_rx_arg
+    if (( dual_load )); then control_profile=--none; fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
         control_profile=--rx-cnm-group
     fi
@@ -296,9 +321,15 @@ for band in "${bands[@]}"; do
     mode=early-only
     if (( dual_hold )); then mode=early-dual; fi
     if (( dual_soak )); then mode=early-soak; fi
+    if (( dual_load )); then mode=early-load; fi
     rc=0
     wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
+    if (( dual_load )); then
+        kill -TERM -- "-$server_pid" 2>/dev/null || kill -TERM "$server_pid" 2>/dev/null || :
+        wait "$server_pid" || :
+        server_pid=''
+    fi
     # Let the bounded independent observers complete even if a client fault
     # interrupts the association; keep the evidence before any restore.
     wait "$trace_pid" || :
@@ -343,6 +374,10 @@ for band in "${bands[@]}"; do
     if (( dual_hold )); then
         result_file=short-dual-hold-result.txt
         expected=short_dual_hold_pass=1
+    fi
+    if (( dual_load )); then
+        result_file=dual-stack-load-result.txt
+        expected=dual_stack_load_pass=1
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
     if [[ $rc != 0 || $result != "$expected" ]]; then
