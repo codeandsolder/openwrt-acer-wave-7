@@ -67,12 +67,14 @@ active=0
 trace_pid=''
 sample_pid=''
 ap_trace_pid=''
+client_control_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
     if [[ -n $trace_pid ]]; then wait "$trace_pid" || :; fi
     if [[ -n $sample_pid ]]; then wait "$sample_pid" || :; fi
     if [[ -n $ap_trace_pid ]]; then wait "$ap_trace_pid" || :; fi
+    if [[ -n $client_control_pid ]]; then wait "$client_control_pid" || :; fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -129,6 +131,14 @@ for band in "${bands[@]}"; do
         sleep .25
     done
     grep -q '^AP_CONTROL_TRACE_READY ' "$prefix.ap-control-trace.txt" || fail 'AP trace not armed'
+    wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot" > "$prefix.client-control-trace.txt" 2>&1 &
+    client_control_pid=$!
+    for _ in {1..60}; do
+        kill -0 "$client_control_pid" 2>/dev/null || fail 'client control trace exited'
+        grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" && break
+        sleep .25
+    done
+    grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" || fail 'client control trace not armed'
     rc=0
     wyse "timeout 75 bash $client/client-sustained.sh $tag --early-only-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
@@ -140,6 +150,8 @@ for band in "${bands[@]}"; do
     sample_pid=''
     wait "$ap_trace_pid" || cases_failed=1
     ap_trace_pid=''
+    wait "$client_control_pid" || cases_failed=1
+    client_control_pid=''
     wyse "tar -C $client_data -cf - $tag" > "$prefix.client.tar" 2>"$prefix.client-archive-error.txt" || :
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg' > "$prefix.ap-after.txt" 2>&1 || :
     if ! guard; then
