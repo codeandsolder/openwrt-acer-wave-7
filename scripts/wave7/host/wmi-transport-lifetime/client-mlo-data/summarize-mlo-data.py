@@ -5,6 +5,7 @@ from collections import Counter
 import json
 from pathlib import Path
 import re
+from statistics import median
 import subprocess
 import tarfile
 
@@ -50,12 +51,23 @@ def trace_summary(path):
     anchor = max(keys, default=None)
     rx = Counter()
     raw = Counter()
+    group = []
+    descriptors = {}
     txd = Counter()
     txs = Counter()
     for t, event, data in rows:
         if event == "rx_header" and data.get("wcid") == "4095":
             raw[(data["freq"], "post" if anchor is not None and t >= anchor
                  else "pre_or_no_activation")] += 1
+        if event == "rxdesc":
+            idx = int(data["word1"]) & 0xfff
+            descriptors[(idx, data["freq"], data["encap"])] = (t, data)
+        elif event == "rx_frame" and data.get("data") == "1" and data.get("u2m") == "0":
+            record = {"monotonic": t, **data}
+            previous = descriptors.get((int(data["wcid"]), data["freq"], data["encap"]))
+            if previous and 0 <= t - previous[0] < 0.001:
+                record["descriptor"] = previous[1]
+            group.append(record)
         if anchor is None or t < anchor:
             continue
         if event == "rx_frame" and data.get("data") == data.get("u2m") == "1":
@@ -76,6 +88,7 @@ def trace_summary(path):
     return {
         "activation_key_snapshot_monotonic": anchor,
         "unresolved_headers": counts(raw, ("frequency", "phase")),
+        "group_data_rx": group,
         "post_activation_rx": counts(rx, ("seconds_bin_start", "wcid",
                                           "frequency", "encap")),
         "post_activation_tx_descriptors": counts(txd, ("wcid", "link", "band",
@@ -103,7 +116,7 @@ def ndp_summary(prefix):
                 raise ValueError("incomplete IPv6 sample")
             fields = dict(FIELDS.findall(line))
             row = {"index": int(fields["index"]), "epoch": float(fields["epoch"]),
-                   "monotonic": float(fields["monotonic"]), "counts": {}, "usable": []}
+                   "monotonic": float(fields["monotonic"]), "counts": {}, "usable": [], "addresses": []}
             if row["index"] != len(rows):
                 raise ValueError("nonconsecutive IPv6 sample")
         elif line.startswith("IP6_SAMPLE_END "):
@@ -120,6 +133,7 @@ def ndp_summary(prefix):
             row["counts"][key] = int(value)
         elif row is not None and line.startswith("IP6_ADDR "):
             fields = line.split()
+            row["addresses"].append(fields[fields.index("inet6") + 1].split("/")[0])
             if "global" in fields and "tentative" not in fields and "dadfailed" not in fields:
                 row["usable"].append(fields[fields.index("inet6") + 1])
         elif line.startswith("CLIENT_IP6_OBSERVER_END "):
@@ -139,7 +153,9 @@ def ndp_summary(prefix):
                                     "epoch_window": [prev["epoch"], cur["epoch"]]})
     first_global = next(({"epoch": r["epoch"], "addresses": r["usable"]}
                          for r in rows if r["usable"]), None)
-    result = {"samples": len(rows), "counter_transitions": transitions,
+    result = {"samples": len(rows),
+              "client_addresses": sorted({addr for r in rows for addr in r["addresses"]}),
+              "client_epoch_minus_monotonic": median(r["epoch"] - r["monotonic"] for r in rows), "counter_transitions": transitions,
               "counter_deltas": {k: rows[-1]["counts"][k] - rows[0]["counts"][k]
                                  for k in NDP_COUNTERS},
               "first_usable_global": first_global}
@@ -191,7 +207,22 @@ def main():
         "ap_rx_delta": json.loads(prefix.with_suffix(".rx-delta.json").read_text()),
     }
     if prefix.with_suffix(".client-ip6.txt").exists():
-        result["router_discovery"] = ndp_summary(prefix)
+        ndp = result["router_discovery"] = ndp_summary(prefix)
+        # Temporal candidates, not payload-based packet identities. Compare
+        # only NS targeting addresses observed on this client.
+        events = [e for e in ndp.get("wired_events", []) if e["type"] == 135
+                  and e.get("target") in ndp["client_addresses"]]
+        groups = result["trace"]["group_data_rx"]
+        offset = ndp["client_epoch_minus_monotonic"]
+        matches = []
+        for e in events:
+            candidates = [(abs(g["monotonic"] + offset - e["epoch"]), g)
+                          for g in groups
+                          if abs(g["monotonic"] + offset - e["epoch"]) < 0.1]
+            if candidates:
+                delta, match = min(candidates, key=lambda x: x[0])
+                matches.append({"wire_event": e, "rx": match, "absolute_delta_s": delta})
+        ndp["ns_group_rx_temporal_matches"] = matches
     print(json.dumps(result, indent=2))
 
 
