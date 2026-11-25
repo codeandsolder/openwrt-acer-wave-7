@@ -154,13 +154,14 @@ ap_trace_pid=''
 client_control_pid=''
 wired_capture_pid=''
 ip6_pid=''
-server_pid=''
+load_client_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
-    if [[ -n $server_pid ]]; then
-        kill -TERM -- "-$server_pid" 2>/dev/null || kill -TERM "$server_pid" 2>/dev/null || :
-        wait "$server_pid" 2>/dev/null || :
+    if [[ -n $load_client_pid ]]; then
+        # The remote session owns bounded listeners and the temporary
+        # association; join it before restoring the module closure.
+        wait "$load_client_pid" || :
     fi
     if [[ -n $trace_pid ]]; then wait "$trace_pid" || :; fi
     if [[ -n $sample_pid ]]; then wait "$sample_pid" || :; fi
@@ -217,20 +218,6 @@ for band in "${bands[@]}"; do
     printf '%s\n' "$tag" > "$prefix.tag"
     snapshot_rx > "$prefix.rx-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
-    if (( dual_load )); then
-        [[ -z $(ss -H -ltn 'sport = :52231') ]] || fail 'load port already used'
-        timeout --signal=TERM --kill-after=2s 320s iperf3 -s -4 -B 192.168.76.2 \
-            --bind-dev enp4s0f4u2u4 -p 52231 --server-max-duration 25 --forceflush \
-            >"$prefix.iperf-server.txt" 2>&1 &
-        server_pid=$!
-        for _ in {1..40}; do
-            kill -0 "$server_pid" 2>/dev/null || fail 'load server exited'
-            if ss -H -ltn 'sport = :52231' | rg -q '192[.]168[.]76[.]2(%enp4s0f4u2u4)?:52231'; then break; fi
-            sleep .25
-        done
-        ss -H -ltn 'sport = :52231' > "$prefix.iperf-listener.txt"
-        rg -q '192[.]168[.]76[.]2(%enp4s0f4u2u4)?:52231' "$prefix.iperf-listener.txt" || fail 'load listener not ready'
-    fi
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
     (
@@ -323,13 +310,52 @@ for band in "${bands[@]}"; do
     if (( dual_soak )); then mode=early-soak; fi
     if (( dual_load )); then mode=early-load; fi
     rc=0
-    wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
-    printf '%s\n' "$rc" > "$prefix.client-exit.txt"
     if (( dual_load )); then
-        kill -TERM -- "-$server_pid" 2>/dev/null || kill -TERM "$server_pid" 2>/dev/null || :
-        wait "$server_pid" || :
-        server_pid=''
+        # Wyse listens only on its temporary Wi-Fi address. Initiate TCP
+        # from the existing Asus direct NIC so no firewall change is needed.
+        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" \
+            > "$prefix.client-run.txt" 2>&1 &
+        load_client_pid=$!
+        target=''
+        for direction in uplink downlink bidirectional; do
+            deadline=$((SECONDS + 90))
+            if [[ -n $target ]]; then deadline=$((SECONDS + 45)); fi
+            ready=''
+            while (( SECONDS < deadline )); do
+                ready=$(rg -m 1 "^LOAD_READY mode=$direction address=192[.]168[.]76[.][0-9]{1,3}$" "$prefix.client-run.txt" || :)
+                [[ -n $ready ]] && break
+                kill -0 "$load_client_pid" 2>/dev/null || break
+                sleep .25
+            done
+            if [[ -z $ready ]]; then cases_failed=1; break; fi
+            peer=${ready##*address=}
+            if [[ -n $target && $peer != "$target" ]]; then cases_failed=1; break; fi
+            target=$peer
+            if ! ip -4 route get "$target" from 192.168.76.2 oif enp4s0f4u2u4 \
+                > "$prefix.load-$direction-route.txt" ||
+                ! rg -q 'dev enp4s0f4u2u4 ' "$prefix.load-$direction-route.txt"; then
+                cases_failed=1
+                break
+            fi
+            args=()
+            case $direction in
+                uplink) args=(-R) ;;
+                bidirectional) args=(--bidir) ;;
+            esac
+            load_rc=0
+            timeout --signal=TERM --kill-after=2s 30s iperf3 -4 -c "$target" \
+                -B 192.168.76.2 --bind-dev enp4s0f4u2u4 -p 52231 -P 4 -t 15 -O 2 \
+                --connect-timeout 4000 -J "${args[@]}" > "$prefix.load-$direction.json" \
+                2>"$prefix.load-$direction-errors.txt" || load_rc=$?
+            printf '%s\n' "$load_rc" > "$prefix.load-$direction-exit.txt"
+            if (( load_rc )); then cases_failed=1; break; fi
+        done
+        wait "$load_client_pid" || rc=$?
+        load_client_pid=''
+    else
+        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     fi
+    printf '%s\n' "$rc" > "$prefix.client-exit.txt"
     # Let the bounded independent observers complete even if a client fault
     # interrupts the association; keep the evidence before any restore.
     wait "$trace_pid" || :
@@ -379,7 +405,7 @@ for band in "${bands[@]}"; do
         result_file=dual-stack-load-result.txt
         expected=dual_stack_load_pass=1
         uv run --no-project python -B "$(dirname "$helper")/load-result.py" \
-            "$prefix.client.tar" "$tag" > "$prefix.load-result.json" 2>"$prefix.load-result-errors.txt" ||
+            "$prefix.client.tar" "$tag" "$prefix" > "$prefix.load-result.json" 2>"$prefix.load-result-errors.txt" ||
             cases_failed=1
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
