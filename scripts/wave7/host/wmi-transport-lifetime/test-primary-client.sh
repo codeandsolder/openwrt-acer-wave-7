@@ -42,10 +42,7 @@ guard || fail 'router no longer healthy'
 systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream'
 wyse "sudo -n bash $client/client-module-stack.sh $variant --check-original" > "$out/client-original.txt"
 remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out/ap-before.txt"
-oldmask=$(remote 'cat /sys/module/ath12k/parameters/debug_mask')
-[[ $oldmask =~ ^[0-9]+$ ]] || fail 'debug mask'
 active=0
-mask_changed=0
 trace_pid=''
 sample_pid=''
 cleanup(){
@@ -53,9 +50,6 @@ cleanup(){
     trap - EXIT
     if [[ -n $trace_pid ]]; then wait "$trace_pid" || :; fi
     if [[ -n $sample_pid ]]; then wait "$sample_pid" || :; fi
-    if (( mask_changed )) && [[ $(remote 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || :) == "$boot" ]]; then
-        remote "printf '%s\\n' '$oldmask' > /sys/module/ath12k/parameters/debug_mask" || rc=1
-    fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -71,8 +65,6 @@ active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
 client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
 [[ $client_boot =~ ^[0-9a-f-]{36}$ ]] || fail 'client boot'
-remote "printf '%s\\n' '$((oldmask | 16))' > /sys/module/ath12k/parameters/debug_mask"
-mask_changed=1
 # Per-case independent trace and passive Q6 samples. Only query station
 # statistics before/after a healthy test, never during firmware teardown.
 for band in 5 24; do
