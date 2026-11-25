@@ -2,11 +2,12 @@
 # Bounded, private ftrace instance. Control-port tracepoints expose only
 # metadata (protocol, length, link, acknowledgement), not payloads or keys.
 set -eu
-[ "$#" -eq 3 ]
+[ "$#" -eq 4 ]
 boot=$1
 tag=$2
 seconds=$3
 case "$seconds" in 90|150|300) ;; *) exit 2 ;; esac
+case "$4" in full|control) ;; *) exit 2 ;; esac
 case "$tag" in *[!a-zA-Z0-9_-]*|'') exit 2 ;; esac
 [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot" ]
 root=/sys/kernel/tracing
@@ -23,9 +24,11 @@ cfg80211/cfg80211_rx_control_port
 cfg80211/cfg80211_control_port_tx_status
 mac80211/drv_sta_state
 mac80211/drv_change_sta_links'
+if [ "$4" = full ]; then
 for fn in $functions; do
     grep -Eq "^$fn([[:space:]]|$)" "$root/available_filter_functions"
 done
+fi
 for ev in $events; do [ -r "$root/events/$ev/format" ]; done
 mkdir "$inst"
 cleanup(){
@@ -42,8 +45,10 @@ trap 'exit 143' HUP INT TERM
 echo 0 > "$inst/tracing_on"
 echo mono > "$inst/trace_clock"
 echo 1024 > "$inst/buffer_size_kb"
-echo "$functions" > "$inst/set_ftrace_filter"
-echo function > "$inst/current_tracer"
+if [ "$4" = full ]; then
+    echo "$functions" > "$inst/set_ftrace_filter"
+    echo function > "$inst/current_tracer"
+fi
 for ev in $events; do
     echo 1 > "$inst/events/$ev/enable"
 done
