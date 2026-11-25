@@ -9,19 +9,22 @@ variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $# -le 2 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $# -le 3 && $1 == "$base"/runs/netgear-primary-* ]] || fail 'expected verified trial run'
+run=$1
+shift
 bands=(5 24)
-if [[ $# == 2 ]]; then
-    case "$2" in
+wired_capture=0
+for arg in "$@"; do
+    case "$arg" in
         --band=5) bands=(5) ;;
         --band=24) bands=(24) ;;
-        *) fail 'invalid band' ;;
+        --wired-capture) wired_capture=1 ;;
+        *) fail 'invalid argument' ;;
     esac
-fi
+done
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
 [[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'
-run=$1
 [[ $(cat "$run/status") == SOAK_PASS ]] || fail 'trial not soaked'
 exec 8<>"$lab/.lab-control.lock"
 flock -n 8 || fail 'lab already reserved'
@@ -58,6 +61,11 @@ snapshot_rx(){
             echo "===$f"
             cat "$f"
         done'
+}
+snapshot_icmp(){
+    remote 'cat /proc/sys/kernel/random/boot_id
+        cat /proc/uptime
+        cat /proc/net/snmp'
 }
 guard || fail 'router no longer healthy'
 systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream'
@@ -101,6 +109,7 @@ for band in "${bands[@]}"; do
     prefix="$out/band-$band"
     printf '%s\n' "$tag" > "$prefix.tag"
     snapshot_rx > "$prefix.rx-before.txt"
+    snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot 90" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
     for _ in {1..80}; do
@@ -141,15 +150,17 @@ for band in "${bands[@]}"; do
         sleep .25
     done
     grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" || fail 'client control trace not armed'
-    # Only ICMP header summaries on the isolated wired lab interface.
-    timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96         -i enp4s0f4u2u4 'icmp and host 192.168.76.2 and not host 192.168.76.1'         > "$prefix.wired-icmp.txt" 2> "$prefix.wired-icmp-status.txt" &
-    wired_capture_pid=$!
-    for _ in {1..40}; do
-        kill -0 "$wired_capture_pid" 2>/dev/null || fail 'wired capture exited'
-        grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" && break
-        sleep .25
-    done
-    grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" || fail 'wired capture not armed'
+    if (( wired_capture )); then
+        # Only ICMP header summaries on the isolated wired lab interface.
+        timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96         -i enp4s0f4u2u4 'icmp and host 192.168.76.2 and not host 192.168.76.1'         > "$prefix.wired-icmp.txt" 2> "$prefix.wired-icmp-status.txt" &
+        wired_capture_pid=$!
+        for _ in {1..40}; do
+            kill -0 "$wired_capture_pid" 2>/dev/null || fail 'wired capture exited'
+            grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" && break
+            sleep .25
+        done
+        grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" || fail 'wired capture not armed'
+    fi
     rc=0
     wyse "timeout 75 bash $client/client-sustained.sh $tag --early-only-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
@@ -163,12 +174,14 @@ for band in "${bands[@]}"; do
     ap_trace_pid=''
     wait "$client_control_pid" || cases_failed=1
     client_control_pid=''
-    capture_rc=0
-    wait "$wired_capture_pid" || capture_rc=$?
-    wired_capture_pid=''
-    if [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
-       ! grep -Eq '^0 packets dropped by kernel$' "$prefix.wired-icmp-status.txt"; then
-        cases_failed=1
+    if (( wired_capture )); then
+        capture_rc=0
+        wait "$wired_capture_pid" || capture_rc=$?
+        wired_capture_pid=''
+        if [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
+           ! grep -Eq '^0 packets dropped by kernel$' "$prefix.wired-icmp-status.txt"; then
+            cases_failed=1
+        fi
     fi
     wyse "tar -C $client_data -cf - $tag" > "$prefix.client.tar" 2>"$prefix.client-archive-error.txt" || :
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg' > "$prefix.ap-after.txt" 2>&1 || :
@@ -177,6 +190,7 @@ for band in "${bands[@]}"; do
         exit 1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
+    snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
     result=$(tar -xOf "$prefix.client.tar" "$tag/short-hold-result.txt" 2>/dev/null || :)
     if [[ $rc != 0 || $result != short_hold_all_replies=1 ]]; then
