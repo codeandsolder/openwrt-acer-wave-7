@@ -10,7 +10,7 @@ from pathlib import Path
 
 STAGES = {
     1: "key", 2: "pre_refresh", 3: "post_refresh", 4: "post_add",
-    5: "post_assoc", 6: "post_mld", 7: "post_keys",
+    5: "post_assoc", 6: "post_mld", 7: "post_keys", 8: "pre_assoc_mld",
 }
 EVENT = re.compile(
     r"(?P<time>\d+\.\d+): mt7925_lab_wtbl_peer: "
