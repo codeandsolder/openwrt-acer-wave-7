@@ -1,0 +1,45 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -2506,6 +2506,7 @@
+ 	struct mt792x_link_sta *pri_mlink;
+ 	struct sta_rec_mld *mld;
+ 	unsigned int i, cnt = 0;
++	u16 band0 = U16_MAX, band1 = U16_MAX;
+ 	struct tlv *tlv;
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_MLD, sizeof(*mld));
+@@ -2545,6 +2546,14 @@
+ 
+ 		mconf = mt792x_vif_to_link(mvif, i);
+ 		bss_idx = mconf->mt76.idx;
++		switch (READ_ONCE(mconf->mt76.band_idx)) {
++		case 0:
++			band0 = mlink_i->wcid.idx;
++			break;
++		case 1:
++			band1 = mlink_i->wcid.idx;
++			break;
++		}
+ 
+ 		/* insertion sort by bss_idx, at most 3 links */
+ 		for (j = cnt; j > 0 && mld->link[j - 1].bss_idx > bss_idx; j--)
+@@ -2559,6 +2568,19 @@
+ 	/* secondary is link[1] */
+ 	if (mld->link_num > 1)
+ 		mld->secondary_id = mld->link[1].wlan_id;
++
++	/* Lab experiment: the firmware's primary MLD role may describe
++	 * the hardware band rather than the over-air association link.
++	 * Keep setup WLAN ID and all host-side link/key ownership intact.
++	 */
++	if (is_mt7925(&mvif->phy->dev->mt76) &&
++	    vif->type == NL80211_IFTYPE_STATION && cnt == 2 &&
++	    band0 != U16_MAX && band1 != U16_MAX && band0 != band1) {
++		if (le16_to_cpu(mld->link[1].wlan_id) == band0)
++			swap(mld->link[0], mld->link[1]);
++		mld->primary_id = cpu_to_le16(band0);
++		mld->secondary_id = cpu_to_le16(band1);
++	}
+ 	for (i = 0; i < mld->link_num; i++)
+ 		trace_mt7925_lab_sta_mld_slot(mlink ? mlink->wcid.idx : U16_MAX,
+ 			le16_to_cpu(mld->primary_id), le16_to_cpu(mld->secondary_id),
