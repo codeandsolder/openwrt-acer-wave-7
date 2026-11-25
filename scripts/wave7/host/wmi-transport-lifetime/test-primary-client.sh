@@ -3,7 +3,7 @@
 # Run only after the independently verified native primary-UMAC boot soak.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261125-netgear-primary-dhcp-fixed
+base=/home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut
 lab=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
@@ -28,7 +28,7 @@ flock -n 8 || fail 'lab already reserved'
 [[ $(id -un) == jan && -s $run/known_hosts ]] || fail 'host identity'
 boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
 rev=$(jq -r .revision "$base/report.json")
-[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-77d7fa1171-ap-dhcp-guard8 ]] || fail 'trial identity'
+[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-65f3c6bcfc-ap-dhcp-guard8 ]] || fail 'trial identity'
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
 remote_stream(){

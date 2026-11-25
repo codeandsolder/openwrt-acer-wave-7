@@ -2,14 +2,12 @@
 # Independent guarded stock->Guard8 radio experiment. Run on the isolated Asus lab.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261125-netgear-primary-dhcp-fixed
+base=/home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut
 guard8=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
-native="$base/wave7-netgear-primary-umac-dhcp-guard8-sysupgrade.bin"
-ota="$base/wave7-nand-squashfs-vendor-ota.bin"
-native_sha=9f1a3848378e1b5a9433ce400cf71b99f0651eea2fad9e9c316a41eddf7784d6
-ota_sha=c00e9b70bd0b10d78449edea1f62298c438a612316ae35e2ac4e7468504e60d3
-rev=r0+38346-77d7fa1171-ap-dhcp-guard8
-builder=77d7fa1171920e94a980a02f6e8e610b7e45f7c5
+native="$base/wave7-netgear-primary-reo-lut-dhcp-guard8-sysupgrade.bin"
+native_sha=ae9aa226c79d6263f9afaff4ec813ad34d1345966bba8fd81617073521498fb4
+rev=r0+38346-65f3c6bcfc-ap-dhcp-guard8
+builder=65f3c6bcfc8b236d1b152632e3081632174af6e7
 rollback="$guard8/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
 rollback_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
 rollback_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
@@ -22,14 +20,13 @@ router=192.168.76.1
 mac=70:5a:6f:5a:bb:14
 attestor=/home/jan/scripts/wave7/secondary-ap-guard8/attest-management.sh
 upstream=/home/jan/scripts/wave7/secondary-ap-guard8/lab-upstream.sh
-stock_flasher=/home/jan/scripts/wave7/wave7-trial-flash.sh
 digest(){ sha256sum "$1" | cut -d' ' -f1; }
 fail(){ echo "RADIO_TRIAL_FAIL $*" >&2; exit 1; }
 value(){ sed -n "s/^$2=//p" <<< "$1" | head -1; }
 log(){ printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$out/observer.log"; }
 finish(){ log "$1"; printf '%s\n' "$1" > "$out/status"; exit "${2:-0}"; }
 verify_artifacts(){
-    [[ $(digest "$native") == "$native_sha" && $(digest "$ota") == "$ota_sha" &&
+    [[ $(digest "$native") == "$native_sha" &&
        $(digest "$rollback") == "$rollback_sha" ]] || fail 'artifact digest'
     (cd "$base"; sha256sum -c SHA256SUMS)
     [[ $(jq -r .image_sha256 "$base/report.json") == "$native_sha" &&
@@ -152,13 +149,8 @@ common_preflight(){
     [[ -z $(systemctl --user --no-pager --no-legend list-units --state=active,activating 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*' 'wave7-qdss-supervisor-*') ]] || fail 'another active observer'
     (cd /home/jan/firmware/wave7/captures/20261125-vendor-fallback && sha256sum -c SHA256SUMS)
 }
-preflight(){
-    common_preflight
-    [[ $(stock 'uname -r; fw_printenv -n bootfail; cat /sys/class/net/br-lan/address') == $'5.4.213\n0\n70:5a:6f:5a:bb:14' ]] || fail 'vendor identity'
-}
-
 case "${1:-}" in
---check) preflight; echo RADIO_TRIAL_PREFLIGHT_PASS ;;
+--check) common_preflight; echo RADIO_TRIAL_PREFLIGHT_PASS ;;
 --run-native)
     [[ $# == 2 ]] || fail 'expected predecessor run'
     lock="$guard8/.lab-control.lock"
@@ -167,9 +159,9 @@ case "${1:-}" in
     flock -n 8 || fail 'lab already reserved'
     common_preflight
     predecessor="$2"
-    [[ $predecessor == /home/jan/firmware/wave7/trials/20261125-netgear-wmi-dhcp-fixed/runs/netgear-wmi-dhcp-fixed-* ]] || fail 'unexpected predecessor run'
+    [[ $predecessor == /home/jan/firmware/wave7/trials/20261125-netgear-primary-dhcp-fixed/runs/netgear-primary-native-* ]] || fail 'unexpected predecessor run'
     case "$(cat "$predecessor/status")" in
-        SOAK_PASS) source_rev=r0+38346-b6733bd5c8-ap-dhcp-guard8 ;;
+        SOAK_PASS) source_rev=r0+38346-77d7fa1171-ap-dhcp-guard8 ;;
         ROLLED_BACK) source_rev=$rollback_rev ;;
         *) fail 'predecessor has not completed guarded soak' ;;
     esac
@@ -178,7 +170,7 @@ case "${1:-}" in
     state=$(read_state)
     [[ $(value "$state" boot) == "$source_boot" && $(value "$state" rev) == "$source_rev" && $(value "$state" merged_rev) == "$source_rev" ]] || fail 'predecessor identity changed'
     ready "$state" || fail 'predecessor unhealthy'
-    tag=netgear-primary-native-$(date +%Y%m%d-%H%M%S)
+    tag=netgear-primary-reo-lut-native-$(date +%Y%m%d-%H%M%S)
     out="$base/runs/$tag"
     mkdir -p "$out"
     printf '%s\n' "$source_boot" > "$out/stock-boot"
@@ -222,40 +214,8 @@ case "${1:-}" in
     cat "$out/status" "$out/observer.log"
     [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
     ;;
---run)
-    lock="$guard8/.lab-control.lock"
-    [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'invalid lab lock'
-    exec 8<>"$lock"
-    flock -n 8 || fail 'lab already reserved'
-    preflight
-    tag=netgear-primary-dhcp-fixed-$(date +%Y%m%d-%H%M%S)
-    out="$base/runs/$tag"
-    mkdir -p "$out"
-    stock 'cat /proc/sys/kernel/random/boot_id' > "$out/stock-boot"
-    unit="wave7-secondary-ap-supervisor-$tag"
-    systemd-run --user --quiet --unit="$unit" --property=RuntimeMaxSec=1500 -- "$(realpath "$0")" --watch "$out"
-    for _ in {1..15}; do
-        [[ -r $out/status && $(cat "$out/status") == ARMED ]] && break
-        sleep 1
-    done
-    if [[ ! -r $out/status || $(cat "$out/status") != ARMED ]] || ! systemctl --user is-active --quiet "$unit.service"; then
-        systemctl --user stop "$unit.service" || :
-        fail 'observer not armed'
-    fi
-    printf 'GUARD_ARMED %s\n' "$out"
-    if ! "$stock_flasher" "$tag" "$ota" 6.18.60 77d7fa1171 > "$out/flash.log" 2>&1; then
-        cat "$out/flash.log"
-        systemctl --user stop "$unit.service" || :
-        fail 'stock upgrade refused'
-    fi
-    cat "$out/flash.log"
-    echo "RUN_DIR=$out"
-    while systemctl --user is-active --quiet "$unit.service"; do sleep 5; done
-    cat "$out/status" "$out/observer.log"
-    [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
-    ;;
 --watch)
-    [[ $# == 2 && $2 == "$base"/runs/netgear-primary-* ]] || fail 'invalid run'
+    [[ $# == 2 && $2 == "$base"/runs/netgear-primary-reo-lut-native-* ]] || fail 'invalid run'
     out=$2
     known="$out/known_hosts"
     exec 9>"$out/.watch.lock"
@@ -348,5 +308,5 @@ case "${1:-}" in
     done
     finish WATCH_TIMEOUT 2
     ;;
-*) echo 'usage: trial-radio.sh --check|--run|--run-native PREDECESSOR_RUN|--watch OUT' >&2; exit 2 ;;
+*) echo 'usage: trial-radio.sh --check|--run-native PREDECESSOR_RUN|--watch OUT' >&2; exit 2 ;;
 esac
