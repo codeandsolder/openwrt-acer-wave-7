@@ -1,0 +1,74 @@
+--- a/mt7925/pci_mac.c
++++ b/mt7925/pci_mac.c
+@@ -6,6 +6,62 @@
+ #include "mcu.h"
+ #include "mac.h"
+ 
++/* For the lab band-primary variant, use the firmware MLD primary for
++ * automatically routed, encrypted Ethernet data.  Do not change explicit
++ * link transmissions, management, control-port, or host station ownership.
++ */
++static struct mt76_wcid *
++mt7925_lab_band_primary_tx_wcid(struct mt76_dev *dev, struct mt76_wcid *wcid,
++			       struct ieee80211_sta *sta, struct sk_buff *skb)
++{
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	struct ieee80211_vif *vif = info->control.vif;
++	struct ieee80211_key_conf *key = info->control.hw_key;
++	struct mt792x_vif *mvif;
++	struct mt792x_sta *msta;
++	struct mt76_wcid *primary = NULL;
++	unsigned long links;
++	unsigned int i;
++	u8 bands = 0;
++
++	if (!is_mt7925(dev) || !sta || !vif ||
++	    vif->type != NL80211_IFTYPE_STATION || !ieee80211_vif_is_mld(vif) ||
++	    !(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
++	    (info->flags & IEEE80211_TX_CTL_TX_OFFCHAN) ||
++	    skb->protocol == cpu_to_be16(ETH_P_PAE) ||
++	    !key || !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE) ||
++	    u32_get_bits(info->control.flags, IEEE80211_TX_CTRL_MLO_LINK) <
++		    IEEE80211_LINK_UNSPECIFIED)
++		return wcid;
++
++	mvif = (struct mt792x_vif *)vif->drv_priv;
++	msta = (struct mt792x_sta *)sta->drv_priv;
++	links = READ_ONCE(msta->valid_links);
++	if (hweight_long(links) != 2 || links != READ_ONCE(vif->active_links))
++		return wcid;
++
++	/* Both members must be published and have the requested key.
++	 * The caller's RCU read-side section covers queueing and TX prepare.
++	 */
++	for_each_set_bit(i, &links, IEEE80211_MLD_MAX_NUM_LINKS) {
++		struct mt792x_link_sta *mlink = rcu_dereference(msta->link[i]);
++		struct mt792x_bss_conf *mconf = rcu_dereference(mvif->link_conf[i]);
++		u8 band;
++
++		if (!mlink || !mconf || !mlink->wcid.link_valid ||
++		    READ_ONCE(mlink->wcid.hw_key_idx) != key->keyidx)
++			return wcid;
++		band = READ_ONCE(mconf->mt76.band_idx);
++		if (band > 1 || bands & BIT(band))
++			return wcid;
++		bands |= BIT(band);
++		if (band == 0)
++			primary = &mlink->wcid;
++	}
++
++	return bands == (BIT(0) | BIT(1)) && primary ? primary : wcid;
++}
++
+ int mt7925e_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
+ 			   enum mt76_txq_id qid, struct mt76_wcid *wcid,
+ 			   struct ieee80211_sta *sta,
+@@ -25,6 +81,8 @@
+ 	if (!wcid)
+ 		wcid = &dev->mt76.global_wcid;
+ 
++	wcid = mt7925_lab_band_primary_tx_wcid(mdev, wcid, sta, tx_info->skb);
++
+ 	t = (struct mt76_txwi_cache *)(txwi + mdev->drv->txwi_size);
+ 	t->skb = tx_info->skb;
+ 
