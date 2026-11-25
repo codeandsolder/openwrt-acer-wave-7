@@ -1,0 +1,11 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1509,7 +1509,7 @@
+ 	ieee80211_set_active_links_async(vif, sel_links);
+ }
+ 
+-#define MT7925_MLO_DIAGNOSTIC_ACTIVATION_DELAY	(8 * HZ)
++#define MT7925_MLO_DIAGNOSTIC_ACTIVATION_DELAY	0
+ 
+ static void mt7925_delayed_mlo_activate(struct wiphy *wiphy,
+ 					 struct wiphy_work *work)
