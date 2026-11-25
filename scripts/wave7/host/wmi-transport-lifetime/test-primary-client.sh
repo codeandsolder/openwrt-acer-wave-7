@@ -14,12 +14,14 @@ run=$1
 shift
 bands=(5 24)
 wired_capture=0
+ip6_observe=0
 client_rx_arg=''
 for arg in "$@"; do
     case "$arg" in
         --band=5) bands=(5) ;;
         --band=24) bands=(24) ;;
         --wired-capture) wired_capture=1 ;;
+        --client-ip6-observe) ip6_observe=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
@@ -120,6 +122,7 @@ sample_pid=''
 ap_trace_pid=''
 client_control_pid=''
 wired_capture_pid=''
+ip6_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
@@ -128,6 +131,7 @@ cleanup(){
     if [[ -n $ap_trace_pid ]]; then wait "$ap_trace_pid" || :; fi
     if [[ -n $client_control_pid ]]; then wait "$client_control_pid" || :; fi
     if [[ -n $wired_capture_pid ]]; then wait "$wired_capture_pid" || :; fi
+    if [[ -n $ip6_pid ]]; then wait "$ip6_pid" || :; fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -210,6 +214,16 @@ for band in "${bands[@]}"; do
         done
         grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" || fail 'wired capture not armed'
     fi
+    if (( ip6_observe )); then
+        wyse "bash $client/client-ip6-observe.sh $tag $client_boot 90" > "$prefix.client-ip6.txt" 2>&1 &
+        ip6_pid=$!
+        for _ in {1..60}; do
+            kill -0 "$ip6_pid" 2>/dev/null || fail 'IPv6 observer exited'
+            rg -q '^CLIENT_IP6_OBSERVER_READY ' "$prefix.client-ip6.txt" && break
+            sleep .25
+        done
+        rg -q '^CLIENT_IP6_OBSERVER_READY ' "$prefix.client-ip6.txt" || fail 'IPv6 observer not armed'
+    fi
     rc=0
     wyse "timeout 75 bash $client/client-sustained.sh $tag --early-only-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
@@ -223,6 +237,11 @@ for band in "${bands[@]}"; do
     ap_trace_pid=''
     wait "$client_control_pid" || cases_failed=1
     client_control_pid=''
+    if (( ip6_observe )); then
+        wait "$ip6_pid" || cases_failed=1
+        ip6_pid=''
+        rg -qx 'CLIENT_IP6_OBSERVER_END samples=91' "$prefix.client-ip6.txt" || cases_failed=1
+    fi
     if (( wired_capture )); then
         capture_rc=0
         wait "$wired_capture_pid" || capture_rc=$?
