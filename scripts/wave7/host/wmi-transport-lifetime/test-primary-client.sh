@@ -16,7 +16,7 @@ bands=(5 24)
 wired_capture=none
 ip6_observe=0
 dual_hold=0
-client_rx_arg=''
+client_rx_arg=--none
 for arg in "$@"; do
     case "$arg" in
         --band=5) bands=(5) ;;
@@ -188,6 +188,7 @@ fi
 # Per-case independent trace and passive Q6 samples. Only query station
 # statistics before/after a healthy test, never during firmware teardown.
 cases_failed=0
+observe_seconds=150
 for band in "${bands[@]}"; do
     guard || fail 'AP health before association'
     tag=0498-$(date +%Y%m%d-%H%M%S)
@@ -195,16 +196,10 @@ for band in "${bands[@]}"; do
     printf '%s\n' "$tag" > "$prefix.tag"
     snapshot_rx > "$prefix.rx-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
-    wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot 90" > "$prefix.client-trace.txt" 2>&1 &
+    wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
-    for _ in {1..80}; do
-        kill -0 "$trace_pid" 2>/dev/null || fail 'client trace exited'
-        grep -q '^CRASH_STREAM_READY ' "$prefix.client-trace.txt" && break
-        sleep .25
-    done
-    grep -q '^CRASH_STREAM_READY ' "$prefix.client-trace.txt" || fail 'client trace not armed'
     (
-        for seq in $(seq 1 360); do
+        for seq in $(seq 1 "$((observe_seconds * 4))"); do
             printf '%s\n' "$seq"
             sleep .25
         done
@@ -214,27 +209,14 @@ for band in "${bands[@]}"; do
         printf "\n"
     done' > "$prefix.ap-passive.txt" 2>&1 &
     sample_pid=$!
-    for _ in {1..20}; do
-        [[ -s $prefix.ap-passive.txt ]] && break
-        sleep .2
-    done
-    [[ -s $prefix.ap-passive.txt ]] || fail 'AP observer not armed'
-    remote_stream "sh -s -- $boot $tag" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
+    remote_stream "sh -s -- $boot $tag $observe_seconds" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
     ap_trace_pid=$!
-    for _ in {1..60}; do
-        kill -0 "$ap_trace_pid" 2>/dev/null || fail 'AP trace exited'
-        grep -q '^AP_CONTROL_TRACE_READY ' "$prefix.ap-control-trace.txt" && break
-        sleep .25
-    done
-    grep -q '^AP_CONTROL_TRACE_READY ' "$prefix.ap-control-trace.txt" || fail 'AP trace not armed'
-    wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot $client_rx_arg" > "$prefix.client-control-trace.txt" 2>&1 &
+    control_profile=$client_rx_arg
+    if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
+        control_profile=--rx-cnm-group
+    fi
+    wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot $control_profile $observe_seconds" > "$prefix.client-control-trace.txt" 2>&1 &
     client_control_pid=$!
-    for _ in {1..60}; do
-        kill -0 "$client_control_pid" 2>/dev/null || fail 'client control trace exited'
-        grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" && break
-        sleep .25
-    done
-    grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" || fail 'client control trace not armed'
     if [[ $wired_capture != none ]]; then
         # Header summaries only, no payload or promiscuous capture.
         # The NDP profile uses the host's existing Wireshark capture-group
@@ -243,7 +225,7 @@ for band in "${bands[@]}"; do
             (
                 dumpcap -i enp4s0f4u2u4 -p -s 96 \
                     -f 'icmp6 and (ip6[40] == 133 or ip6[40] == 134)' \
-                    -a duration:90 -w - 2>"$prefix.wired-ndp-status.txt" |
+                    -a "duration:$observe_seconds" -w - 2>"$prefix.wired-ndp-status.txt" |
                     tshark -n -l -r - -T fields \
                         -e frame.time_epoch -e eth.src -e eth.dst \
                         -e ipv6.src -e ipv6.dst -e icmpv6.type \
@@ -251,29 +233,48 @@ for band in "${bands[@]}"; do
             ) &
             capture_ready='^File: -$'
         else
-            timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96 \
+            timeout -s INT "$observe_seconds" sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96 \
                 -i enp4s0f4u2u4 'icmp and host 192.168.76.2 and not host 192.168.76.1' \
                 > "$prefix.wired-icmp.txt" 2> "$prefix.wired-icmp-status.txt" &
             capture_ready='listening on enp4s0f4u2u4'
         fi
         wired_capture_pid=$!
-        for _ in {1..40}; do
-            kill -0 "$wired_capture_pid" 2>/dev/null || fail 'wired capture exited'
-            rg -q "$capture_ready" "$prefix.wired-$wired_capture-status.txt" && break
-            sleep .25
-        done
-        rg -q "$capture_ready" "$prefix.wired-$wired_capture-status.txt" || fail 'wired capture not armed'
     fi
     if (( ip6_observe )); then
-        wyse "bash $client/client-ip6-observe.sh $tag $client_boot 90" > "$prefix.client-ip6.txt" 2>&1 &
+        wyse "bash $client/client-ip6-observe.sh $tag $client_boot $observe_seconds" > "$prefix.client-ip6.txt" 2>&1 &
         ip6_pid=$!
-        for _ in {1..60}; do
-            kill -0 "$ip6_pid" 2>/dev/null || fail 'IPv6 observer exited'
-            rg -q '^CLIENT_IP6_OBSERVER_READY ' "$prefix.client-ip6.txt" && break
-            sleep .25
-        done
-        rg -q '^CLIENT_IP6_OBSERVER_READY ' "$prefix.client-ip6.txt" || fail 'IPv6 observer not armed'
     fi
+    # Independent starts above may race for a busy host. No association
+    # starts until each observer is live and has emitted its marker.
+    pids=("$trace_pid" "$sample_pid" "$ap_trace_pid" "$client_control_pid")
+    logs=("$prefix.client-trace.txt" "$prefix.ap-passive.txt"
+          "$prefix.ap-control-trace.txt" "$prefix.client-control-trace.txt")
+    markers=('^CRASH_STREAM_READY ' '^[0-9]+ [0-9.]+ running running running'
+             '^AP_CONTROL_TRACE_READY ' '^CLIENT_CONTROL_TRACE_READY ')
+    if [[ $wired_capture != none ]]; then
+        pids+=("$wired_capture_pid")
+        logs+=("$prefix.wired-$wired_capture-status.txt")
+        markers+=("$capture_ready")
+    fi
+    if (( ip6_observe )); then
+        pids+=("$ip6_pid")
+        logs+=("$prefix.client-ip6.txt")
+        markers+=('^CLIENT_IP6_OBSERVER_READY ')
+    fi
+    deadline=$((SECONDS + 45))
+    while :; do
+        ready=1
+        for i in "${!pids[@]}"; do
+            kill -0 "${pids[i]}" 2>/dev/null || fail "observer exited: ${logs[i]}"
+            if [[ ! -s ${logs[i]} ]] || ! rg -q "${markers[i]}" "${logs[i]}"; then
+                ready=0
+            fi
+        done
+        (( ready )) && break
+        (( SECONDS < deadline )) || fail 'observer readiness deadline'
+        sleep .25
+    done
+    printf 'ALL_OBSERVERS_READY epoch=%s\n' "$(date +%s.%N)" > "$prefix.observers-ready.txt"
     mode=early-only
     if (( dual_hold )); then mode=early-dual; fi
     rc=0
@@ -292,7 +293,7 @@ for band in "${bands[@]}"; do
     if (( ip6_observe )); then
         wait "$ip6_pid" || cases_failed=1
         ip6_pid=''
-        rg -qx 'CLIENT_IP6_OBSERVER_END samples=91' "$prefix.client-ip6.txt" || cases_failed=1
+        rg -qx "CLIENT_IP6_OBSERVER_END samples=$((observe_seconds + 1))" "$prefix.client-ip6.txt" || cases_failed=1
     fi
     if [[ $wired_capture != none ]]; then
         capture_rc=0
