@@ -38,6 +38,7 @@ for arg in "$@"; do
         --client-band-primary-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-trace ;;
         --client-band-primary-tx-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ;;
         --client-join-band1-trace) variant=upstream-prefix22-authorize-delayed-links-join-band1-trace ;;
+        --client-band-primary-txd-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-txd-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -58,6 +59,8 @@ elif [[ $variant == upstream-prefix22-authorize-delayed-links-cnm-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-join-band1-trace ]]; then
     client_rx_arg=--rx-cnm
+elif [[ $variant == upstream-prefix22-authorize-delayed-links-band-primary-txd-trace ]]; then
+    client_rx_arg=--rx-txd
 fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
@@ -138,7 +141,7 @@ active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
 client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
 [[ $client_boot =~ ^[0-9a-f-]{36}$ ]] || fail 'client boot'
-if [[ $client_rx_arg == --rx-cnm ]]; then
+if [[ $client_rx_arg == --rx-cnm || $client_rx_arg == --rx-txd ]]; then
     # Query once while disconnected. Do not associate on a failed query.
     wyse "sudo -n bash -c 'set -eu; mapfile -t paths < <(find /sys/kernel/debug/ieee80211 -name lab_cnm -type f); [[ \${#paths[@]} == 1 ]]; cat \"\${paths[0]}\"'" > "$out/client-cnm-preflight.txt" 2>&1 || fail 'CNM preflight query'
     grep -q '^CNM_GET_INFO count=' "$out/client-cnm-preflight.txt" || fail 'CNM preflight response'
