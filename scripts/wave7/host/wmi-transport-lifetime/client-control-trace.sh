@@ -1,7 +1,7 @@
 #!/bin/bash
 # Capture control-port and optional data-path metadata, never packet payloads.
 set -Eeuo pipefail
-[[ $EUID == 0 && ( $# == 2 || ( $# == 3 && ( $3 == --rx-data || $3 == --rx-header || $3 == --rx-wtbl ) ) ) &&
+[[ $EUID == 0 && ( $# == 2 || ( $# == 3 && ( $3 == --rx-data || $3 == --rx-header || $3 == --rx-wtbl || $3 == --rx-cnm ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ &&
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ ]]
 [[ $(cat /proc/sys/kernel/random/boot_id) == "$2" ]]
@@ -12,19 +12,23 @@ events=(cfg80211/rdev_tx_control_port
         cfg80211/cfg80211_control_port_tx_status)
 rx_data=0
 rx_header=0
-if [[ ${3:-} == --rx-data || ${3:-} == --rx-header || ${3:-} == --rx-wtbl ]]; then
+if [[ ${3:-} == --rx-data || ${3:-} == --rx-header || ${3:-} == --rx-wtbl || ${3:-} == --rx-cnm ]]; then
     rx_data=1
     events+=(mt7925_lab/mt7925_lab_rxdesc
              mt7925_lab/mt7925_lab_rx_frame
              mt7925_lab/mt7925_lab_txs_peer_data)
 fi
-if [[ ${3:-} == --rx-header || ${3:-} == --rx-wtbl ]]; then
+if [[ ${3:-} == --rx-header || ${3:-} == --rx-wtbl || ${3:-} == --rx-cnm ]]; then
     rx_header=1
     events+=(mt7925_lab/mt7925_lab_rx_header
              mt7925_lab/mt7925_lab_link_addr)
 fi
-if [[ ${3:-} == --rx-wtbl ]]; then
+if [[ ${3:-} == --rx-wtbl || ${3:-} == --rx-cnm ]]; then
     events+=(mt7925_lab/mt7925_lab_wtbl_peer)
+fi
+if [[ ${3:-} == --rx-cnm ]]; then
+    events+=(mt7925_lab/mt7925_lab_cnm_bss
+             mt7925_lab/mt7925_lab_cnm_result)
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
