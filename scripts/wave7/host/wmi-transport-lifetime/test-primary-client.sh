@@ -28,6 +28,7 @@ for arg in "$@"; do
         --client-wtbl-trace) variant=upstream-prefix22-authorize-delayed-links-wtbl-trace ;;
         --client-mld-order-trace) variant=upstream-prefix22-authorize-delayed-links-mld-order-trace ;;
         --client-mld-rebind-trace) variant=upstream-prefix22-authorize-delayed-links-mld-rebind-trace ;;
+        --client-mld-len-trace) variant=upstream-prefix22-authorize-delayed-links-mld-len-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -35,7 +36,8 @@ if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; the
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-mld-order-trace ||
-        $variant == upstream-prefix22-authorize-delayed-links-mld-rebind-trace ]]; then
+        $variant == upstream-prefix22-authorize-delayed-links-mld-rebind-trace ||
+        $variant == upstream-prefix22-authorize-delayed-links-mld-len-trace ]]; then
     client_rx_arg=--rx-wtbl
 fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh

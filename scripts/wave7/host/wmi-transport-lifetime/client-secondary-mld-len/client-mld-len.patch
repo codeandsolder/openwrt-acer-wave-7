@@ -1,0 +1,35 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -2430,12 +2430,12 @@
+ 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 	unsigned long valid = mvif->valid_links;
+ 	struct mt792x_link_sta *pri_mlink;
+-	struct sta_rec_mld *mld;
++	struct sta_rec_mld data = {};
++	struct sta_rec_mld *mld = &data;
+ 	unsigned int i, cnt = 0;
+ 	struct tlv *tlv;
++	size_t len;
+ 
+-	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_MLD, sizeof(*mld));
+-	mld = (struct sta_rec_mld *)tlv;
+ 	memcpy(mld->mac_addr, sta->addr, ETH_ALEN);
+ 
+ 	/* primary_id is the wcid of the primary link; the link being added is
+@@ -2490,6 +2490,16 @@
+ 			le16_to_cpu(mld->primary_id), le16_to_cpu(mld->secondary_id),
+ 			i, mld->link_num, le16_to_cpu(mld->link[i].wlan_id),
+ 			mld->link[i].bss_idx, mvif->valid_links);
++
++	/* The vendor command length includes exactly link_num entries,
++	 * not the capacity of the host-side scratch array.
++	 */
++	len = offsetof(struct sta_rec_mld, link) +
++	      cnt * sizeof(mld->link[0]);
++	mld->tag = cpu_to_le16(STA_REC_MLD);
++	mld->len = cpu_to_le16(len);
++	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_MLD, len);
++	memcpy(tlv, mld, len);
+ }
+ 
+ /* Lab experiment: change only MLD membership of an existing STAREC. */
