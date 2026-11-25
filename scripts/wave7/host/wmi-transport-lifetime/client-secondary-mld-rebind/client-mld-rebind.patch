@@ -1,0 +1,40 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -796,6 +796,7 @@
+ 	MT7925_LAB_WTBL_POST_ASSOC,
+ 	MT7925_LAB_WTBL_POST_MLD,
+ 	MT7925_LAB_WTBL_POST_KEYS,
++	MT7925_LAB_WTBL_POST_SECONDARY_MLD = 9,
+ };
+ 
+ /*
+@@ -2992,6 +2993,29 @@
+ 		}
+ 		if (add)
+ 			mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_MLD);
++
++		/* The combined secondary ASSOC command can leave its WTBL
++		 * on band 2. A standalone MLD update migrated the primary
++		 * to its granted band; try the same update on the secondary
++		 * before installing its key. Do not alter the existing PTK.
++		 */
++		for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
++			struct mt792x_link_sta *mlink;
++
++			if (link_id == lab_msta->deflink_id)
++				continue;
++			mlink = mt792x_sta_to_link(lab_msta, link_id);
++			if (!mlink) {
++				err = -EINVAL;
++				goto out;
++			}
++			err = mt7925_mcu_sta_mld_update(dev, vif, sta, mlink);
++			if (err)
++				goto out;
++		}
++		if (add)
++			mt7925_lab_wtbl_snapshot(dev, vif, lab_msta,
++						MT7925_LAB_WTBL_POST_SECONDARY_MLD);
+ 		if (add) {
+ 			struct mt7925_set_links_key_iter it = {
+ 				.sta = sta,
