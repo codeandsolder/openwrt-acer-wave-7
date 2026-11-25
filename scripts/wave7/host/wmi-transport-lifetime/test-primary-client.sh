@@ -36,6 +36,7 @@ for arg in "$@"; do
         --client-starec-split-trace) variant=upstream-prefix22-authorize-delayed-links-starec-split-trace ;;
         --client-eht-first-trace) variant=upstream-prefix22-authorize-delayed-links-eht-first-trace ;;
         --client-band-primary-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-trace ;;
+        --client-band-primary-tx-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -52,7 +53,8 @@ elif [[ $variant == upstream-prefix22-authorize-delayed-links-cnm-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-omac-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-starec-split-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-eht-first-trace ||
-        $variant == upstream-prefix22-authorize-delayed-links-band-primary-trace ]]; then
+        $variant == upstream-prefix22-authorize-delayed-links-band-primary-trace ||
+        $variant == upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ]]; then
     client_rx_arg=--rx-cnm
 fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
