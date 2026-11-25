@@ -99,7 +99,7 @@ def main():
     parser.add_argument("--parent", type=Path, required=True)
     parser.add_argument("--modules", type=Path, required=True)
     parser.add_argument("--baseline-modules", type=Path, required=True)
-    parser.add_argument("--donor-squashfs", type=Path)
+    parser.add_argument("--donor-squashfs", type=Path, required=True)
     parser.add_argument("--host-tree", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     a = parser.parse_args()
@@ -114,7 +114,7 @@ def main():
               f"baseline reproduction mismatch {name}")
     if a.donor_squashfs:
         check(sha(a.donor_squashfs) == DONOR_SHA, "unverified donor payload")
-    rev = "r0+38346-" + WMI_COMMIT[:10] + ("-netgear0726" if a.donor_squashfs else "-wmi") + "-ap-dhcp-guard8"
+    rev = "r0+38346-" + builder[:10] + "-ap-dhcp-guard8"
     tools = a.host_tree / "staging_dir/host/bin"
     unsq, mksq, fwtool = (tools / s for s in ("unsquashfs4","mksquashfs4","fwtool"))
     check(a.out.parent.is_dir() and not a.out.exists(), "output exists or parent missing")
