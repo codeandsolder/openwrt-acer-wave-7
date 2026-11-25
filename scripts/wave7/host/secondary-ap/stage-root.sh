@@ -118,6 +118,8 @@ config dhcp 'lan'
 
 config odhcpd 'odhcpd'
   option maindhcp '0'
+  option piodir '/tmp/odhcpd-piodir'
+  option hostsdir '/tmp/hosts'
 DHCP
 cat > "$root/etc/config/dropbear.new" <<'SSH'
 config dropbear 'main'

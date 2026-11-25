@@ -58,6 +58,8 @@ rg -q "option proto 'dhcp'" "$work/dhcp/etc/config/network"
 rg -q "list ipaddr '192.168.76.1/24'" "$work/static/etc/config/network"
 for d in "$work/dhcp" "$work/static"; do
   rg -q "option disabled '1'" "$d/etc/config/dhcp"
+  rg -Fq "option piodir '/tmp/odhcpd-piodir'" "$d/etc/config/dhcp"
+  rg -Fq "option hostsdir '/tmp/hosts'" "$d/etc/config/dhcp"
   for role in "dhcpv4 'disabled'" "dhcpv6 'disabled'" "ra 'disabled'" "ndp 'disabled'"; do
     rg -Fq "$role" "$d/etc/config/dhcp"
   done
