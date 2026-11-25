@@ -5,7 +5,9 @@
 #include <errno.h>
 
 typedef uint8_t u8;
-#define IEEE80211_MLD_MAX_NUM_LINKS 16
+#define IEEE80211_MLD_MAX_NUM_LINKS 15
+#define IEEE80211_LINK_UNSPECIFIED 15
+#define READ_ONCE(value) (value)
 #define BIT(n) (1UL << (n))
 #define for_each_set_bit(i, map, max) \
     for ((i) = 0; (i) < (max); (i)++) if (*(map) & BIT(i))
@@ -58,6 +60,17 @@ int main(void)
     struct ath12k_hw ah = { &hw };
     struct ath12k_sta sta = { .links_map = 3, .link = { &st[0], &st[1] } };
 
+    sta.primary_link_id = 1;
+    assert(ath12k_mac_mlo_data_link(&sta, 0, false) == 1);
+    assert(ath12k_mac_mlo_data_link(&sta, IEEE80211_LINK_UNSPECIFIED, false) == 1);
+    assert(ath12k_mac_mlo_data_link(&sta, IEEE80211_LINK_UNSPECIFIED, true) == 0);
+    assert(ath12k_mac_mlo_data_link(&sta, 0, true) == 0);
+    assert(ath12k_mac_mlo_data_link(&sta, 1, true) == 1);
+    assert(ath12k_mac_mlo_data_link(&sta, 2, true) == IEEE80211_LINK_UNSPECIFIED);
+    sta.links_map = 1;
+    assert(ath12k_mac_mlo_data_link(&sta, 1, true) == IEEE80211_LINK_UNSPECIFIED);
+    assert(ath12k_mac_mlo_data_link(&sta, IEEE80211_LINK_UNSPECIFIED, true) == 0);
+    sta.links_map = 3;
     assert(ath12k_mac_mlo_select_primary(&ah, &sta) == 1);
     sta.assoc_link_id = 1;
     assert(ath12k_mac_mlo_select_primary(&ah, &sta) == 1);

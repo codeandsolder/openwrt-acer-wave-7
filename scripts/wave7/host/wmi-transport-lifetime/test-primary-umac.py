@@ -28,7 +28,8 @@ def main():
     text = (args.source / "mac.c").read_text()
     fixture = Path(__file__).with_name("primary-umac-fixture.c").read_text()
     bodies = "\n".join(function(text, name) for name in (
-        "ath12k_mac_mlo_select_primary", "ath12k_mac_mlo_setup_primary"))
+        "ath12k_mac_mlo_select_primary", "ath12k_mac_mlo_setup_primary",
+        "ath12k_mac_mlo_data_link"))
     generated = args.output / "primary-umac-expanded.c"
     generated.write_text(fixture.replace("/* EXTRACTED BODIES */", bodies))
     obj = args.output / "primary-umac.o"

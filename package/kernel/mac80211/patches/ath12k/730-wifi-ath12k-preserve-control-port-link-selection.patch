@@ -1,0 +1,101 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: preserve MLO control-port link selection
+
+Keep the selected shared data owner for ordinary MLO data, but honor
+mac80211 control-port link routing before peer authorization. Preserve
+control flags before the driver_data union is overwritten.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -9666,15 +9666,36 @@
+ }
+ EXPORT_SYMBOL(ath12k_mlo_mcast_update_tx_link_address);
+ 
++/* Control-port frames precede authorization and secondary-link activation.
++ * The selected REO/data owner need not be the radio on which the peer is
++ * listening. Preserve explicit mac80211 link selection for control frames.
++ */
++static u8 ath12k_mac_mlo_data_link(struct ath12k_sta *ahsta, u8 link,
++				   bool control_port)
++{
++	if (!control_port)
++		return READ_ONCE(ahsta->primary_link_id);
++
++	if (link == IEEE80211_LINK_UNSPECIFIED)
++		link = READ_ONCE(ahsta->assoc_link_id);
++
++	if (link >= IEEE80211_MLD_MAX_NUM_LINKS ||
++	    !(READ_ONCE(ahsta->links_map) & BIT(link)))
++		return IEEE80211_LINK_UNSPECIFIED;
++
++	return link;
++}
++
+ /* Note: called under rcu_read_lock() */
+ u8 ath12k_mac_get_tx_link(struct ieee80211_sta *sta, struct ieee80211_vif *vif,
+-			  u8 link, struct sk_buff *skb, u32 info_flags)
++			  struct sk_buff *skb, u32 info_flags, u32 control_flags)
+ {
+ 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+ 	struct ath12k_vif *ahvif = ath12k_vif_to_ahvif(vif);
+ 	struct ieee80211_link_sta *link_sta;
+ 	struct ieee80211_bss_conf *bss_conf;
+ 	struct ath12k_sta *ahsta;
++	u8 link = u32_get_bits(control_flags, IEEE80211_TX_CTRL_MLO_LINK);
+ 
+ 	/* Use the link id passed or the default vif link */
+ 	if (!sta) {
+@@ -9711,7 +9732,10 @@
+ 	 */
+ 	if (info_flags & IEEE80211_TX_CTL_HW_80211_ENCAP ||
+ 	    ieee80211_is_data(hdr->frame_control))
+-		return READ_ONCE(ahsta->primary_link_id);
++		return ath12k_mac_mlo_data_link(ahsta, link,
++			control_flags & IEEE80211_TX_CTRL_PORT_CTRL_PROTO ||
++			skb->protocol == cpu_to_be16(ETH_P_PAE) ||
++			skb->protocol == cpu_to_be16(ETH_P_PREAUTH));
+ 
+ 	/* 802.11 frame cases */
+ 	if (link == IEEE80211_LINK_UNSPECIFIED)
+--- a/drivers/net/wireless/ath/ath12k/mac.h
++++ b/drivers/net/wireless/ath/ath12k/mac.h
+@@ -340,7 +340,7 @@
+ 			       struct sk_buff *skb,
+ 			       bool is_prb_rsp);
+ u8 ath12k_mac_get_tx_link(struct ieee80211_sta *sta, struct ieee80211_vif *vif,
+-			  u8 link, struct sk_buff *skb, u32 info_flags);
++			  struct sk_buff *skb, u32 info_flags, u32 control_flags);
+ 
+ void ath12k_mlo_mcast_update_tx_link_address(struct ieee80211_vif *vif,
+ 					     u8 link_id, struct sk_buff *skb,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -1031,6 +1031,7 @@
+ 	struct ath12k_link_vif *tmp_arvif;
+ 	struct ath12k_sta *ahsta = NULL;
+ 	u32 info_flags = info->flags;
++	u32 control_flags = info->control.flags;
+ 	struct sk_buff *msdu_copied;
+ 	struct ath12k *ar, *tmp_ar;
+ 	struct ath12k_pdev_dp *dp_pdev, *tmp_dp_pdev;
+@@ -1050,7 +1051,7 @@
+ 		return;
+ 	}
+ 
+-	link_id = u32_get_bits(info->control.flags, IEEE80211_TX_CTRL_MLO_LINK);
++	/* The driver_data union overlaps mac80211 control information. */
+ 	memset(skb_cb, 0, sizeof(*skb_cb));
+ 	skb_cb->vif = vif;
+ 
+@@ -1061,7 +1062,8 @@
+ 
+ 	/* handle only for MLO case, use deflink for non MLO case */
+ 	if (ieee80211_vif_is_mld(vif)) {
+-		link_id = ath12k_mac_get_tx_link(sta, vif, link_id, skb, info_flags);
++		link_id = ath12k_mac_get_tx_link(sta, vif, skb, info_flags,
++						 control_flags);
+ 		if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS) {
+ 			ieee80211_free_txskb(hw, skb);
+ 			return;
