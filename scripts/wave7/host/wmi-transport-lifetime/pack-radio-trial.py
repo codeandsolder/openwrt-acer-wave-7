@@ -31,10 +31,10 @@ FW_VERSION = "WLAN.WBE.1.4-01734-QCAHKSWPL_SILICONZ-1.162738.2.173996.1"
 MODULES = {
     "ath12k.ko": (
         "16e9003a442e518d1dc22b40094e77c1f23bd7e7dfa204b53dc8b105f99265e9",
-        "477ea1d123a13791fd204958a9be4fd62f7d471f8f849810bb2faed473e5d015"),
+        "1d0190e985c7b14d22dfff5345efc63a342a06b3e39f7aa038615b52a4daf5b8"),
     "ath12k_wifi7.ko": (
         "aab8385e320f61701241d605182dc72069d7051a061cf9be144b1da6fcf038bd",
-        "edd5f3d02d52f21b63e11cc7e4c65f386ccf662753d80fccdada81135293be97"),
+        "29cfd2fc2c4110baf17a79d643459026637d2e414c9f64473d7389344165c7e3"),
 }
 WMI_COMMIT = "d86c0f1c3adce6b55fef3dad229bbb7028554e80"
 PRIMARY_COMMIT = "2819d40df8efedf4a740ad4ef4b0025d0fa20925"
@@ -234,7 +234,7 @@ def main():
                 "firmware":radio_manifest,"module_sha256":{k:v[1] for k,v in MODULES.items()},
                 "delta":delta,"roundtrip_identical":True}
         a.out.mkdir(mode=0o700)
-        filename="wave7-"+"netgear-primary-umac"+"-dhcp-guard8-sysupgrade.bin"
+        filename="wave7-"+"netgear-primary-control-port"+"-dhcp-guard8-sysupgrade.bin"
         shutil.move(output,a.out/filename)
         (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (a.out/"radio.sha256").write_text("".join(f"{v}  {k}\n" for k,v in radio_manifest.items()))
