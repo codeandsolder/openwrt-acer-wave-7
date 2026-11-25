@@ -38,7 +38,7 @@ if (( rx_data )); then
     echo 1024 > "$inst/buffer_size_kb"
     # Peer descriptors, accepted unicast data, and all peer TX statuses.
     # Capture errors and unresolved translated frames as well as valid peers.
-    echo 'sta == 1 || result != 0 || encap == 1' > "$inst/events/mt7925_lab/mt7925_lab_rxdesc/filter"
+    echo 'sta == 1 || result != 0 || encap == 1 || resolved_wcid == 65535' > "$inst/events/mt7925_lab/mt7925_lab_rxdesc/filter"
     echo 'data == 1 && u2m == 1' > "$inst/events/mt7925_lab/mt7925_lab_rx_frame/filter"
 else
     echo 256 > "$inst/buffer_size_kb"
