@@ -49,16 +49,37 @@ physical_peer(){
 stock(){
     ssh -F /home/jan/.ssh/config -n -o BatchMode=yes -o ConnectTimeout=3 -o ConnectionAttempts=1 wave7 "$@"
 }
-# After vendor->native upgrade, Dropbear can generate a fresh host key.
-# Pin only a unique ED25519 key on the directly connected, MAC-checked lab.
+# Bootstrap using the attestor's SSH KEX on a verified physical path.
+# Both paths are still required for preflight and acceptance.
 pin_native(){
-    local scan
-    physical_peer || return 1
-    scan=$(ssh-keyscan -T 2 -t ed25519 "$router" 2>/dev/null) || return 1
-    [[ $(wc -l <<< "$scan") == 1 && $scan == "$router ssh-ed25519 "* ]] || return 1
-    printf '%s\n' "$scan" > "$known.new"
-    ssh-keygen -lf "$known.new" >> "$out/host-key-fingerprints.txt" || return 1
-    mv "$known.new" "$known"
+    local nic source result wanted pair
+    wanted=$rev
+    [[ ${restoring:-0} != 1 ]] || wanted=$rollback_rev
+    for pair in "enp4s0f4u2u2u4:192.168.76.250" "$direct:$direct_ip"; do
+        nic=${pair%%:*}
+        source=${pair#*:}
+        [[ $(cat "/sys/class/net/$nic/carrier" 2>/dev/null) == 1 ]] || continue
+        ping -I "$source" -c 1 -W 1 "$router" >/dev/null 2>&1 || continue
+        ip neigh show "$router" dev "$nic" | grep -Fqi "lladdr $mac " || continue
+        rm -f "$known.new"
+        result=$(ssh -n -T -i "$key" -o "BindInterface=$nic" -o "BindAddress=$source" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 \
+            -o ConnectionAttempts=1 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=accept-new \
+            -o "UserKnownHostsFile=$known.new" "root@$router" \
+            'uname -r; cat /rom/etc/openwrt_version; cat /sys/class/net/br-lan/address' \
+            2>>"$out/pin.log") || continue
+        [[ $result == "$(printf '6.18.60\n%s\n%s' "$wanted" "$mac")" ]] || continue
+        [[ -s $known.new ]] || continue
+        ssh-keygen -lf "$known.new" >> "$out/host-key-fingerprints.txt" || continue
+        mv "$known.new" "$known"
+        iface=$nic
+        ip=$source
+        log "NATIVE_PIN path=$iface source=$ip"
+        return 0
+    done
+    rm -f "$known.new"
+    return 1
 }
 remote(){
     ssh -n -T -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip"         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4         -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known"         "root@$router" "$@"
