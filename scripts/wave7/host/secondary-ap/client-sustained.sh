@@ -682,18 +682,25 @@ if (( early_only )); then
             for mode in uplink downlink bidirectional; do
                 load_link > "$out/load-$mode-before.txt" || exit 3
                 ip -4 route get 192.168.76.2 from "$v4" oif "$iface" >> "$out/load-$mode-before.txt" || exit 3
-                args=()
-                case $mode in
-                    downlink) args=(-R) ;;
-                    bidirectional) args=(--bidir) ;;
-                esac
-                probe_start "load-$mode-latency-v4" 80 "$v4" 192.168.76.2 -4
-                probe_start "load-$mode-latency-v6" 80 "$v6" fd76:7::2 -6
-                timeout --signal=TERM --kill-after=2s 30s iperf3 -4 -c 192.168.76.2 \
-                    -B "$v4" --bind-dev "$iface" -p 52231 -P 4 -t 15 -O 2 \
-                    --connect-timeout 4000 -J "${args[@]}" > "$out/load-$mode.json.txt" \
-                    2>"$out/load-$mode-errors.txt" &
+                [[ -z $(ss -H -ltn 'sport = :52231') ]] || exit 3
+                timeout --signal=TERM --kill-after=2s 45s iperf3 -s -1 -4 \
+                    -B "$v4" --bind-dev "$iface" -p 52231 --server-max-duration 25 -J \
+                    > "$out/load-$mode.server.json.txt" 2>"$out/load-$mode-errors.txt" &
                 load_pid=$!
+                ready=0
+                for _ in {1..40}; do
+                    kill -0 "$load_pid" 2>/dev/null || exit 3
+                    if ss -H -ltn 'sport = :52231' | awk -v address="$v4" -v iface="$iface" '$4 == address ":52231" || $4 == address "%" iface ":52231" { found=1 } END { exit !found }'; then
+                        ready=1
+                        break
+                    fi
+                    sleep .25
+                done
+                (( ready )) || exit 3
+                ss -H -ltn 'sport = :52231' > "$out/load-$mode-listener.txt"
+                probe_start "load-$mode-latency-v4" 100 "$v4" 192.168.76.2 -4
+                probe_start "load-$mode-latency-v6" 100 "$v6" fd76:7::2 -6
+                printf 'LOAD_READY mode=%s address=%s\n' "$mode" "$v4"
                 load_rc=0
                 wait "$load_pid" || load_rc=$?
                 load_pid=''
