@@ -142,6 +142,18 @@ def main():
             (t/manifest).write_text(cmd("git","-C",repo,"show","HEAD:scripts/wave7/"+manifest))
             cmd("sha256sum","-c","--status",t/manifest,cwd=root/RADIO)
         allow=set(IDENTITIES)
+        # 15_odhcpd commits these missing defaults on a fresh overlay.
+        # Supply them in ROM so the existing exact policy gate remains valid.
+        dhcp = root / "etc/config/dhcp"
+        old = dhcp.read_text()
+        anchor = "config odhcpd 'odhcpd'\n  option maindhcp '0'\n"
+        check(old.count(anchor) == 1, "unexpected odhcpd profile")
+        check("option piodir" not in old and "option hostsdir" not in old,
+              "unexpected preexisting odhcpd migration defaults")
+        dhcp.write_text(old.replace(anchor, anchor +
+            "  option piodir '/tmp/odhcpd-piodir'\n"
+            "  option hostsdir '/tmp/hosts'\n"))
+        allow.add("etc/config/dhcp")
         for name,(before,after) in MODULES.items():
             p=root/MODDIR/name
             check(sha(p)==before,f"parent module {name}")
