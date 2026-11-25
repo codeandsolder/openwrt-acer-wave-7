@@ -212,22 +212,32 @@ for band in "${bands[@]}"; do
     grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" || fail 'client control trace not armed'
     if [[ $wired_capture != none ]]; then
         # Header summaries only, no payload or promiscuous capture.
-        # The NDP profile identifies solicitations reaching the Asus RA
-        # server and advertisements actually leaving its isolated NIC.
-        case $wired_capture in
-            icmp) filter='icmp and host 192.168.76.2 and not host 192.168.76.1' ;;
-            ndp) filter='icmp6 and (ip6[40] == 133 or ip6[40] == 134)' ;;
-        esac
-        timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -e -s 96 \
-            -i enp4s0f4u2u4 "$filter" \
-            > "$prefix.wired-$wired_capture.txt" 2> "$prefix.wired-$wired_capture-status.txt" &
+        # The NDP profile uses the host's existing Wireshark capture-group
+        # access; decode only the six explicitly selected metadata fields.
+        if [[ $wired_capture == ndp ]]; then
+            (
+                dumpcap -i enp4s0f4u2u4 -p -s 96 \
+                    -f 'icmp6 and (ip6[40] == 133 or ip6[40] == 134)' \
+                    -a duration:90 -w - 2>"$prefix.wired-ndp-status.txt" |
+                    tshark -n -l -r - -T fields \
+                        -e frame.time_epoch -e eth.src -e eth.dst \
+                        -e ipv6.src -e ipv6.dst -e icmpv6.type \
+                        >"$prefix.wired-ndp.txt" 2>"$prefix.wired-ndp-decode.txt"
+            ) &
+            capture_ready='^File: -$'
+        else
+            timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96 \
+                -i enp4s0f4u2u4 'icmp and host 192.168.76.2 and not host 192.168.76.1' \
+                > "$prefix.wired-icmp.txt" 2> "$prefix.wired-icmp-status.txt" &
+            capture_ready='listening on enp4s0f4u2u4'
+        fi
         wired_capture_pid=$!
         for _ in {1..40}; do
             kill -0 "$wired_capture_pid" 2>/dev/null || fail 'wired capture exited'
-            rg -q 'listening on enp4s0f4u2u4' "$prefix.wired-$wired_capture-status.txt" && break
+            rg -q "$capture_ready" "$prefix.wired-$wired_capture-status.txt" && break
             sleep .25
         done
-        rg -q 'listening on enp4s0f4u2u4' "$prefix.wired-$wired_capture-status.txt" || fail 'wired capture not armed'
+        rg -q "$capture_ready" "$prefix.wired-$wired_capture-status.txt" || fail 'wired capture not armed'
     fi
     if (( ip6_observe )); then
         wyse "bash $client/client-ip6-observe.sh $tag $client_boot 90" > "$prefix.client-ip6.txt" 2>&1 &
@@ -263,8 +273,13 @@ for band in "${bands[@]}"; do
         capture_rc=0
         wait "$wired_capture_pid" || capture_rc=$?
         wired_capture_pid=''
-        if [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
-           ! rg -qx '0 packets dropped by kernel' "$prefix.wired-$wired_capture-status.txt"; then
+        if [[ $wired_capture == ndp ]]; then
+            if [[ $capture_rc != 0 ]] ||
+               ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt"; then
+                cases_failed=1
+            fi
+        elif [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
+             ! rg -qx '0 packets dropped by kernel' "$prefix.wired-icmp-status.txt"; then
             cases_failed=1
         fi
     fi
