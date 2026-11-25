@@ -38,7 +38,7 @@ echo 0 > "$inst/tracing_on"
 echo mono > "$inst/trace_clock"
 echo 512 > "$inst/buffer_size_kb"
 echo "$functions" > "$inst/set_ftrace_filter"
-printf 'function\n' > "$inst/current_tracer"
+echo function > "$inst/current_tracer"
 for ev in $events; do
     echo 1 > "$inst/events/$ev/enable"
 done
