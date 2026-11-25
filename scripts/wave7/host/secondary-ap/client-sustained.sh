@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -83,6 +83,7 @@ upstream_stack_variant=''
 early_only=0
 early_tap=0
 early_dual=0
+early_soak=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -101,8 +102,13 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*)
-        if [[ $2 == --early-dual-upstream-* ]]; then
+    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*|--early-soak-upstream-*)
+        if [[ $2 == --early-soak-upstream-* ]]; then
+            early_only=1
+            early_dual=1
+            early_soak=1
+            upstream_stack_variant=${2#--early-soak-}
+        elif [[ $2 == --early-dual-upstream-* ]]; then
             early_only=1
             early_dual=1
             upstream_stack_variant=${2#--early-dual-}
@@ -597,16 +603,40 @@ if (( early_only )); then
     fi
     # This shortened diagnostic is not a production acceptance PASS.
     short_failed=0
+    hold_count=440
+    if (( early_soak )); then hold_count=2400; fi
     for target in 192.168.76.1 192.168.76.2; do
-        probe_start "short-hold-${target##*.}" 440 "$v4" "$target" -4
+        probe_start "short-hold-${target##*.}" "$hold_count" "$v4" "$target" -4
     done
     if (( early_dual )); then
         [[ -n $v6 ]] || exit 3
-        probe_start short-hold-v6 440 "$v6" fd76:7::2 -6
+        probe_start short-hold-v6 "$hold_count" "$v6" fd76:7::2 -6
+    fi
+    if (( early_soak )); then
+        # All probes run concurrently. Independently attest the active
+        # and valid MLO links throughout the 120-second offered hold.
+        (
+            path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+            for ((i=0;i<24;i++)); do
+                active=$(rootcmd cat "$path/active_links")
+                valid=$(rootcmd cat "$path/valid_links")
+                dormant=$(rootcmd cat "$path/dormant_links")
+                printf 'sample=%d epoch=%s active=%s valid=%s dormant=%s\n' \
+                    "$i" "$(date +%s.%N)" "$active" "$valid" "$dormant"
+                [[ $active == 0x3 && $valid == 0x3 ]] || exit 1
+                if (( i < 23 )); then sleep 5; fi
+            done
+        ) > "$out/soak-link-masks.txt" 2>&1 &
+        sample_pid=$!
     fi
     for index in "${!pings[@]}"; do
         probe_wait_one "$index" || short_failed=1
     done
+    if (( early_soak )); then
+        wait "$sample_pid" || short_failed=1
+        sample_pid=''
+        [[ $(wc -l < "$out/soak-link-masks.txt") == 24 ]] || short_failed=1
+    fi
     printf 'short_hold_all_replies=%s\n' "$((1 - short_failed))" \
         > "$out/short-hold-result.txt"
     {
