@@ -12,7 +12,10 @@ inst="$root/instances/wave7_primary_$tag"
 [ ! -e "$inst" ]
 functions='ath12k_dp_peer_setup
 ath12k_wmi_send_peer_assoc_cmd
-ath12k_mac_get_tx_link'
+ath12k_mac_get_tx_link
+ath12k_dp_rx_deliver_msdu
+ath12k_wifi7_dp_rx_set_link_id_qcn9274
+ieee80211_rx_napi'
 events='cfg80211/rdev_tx_control_port
 cfg80211/cfg80211_rx_control_port
 cfg80211/cfg80211_control_port_tx_status
