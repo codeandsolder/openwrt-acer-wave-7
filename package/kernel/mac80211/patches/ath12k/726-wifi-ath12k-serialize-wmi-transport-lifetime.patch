@@ -1,0 +1,255 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: serialize WMI transport lifetime across recovery
+
+Prevent asynchronous WMI requests from entering HTC while CE/SRNG
+resources are being rebuilt. Reject old credit waiters across restart
+and admit only the core initialization thread before publication.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.h b/drivers/net/wireless/ath/ath12k/wmi.h
+--- a/drivers/net/wireless/ath/ath12k/wmi.h
++++ b/drivers/net/wireless/ath/ath12k/wmi.h
+@@ -5383,6 +5383,11 @@
+ 	struct completion unified_ready;
+ 	DECLARE_BITMAP(svc_map, WMI_MAX_EXT2_SERVICE);
+ 	wait_queue_head_t tx_credits_wq;
++	/* Protect endpoint publication and each in-flight HTC send. */
++	spinlock_t tx_lock;
++	u64 tx_generation;
++	struct task_struct *tx_bootstrap;
++	bool tx_ready;
+ 	u32 num_mem_chunks;
+ 	u32 rx_decap_mode;
+ 	struct ath12k_wmi_host_mem_chunk_arg mem_chunks[WMI_MAX_MEM_REQS];
+@@ -6503,6 +6508,9 @@
+ 	s8  non_srg_th;
+ };
+ 
++void ath12k_wmi_tx_close(struct ath12k_base *ab);
++int ath12k_wmi_tx_start(struct ath12k_base *ab);
++int ath12k_wmi_tx_publish(struct ath12k_base *ab);
+ int ath12k_wmi_cmd_send(struct ath12k_wmi_pdev *wmi, struct sk_buff *skb,
+ 			u32 cmd_id);
+ struct sk_buff *ath12k_wmi_alloc_skb(struct ath12k_wmi_base *wmi_sc, u32 len);
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.c b/drivers/net/wireless/ath/ath12k/wmi.c
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -401,19 +401,88 @@
+ 	return ret;
+ }
+ 
++/* Closing the gate drains the bounded HTC submission critical section,
++ * not the potentially sleeping wait for credits. Generation changes prevent
++ * a waiter from sending an old command on the replacement endpoint.
++ */
++void ath12k_wmi_tx_close(struct ath12k_base *ab)
++{
++	struct ath12k_wmi_base *wmi_ab = &ab->wmi_ab;
++
++	spin_lock_bh(&wmi_ab->tx_lock);
++	wmi_ab->tx_ready = false;
++	wmi_ab->tx_bootstrap = NULL;
++	wmi_ab->tx_generation++;
++	spin_unlock_bh(&wmi_ab->tx_lock);
++	wake_up(&wmi_ab->tx_credits_wq);
++}
++
++int ath12k_wmi_tx_start(struct ath12k_base *ab)
++{
++	struct ath12k_wmi_base *wmi_ab = &ab->wmi_ab;
++	int ret = 0;
++
++	lockdep_assert_held(&ab->core_lock);
++	spin_lock_bh(&wmi_ab->tx_lock);
++	if (test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags)) {
++		ret = -ESHUTDOWN;
++	} else if (wmi_ab->tx_ready || wmi_ab->tx_bootstrap) {
++		ret = -EBUSY;
++	} else {
++		wmi_ab->tx_generation++;
++		wmi_ab->tx_bootstrap = current;
++	}
++	spin_unlock_bh(&wmi_ab->tx_lock);
++
++	return ret;
++}
++
++int ath12k_wmi_tx_publish(struct ath12k_base *ab)
++{
++	struct ath12k_wmi_base *wmi_ab = &ab->wmi_ab;
++	int ret = 0;
++
++	lockdep_assert_held(&ab->core_lock);
++	spin_lock_bh(&wmi_ab->tx_lock);
++	if (wmi_ab->tx_bootstrap != current ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags)) {
++		ret = -ESHUTDOWN;
++	} else {
++		wmi_ab->tx_bootstrap = NULL;
++		wmi_ab->tx_ready = true;
++	}
++	spin_unlock_bh(&wmi_ab->tx_lock);
++
++	return ret;
++}
++
+ int ath12k_wmi_cmd_send(struct ath12k_wmi_pdev *wmi, struct sk_buff *skb,
+ 			u32 cmd_id)
+ {
+ 	struct ath12k_wmi_base *wmi_ab = wmi->wmi_ab;
++	u64 generation;
+ 	int ret = -EOPNOTSUPP;
+ 
+ 	might_sleep();
+ 
++	spin_lock_bh(&wmi_ab->tx_lock);
++	if ((!wmi_ab->tx_ready && wmi_ab->tx_bootstrap != current) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &wmi_ab->ab->dev_flags)) {
++		spin_unlock_bh(&wmi_ab->tx_lock);
++		return -ESHUTDOWN;
++	}
++	generation = wmi_ab->tx_generation;
++	spin_unlock_bh(&wmi_ab->tx_lock);
++
+ 	wait_event_timeout(wmi_ab->tx_credits_wq, ({
+-		ret = ath12k_wmi_cmd_send_nowait(wmi, skb, cmd_id);
+-
+-		if (ret && test_bit(ATH12K_FLAG_CRASH_FLUSH, &wmi_ab->ab->dev_flags))
++		spin_lock_bh(&wmi_ab->tx_lock);
++		if (generation != wmi_ab->tx_generation ||
++		    (!wmi_ab->tx_ready && wmi_ab->tx_bootstrap != current) ||
++		    test_bit(ATH12K_FLAG_CRASH_FLUSH, &wmi_ab->ab->dev_flags))
+ 			ret = -ESHUTDOWN;
++		else
++			ret = ath12k_wmi_cmd_send_nowait(wmi, skb, cmd_id);
++		spin_unlock_bh(&wmi_ab->tx_lock);
+ 
+ 		(ret != -EAGAIN);
+ 	}), WMI_SEND_TIMEOUT_HZ);
+@@ -10659,13 +10728,17 @@
+ {
+ 	u32 i;
+ 	u8 wmi_ep_count;
++	int ret;
+ 
+ 	wmi_ep_count = ab->htc.wmi_ep_count;
+-	if (wmi_ep_count > ab->hw_params->max_radios)
+-		return -1;
+-
+-	for (i = 0; i < wmi_ep_count; i++)
+-		ath12k_connect_pdev_htc_service(ab, i);
++	if (!wmi_ep_count || wmi_ep_count > ab->hw_params->max_radios)
++		return -EINVAL;
++
++	for (i = 0; i < wmi_ep_count; i++) {
++		ret = ath12k_connect_pdev_htc_service(ab, i);
++		if (ret)
++			return ret;
++	}
+ 
+ 	return 0;
+ }
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -181,6 +181,7 @@
+ 	if (ret <= 0)
+ 		return ret;
+ 
++	ath12k_wmi_tx_close(ab);
+ 	ath12k_acpi_stop(ab);
+ 
+ 	ath12k_hif_irq_disable(ab);
+@@ -725,6 +726,7 @@
+ 
+ static void ath12k_core_stop(struct ath12k_base *ab)
+ {
++	ath12k_wmi_tx_close(ab);
+ 	ath12k_link_sta_rhash_tbl_destroy(ab);
+ 
+ 	ath12k_core_to_group_ref_put(ab);
+@@ -975,6 +977,10 @@
+ 		goto err_hif_stop;
+ 	}
+ 
++	ret = ath12k_wmi_tx_start(ab);
++	if (ret)
++		goto err_hif_stop;
++
+ 	ret = ath12k_wmi_wait_for_service_ready(ab);
+ 	if (ret) {
+ 		ath12k_err(ab, "failed to receive wmi service ready event: %d\n",
+@@ -1021,20 +1027,27 @@
+ 
+ 	ath12k_acpi_set_dsm_func(ab);
+ 
++	ret = ath12k_link_sta_rhash_tbl_init(ab);
++	if (ret) {
++		ath12k_warn(ab, "failed to init peer addr rhash table %d\n", ret);
++		goto err_reo_cleanup;
++	}
++
++	ret = ath12k_wmi_tx_publish(ab);
++	if (ret) {
++		ath12k_link_sta_rhash_tbl_destroy(ab);
++		goto err_reo_cleanup;
++	}
++
+ 	/* Indicate the core start in the appropriate group */
+ 	ath12k_core_to_group_ref_get(ab);
+-
+-	ret = ath12k_link_sta_rhash_tbl_init(ab);
+-	if (ret) {
+-		ath12k_warn(ab, "failed to init peer addr rhash table %d\n", ret);
+-		goto err_reo_cleanup;
+-	}
+ 
+ 	return 0;
+ 
+ err_reo_cleanup:
+ 	ath12k_dp_rx_pdev_reo_cleanup(ab);
+ err_hif_stop:
++	ath12k_wmi_tx_close(ab);
+ 	ath12k_hif_stop(ab);
+ err_wmi_detach:
+ 	ath12k_wmi_detach(ab);
+@@ -1446,6 +1459,7 @@
+ {
+ 	int ret, total_vdev;
+ 
++	ath12k_wmi_tx_close(ab);
+ 	mutex_lock(&ab->core_lock);
+ 	ath12k_link_sta_rhash_tbl_destroy(ab);
+ 	ath12k_thermal_unregister(ab);
+@@ -1785,6 +1799,7 @@
+ 
+ 	ath12k_dbg(ab, ATH12K_DBG_BOOT, "reset starting\n");
+ 
++	ath12k_wmi_tx_close(ab);
+ 	ab->is_reset = true;
+ 	atomic_set(&ab->recovery_count, 0);
+ 
+@@ -2385,6 +2400,7 @@
+ 
+ 	init_waitqueue_head(&ab->peer_mapping_wq);
+ 	init_waitqueue_head(&ab->wmi_ab.tx_credits_wq);
++	spin_lock_init(&ab->wmi_ab.tx_lock);
+ 	INIT_WORK(&ab->restart_work, ath12k_core_restart);
+ 	INIT_WORK(&ab->reset_work, ath12k_core_reset);
+ 	INIT_WORK(&ab->rfkill_work, ath12k_rfkill_work);
+diff --git a/drivers/net/wireless/ath/ath12k/qmi.c b/drivers/net/wireless/ath/ath12k/qmi.c
+--- a/drivers/net/wireless/ath/ath12k/qmi.c
++++ b/drivers/net/wireless/ath/ath12k/qmi.c
+@@ -4689,8 +4689,9 @@
+ 				set_bit(ATH12K_FLAG_QMI_FAIL, &ab->dev_flags);
+ 			break;
+ 		case ATH12K_QMI_EVENT_SERVER_EXIT:
++			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
++			ath12k_wmi_tx_close(ab);
+ 			ath12k_qdss_cleanup(ab);
+-			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
+ 			break;
+ 		case ATH12K_QMI_EVENT_REQUEST_MEM:
+ 			ret = ath12k_qmi_event_mem_request(qmi);
