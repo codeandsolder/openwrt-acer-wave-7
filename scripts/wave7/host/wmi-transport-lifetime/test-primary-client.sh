@@ -33,6 +33,7 @@ for arg in "$@"; do
         --client-roc-duration-trace) variant=upstream-prefix22-authorize-delayed-links-roc-duration-trace ;;
         --client-cnm-trace) variant=upstream-prefix22-authorize-delayed-links-cnm-trace ;;
         --client-omac-trace) variant=upstream-prefix22-authorize-delayed-links-omac-trace ;;
+        --client-starec-split-trace) variant=upstream-prefix22-authorize-delayed-links-starec-split-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -46,7 +47,8 @@ elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
         $variant == upstream-prefix22-authorize-delayed-links-roc-duration-trace ]]; then
     client_rx_arg=--rx-wtbl
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-cnm-trace ||
-        $variant == upstream-prefix22-authorize-delayed-links-omac-trace ]]; then
+        $variant == upstream-prefix22-authorize-delayed-links-omac-trace ||
+        $variant == upstream-prefix22-authorize-delayed-links-starec-split-trace ]]; then
     client_rx_arg=--rx-cnm
 fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh

@@ -1,0 +1,152 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -797,6 +797,9 @@
+ 	MT7925_LAB_WTBL_POST_MLD,
+ 	MT7925_LAB_WTBL_POST_KEYS,
+ 	MT7925_LAB_CNM_PRE_ASSOC = 10,
++	MT7925_LAB_CNM_ASSOC_WITHOUT_MLD,
++	MT7925_LAB_CNM_SECONDARY_MLD,
++	MT7925_LAB_CNM_SECONDARY_EHT_MLD,
+ };
+ 
+ /*
+@@ -3024,8 +3027,27 @@
+ 					err = -EINVAL;
+ 					goto out;
+ 				}
+-				err = mt7925_mcu_sta_update(dev, link_sta, vif, mlink,
+-							    true, MT76_STA_INFO_STATE_ASSOC);
++				err = mt7925_lab_sta_assoc_without_mld(dev, link_sta, vif, mlink);
++				if (err)
++					goto out;
++				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_CNM_ASSOC_WITHOUT_MLD);
++				err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_CNM_ASSOC_WITHOUT_MLD);
++				if (err)
++					goto out;
++
++				err = mt7925_mcu_sta_mld_update(dev, vif, sta, mlink);
++				if (err)
++					goto out;
++				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_CNM_SECONDARY_MLD);
++				err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_CNM_SECONDARY_MLD);
++				if (err)
++					goto out;
++
++				err = mt7925_lab_sta_eht_mld_update(dev, vif, sta, mlink);
++				if (err)
++					goto out;
++				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_CNM_SECONDARY_EHT_MLD);
++				err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_CNM_SECONDARY_EHT_MLD);
+ 				if (err)
+ 					goto out;
+ 			}
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -2607,7 +2607,7 @@
+ 
+ static int
+ mt7925_mcu_sta_cmd(struct mt76_phy *phy,
+-		   struct mt76_sta_cmd_info *info)
++		   struct mt76_sta_cmd_info *info, bool include_mld)
+ {
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)info->vif->drv_priv;
+ 	struct mt76_dev *dev = phy->dev;
+@@ -2649,7 +2649,7 @@
+ 		 * 0) would produce link_num == 0 with primary_id set, which the
+ 		 * firmware cannot parse, and drops the unicast data path.
+ 		 */
+-		if (info->state != MT76_STA_INFO_STATE_NONE &&
++		if (include_mld && info->state != MT76_STA_INFO_STATE_NONE &&
+ 		    ieee80211_vif_is_mld(info->vif)) {
+ 			mt7925_mcu_sta_mld_tlv(skb, info->vif,
+ 					       info->link_sta->sta, mlink);
+@@ -2675,12 +2675,13 @@
+ 	return ret;
+ }
+ 
+-int mt7925_mcu_sta_update(struct mt792x_dev *dev,
+-			  struct ieee80211_link_sta *link_sta,
+-			  struct ieee80211_vif *vif,
+-			  struct mt792x_link_sta *mlink,
+-			  bool enable,
+-			  enum mt76_sta_info_state state)
++static int
++mt7925_mcu_sta_update_internal(struct mt792x_dev *dev,
++			      struct ieee80211_link_sta *link_sta,
++			      struct ieee80211_vif *vif,
++			      struct mt792x_link_sta *mlink,
++			      bool enable, enum mt76_sta_info_state state,
++			      bool include_mld)
+ {
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 	int rssi = -ewma_rssi_read(&mvif->bss_conf.rssi);
+@@ -2698,7 +2699,51 @@
+ 	info.wcid = &mlink->wcid;
+ 	info.newly = state != MT76_STA_INFO_STATE_ASSOC;
+ 
+-	return mt7925_mcu_sta_cmd(&dev->mphy, &info);
++	return mt7925_mcu_sta_cmd(&dev->mphy, &info, include_mld);
++}
++
++int mt7925_mcu_sta_update(struct mt792x_dev *dev,
++			  struct ieee80211_link_sta *link_sta,
++			  struct ieee80211_vif *vif,
++			  struct mt792x_link_sta *mlink,
++			  bool enable,
++			  enum mt76_sta_info_state state)
++{
++	return mt7925_mcu_sta_update_internal(dev, link_sta, vif, mlink,
++					      enable, state, true);
++}
++
++int mt7925_lab_sta_assoc_without_mld(struct mt792x_dev *dev,
++				    struct ieee80211_link_sta *link_sta,
++				    struct ieee80211_vif *vif,
++				    struct mt792x_link_sta *mlink)
++{
++	return mt7925_mcu_sta_update_internal(dev, link_sta, vif, mlink,
++					      true, MT76_STA_INFO_STATE_ASSOC,
++					      false);
++}
++
++int mt7925_lab_sta_eht_mld_update(struct mt792x_dev *dev,
++				  struct ieee80211_vif *vif,
++				  struct ieee80211_sta *sta,
++				  struct mt792x_link_sta *mlink)
++{
++	struct mt792x_vif *mvif = (void *)vif->drv_priv;
++	struct mt792x_bss_conf *mconf;
++	struct sk_buff *skb;
++
++	mconf = mt792x_vif_to_link(mvif, mlink->wcid.link_id);
++	if (!mconf)
++		return -EINVAL;
++	skb = __mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mconf->mt76,
++					      &mlink->wcid,
++					      MT7925_STA_UPDATE_MAX_SIZE);
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++
++	mt7925_mcu_sta_eht_mld_tlv(skb, vif, sta);
++	return mt76_mcu_skb_send_msg(&dev->mt76, skb,
++				     MCU_UNI_CMD(STA_REC_UPDATE), true);
+ }
+ 
+ int mt7925_mcu_set_beacon_filter(struct mt792x_dev *dev,
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -316,6 +316,14 @@
+ 			  struct mt792x_link_sta *mlink,
+ 			  bool enable,
+ 			  enum mt76_sta_info_state state);
++int mt7925_lab_sta_assoc_without_mld(struct mt792x_dev *dev,
++				    struct ieee80211_link_sta *link_sta,
++				    struct ieee80211_vif *vif,
++				    struct mt792x_link_sta *mlink);
++int mt7925_lab_sta_eht_mld_update(struct mt792x_dev *dev,
++				  struct ieee80211_vif *vif,
++				  struct ieee80211_sta *sta,
++				  struct mt792x_link_sta *mlink);
+ int mt7925_mcu_sta_mld_update(struct mt792x_dev *dev,
+ 			      struct ieee80211_vif *vif,
+ 			      struct ieee80211_sta *sta,
