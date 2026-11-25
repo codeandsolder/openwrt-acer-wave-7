@@ -68,6 +68,7 @@ trace_pid=''
 sample_pid=''
 ap_trace_pid=''
 client_control_pid=''
+wired_capture_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
@@ -75,6 +76,7 @@ cleanup(){
     if [[ -n $sample_pid ]]; then wait "$sample_pid" || :; fi
     if [[ -n $ap_trace_pid ]]; then wait "$ap_trace_pid" || :; fi
     if [[ -n $client_control_pid ]]; then wait "$client_control_pid" || :; fi
+    if [[ -n $wired_capture_pid ]]; then wait "$wired_capture_pid" || :; fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -139,6 +141,15 @@ for band in "${bands[@]}"; do
         sleep .25
     done
     grep -q '^CLIENT_CONTROL_TRACE_READY ' "$prefix.client-control-trace.txt" || fail 'client control trace not armed'
+    # Only ICMP header summaries on the isolated wired lab interface.
+    timeout -s INT 90 sudo -n /usr/bin/tcpdump -p -nn -l -tt -s 96         -i enp4s0f4u2u4 'icmp and host 192.168.76.2 and not host 192.168.76.1'         > "$prefix.wired-icmp.txt" 2> "$prefix.wired-icmp-status.txt" &
+    wired_capture_pid=$!
+    for _ in {1..40}; do
+        kill -0 "$wired_capture_pid" 2>/dev/null || fail 'wired capture exited'
+        grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" && break
+        sleep .25
+    done
+    grep -q 'listening on enp4s0f4u2u4' "$prefix.wired-icmp-status.txt" || fail 'wired capture not armed'
     rc=0
     wyse "timeout 75 bash $client/client-sustained.sh $tag --early-only-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
@@ -152,6 +163,13 @@ for band in "${bands[@]}"; do
     ap_trace_pid=''
     wait "$client_control_pid" || cases_failed=1
     client_control_pid=''
+    capture_rc=0
+    wait "$wired_capture_pid" || capture_rc=$?
+    wired_capture_pid=''
+    if [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
+       ! grep -Eq '^0 packets dropped by kernel$' "$prefix.wired-icmp-status.txt"; then
+        cases_failed=1
+    fi
     wyse "tar -C $client_data -cf - $tag" > "$prefix.client.tar" 2>"$prefix.client-archive-error.txt" || :
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg' > "$prefix.ap-after.txt" 2>&1 || :
     if ! guard; then
