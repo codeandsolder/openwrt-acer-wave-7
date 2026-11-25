@@ -15,6 +15,7 @@ shift
 bands=(5 24)
 wired_capture=0
 ip6_observe=0
+dual_hold=0
 client_rx_arg=''
 for arg in "$@"; do
     case "$arg" in
@@ -22,6 +23,7 @@ for arg in "$@"; do
         --band=24) bands=(24) ;;
         --wired-capture) wired_capture=1 ;;
         --client-ip6-observe) ip6_observe=1 ;;
+        --client-dual-hold) dual_hold=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
@@ -224,8 +226,10 @@ for band in "${bands[@]}"; do
         done
         rg -q '^CLIENT_IP6_OBSERVER_READY ' "$prefix.client-ip6.txt" || fail 'IPv6 observer not armed'
     fi
+    mode=early-only
+    if (( dual_hold )); then mode=early-dual; fi
     rc=0
-    wyse "timeout 75 bash $client/client-sustained.sh $tag --early-only-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+    wyse "timeout 75 bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
     # Let the bounded independent observers complete even if a client fault
     # interrupts the association; keep the evidence before any restore.
@@ -260,8 +264,14 @@ for band in "${bands[@]}"; do
     snapshot_rx > "$prefix.rx-after.txt"
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
-    result=$(tar -xOf "$prefix.client.tar" "$tag/short-hold-result.txt" 2>/dev/null || :)
-    if [[ $rc != 0 || $result != short_hold_all_replies=1 ]]; then
+    result_file=short-hold-result.txt
+    expected=short_hold_all_replies=1
+    if (( dual_hold )); then
+        result_file=short-dual-hold-result.txt
+        expected=short_dual_hold_pass=1
+    fi
+    result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
+    if [[ $rc != 0 || $result != "$expected" ]]; then
         cases_failed=1
     fi
     printf 'CASE_COMPLETE band=%s client_rc=%s hold=%s tag=%s\n' "$band" "$rc" "$result" "$tag"
