@@ -10,6 +10,9 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 typedef int spinlock_t;
+typedef u64 atomic64_t;
+#define atomic64_read(p) (*(p))
+#define atomic64_set(p,v) (*(p)=(v))
 #define REG_ALPHA2_LEN 2
 #define ALPHA_IS_SET 1
 #define ATH12K_FLAG_CRASH_FLUSH 0
@@ -26,6 +29,7 @@ static void (*wait_hook)(void);
 static void (*unlock_hook)(void);
 static unsigned int wake_count, sends, cases;
 static int transport_result;
+static bool reject_country;
 static bool wiphy_locked=true;
 static void spin_lock_bh(int *p) { assert(!*p); *p=1; }
 static void spin_unlock_bh(int *p) {
@@ -78,7 +82,7 @@ struct ath12k {
     int reg_country_lock;
     u8 alpha2[2];
     bool regdom_set_by_user;
-    u64 reg_country_generation;
+    atomic64_t reg_country_generation;
     int regd_update_completed;
 };
 struct wmi_set_current_country_arg { u8 alpha2[2]; };
@@ -98,6 +102,7 @@ static int ath12k_wmi_cmd_send_nowait(struct ath12k_wmi_pdev *p,struct sk_buff *
     assert(p->wmi_ab->tx_ready || p->wmi_ab->tx_bootstrap==current);
     assert(!p->wmi_ab->ab->dev_flags);
     ++sends;
+    if (reject_country) atomic64_set(&ar.reg_country_generation,0);
     return transport_result;
 }
 static int ath12k_wmi_send_set_current_country_cmd(struct ath12k *radio, struct wmi_set_current_country_arg *arg) {
@@ -124,7 +129,7 @@ static void reset_fixture(bool current_cc) {
     ar=(struct ath12k){.ab=&base,.ah=&hw,.hw={&wiphy_locked}};
     current=&caller;
     sends=0; wake_count=0; last_cmd=0;
-    transport_result=0;
+    transport_result=0; reject_country=false;
     wait_hook=NULL; unlock_hook=NULL;
 }
 static void start(void) {
@@ -211,10 +216,22 @@ static void test_automatic(bool current_cc) {
     assert(!memcmp(ar.alpha2,pl,2));
     ++cases;
 }
+static void test_rejection(bool current_cc) {
+    const u8 pl[]={'P','L'};
+    reset_fixture(current_cc); start();
+    reject_country=true;
+    assert(ath12k_reg_request_country(&ar,pl,true)==0);
+    assert(ar.reg_country_generation==0 && sends==1);
+    reject_country=false;
+    assert(ath12k_reg_request_country(&ar,pl,true)==0 && sends==2);
+    assert(ar.reg_country_generation==base.wmi_ab.tx_generation);
+    ++cases;
+}
 int main(void) {
     test_gate();
     for (int cc=0;cc<2;cc++) {
         test_automatic(cc);
+        test_rejection(cc);
         for (int ready=0;ready<2;ready++)
             for (int err=0;err<2;err++)
                 for (int reset=0;reset<2;reset++)

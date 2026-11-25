@@ -1,0 +1,154 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: close WMI on early SSR and retain rejected hints
+
+Close the gate on the earliest root SSR and PCI crash notification,
+and on SoC destruction. Publish country submission generation before
+sending so the asynchronous firmware rejection can invalidate it.
+Complete valid radio requests even when their regulatory event is dropped.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+
+diff --git a/drivers/net/wireless/ath/ath12k/core.h b/drivers/net/wireless/ath/ath12k/core.h
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -766,7 +766,7 @@
+ 	struct mutex reg_country_lock;
+ 	u8 alpha2[REG_ALPHA2_LEN];
+ 	bool regdom_set_by_user;
+-	u64 reg_country_generation;
++	atomic64_t reg_country_generation;
+ 	struct completion regd_update_completed;
+ 
+ 	struct completion fw_stats_complete;
+diff --git a/drivers/net/wireless/ath/ath12k/reg.c b/drivers/net/wireless/ath/ath12k/reg.c
+--- a/drivers/net/wireless/ath/ath12k/reg.c
++++ b/drivers/net/wireless/ath/ath12k/reg.c
+@@ -46,9 +46,13 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	if (ar->reg_country_generation == generation)
++	if (atomic64_read(&ar->reg_country_generation) == generation)
+ 		return 0;
+ 
++	/* Publish before sending: a fast firmware rejection must be able
++	 * to invalidate the submission, even before WMI send returns.
++	 */
++	atomic64_set(&ar->reg_country_generation, generation);
+ 	ar->ah->regd_updated = false;
+ 	reinit_completion(&ar->regd_update_completed);
+ 
+@@ -66,14 +70,12 @@
+ 	}
+ 
+ 	if (ret) {
++		atomic64_set(&ar->reg_country_generation, 0);
+ 		complete_all(&ar->regd_update_completed);
+-		return ret;
+ 	}
+ 
+ 	/* If recovery raced the send, the older generation forces replay. */
+-	ar->reg_country_generation = generation;
+-
+-	return 0;
++	return ret;
+ }
+ 
+ int ath12k_reg_replay_country(struct ath12k *ar)
+@@ -100,7 +102,7 @@
+ 
+ 	if (memcmp(ar->alpha2, alpha2, REG_ALPHA2_LEN)) {
+ 		memcpy(ar->alpha2, alpha2, REG_ALPHA2_LEN);
+-		ar->reg_country_generation = 0;
++		atomic64_set(&ar->reg_country_generation, 0);
+ 	}
+ 
+ 	return ath12k_reg_apply_country(ar);
+diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -15114,6 +15114,7 @@
+ 	init_completion(&ar->completed_11d_scan);
+ 	init_completion(&ar->regd_update_completed);
+ 	mutex_init(&ar->reg_country_lock);
++	atomic64_set(&ar->reg_country_generation, 0);
+ 	init_completion(&ar->thermal.wmi_sync);
+ 	mutex_init(&ar->thermal.lock);
+ 
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.c b/drivers/net/wireless/ath/ath12k/wmi.c
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -7016,6 +7016,7 @@
+ 	struct ath12k_reg_info *reg_info;
+ 	struct ath12k *ar = NULL;
+ 	u8 pdev_idx = 255;
++	bool rejected = false;
+ 	int ret;
+ 
+ 	reg_info = kzalloc_obj(*reg_info, GFP_ATOMIC);
+@@ -7029,6 +7030,9 @@
+ 		ath12k_warn(ab, "failed to extract regulatory info from received event\n");
+ 		goto mem_free;
+ 	}
++
++	if (reg_info->phy_id < ab->num_radios)
++		pdev_idx = reg_info->phy_id;
+ 
+ 	ret = ath12k_reg_validate_reg_info(ab, reg_info);
+ 	if (ret == ATH12K_REG_STATUS_FALLBACK) {
+@@ -7041,6 +7045,7 @@
+ 		/* reg info is valid but we will not store it and
+ 		 * not going to create new regd for it
+ 		 */
++		rejected = reg_info->status_code != REG_SET_CC_STATUS_PASS;
+ 		ret = ATH12K_REG_STATUS_VALID;
+ 		goto mem_free;
+ 	}
+@@ -7093,8 +7098,11 @@
+ 	 * This boot-time update is handled in ath12k_mac_hw_register()
+ 	 * before registering the hardware.
+ 	 */
+-	if (ar)
++	if (ar) {
++		if (rejected)
++			atomic64_set(&ar->reg_country_generation, 0);
+ 		complete_all(&ar->regd_update_completed);
++	}
+ 
+ 	return ret;
+ }
+diff --git a/drivers/net/wireless/ath/ath12k/ahb.c b/drivers/net/wireless/ath/ath12k/ahb.c
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -736,6 +736,8 @@
+ 	const struct qcom_ssr_notify_data *ssr = data;
+ 
+ 	if (event == QCOM_SSR_BEFORE_SHUTDOWN && ssr->crashed) {
++		set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
++		ath12k_wmi_tx_close(ab);
+ 		WRITE_ONCE(ab_ahb->root_ssr_crashed, true);
+ 		return NOTIFY_OK;
+ 	}
+diff --git a/drivers/net/wireless/ath/ath12k/mhi.c b/drivers/net/wireless/ath/ath12k/mhi.c
+--- a/drivers/net/wireless/ath/ath12k/mhi.c
++++ b/drivers/net/wireless/ath/ath12k/mhi.c
+@@ -160,6 +160,7 @@
+ 
+ 		if (!(test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags))) {
+ 			set_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags);
++			ath12k_wmi_tx_close(ab);
+ 			set_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags);
+ 			queue_work(ab->workqueue_aux, &ab->reset_work);
+ 		}
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -894,6 +894,7 @@
+ 
+ static void ath12k_core_soc_destroy(struct ath12k_base *ab)
+ {
++	ath12k_wmi_tx_close(ab);
+ 	ath12k_hif_power_down(ab, false);
+ 	ath12k_reg_free(ab);
+ 	ath12k_debugfs_soc_destroy(ab);
