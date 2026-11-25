@@ -19,7 +19,8 @@ if [[ $# == 2 ]]; then
     esac
 fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
-[[ -r $helper ]] || fail 'missing AP trace helper'
+delta_helper=$(dirname "$helper")/rx-counter-delta.py
+[[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'
 run=$1
 [[ $(cat "$run/status") == SOAK_PASS ]] || fail 'trial not soaked'
 exec 8<>"$lab/.lab-control.lock"
@@ -48,6 +49,15 @@ guard(){
     [[ $s == "$(printf '%s\n%s\n0\nrunning\nrunning\nrunning\n0' "$boot" "$rev")" ]] || return 1
     ping -I 192.168.76.2 -c 1 -W 1 192.168.76.1 >/dev/null &&
     ping -I 192.168.76.250 -c 1 -W 1 192.168.76.1 >/dev/null
+}
+snapshot_rx(){
+    remote 'set -eu
+        cat /proc/sys/kernel/random/boot_id
+        cat /proc/uptime
+        for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do
+            echo "===$f"
+            cat "$f"
+        done'
 }
 guard || fail 'router no longer healthy'
 systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream'
@@ -86,6 +96,7 @@ for band in "${bands[@]}"; do
     tag=0498-$(date +%Y%m%d-%H%M%S)
     prefix="$out/band-$band"
     printf '%s\n' "$tag" > "$prefix.tag"
+    snapshot_rx > "$prefix.rx-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot 90" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
     for _ in {1..80}; do
@@ -135,6 +146,8 @@ for band in "${bands[@]}"; do
         echo "AP_FAULT_AFTER_BAND_$band"
         exit 1
     fi
+    snapshot_rx > "$prefix.rx-after.txt"
+    uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
     result=$(tar -xOf "$prefix.client.tar" "$tag/short-hold-result.txt" 2>/dev/null || :)
     if [[ $rc != 0 || $result != short_hold_all_replies=1 ]]; then
         cases_failed=1
