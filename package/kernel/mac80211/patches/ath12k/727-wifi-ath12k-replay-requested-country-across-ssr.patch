@@ -1,0 +1,323 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: replay requested country after WMI restart
+
+Retain the latest country separately from successful command submission.
+Replay on the new transport generation for both country commands, and
+prevent queued automatic hints from overwriting the explicit selection.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+
+diff --git a/drivers/net/wireless/ath/ath12k/core.h b/drivers/net/wireless/ath/ath12k/core.h
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -762,8 +762,11 @@
+ 	u32 vdev_id_11d_scan;
+ 	struct completion completed_11d_scan;
+ 	enum ath12k_11d_state state_11d;
++	/* Serialize requested country and its WMI transport generation. */
++	struct mutex reg_country_lock;
+ 	u8 alpha2[REG_ALPHA2_LEN];
+ 	bool regdom_set_by_user;
++	u64 reg_country_generation;
+ 	struct completion regd_update_completed;
+ 
+ 	struct completion fw_stats_complete;
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.h b/drivers/net/wireless/ath/ath12k/wmi.h
+--- a/drivers/net/wireless/ath/ath12k/wmi.h
++++ b/drivers/net/wireless/ath/ath12k/wmi.h
+@@ -6511,6 +6511,7 @@
+ void ath12k_wmi_tx_close(struct ath12k_base *ab);
+ int ath12k_wmi_tx_start(struct ath12k_base *ab);
+ int ath12k_wmi_tx_publish(struct ath12k_base *ab);
++int ath12k_wmi_tx_get_generation(struct ath12k_base *ab, u64 *generation);
+ int ath12k_wmi_cmd_send(struct ath12k_wmi_pdev *wmi, struct sk_buff *skb,
+ 			u32 cmd_id);
+ struct sk_buff *ath12k_wmi_alloc_skb(struct ath12k_wmi_base *wmi_sc, u32 len);
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.c b/drivers/net/wireless/ath/ath12k/wmi.c
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -451,6 +451,22 @@
+ 		wmi_ab->tx_bootstrap = NULL;
+ 		wmi_ab->tx_ready = true;
+ 	}
++	spin_unlock_bh(&wmi_ab->tx_lock);
++
++	return ret;
++}
++
++int ath12k_wmi_tx_get_generation(struct ath12k_base *ab, u64 *generation)
++{
++	struct ath12k_wmi_base *wmi_ab = &ab->wmi_ab;
++	int ret = 0;
++
++	spin_lock_bh(&wmi_ab->tx_lock);
++	if (!wmi_ab->tx_ready ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags))
++		ret = -ESHUTDOWN;
++	else
++		*generation = wmi_ab->tx_generation;
+ 	spin_unlock_bh(&wmi_ab->tx_lock);
+ 
+ 	return ret;
+diff --git a/drivers/net/wireless/ath/ath12k/reg.c b/drivers/net/wireless/ath/ath12k/reg.c
+--- a/drivers/net/wireless/ath/ath12k/reg.c
++++ b/drivers/net/wireless/ath/ath12k/reg.c
+@@ -29,27 +29,87 @@
+ 	}
+ };
+ 
+-static bool ath12k_regdom_changes(struct ieee80211_hw *hw, char *alpha2)
+-{
+-	const struct ieee80211_regdomain *regd;
+-
+-	regd = rcu_dereference_rtnl(hw->wiphy->regd);
+-	/* This can happen during wiphy registration where the previous
+-	 * user request is received before we update the regd received
+-	 * from firmware.
+-	 */
+-	if (!regd)
+-		return true;
+-
+-	return memcmp(regd->alpha2, alpha2, 2) != 0;
++/* Call with reg_country_lock held, independently of the wiphy lock.
++ * Firmware recovery invalidates the applied generation, not the request.
++ */
++static int ath12k_reg_apply_country(struct ath12k *ar)
++{
++	u64 generation;
++	int ret;
++
++	lockdep_assert_held(&ar->reg_country_lock);
++
++	if (!ar->alpha2[0] || !ar->alpha2[1])
++		return 0;
++
++	ret = ath12k_wmi_tx_get_generation(ar->ab, &generation);
++	if (ret)
++		return ret;
++
++	if (ar->reg_country_generation == generation)
++		return 0;
++
++	ar->ah->regd_updated = false;
++	reinit_completion(&ar->regd_update_completed);
++
++	if (ar->ab->hw_params->current_cc_support) {
++		struct wmi_set_current_country_arg arg = {};
++
++		memcpy(&arg.alpha2, ar->alpha2, REG_ALPHA2_LEN);
++		ret = ath12k_wmi_send_set_current_country_cmd(ar, &arg);
++	} else {
++		struct ath12k_wmi_init_country_arg arg = {};
++
++		arg.flags = ALPHA_IS_SET;
++		memcpy(&arg.cc_info.alpha2, ar->alpha2, REG_ALPHA2_LEN);
++		ret = ath12k_wmi_send_init_country_cmd(ar, &arg);
++	}
++
++	if (ret) {
++		complete_all(&ar->regd_update_completed);
++		return ret;
++	}
++
++	/* If recovery raced the send, the older generation forces replay. */
++	ar->reg_country_generation = generation;
++
++	return 0;
++}
++
++int ath12k_reg_replay_country(struct ath12k *ar)
++{
++	guard(mutex)(&ar->reg_country_lock);
++
++	return ath12k_reg_apply_country(ar);
++}
++
++int ath12k_reg_request_country(struct ath12k *ar, const u8 *alpha2,
++			       bool user)
++{
++	guard(mutex)(&ar->reg_country_lock);
++
++	/* Explicit user hints take precedence over queued 11d/boot hints. */
++	if (!user && (ar->regdom_set_by_user ||
++		      !ar->ab->hw_params->current_cc_support))
++		return 0;
++
++	if (user) {
++		lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
++		ar->regdom_set_by_user = true;
++	}
++
++	if (memcmp(ar->alpha2, alpha2, REG_ALPHA2_LEN)) {
++		memcpy(ar->alpha2, alpha2, REG_ALPHA2_LEN);
++		ar->reg_country_generation = 0;
++	}
++
++	return ath12k_reg_apply_country(ar);
+ }
+ 
+ static void
+ ath12k_reg_notifier(struct wiphy *wiphy, struct regulatory_request *request)
+ {
+ 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
+-	struct ath12k_wmi_init_country_arg arg;
+-	struct wmi_set_current_country_arg current_arg = {};
+ 	struct ath12k_hw *ah = ath12k_hw_to_ah(hw);
+ 	struct ath12k *ar = ath12k_ah_to_ar(ah, 0);
+ 	int ret, i;
+@@ -92,42 +152,18 @@
+ 		return;
+ 	}
+ 
+-	if (!ath12k_regdom_changes(hw, request->alpha2)) {
+-		ath12k_dbg(ar->ab, ATH12K_DBG_REG, "Country is already set\n");
+-		return;
+-	}
+-
+-	/* Allow fresh updates to wiphy regd */
+-	ah->regd_updated = false;
+-
+-	/* Send the reg change request to all the radios */
++	/* User hints arrive under RTNL, without the wiphy lock. Serialize
++	 * their desired-country update with MAC start/reconfiguration.
++	 */
++	wiphy_lock(wiphy);
+ 	for_each_ar(ah, ar, i) {
+-		reinit_completion(&ar->regd_update_completed);
+-
+-		if (ar->ab->hw_params->current_cc_support) {
+-			memcpy(&current_arg.alpha2, request->alpha2, 2);
+-			memcpy(&ar->alpha2, &current_arg.alpha2, 2);
+-			ret = ath12k_wmi_send_set_current_country_cmd(ar, &current_arg);
+-			if (ret)
+-				ath12k_warn(ar->ab,
+-					    "failed set current country code: %d\n", ret);
+-		} else {
+-			arg.flags = ALPHA_IS_SET;
+-			memcpy(&arg.cc_info.alpha2, request->alpha2, 2);
+-			arg.cc_info.alpha2[2] = 0;
+-
+-			ret = ath12k_wmi_send_init_country_cmd(ar, &arg);
+-			if (ret)
+-				ath12k_warn(ar->ab,
+-					    "failed set INIT Country code: %d\n", ret);
+-		}
+-
+-		wiphy_lock(wiphy);
++		ret = ath12k_reg_request_country(ar, request->alpha2, true);
++		if (ret && ret != -ESHUTDOWN)
++			ath12k_warn(ar->ab,
++				    "failed to set requested country: %d\n", ret);
+ 		ath12k_mac_11d_scan_stop(ar);
+-		wiphy_unlock(wiphy);
+-
+-		ar->regdom_set_by_user = true;
+-	}
++	}
++	wiphy_unlock(wiphy);
+ }
+ 
+ int ath12k_reg_update_chan_list(struct ath12k *ar, bool wait)
+diff --git a/drivers/net/wireless/ath/ath12k/reg.h b/drivers/net/wireless/ath/ath12k/reg.h
+--- a/drivers/net/wireless/ath/ath12k/reg.h
++++ b/drivers/net/wireless/ath/ath12k/reg.h
+@@ -101,6 +101,9 @@
+ };
+ 
+ void ath12k_reg_init(struct ieee80211_hw *hw);
++int ath12k_reg_replay_country(struct ath12k *ar);
++int ath12k_reg_request_country(struct ath12k *ar, const u8 *alpha2,
++			       bool user);
+ void ath12k_reg_free(struct ath12k_base *ab);
+ void ath12k_regd_update_work(struct work_struct *work);
+ struct ieee80211_regdomain *ath12k_reg_build_regd(struct ath12k_base *ab,
+diff --git a/drivers/net/wireless/ath/ath12k/core.c b/drivers/net/wireless/ath/ath12k/core.c
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -1645,11 +1645,7 @@
+ 		pdev = &ab->pdevs[i];
+ 		ar = pdev->ar;
+ 
+-		memcpy(&ar->alpha2, &arg.alpha2, 2);
+-
+-		reinit_completion(&ar->regd_update_completed);
+-
+-		ret = ath12k_wmi_send_set_current_country_cmd(ar, &arg);
++		ret = ath12k_reg_request_country(ar, arg.alpha2, false);
+ 		if (ret)
+ 			ath12k_warn(ar->ab,
+ 				    "pdev id %d failed set current country code: %d\n",
+diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -9884,7 +9884,9 @@
+ 	}
+ 
+ 	for_each_ar(ah, ar, i) {
+-		ret = ath12k_mac_start(ar);
++		ret = ath12k_reg_replay_country(ar);
++		if (!ret)
++			ret = ath12k_mac_start(ar);
+ 		if (ret) {
+ 			ah->state = ATH12K_HW_STATE_OFF;
+ 
+@@ -13522,7 +13524,7 @@
+ 	struct ath12k_base *ab;
+ 	struct ath12k_vif *ahvif;
+ 	struct ath12k_link_vif *arvif;
+-	int recovery_count, i;
++	int recovery_count, ret, i;
+ 
+ 	lockdep_assert_wiphy(hw->wiphy);
+ 
+@@ -13543,14 +13545,9 @@
+ 		ath12k_warn(ar->ab, "pdev %d successfully recovered\n",
+ 			    ar->pdev->pdev_id);
+ 
+-		if (ar->ab->hw_params->current_cc_support &&
+-		    ar->alpha2[0] != 0 && ar->alpha2[1] != 0) {
+-			struct wmi_set_current_country_arg arg = {};
+-
+-			memcpy(&arg.alpha2, ar->alpha2, 2);
+-			reinit_completion(&ar->regd_update_completed);
+-			ath12k_wmi_send_set_current_country_cmd(ar, &arg);
+-		}
++		ret = ath12k_reg_replay_country(ar);
++		if (ret)
++			ath12k_warn(ar->ab, "failed to replay country: %d\n", ret);
+ 
+ 		if (ab->is_reset) {
+ 			recovery_count = atomic_inc_return(&ab->recovery_count);
+@@ -15035,15 +15032,14 @@
+ 			goto err_unregister_hw;
+ 		}
+ 
+-		if (ar->ab->hw_params->current_cc_support && ab->new_alpha2[0]) {
+-			struct wmi_set_current_country_arg current_cc = {};
+-
+-			memcpy(&current_cc.alpha2, ab->new_alpha2, 2);
+-			memcpy(&ar->alpha2, ab->new_alpha2, 2);
+-
+-			reinit_completion(&ar->regd_update_completed);
+-
+-			ret = ath12k_wmi_send_set_current_country_cmd(ar, &current_cc);
++		if (ar->ab->hw_params->current_cc_support && ar->ab->new_alpha2[0]) {
++			u8 alpha2[REG_ALPHA2_LEN];
++
++			spin_lock_bh(&ar->ab->base_lock);
++			memcpy(alpha2, ar->ab->new_alpha2, REG_ALPHA2_LEN);
++			spin_unlock_bh(&ar->ab->base_lock);
++
++			ret = ath12k_reg_request_country(ar, alpha2, false);
+ 			if (ret)
+ 				ath12k_warn(ar->ab,
+ 					    "failed set cc code for mac register: %d\n",
+@@ -15117,6 +15113,7 @@
+ 	init_completion(&ar->mlo_setup_done);
+ 	init_completion(&ar->completed_11d_scan);
+ 	init_completion(&ar->regd_update_completed);
++	mutex_init(&ar->reg_country_lock);
+ 	init_completion(&ar->thermal.wmi_sync);
+ 	mutex_init(&ar->thermal.lock);
+ 
