@@ -20,13 +20,14 @@ rev=$(jq -r .revision "$base/report.json")
 [[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-77d7fa1171-ap-dhcp-guard8 ]] || fail 'trial identity'
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
-remote(){
-    ssh -nT -i /home/jan/.ssh/wave7-root-rsa \
+remote_stream(){
+    ssh -T -i /home/jan/.ssh/wave7-root-rsa \
         -o BindInterface=enp4s0f4u2u4 -o BindAddress=192.168.76.2 \
         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 \
         -o ServerAliveInterval=4 -o ServerAliveCountMax=2 \
         -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$run/known_hosts" root@192.168.76.1 "$@"
 }
+remote(){ remote_stream "$@" </dev/null; }
 wyse(){
     ssh -nT -o BatchMode=yes -o ConnectTimeout=4 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 acer \
         "ssh -nT -o BatchMode=yes -o ConnectTimeout=4 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 wyse-eth $(printf '%q' "$1")"
@@ -80,10 +81,15 @@ for band in 5 24; do
         sleep .25
     done
     grep -q '^CRASH_STREAM_READY ' "$prefix.client-trace.txt" || fail 'client trace not armed'
-    remote 'i=0; while [ "$i" -lt 360 ]; do
-        printf "%s " "$(cat /proc/uptime | cut -d" " -f1)"
+    (
+        for seq in $(seq 1 360); do
+            printf '%s\n' "$seq"
+            sleep .25
+        done
+    ) | remote_stream 'while IFS= read -r seq; do
+        printf "%s %s " "$seq" "$(cut -d" " -f1 /proc/uptime)"
         for p in 0 1 2; do printf "%s " "$(cat /sys/class/remoteproc/remoteproc$p/state)"; done
-        printf "\n"; i=$((i+1)); sleep 0.25
+        printf "\n"
     done' > "$prefix.ap-passive.txt" 2>&1 &
     sample_pid=$!
     for _ in {1..20}; do
