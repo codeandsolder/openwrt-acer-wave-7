@@ -18,7 +18,7 @@ def hold_summary(archive, bin_size=40):
     results = []
     with tarfile.open(archive) as tar:
         for member in sorted(tar.getmembers(), key=lambda x: x.name):
-            if not re.search(r"/short-hold-[12]\.txt$", member.name):
+            if not re.search(r"/short-hold-(?:[12]|v6)\.txt$", member.name):
                 continue
             with tar.extractfile(member) as src:
                 text = src.read().decode()
@@ -87,6 +87,79 @@ def trace_summary(path):
     }
 
 
+NDP_COUNTERS = ("Icmp6OutRouterSolicits", "Icmp6InRouterAdvertisements",
+                "Icmp6OutNeighborSolicits", "Icmp6InNeighborAdvertisements")
+
+
+def ndp_summary(prefix):
+    path = prefix.with_suffix(".client-ip6.txt")
+    rows = []
+    row = None
+    done = None
+    for line in path.read_text().splitlines():
+        if line.startswith("IP6_SAMPLE "):
+            if row is not None:
+                raise ValueError("incomplete IPv6 sample")
+            fields = dict(FIELDS.findall(line))
+            row = {"index": int(fields["index"]), "epoch": float(fields["epoch"]),
+                   "monotonic": float(fields["monotonic"]), "counts": {}, "usable": []}
+            if row["index"] != len(rows):
+                raise ValueError("nonconsecutive IPv6 sample")
+        elif line.startswith("IP6_SAMPLE_END "):
+            if row is None or int(dict(FIELDS.findall(line))["index"]) != row["index"]:
+                raise ValueError("invalid sample end")
+            if not set(NDP_COUNTERS).issubset(row["counts"]):
+                raise ValueError("missing IPv6 counter")
+            rows.append(row)
+            row = None
+        elif row is not None and line.startswith("IP6_COUNTER "):
+            _, key, value = line.split()
+            if key in row["counts"]:
+                raise ValueError("duplicate IPv6 counter")
+            row["counts"][key] = int(value)
+        elif row is not None and line.startswith("IP6_ADDR "):
+            fields = line.split()
+            if "global" in fields and "tentative" not in fields and "dadfailed" not in fields:
+                row["usable"].append(fields[fields.index("inet6") + 1])
+        elif line.startswith("CLIENT_IP6_OBSERVER_END "):
+            done = int(dict(FIELDS.findall(line))["samples"])
+    if row is not None or not rows or len(rows) != done:
+        raise ValueError("incomplete IPv6 observation")
+    transitions = []
+    for prev, cur in zip(rows, rows[1:]):
+        if cur["monotonic"] <= prev["monotonic"]:
+            raise ValueError("nonmonotonic IPv6 sample")
+        for key in NDP_COUNTERS:
+            delta = cur["counts"][key] - prev["counts"][key]
+            if delta < 0:
+                raise ValueError("IPv6 counter reset")
+            if delta:
+                transitions.append({"counter": key, "delta": delta,
+                                    "epoch_window": [prev["epoch"], cur["epoch"]]})
+    first_global = next(({"epoch": r["epoch"], "addresses": r["usable"]}
+                         for r in rows if r["usable"]), None)
+    result = {"samples": len(rows), "counter_transitions": transitions,
+              "counter_deltas": {k: rows[-1]["counts"][k] - rows[0]["counts"][k]
+                                 for k in NDP_COUNTERS},
+              "first_usable_global": first_global}
+    capture = prefix.with_suffix(".wired-ndp.txt")
+    if capture.exists():
+        status = prefix.with_suffix(".wired-ndp-status.txt").read_text()
+        if not re.search(r"Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 "
+                         r"\(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)", status):
+            raise ValueError("incomplete or dropped wired capture")
+        events = []
+        for line in capture.read_text().splitlines():
+            epoch, mac_src, mac_dst, src, dst, kind = line.split("\t")
+            if kind not in ("133", "134"):
+                raise ValueError("unexpected NDP type")
+            events.append({"epoch": float(epoch), "mac_src": mac_src, "mac_dst": mac_dst,
+                           "src": src, "dst": dst, "type": int(kind)})
+        result["wired_events"] = events
+        result["wired_counts"] = dict(Counter(str(e["type"]) for e in events))
+    return result
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("run", type=Path)
@@ -102,6 +175,8 @@ def main():
         "trace": trace_summary(prefix.with_suffix(".client-control-trace.txt")),
         "ap_rx_delta": json.loads(prefix.with_suffix(".rx-delta.json").read_text()),
     }
+    if prefix.with_suffix(".client-ip6.txt").exists():
+        result["router_discovery"] = ndp_summary(prefix)
     print(json.dumps(result, indent=2))
 
 
