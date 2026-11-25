@@ -2,14 +2,14 @@
 # Independent guarded stock->Guard8 radio experiment. Run on the isolated Asus lab.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261125-netgear-wmi-guard8
+base=/home/jan/firmware/wave7/trials/20261125-netgear-wmi-dhcp-fixed
 guard8=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 native="$base/wave7-netgear-wmi-dhcp-guard8-sysupgrade.bin"
 ota="$base/wave7-nand-squashfs-vendor-ota.bin"
-native_sha=8f2259fa005c688b64ddaa6e26aa2c7e661292737b771961ced59219bb9baf88
-ota_sha=98bceeb90f4c855394af4f5115bc849e799777712821729b9c29c9e0eb216804
-rev=r0+38346-fe9d48e01d-ap-dhcp-guard8
-builder=fe9d48e01d4199fe34ae14b3db72461c38e213c8
+native_sha=49c3cff80589d4a727c106398131256e452fb11c6c7071e8c13669913243c589
+ota_sha=61b25521af478ff1b5d48bfcccc4fb0604de6f9731b994be1191b4b445be45d0
+rev=r0+38346-b6733bd5c8-ap-dhcp-guard8
+builder=b6733bd5c850e9bc9ffa70de0d1d79d6b4125648
 rollback="$guard8/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
 rollback_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
 rollback_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
@@ -49,16 +49,37 @@ physical_peer(){
 stock(){
     ssh -F /home/jan/.ssh/config -n -o BatchMode=yes -o ConnectTimeout=3 -o ConnectionAttempts=1 wave7 "$@"
 }
-# After vendor->native upgrade, Dropbear can generate a fresh host key.
-# Pin only a unique ED25519 key on the directly connected, MAC-checked lab.
+# Bootstrap using the attestor's SSH KEX on a verified physical path.
+# Both paths are still required for preflight and acceptance.
 pin_native(){
-    local scan
-    physical_peer || return 1
-    scan=$(ssh-keyscan -T 2 -t ed25519 "$router" 2>/dev/null) || return 1
-    [[ $(wc -l <<< "$scan") == 1 && $scan == "$router ssh-ed25519 "* ]] || return 1
-    printf '%s\n' "$scan" > "$known.new"
-    ssh-keygen -lf "$known.new" >> "$out/host-key-fingerprints.txt" || return 1
-    mv "$known.new" "$known"
+    local nic source result wanted pair
+    wanted=$rev
+    [[ ${restoring:-0} != 1 ]] || wanted=$rollback_rev
+    for pair in "enp4s0f4u2u2u4:192.168.76.250" "$direct:$direct_ip"; do
+        nic=${pair%%:*}
+        source=${pair#*:}
+        [[ $(cat "/sys/class/net/$nic/carrier" 2>/dev/null) == 1 ]] || continue
+        ping -I "$source" -c 1 -W 1 "$router" >/dev/null 2>&1 || continue
+        ip neigh show "$router" dev "$nic" | grep -Fqi "lladdr $mac " || continue
+        rm -f "$known.new"
+        result=$(ssh -n -T -i "$key" -o "BindInterface=$nic" -o "BindAddress=$source" \
+            -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 \
+            -o ConnectionAttempts=1 -o HostKeyAlgorithms=ssh-ed25519 \
+            -o GlobalKnownHostsFile=/dev/null -o StrictHostKeyChecking=accept-new \
+            -o "UserKnownHostsFile=$known.new" "root@$router" \
+            'uname -r; cat /rom/etc/openwrt_version; cat /sys/class/net/br-lan/address' \
+            2>>"$out/pin.log") || continue
+        [[ $result == "$(printf '6.18.60\n%s\n%s' "$wanted" "$mac")" ]] || continue
+        [[ -s $known.new ]] || continue
+        ssh-keygen -lf "$known.new" >> "$out/host-key-fingerprints.txt" || continue
+        mv "$known.new" "$known"
+        iface=$nic
+        ip=$source
+        log "NATIVE_PIN path=$iface source=$ip"
+        return 0
+    done
+    rm -f "$known.new"
+    return 1
 }
 remote(){
     ssh -n -T -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip"         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4         -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known"         "root@$router" "$@"
@@ -140,7 +161,7 @@ case "${1:-}" in
     exec 8<>"$lock"
     flock -n 8 || fail 'lab already reserved'
     preflight
-    tag=netgear-wmi-$(date +%Y%m%d-%H%M%S)
+    tag=netgear-wmi-dhcp-fixed-$(date +%Y%m%d-%H%M%S)
     out="$base/runs/$tag"
     mkdir -p "$out"
     stock 'cat /proc/sys/kernel/random/boot_id' > "$out/stock-boot"
@@ -155,7 +176,7 @@ case "${1:-}" in
         fail 'observer not armed'
     fi
     printf 'GUARD_ARMED %s\n' "$out"
-    if ! "$stock_flasher" "$tag" "$ota" 6.18.60 fe9d48e01d > "$out/flash.log" 2>&1; then
+    if ! "$stock_flasher" "$tag" "$ota" 6.18.60 b6733bd5c8 > "$out/flash.log" 2>&1; then
         cat "$out/flash.log"
         systemctl --user stop "$unit.service" || :
         fail 'stock upgrade refused'
