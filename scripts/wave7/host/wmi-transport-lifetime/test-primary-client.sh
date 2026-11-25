@@ -378,6 +378,9 @@ for band in "${bands[@]}"; do
     if (( dual_load )); then
         result_file=dual-stack-load-result.txt
         expected=dual_stack_load_pass=1
+        uv run --no-project python -B "$(dirname "$helper")/load-result.py" \
+            "$prefix.client.tar" "$tag" > "$prefix.load-result.json" 2>"$prefix.load-result-errors.txt" ||
+            cases_failed=1
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
     if [[ $rc != 0 || $result != "$expected" ]]; then
