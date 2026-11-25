@@ -31,12 +31,13 @@ FW_VERSION = "WLAN.WBE.1.4-01734-QCAHKSWPL_SILICONZ-1.162738.2.173996.1"
 MODULES = {
     "ath12k.ko": (
         "16e9003a442e518d1dc22b40094e77c1f23bd7e7dfa204b53dc8b105f99265e9",
-        "e70a2c0abbbf6d58aa4a3154ce4140f0bb119ad432a365bbba0c4308008a35f4"),
+        "477ea1d123a13791fd204958a9be4fd62f7d471f8f849810bb2faed473e5d015"),
     "ath12k_wifi7.ko": (
         "aab8385e320f61701241d605182dc72069d7051a061cf9be144b1da6fcf038bd",
-        "d07c9bf1b5203d5aa8fb59d6093e97c0f6ccede0e4242de44635c0ae7de09061"),
+        "edd5f3d02d52f21b63e11cc7e4c65f386ccf662753d80fccdada81135293be97"),
 }
 WMI_COMMIT = "d86c0f1c3adce6b55fef3dad229bbb7028554e80"
+PRIMARY_COMMIT = "2819d40df8efedf4a740ad4ef4b0025d0fa20925"
 IDENTITIES = ("etc/openwrt_version", "etc/openwrt_release", "usr/lib/os-release", "etc/banner",
               "etc/wave7-role-profile")
 STEMS = (
@@ -107,6 +108,7 @@ def main():
     builder = cmd("git","-C",repo,"rev-parse","HEAD").strip()
     check(not cmd("git","-C",repo,"status","--porcelain").strip(), "dirty builder")
     cmd("git","-C",repo,"merge-base","--is-ancestor",WMI_COMMIT,builder)
+    cmd("git","-C",repo,"merge-base","--is-ancestor",PRIMARY_COMMIT,builder)
     check(sha(a.parent) == PARENT_SHA, "parent hash mismatch")
     for name, (before, after) in MODULES.items():
         check(sha(a.modules/name) == after, f"unexpected candidate module {name}")
@@ -186,6 +188,7 @@ def main():
         fields={"trial_ath12k_sha256":MODULES["ath12k.ko"][1],
                 "trial_ath12k_wifi7_sha256":MODULES["ath12k_wifi7.ko"][1],
                 "trial_wmi_transport_commit":WMI_COMMIT,
+                "trial_primary_umac_commit":PRIMARY_COMMIT,
                 "trial_radio_release":family["userpd_release"]}
         if a.donor_squashfs: fields["trial_radio_donor_sha256"]=DONOR_SHA
         for key,value in fields.items():
@@ -231,7 +234,7 @@ def main():
                 "firmware":radio_manifest,"module_sha256":{k:v[1] for k,v in MODULES.items()},
                 "delta":delta,"roundtrip_identical":True}
         a.out.mkdir(mode=0o700)
-        filename="wave7-"+("netgear-wmi" if a.donor_squashfs else "wmi")+"-dhcp-guard8-sysupgrade.bin"
+        filename="wave7-"+"netgear-primary-umac"+"-dhcp-guard8-sysupgrade.bin"
         shutil.move(output,a.out/filename)
         (a.out/"report.json").write_text(json.dumps(report,indent=2)+"\n")
         (a.out/"radio.sha256").write_text("".join(f"{v}  {k}\n" for k,v in radio_manifest.items()))
