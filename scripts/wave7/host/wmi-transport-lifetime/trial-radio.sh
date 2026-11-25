@@ -61,7 +61,7 @@ pin_native(){
     mv "$known.new" "$known"
 }
 remote(){
-    ssh -n -T -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip"         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4         -o ConnectionAttempts=1 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known"         "root@$router" "$@"
+    ssh -n -T -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip"         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4         -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known"         "root@$router" "$@"
 }
 upload(){
     scp -q -O -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip"         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=5         -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known"         "$1" "root@$router:$2"
@@ -178,8 +178,13 @@ case "${1:-}" in
     current_boot='' verified=0 healthy_since=0 first_seen=0 accepted=0 restoring=0 attempted=0
     while (( $(date +%s) < deadline )); do
         now=$(date +%s)
-        if [[ ! -s $known ]]; then
-            pin_native || { sleep 2; continue; }
+        if [[ ! -s $known ]] && ! pin_native; then
+            if [[ $(stock 'uname -r' 2>/dev/null || :) == 5.4.213 ]] && [[ -s $out/flash.log ]] &&
+               grep -q '^FLASHING_NOW$' "$out/flash.log" &&
+               [[ $(stock 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || :) != "$(cat "$out/stock-boot")" ]]; then
+                finish VENDOR_FALLBACK 2
+            fi
+            sleep 2; continue
         fi
         if ! state=$(read_state 2>/dev/null); then
             if [[ $(stock 'uname -r' 2>/dev/null || :) == 5.4.213 ]] && [[ -s $out/flash.log ]] &&
@@ -243,7 +248,11 @@ case "${1:-}" in
                     [[ $result == "$rollback_sha  /tmp/wave7-radio-rollback.bin"* ]] || finish ROLLBACK_SHA_FAILED 2
                     restoring=1; healthy_since=0
                     log ROLLBACK_NATIVE_SYSUPGRADE
-                    remote '/sbin/sysupgrade -n /tmp/wave7-radio-rollback.bin' > "$out/rollback.log" 2>&1 || :
+                    timeout 135 ssh -n -T -i "$key" -o "BindInterface=$iface" -o "BindAddress=$ip" \
+                        -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=4 \
+                        -o ConnectionAttempts=1 -o ServerAliveInterval=4 -o ServerAliveCountMax=2 \
+                        -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$known" \
+                        "root@$router" '/sbin/sysupgrade -n /tmp/wave7-radio-rollback.bin' > "$out/rollback.log" 2>&1 || :
                 fi
             fi
         fi
