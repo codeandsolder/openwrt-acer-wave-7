@@ -22,6 +22,8 @@ ieee80211_rx_napi'
 events='cfg80211/rdev_tx_control_port
 cfg80211/cfg80211_rx_control_port
 cfg80211/cfg80211_control_port_tx_status
+cfg80211/cfg80211_rx_mgmt
+cfg80211/cfg80211_mgmt_tx_status
 mac80211/drv_sta_state
 mac80211/drv_change_sta_links'
 if [ "$4" = full ]; then

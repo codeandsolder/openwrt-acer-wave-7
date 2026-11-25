@@ -21,7 +21,13 @@ root=/sys/kernel/tracing
 inst="$root/instances/wave7-control-$1"
 events=(cfg80211/rdev_tx_control_port
         cfg80211/cfg80211_rx_control_port
-        cfg80211/cfg80211_control_port_tx_status)
+        cfg80211/cfg80211_control_port_tx_status
+        cfg80211/cfg80211_mgmt_tx_status
+        mac80211/drv_mgd_prepare_tx
+        mac80211/drv_mgd_complete_tx
+        mac80211/drv_flush
+        mac80211/drv_flush_sta
+        mac80211/drv_sta_state)
 rx_data=0
 rx_header=0
 if [[ $profile == --rx-data || $profile == --rx-header || $profile == --rx-wtbl || $profile == --rx-cnm || $profile == --rx-txd ]]; then
