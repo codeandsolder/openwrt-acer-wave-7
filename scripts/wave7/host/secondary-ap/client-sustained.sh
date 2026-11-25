@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -82,6 +82,7 @@ rocgeometry_experiment=0
 upstream_stack_variant=''
 early_only=0
 early_tap=0
+early_dual=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -100,8 +101,12 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*)
-        if [[ $2 == --early-tap-upstream-* ]]; then
+    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*)
+        if [[ $2 == --early-dual-upstream-* ]]; then
+            early_only=1
+            early_dual=1
+            upstream_stack_variant=${2#--early-dual-}
+        elif [[ $2 == --early-tap-upstream-* ]]; then
             early_only=1
             early_tap=1
             upstream_stack_variant=${2#--early-tap-}
@@ -369,7 +374,13 @@ cleanup() {
         [[ $(rootcmd cat "$pm_dir/deep-sleep") == 1 &&
            $(rootcmd cat "$pm_dir/runtime-pm") == 1 ]] || rc=1
     fi
-    sleep 1
+    # NetworkManager removes the profile before the asynchronous device
+    # deactivation finishes. Require the same disconnected state, but
+    # wait for it rather than misclassify a slow normal teardown.
+    for ((attempt=0; attempt<60; attempt++)); do
+        [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] && break
+        sleep .25
+    done
     if [[ -n $event_pid ]]; then kill "$event_pid" 2>/dev/null || :; wait "$event_pid" 2>/dev/null || :; fi
     {
         nmcli -g GENERAL.STATE device show "$iface"
@@ -589,6 +600,10 @@ if (( early_only )); then
     for target in 192.168.76.1 192.168.76.2; do
         probe_start "short-hold-${target##*.}" 440 "$v4" "$target" -4
     done
+    if (( early_dual )); then
+        [[ -n $v6 ]] || exit 3
+        probe_start short-hold-v6 440 "$v6" fd76:7::2 -6
+    fi
     for index in "${!pings[@]}"; do
         probe_wait_one "$index" || short_failed=1
     done
@@ -605,6 +620,16 @@ if (( early_only )); then
             rootcmd cat "$path/$mask" || :
         done
     } > "$out/early-only-final.txt" 2>&1
+    if (( early_dual )); then
+        # A successful ping on one active link is not dual-link evidence.
+        for f in early-only-snapshot.txt early-only-final.txt; do
+            rg -qx 'mac80211_active_links=0x3' "$out/$f" || short_failed=1
+            rg -qx 'mac80211_valid_links=0x3' "$out/$f" || short_failed=1
+        done
+        printf 'short_dual_hold_pass=%s\n' "$((1 - short_failed))" > "$out/short-dual-hold-result.txt"
+        echo EARLY_DUAL_STACK_DIAGNOSTIC_COMPLETE
+        exit "$short_failed"
+    fi
     echo EARLY_IPV4_ONLY_DIAGNOSTIC_COMPLETE
     exit 0
 fi
