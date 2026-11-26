@@ -204,6 +204,7 @@ trace_pid=''
 early_pid=''
 neigh_pid=''
 load_pid=''
+activation_pid=''
 pings=()
 ping_names=()
 ping_counts=()
@@ -336,6 +337,12 @@ probe() {
 cleanup() {
     local rc=$?
     trap - EXIT
+    if [[ -n $activation_pid ]]; then
+        # The bounded nmcli operation may still be finishing. Do not
+        # delete its temporary profile or seal evidence until it exits.
+        wait "$activation_pid" 2>/dev/null || :
+        activation_pid=''
+    fi
     if [[ -n $load_pid ]]; then
         kill -TERM -- "-$load_pid" 2>/dev/null || kill -TERM "$load_pid" 2>/dev/null || :
         wait "$load_pid" 2>/dev/null || :
@@ -684,9 +691,42 @@ if (( early_only )); then
                 sleep .1
             done
             [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] || exit 3
+            reconnect_epoch=$(date +%s)
             printf 'up_start=%s\n' "$(date +%s.%N)" >> "$out/reconnect-timing.txt"
-            rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/reconnect-up.txt" 2>&1
-            printf 'up_complete=%s\n' "$(date +%s.%N)" >> "$out/reconnect-timing.txt"
+            # Observe L2/L3 activation separately, including failures.
+            # No extra traffic, scan, profile mutation or AP intervention.
+            rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/reconnect-up.txt" 2>&1 &
+            activation_pid=$!
+            reconnect_snapshot() {
+                printf 'snapshot_epoch=%s\n' "$(date +%s.%N)"
+                nmcli -g GENERAL.STATE,GENERAL.REASON,IP4.ADDRESS,IP6.ADDRESS device show "$iface" || :
+                ip -4 -o addr show dev "$iface" || :
+                ip -6 -o addr show dev "$iface" || :
+                ip -s neigh show dev "$iface" || :
+                iw dev "$iface" link || :
+                local mask
+                for mask in active_links valid_links dormant_links; do
+                    printf 'mac80211_%s=' "$mask"
+                    rootcmd cat "/sys/kernel/debug/ieee80211/$phy/netdev:$iface/$mask" || :
+                done
+            }
+            while kill -0 "$activation_pid" 2>/dev/null; do
+                reconnect_snapshot
+                sleep 1
+            done > "$out/reconnect-activation.txt" 2>&1
+            activation_rc=0
+            wait "$activation_pid" || activation_rc=$?
+            activation_pid=''
+            printf 'up_complete=%s rc=%s\n' "$(date +%s.%N)" "$activation_rc" >> "$out/reconnect-timing.txt"
+            reconnect_snapshot >> "$out/reconnect-activation.txt" 2>&1
+            # Only device-specific NetworkManager state/IP transitions,
+            # not profile settings or supplicant key material.
+            journalctl -b -u NetworkManager --since "@$reconnect_epoch" --no-pager -o short-unix |
+                awk -v iface="$iface" 'index($0, "(" iface ")") && /state change|dhcp[46]|ip-config|ip-check|activation|Activation|carrier|supplicant interface state/'                 > "$out/reconnect-nm-state.txt" || :
+            if (( activation_rc )); then
+                printf 'reconnect_pass=0\n' > "$out/reconnect-result.txt"
+                exit 3
+            fi
             v4=$(ip -4 -o addr show dev "$iface" | lab_ipv4_from_ip)
             v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
             [[ -n $v4 && -n $v6 ]] || exit 3
