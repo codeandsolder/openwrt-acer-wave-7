@@ -1,0 +1,21 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1659,9 +1659,15 @@
+ 	if (ret)
+ 		goto out;
+ 	mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_INITIAL_BASIC);
+-	ret = mt7925_mcu_sta_mld_update(dev, vif, link_sta->sta, mlink);
+-	if (ret)
+-		goto out;
++	/* For a negotiated dual-link station, do not allocate a
++	 * single-link firmware MLD group before band migration either.
++	 * Ordinary association remains complete at this point.
++	 */
++	if (hweight16(vif->valid_links) != 2) {
++		ret = mt7925_mcu_sta_mld_update(dev, vif, link_sta->sta, mlink);
++		if (ret)
++			goto out;
++	}
+ 	mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_INITIAL_SETUP);
+ 	if (hweight16(vif->valid_links) != 2) {
+ 		ret = mt7925_lab_sta_eht_mld_update(dev, vif, link_sta->sta, mlink);
