@@ -18,6 +18,7 @@ ip6_observe=0
 dual_hold=0
 dual_soak=0
 dual_load=0
+ap_irq_spread=0
 client_rx_arg=--none
 for arg in "$@"; do
     case "$arg" in
@@ -33,6 +34,7 @@ for arg in "$@"; do
         --client-dual-hold) dual_hold=1 ;;
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
+        --ap-irq-spread) ap_irq_spread=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
@@ -59,6 +61,7 @@ for arg in "$@"; do
 done
 if (( (dual_soak || dual_load) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
 if (( dual_soak && dual_load )); then fail "select one extended trial mode"; fi
+if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -207,6 +210,7 @@ client_control_pid=''
 wired_capture_pid=''
 ip6_pid=''
 load_client_pid=''
+ap_irq_pid=''
 cleanup(){
     local rc=$?
     trap - EXIT
@@ -221,6 +225,7 @@ cleanup(){
     if [[ -n $client_control_pid ]]; then wait "$client_control_pid" || :; fi
     if [[ -n $wired_capture_pid ]]; then wait "$wired_capture_pid" || :; fi
     if [[ -n $ip6_pid ]]; then wait "$ip6_pid" || :; fi
+    if [[ -n $ap_irq_pid ]]; then wait "$ap_irq_pid" || rc=1; fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -268,6 +273,17 @@ for band in "${bands[@]}"; do
     tag=0498-$(date +%Y%m%d-%H%M%S)
     prefix="$out/band-$band"
     printf '%s\n' "$tag" > "$prefix.tag"
+    if (( ap_irq_spread )); then
+        remote_stream "sh -s -- $boot 335" < "$(dirname "$helper")/ap-irq-profile.sh" \
+            > "$prefix.ap-irq-profile.txt" 2>&1 &
+        ap_irq_pid=$!
+        deadline=$((SECONDS + 15))
+        until [[ -s $prefix.ap-irq-profile.txt ]] && rg -q '^IRQ_PROFILE_READY ' "$prefix.ap-irq-profile.txt"; do
+            kill -0 "$ap_irq_pid" 2>/dev/null || fail 'IRQ profile failed'
+            (( SECONDS < deadline )) || fail 'IRQ profile readiness timeout'
+            sleep .25
+        done
+    fi
     snapshot_rx > "$prefix.rx-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
@@ -374,7 +390,9 @@ for band in "${bands[@]}"; do
             if [[ -n $target ]]; then deadline=$((SECONDS + 45)); fi
             ready=''
             while (( SECONDS < deadline )); do
-                ready=$(rg -m 1 "^LOAD_READY mode=$direction address=192[.]168[.]76[.][0-9]{1,3}$" "$prefix.client-run.txt" || :)
+                if [[ -f $prefix.client-run.txt ]]; then
+                    ready=$(rg -m 1 "^LOAD_READY mode=$direction address=192[.]168[.]76[.][0-9]{1,3}$" "$prefix.client-run.txt" || :)
+                fi
                 [[ -n $ready ]] && break
                 kill -0 "$load_client_pid" 2>/dev/null || break
                 sleep .25
@@ -442,6 +460,11 @@ for band in "${bands[@]}"; do
     fi
     wyse "tar -C $client_data -cf - $tag" > "$prefix.client.tar" 2>"$prefix.client-archive-error.txt" || :
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg' > "$prefix.ap-after.txt" 2>&1 || :
+    if (( ap_irq_spread )); then
+        wait "$ap_irq_pid" || cases_failed=1
+        ap_irq_pid=''
+        rg -qx 'IRQ_PROFILE_END rc=0' "$prefix.ap-irq-profile.txt" || cases_failed=1
+    fi
     if ! guard; then
         echo "AP_FAULT_AFTER_BAND_$band"
         exit 1
