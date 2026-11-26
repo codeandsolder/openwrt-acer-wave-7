@@ -1,0 +1,56 @@
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -220,6 +220,7 @@
+ 
+ 	struct mt792x_phy *phy;
+ 	bool roc_join_held; /* join ROC kept until the STA is authorized */
++	u8 lab_next_peer_wcid;
+ 	u16 valid_links;
+ 	u8 deflink_id;
+ 	enum mt792x_mlo_pm_state mlo_pm_state;
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1212,6 +1212,34 @@
+ 	mt76_wcid_mask_clear(mdev->wcid_mask, wcid->idx);
+ }
+ 
++/* Lab-only allocation discriminator. Keep the first lifetime's ordinary
++ * first-fit order, then cycle through legal free peer slots without
++ * retaining a reservation or altering normal free/unwind paths.
++ */
++static int mt7925_lab_alloc_peer_wcid(struct mt76_dev *mdev,
++				    struct ieee80211_vif *vif)
++{
++	struct mt792x_vif *mvif = (void *)vif->drv_priv;
++	const unsigned int limit = MT792x_WTBL_STA - 1;
++	unsigned int i, idx;
++
++	if (!is_mt7925(mdev) || vif->type != NL80211_IFTYPE_STATION ||
++	    !ieee80211_vif_is_mld(vif))
++		return mt76_wcid_alloc(mdev->wcid_mask, limit);
++
++	lockdep_assert_held(&mdev->mutex);
++	for (i = 0; i < limit; i++) {
++		idx = (mvif->lab_next_peer_wcid + i) % limit;
++		if (mdev->wcid_mask[idx / 32] & BIT(idx % 32))
++			continue;
++		mdev->wcid_mask[idx / 32] |= BIT(idx % 32);
++		mvif->lab_next_peer_wcid = (idx + 1) % limit;
++		return idx;
++	}
++
++	return -1;
++}
++
+ /* Allocate and publish the wcid only; no MCU command is sent.
+  * On failure the caller unwinds with mt7925_mac_link_sta_free_wcid().
+  */
+@@ -1225,7 +1253,7 @@
+ 	struct mt76_wcid *wcid = &mlink->wcid;
+ 	int idx;
+ 
+-	idx = mt76_wcid_alloc(dev->mt76.wcid_mask, MT792x_WTBL_STA - 1);
++	idx = mt7925_lab_alloc_peer_wcid(mdev, vif);
+ 	if (idx < 0)
+ 		return -ENOSPC;
+ 
