@@ -1,0 +1,20 @@
+mt76_connac_lib
+749A4015F0F3E1F3C96A6C9
+7.4.0-rc1-2-cachyos-rc SMP preempt mod_unload
+    Build ID: 5081d427298d91cdab11163579a45bd42e9ad179
+mt76
+DEF56EC1D966C3C1D7AC35A
+7.4.0-rc1-2-cachyos-rc SMP preempt mod_unload
+    Build ID: a97dd5defc14c2491db74c4c5db6ddd36b47ced2
+mt7925_common
+D442F619B89C47E231742A7
+7.4.0-rc1-2-cachyos-rc SMP preempt mod_unload
+    Build ID: 7e7bf307910331e9a66f9a2f09f4af12331f285c
+mt7925e
+CAC129B75EA2C6CB80A3676
+7.4.0-rc1-2-cachyos-rc SMP preempt mod_unload
+    Build ID: 4734f66e5eb66d820166addfc6112e240f411fda
+mt792x_lib
+A681310C17DD1275877F354
+7.4.0-rc1-2-cachyos-rc SMP preempt mod_unload
+    Build ID: 70338cba2c29c6b94065670e34b312be266b7947
