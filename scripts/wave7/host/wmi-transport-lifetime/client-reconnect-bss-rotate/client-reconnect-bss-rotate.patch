@@ -1,0 +1,40 @@
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -367,6 +367,7 @@
+ 
+ 	u8 fw_debug;
+ 	u8 fw_features;
++	u8 lab_next_secondary_bss;
+ 
+ 	struct mt76_connac_pm pm;
+ 	struct mt76_connac_coredump coredump;
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -393,6 +393,27 @@
+ 		mconf->mt76.idx = MT792x_MAX_INTERFACES;
+ 	} else {
+ 		mconf->mt76.idx = __ffs64(~dev->mt76.vif_mask);
++
++		/* Diagnostic: choose a fresh legal secondary BSS slot on
++		 * reassociation, while preserving primary BSS/group identity.
++		 * The cursor survives recreation of the VIF private state.
++		 */
++		if (is_mt7925(&dev->mt76) && mld &&
++		    vif->type == NL80211_IFTYPE_STATION &&
++		    mconf != &mvif->bss_conf) {
++			unsigned int i, candidate;
++
++			for (i = 0; i < MT792x_MAX_INTERFACES; i++) {
++				candidate = (dev->lab_next_secondary_bss + i) %
++					    MT792x_MAX_INTERFACES;
++				if (dev->mt76.vif_mask & BIT_ULL(candidate))
++					continue;
++				mconf->mt76.idx = candidate;
++				dev->lab_next_secondary_bss = (candidate + 1) %
++							      MT792x_MAX_INTERFACES;
++				break;
++			}
++		}
+ 
+ 		if (mconf->mt76.idx >= MT792x_MAX_INTERFACES) {
+ 			ret = -ENOSPC;
