@@ -19,6 +19,8 @@ dual_hold=0
 dual_soak=0
 dual_load=0
 ap_irq_spread=0
+ap_link_stats=0
+ap_link_tool=""
 client_rx_arg=--none
 for arg in "$@"; do
     case "$arg" in
@@ -35,6 +37,7 @@ for arg in "$@"; do
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
+        --ap-link-stats) ap_link_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
         --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
@@ -64,6 +67,7 @@ done
 if (( (dual_soak || dual_load) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
 if (( dual_soak && dual_load )); then fail "select one extended trial mode"; fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
+if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -169,6 +173,12 @@ snapshot_load(){
         cat /proc/interrupts
         echo ==== STATION
         iw dev ap-mld0 station dump
+        if [ '$ap_link_stats' = 1 ]; then
+            echo ==== LINK_STATION
+            '$ap_link_tool/iw' dev ap-mld0 station dump --links
+            echo ==== LINK_DATAPATH
+            cat /sys/kernel/debug/ieee80211/phy0/netdev:ap-mld0/link_stats
+        fi
         echo ==== AGGREGATION
         for sta in /sys/kernel/debug/ieee80211/phy0/netdev:ap-mld0/stations/*; do
             [ -d \"\$sta\" ] || exit 1
@@ -228,6 +238,9 @@ cleanup(){
     if [[ -n $wired_capture_pid ]]; then wait "$wired_capture_pid" || :; fi
     if [[ -n $ip6_pid ]]; then wait "$ip6_pid" || :; fi
     if [[ -n $ap_irq_pid ]]; then wait "$ap_irq_pid" || rc=1; fi
+    if [[ -n $ap_link_tool ]]; then
+        remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_link_tool/iw'; rmdir '$ap_link_tool'" || rc=1
+    fi
     if (( active )); then
         wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
     fi
@@ -253,6 +266,14 @@ remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out
 remote 'iw dev ap-mld0 station dump' > "$out/ap-stations-before.txt"
 if (( dual_soak || dual_load )); then
     [[ ! -s $out/ap-stations-before.txt ]] || fail 'extended hold requires an empty AP station table'
+fi
+if (( ap_link_stats )); then
+    tool="$base/analysis/mt7925-mlo-data-20261125/iw-link-stats/iw"
+    digest=36d53ae834363dd824975a66d9f3efea53345c040568fc8e381b14b6f2c4a7ca
+    [[ $(sha256sum "$tool" | cut -d' ' -f1) == "$digest" ]] || fail 'link stats tool identity'
+    ap_link_tool=$(remote 'mktemp -d /tmp/wave7-iw.XXXXXX')
+    [[ $ap_link_tool =~ ^/tmp/wave7-iw[.][a-zA-Z0-9]{6}$ ]] || fail 'link stats temporary path'
+    remote_stream "set -eu; cat > '$ap_link_tool/iw'; [ \"\$(sha256sum '$ap_link_tool/iw' | cut -d' ' -f1)\" = '$digest' ]; chmod 700 '$ap_link_tool/iw'" < "$tool"
 fi
 active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
