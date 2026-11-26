@@ -18,6 +18,7 @@ ip6_observe=0
 dual_hold=0
 dual_soak=0
 dual_load=0
+dual_reconnect=0
 ap_irq_spread=0
 ap_link_stats=0
 ap_link_tool=""
@@ -36,6 +37,7 @@ for arg in "$@"; do
         --client-dual-hold) dual_hold=1 ;;
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
+        --client-reconnect) dual_hold=1; dual_reconnect=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
@@ -61,11 +63,12 @@ for arg in "$@"; do
         --client-group-raw-trace) variant=upstream-prefix22-authorize-delayed-links-group-raw-trace ;;
         --client-mgmt-tx-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ;;
         --client-mgmt-fixed-link-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ;;
+        --client-mgmt-wmm-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
-if (( (dual_soak || dual_load) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
-if (( dual_soak && dual_load )); then fail "select one extended trial mode"; fi
+if (( (dual_soak || dual_load || dual_reconnect) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
+if (( dual_soak + dual_load + dual_reconnect > 1 )); then fail "select one extended trial mode"; fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
@@ -264,7 +267,7 @@ remote 'cat /proc/sys/kernel/random/boot_id; dmesg; iw dev ap-mld0 info' > "$out
 # A stale authorized MFP station may trigger SA Query on reassociation.
 # Record the old station state rather than forcibly deleting it.
 remote 'iw dev ap-mld0 station dump' > "$out/ap-stations-before.txt"
-if (( dual_soak || dual_load )); then
+if (( dual_soak || dual_load || dual_reconnect )); then
     [[ ! -s $out/ap-stations-before.txt ]] || fail 'extended hold requires an empty AP station table'
 fi
 if (( ap_link_stats )); then
@@ -290,7 +293,7 @@ fi
 cases_failed=0
 observe_seconds=150
 client_seconds=75
-if (( dual_soak || dual_load )); then observe_seconds=300; client_seconds=225; fi
+if (( dual_soak || dual_load || dual_reconnect )); then observe_seconds=300; client_seconds=225; fi
 for band in "${bands[@]}"; do
     guard || fail 'AP health before association'
     tag=0498-$(date +%Y%m%d-%H%M%S)
@@ -323,13 +326,14 @@ for band in "${bands[@]}"; do
     done' > "$prefix.ap-passive.txt" 2>&1 &
     sample_pid=$!
     ap_profile=full
-    if (( dual_load )); then ap_profile=control; fi
+    if (( dual_load || dual_reconnect )); then ap_profile=control; fi
     remote_stream "sh -s -- $boot $tag $observe_seconds $ap_profile" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
     ap_trace_pid=$!
     control_profile=$client_rx_arg
     if (( dual_load )); then control_profile=--none; fi
     if [[ $variant == upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ]]; then
+          $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ||
+          $variant == upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ]]; then
         control_profile=--mgmt-tx
     fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
@@ -404,6 +408,7 @@ for band in "${bands[@]}"; do
     if (( dual_hold )); then mode=early-dual; fi
     if (( dual_soak )); then mode=early-soak; fi
     if (( dual_load )); then mode=early-load; fi
+    if (( dual_reconnect )); then mode=early-reconnect; fi
     rc=0
     if (( dual_load )); then
         # Wyse listens only on its temporary Wi-Fi address. Initiate TCP
@@ -504,6 +509,10 @@ for band in "${bands[@]}"; do
     if (( dual_hold )); then
         result_file=short-dual-hold-result.txt
         expected=short_dual_hold_pass=1
+    fi
+    if (( dual_reconnect )); then
+        result_file=reconnect-result.txt
+        expected=reconnect_pass=1
     fi
     if (( dual_load )); then
         result_file=dual-stack-load-result.txt
