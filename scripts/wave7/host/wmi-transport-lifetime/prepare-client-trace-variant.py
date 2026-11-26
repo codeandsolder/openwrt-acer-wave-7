@@ -44,6 +44,14 @@ def extend_crash_profile(text, old, new):
     return extended
 
 
+def extend_window_profile(text, old, new):
+    pattern = re.compile(rf"--{re.escape(old)}(?=[|)])")
+    extended, count = pattern.subn(lambda m: m.group() + f"|--{new}", text)
+    if count != 1:
+        raise ValueError(f"expected one window profile for {old}, got {count}")
+    return extended
+
+
 def selftest():
     old, new = "old-trace", "new-trace"
     fixture = (
@@ -68,6 +76,9 @@ def selftest():
         pass
     else:
         raise AssertionError("unhandled variant reference accepted")
+    for fixture in ("--other|--old-trace)", "--old-trace|--other)"):
+        result = extend_window_profile(fixture, old, new)
+        assert "--old-trace|--new-trace" in result
     print("TRACE_VARIANT_SELFTEST_PASS")
 
 
@@ -119,7 +130,7 @@ def main():
     line = f"    [{old}]=association-rxtx"
     source[names[0]] = replace_once(s, line, line + f"\n    [{new}]=association-rxtx")
     source[names[1]] = extend_crash_profile(source[names[1]], old, new)
-    source[names[2]] = replace_once(source[names[2]], f"--{old})", f"--{old}|--{new})")
+    source[names[2]] = extend_window_profile(source[names[2]], old, new)
     args.output.mkdir(parents=True, exist_ok=False)
     for name, content in source.items():
         target = args.output / name
