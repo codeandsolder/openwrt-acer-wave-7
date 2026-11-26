@@ -359,6 +359,71 @@ def mld_command_windows(lifecycle, control, windows):
                 without_bss_group(r) == without_bss_group(rows[0]) for r in rows[1:])}
 
 
+def band_retirement_windows(lifecycle, control, windows):
+    """Observe peer disconnect, station removal and DEV deactivation in order.
+
+    Called only after the lifecycle/control trace clock and boot checks.
+    Missing witnesses are distinct from a wrong band or a failed command.
+    """
+    starts = []
+    for line in control.splitlines():
+        m = LINE.search(line)
+        if m and m[2] == "drv_sta_state":
+            state = STATE.search(m[3])
+            if state and state.group(2, 3) == ("0", "1"):
+                starts.append(float(m[1]))
+    kinds = {"mt7925_lab_bss_basic", "mt7925_lab_bss_result",
+             "mt7925_lab_sta_result", "mt7925_lab_band_retire"}
+    events = []
+    for line in lifecycle.splitlines():
+        m = LINE.search(line)
+        if m and m[2] in kinds:
+            fields = dict(FIELD.findall(m[3]))
+            events.append((float(m[1]), m[2],
+                           {key: int(value) for key, value in fields.items()}))
+    result = []
+    for window in windows:
+        stop = window["deauthorized_at"]
+        end = min((t for t in starts if t > stop), default=float("inf"))
+        peers = [p for p in window["wtbl"] if p["stage"] == 7]
+        details = []
+        for peer in peers:
+            bss, link, wcid = peer["bss"], peer["link"], peer["wcid"]
+            band = peer["host_band"]
+            relevant = [(t, kind, f) for t, kind, f in events
+                        if stop <= t < end and f["bss"] == bss and f["link"] == link]
+
+            def matching(kind, predicate):
+                return [{"time": t, **f} for t, event, f in relevant
+                        if event == kind and predicate(f)]
+
+            disconnect = matching("mt7925_lab_bss_basic",
+                                  lambda f: not f["enabled"] and f["peer"] == wcid)
+            bss_ack = matching("mt7925_lab_bss_result",
+                               lambda f: not f["enabled"] and f["wcid"] == wcid)
+            remove = matching("mt7925_lab_sta_result",
+                              lambda f: not f["enabled"] and f["wcid"] == wcid)
+            dev = matching("mt7925_lab_band_retire", lambda f: True)
+            # Absence or ambiguity is not positive proof of retirement.
+            bss_band_ok = (disconnect[0]["band"] == band
+                           if len(disconnect) == 1 else None)
+            dev_band_ok = (dev[0]["band"] == band if len(dev) == 1 else None)
+            complete = None
+            if all(len(rows) == 1 for rows in (disconnect, bss_ack, remove, dev)):
+                complete = (bss_band_ok and dev_band_ok and dev[0]["was_active"] == 1
+                            and all(rows[0]["result"] == 0 for rows in (bss_ack, remove, dev))
+                            and disconnect[0]["time"] <= bss_ack[0]["time"]
+                            <= remove[0]["time"] <= dev[0]["time"])
+            details.append({"bss": bss, "link": link, "wcid": wcid,
+                            "expected_band": band, "bss_disconnect": disconnect,
+                            "bss_ack": bss_ack, "station_remove": remove,
+                            "dev_retire": dev, "bss_band_matches": bss_band_ok,
+                            "dev_band_matches": dev_band_ok, "complete": complete})
+        result.append({"authorized_at": window["authorized_at"],
+                       "deauthorized_at": stop, "peers": details})
+    return result
+
+
 def wtbl_pair_bindings(windows):
     """Check the dual-link peer table independently of scheduler records.
 
@@ -596,6 +661,23 @@ def selftest():
     assert not changed["same_sequence"] and changed["same_sequence_except_bss_group"]
     assert not mld_command_windows(groups.replace("bss=0 group=1", "bss=1 group=1"),
                                    ctl, w)["same_sequence_except_bss_group"]
+    peer = {"stage": 7, "bss": 1, "link": 1, "wcid": 3, "host_band": 0}
+    retire_window = [{"authorized_at": 10, "deauthorized_at": 11, "wtbl": [peer]}]
+    retirement = (
+        line(11.1, "mt7925_lab_bss_basic", "bss=1 link=1 enabled=0 peer=3 band=0")
+        + line(11.2, "mt7925_lab_bss_result", "bss=1 link=1 enabled=0 wcid=3 result=0")
+        + line(11.3, "mt7925_lab_sta_result", "bss=1 link=1 enabled=0 wcid=3 result=0")
+        + line(11.4, "mt7925_lab_band_retire", "bss=1 link=1 band=0 was_active=1 result=0")
+    )
+    def retire_result(trace):
+        return band_retirement_windows(trace, ctl, retire_window)[0]["peers"][0]
+    assert retire_result(retirement)["complete"] is True
+    assert retire_result(retirement.replace("band=0", "band=255"))["complete"] is False
+    assert retire_result(retirement.replace("was_active=1", "was_active=0"))["complete"] is False
+    assert retire_result(retirement.replace("result=0", "result=-5"))["complete"] is False
+    assert retire_result(retirement.replace("11.400000", "20.000000"))["complete"] is None
+    assert retire_result(retirement + retirement)["complete"] is None
+    assert retire_result(retirement.replace("mt7925_lab_band_retire", "other"))["complete"] is None
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -627,6 +709,8 @@ if __name__ == "__main__":
                 if lifecycle_name in sealed:
                     lifecycle = (args.trial / lifecycle_name).read_text()
                     result["mld_commands"] = mld_command_windows(lifecycle, text, result[side])
+                    result["band_retirement"] = band_retirement_windows(
+                        lifecycle, text, result[side])
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
                 result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
