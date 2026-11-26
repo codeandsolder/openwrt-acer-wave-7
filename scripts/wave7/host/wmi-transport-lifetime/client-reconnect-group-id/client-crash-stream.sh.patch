@@ -1,0 +1,22 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -99,7 +99,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ]]; then
+     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ]]; then
+         events+=(mt7925_lab/mt7925_lab_sta_mld_teardown)
+@@ -156,7 +157,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ]]; then
+     # BTF field fetching avoids hard-coded structures/offsets. Register only
+     # these two named probes and remove the exact definitions at cleanup.
+     [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
