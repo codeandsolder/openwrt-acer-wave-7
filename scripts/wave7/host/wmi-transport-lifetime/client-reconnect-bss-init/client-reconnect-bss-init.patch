@@ -1,0 +1,332 @@
+--- a/mt7615/mcu.c
++++ b/mt7615/mcu.c
+@@ -1129,7 +1129,7 @@
+ 	struct mt7615_vif *mvif = (struct mt7615_vif *)vif->drv_priv;
+ 
+ 	return mt76_connac_mcu_uni_add_dev(phy->mt76, &vif->bss_conf, &mvif->mt76,
+-					   &mvif->sta.wcid, enable);
++					   &mvif->sta.wcid, enable, false);
+ }
+ 
+ static int
+--- a/mt76_connac_mcu.c
++++ b/mt76_connac_mcu.c
+@@ -1195,7 +1195,7 @@
+ 				struct ieee80211_bss_conf *bss_conf,
+ 				struct mt76_vif_link *mvif,
+ 				struct mt76_wcid *wcid,
+-				bool enable)
++				bool enable, bool init_mld)
+ {
+ 	struct mt76_dev *dev = phy->dev;
+ 	struct {
+@@ -1229,6 +1229,7 @@
+ 			u8 pad[3];
+ 		} __packed hdr;
+ 		struct mt76_connac_bss_basic_tlv basic;
++		struct mt76_connac_bss_mld_tlv mld;
+ 	} basic_req = {
+ 		.hdr = {
+ 			.bss_idx = mvif->idx,
+@@ -1247,7 +1248,7 @@
+ 			.link_idx = mvif->link_idx,
+ 		},
+ 	};
+-	int err, idx, cmd, len;
++	int err, idx, cmd, len, basic_len;
+ 	void *data;
+ 
+ 	switch (bss_conf->vif->type) {
+@@ -1280,9 +1281,26 @@
+ 
+ 	memcpy(dev_req.tlv.omac_addr, bss_conf->addr, ETH_ALEN);
+ 
++	/* Initialize a newly allocated MT7925 MLD secondary BSS
++	 * outside any group, matching gen4m nicUniCmdBssActivateCtrl.
++	 * Never clear membership during temporary band reactivation.
++	 */
++	basic_len = offsetof(typeof(basic_req), mld);
++	if (init_mld && enable && is_mt7925(dev) &&
++	    bss_conf->vif->type == NL80211_IFTYPE_STATION) {
++		basic_req.mld.tag = cpu_to_le16(UNI_BSS_INFO_MLD);
++		basic_req.mld.len = cpu_to_le16(sizeof(basic_req.mld));
++		basic_req.mld.group_mld_id = 0xff;
++		basic_req.mld.own_mld_id = mvif->idx + 32;
++		basic_req.mld.remap_idx = 0xff;
++		basic_req.mld.link_id = 0xff;
++		memcpy(basic_req.mld.mac_addr, bss_conf->addr, ETH_ALEN);
++		basic_len += sizeof(basic_req.mld);
++	}
++
+ 	cmd = enable ? MCU_UNI_CMD(DEV_INFO_UPDATE) : MCU_UNI_CMD(BSS_INFO_UPDATE);
+ 	data = enable ? (void *)&dev_req : (void *)&basic_req;
+-	len = enable ? sizeof(dev_req) : sizeof(basic_req);
++	len = enable ? sizeof(dev_req) : basic_len;
+ 
+ 	err = mt76_mcu_send_msg(dev, cmd, data, len, true);
+ 	if (err && cmd == MCU_UNI_CMD(BSS_INFO_UPDATE))
+@@ -1293,7 +1311,7 @@
+ 
+ 	cmd = enable ? MCU_UNI_CMD(BSS_INFO_UPDATE) : MCU_UNI_CMD(DEV_INFO_UPDATE);
+ 	data = enable ? (void *)&basic_req : (void *)&dev_req;
+-	len = enable ? sizeof(basic_req) : sizeof(dev_req);
++	len = enable ? basic_len : sizeof(dev_req);
+ 
+ 	err = mt76_mcu_send_msg(dev, cmd, data, len, true);
+ 	if (err && cmd == MCU_UNI_CMD(BSS_INFO_UPDATE))
+--- a/mt76_connac_mcu.h
++++ b/mt76_connac_mcu.h
+@@ -1543,6 +1543,20 @@
+ 	u8 link_idx;
+ } __packed;
+ 
++struct mt76_connac_bss_mld_tlv {
++	__le16 tag;
++	__le16 len;
++	u8 group_mld_id;
++	u8 own_mld_id;
++	u8 mac_addr[ETH_ALEN];
++	u8 remap_idx;
++	u8 link_id;
++	u8 eml_enable;
++	u8 max_link_num;
++	u8 hybrid_mode;
++	u8 __rsv[3];
++} __packed;
++
+ struct mt76_connac_bss_qos_tlv {
+ 	__le16 tag;
+ 	__le16 len;
+@@ -2046,7 +2060,7 @@
+ 				struct ieee80211_bss_conf *bss_conf,
+ 				struct mt76_vif_link *mvif,
+ 				struct mt76_wcid *wcid,
+-				bool enable);
++				bool enable, bool init_mld);
+ int mt76_connac_mcu_sta_ba(struct mt76_dev *dev, struct mt76_vif_link *mvif,
+ 			   struct ieee80211_ampdu_params *params,
+ 			   int cmd, bool enable, bool tx);
+--- a/mt7921/mac.c
++++ b/mt7921/mac.c
+@@ -635,7 +635,7 @@
+ 	/* firmware was reset: force the DEV reactivation */
+ 	mvif->bss_conf.dev_active = false;
+ 	mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+-				  &mvif->sta.deflink.wcid, true);
++				  &mvif->sta.deflink.wcid, true, false);
+ 	mt7921_mcu_set_tx(dev, vif);
+ 
+ 	if (vif->type == NL80211_IFTYPE_AP) {
+--- a/mt7921/main.c
++++ b/mt7921/main.c
+@@ -321,7 +321,7 @@
+ 	mvif->bss_conf.mt76.wmm_idx = mvif->bss_conf.mt76.idx % MT76_CONNAC_MAX_WMM_SETS;
+ 
+ 	ret = mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+-					&mvif->sta.deflink.wcid, true);
++					&mvif->sta.deflink.wcid, true, false);
+ 	if (ret)
+ 		goto out;
+ 
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -1682,7 +1682,7 @@
+ 		/* firmware was reset: force the DEV reactivation */
+ 		mconf->dev_active = false;
+ 		mt792x_mcu_set_dev_active(dev, bss_conf, mconf,
+-					  &mvif->sta.deflink.wcid, true);
++					  &mvif->sta.deflink.wcid, true, false);
+ 		mt7925_mcu_set_tx(dev, bss_conf);
+ 	}
+ 
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -481,7 +481,7 @@
+ 		return ret;
+ 
+ 	ret = mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-					&mlink->wcid, true);
++					&mlink->wcid, true, link_idx != 0);
+ 	if (ret) {
+ 		mt792x_mac_link_bss_remove(dev, link_conf, mconf, mlink);
+ 		mt7925_p2p_bmc_remove(dev, mconf);
+@@ -759,7 +759,7 @@
+ 
+ 	mt792x_mutex_acquire(phy->dev);
+ 	mt792x_mcu_set_dev_active(phy->dev, &vif->bss_conf, &mvif->bss_conf,
+-				  &mvif->sta.deflink.wcid, true);
++				  &mvif->sta.deflink.wcid, true, false);
+ 	err = mt7925_set_roc(phy, &mvif->bss_conf,
+ 			     chan, duration, MT7925_ROC_REQ_ROC);
+ 	mt792x_mutex_release(phy->dev);
+@@ -1793,7 +1793,7 @@
+ 		if (WARN_ON_ONCE(!owner))
+ 			mt792x_reset(mdev);
+ 		else if (mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-						   &owner->wcid, false))
++						   &owner->wcid, false, false))
+ 			mt792x_reset(mdev);
+ 	}
+ 
+@@ -2119,7 +2119,7 @@
+ 
+ 	mt792x_mutex_acquire(dev);
+ 	mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+-				  &mvif->sta.deflink.wcid, true);
++				  &mvif->sta.deflink.wcid, true, false);
+ 	err = mt7925_mcu_hw_scan(mphy, vif, req);
+ 	mt792x_mutex_release(dev);
+ 
+@@ -2150,7 +2150,7 @@
+ 	mt792x_mutex_acquire(dev);
+ 
+ 	mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+-				  &mvif->sta.deflink.wcid, true);
++				  &mvif->sta.deflink.wcid, true, false);
+ 
+ 	err = mt7925_mcu_sched_scan_req(mphy, vif, req, ies);
+ 	if (err < 0)
+@@ -2833,7 +2833,7 @@
+ 	if (mconf == &mvif->bss_conf && !release_primary) {
+ 		if (mconf->dev_active &&
+ 		    (!link_conf || mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-							   &mlink->wcid, false)))
++							   &mlink->wcid, false, false)))
+ 			mt792x_reset(&dev->mt76);
+ 		return;
+ 	}
+@@ -2936,7 +2936,7 @@
+ 		/* A returning primary can reuse the embedded reserved WCID. */
+ 		if (old_links && link_id == primary) {
+ 			err = mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-							 &mlink->wcid, true);
++							 &mlink->wcid, true, false);
+ 		} else {
+ 			err = mt7925_mac_link_bss_add(dev, link_conf, mconf, mlink,
+ 						      hweight16(new_links) != 3,
+@@ -2966,7 +2966,7 @@
+ 		mvif->bss_conf.mt76.wmm_idx = mvif->bss_conf.mt76.idx %
+ 					      MT76_CONNAC_MAX_WMM_SETS;
+ 		if (mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+-					       &mvif->sta.deflink.wcid, false))
++					       &mvif->sta.deflink.wcid, false, false))
+ 			mt792x_reset(&dev->mt76);
+ 	}
+ 
+@@ -3286,14 +3286,14 @@
+ 	int ret;
+ 
+ 	ret = mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-					&mlink->wcid, false);
++					&mlink->wcid, false, false);
+ 	if (ret)
+ 		return ret;
+ 
+ 	mconf->mt76.band_idx = band_idx;
+ 
+ 	return mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-					 &mlink->wcid, true);
++					 &mlink->wcid, true, false);
+ }
+ 
+ static int mt7925_assign_vif_chanctx(struct ieee80211_hw *hw,
+@@ -3322,7 +3322,7 @@
+ 		mconf = &mvif->bss_conf;
+ 
+ 		mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-					  &mvif->sta.deflink.wcid, true);
++					  &mvif->sta.deflink.wcid, true, false);
+ 
+ 		if (is_mt7927(&dev->mt76)) {
+ 			band_idx = mt7927_band_idx(ctx->def.chan->band);
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3547,7 +3547,7 @@
+ 	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)link_conf->vif->drv_priv;
+ 	struct mt792x_phy *phy = mvif->phy;
+-	struct bss_mld_tlv *mld;
++	struct mt76_connac_bss_mld_tlv *mld;
+ 	struct tlv *tlv;
+ 	bool is_mld;
+ 	bool is_supported_ap = false;
+@@ -3556,7 +3556,7 @@
+ 		 (hweight16(mvif->valid_links) > 1);
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, UNI_BSS_INFO_MLD, sizeof(*mld));
+-	mld = (struct bss_mld_tlv *)tlv;
++	mld = (struct mt76_connac_bss_mld_tlv *)tlv;
+ 
+ 	mld->link_id = is_mld ? link_conf->link_id : 0xff;
+ 	/* apply the index of the primary link */
+--- a/mt7925/mcu.h
++++ b/mt7925/mcu.h
+@@ -384,19 +384,6 @@
+ 	u8 __rsv2;
+ } __packed;
+ 
+-struct bss_mld_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 group_mld_id;
+-	u8 own_mld_id;
+-	u8 mac_addr[ETH_ALEN];
+-	u8 remap_idx;
+-	u8 link_id;
+-	u8 eml_enable;
+-	u8 max_link_num;
+-	u8 hybrid_mode;
+-	u8 __rsv[3];
+-} __packed;
+ 
+ struct bss_eht_tlv {
+ 	__le16 tag;
+@@ -549,7 +536,7 @@
+ 					 sizeof(struct mt76_connac_bss_basic_tlv) +	\
+ 					 sizeof(struct mt76_connac_bss_qos_tlv) +	\
+ 					 sizeof(struct bss_rate_tlv) +			\
+-					 sizeof(struct bss_mld_tlv) +			\
++					 sizeof(struct mt76_connac_bss_mld_tlv) +			\
+ 					 sizeof(struct bss_info_uni_he) +		\
+ 					 sizeof(struct bss_info_uni_bss_color) +	\
+ 					 sizeof(struct bss_ifs_time_tlv) +		\
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -608,7 +608,7 @@
+ int mt792x_mcu_set_dev_active(struct mt792x_dev *dev,
+ 			      struct ieee80211_bss_conf *link_conf,
+ 			      struct mt792x_bss_conf *mconf,
+-			      struct mt76_wcid *wcid, bool enable);
++			      struct mt76_wcid *wcid, bool enable, bool init_mld);
+ void mt792x_config_mac_addr_list(struct mt792x_dev *dev);
+ 
+ static inline char *mt792x_ram_name(struct mt792x_dev *dev)
+--- a/mt792x_core.c
++++ b/mt792x_core.c
+@@ -314,7 +314,7 @@
+ 
+ 	if (mconf->dev_active &&
+ 	    (!link_conf || mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-						   wcid, false))) {
++						   wcid, false, false))) {
+ 		/* Host ownership must still be retired after a firmware error. */
+ 		mconf->dev_active = false;
+ 		mt792x_reset(&dev->mt76);
+@@ -336,7 +336,7 @@
+ int mt792x_mcu_set_dev_active(struct mt792x_dev *dev,
+ 			      struct ieee80211_bss_conf *link_conf,
+ 			      struct mt792x_bss_conf *mconf,
+-			      struct mt76_wcid *wcid, bool enable)
++			      struct mt76_wcid *wcid, bool enable, bool init_mld)
+ {
+ 	int ret;
+ 
+@@ -345,7 +345,7 @@
+ 		return 0;
+ 
+ 	ret = mt76_connac_mcu_uni_add_dev(&dev->mphy, link_conf,
+-					  &mconf->mt76, wcid, enable);
++					  &mconf->mt76, wcid, enable, init_mld);
+ 	if (!ret)
+ 		mconf->dev_active = enable;
+ 
