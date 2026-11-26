@@ -1,0 +1,32 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -556,7 +556,8 @@
+ }
+ 
+ /* The request's original BSS owns its token. Multi-link CNM requests
+- * release all bands in one abort (vendor nicUniCmdChAbortPrivilege).
++ * On MT7925 MLSR firmware, BAND_ALL release stopped data scheduling.
++ * Retain AUTO scope while releasing only the original request owner.
+  */
+ static int mt7925_roc_release(struct mt792x_phy *phy)
+ {
+@@ -721,7 +722,7 @@
+ 	phy->roc_is_mlo = true;
+ 	phy->roc_mconf = mconf;
+ 	phy->roc_owner_bss = mconf->mt76.idx;
+-	phy->roc_abort_band = MT792x_BAND_ALL;
++	phy->roc_abort_band = MT792x_BAND_AUTO;
+ 	phy->roc_grant = false;
+ 	phy->roc_notify = false;
+ 
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -780,7 +780,7 @@
+ 	return hdr;
+ }
+ 
+-static bool mt7925_lab_data_skb(const struct sk_buff *skb)
++static bool mt7925_lab_data_skb(struct sk_buff *skb)
+ {
+ 	const struct ieee80211_hdr *hdr;
+ 
