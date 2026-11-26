@@ -1,0 +1,59 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -3355,9 +3355,22 @@
+ 		mconf = mt792x_vif_to_link(mvif, link_conf->link_id);
+ 
+ 		if (vif->type == NL80211_IFTYPE_STATION &&
+-		    mconf == &mvif->bss_conf)
+-			mt7925_mcu_add_bss_info(&dev->phy, NULL, link_conf,
+-						NULL, false);
++		    mconf == &mvif->bss_conf) {
++			/* STA removal already deactivates this BSS. The ordinary
++			 * disconnect update keeps BASIC.active set and would
++			 * reintroduce the retired BSS/MLD group to firmware.
++			 * An active BSS still needs the channel-context update.
++			 */
++			bool skip = is_mt7925(&dev->mt76) && !mconf->dev_active;
++			int ret = 0;
++
++			if (!skip)
++				ret = mt7925_mcu_add_bss_info(&dev->phy, NULL,
++							       link_conf, NULL, false);
++			trace_mt7925_lab_chanctx_unassign(mconf->mt76.idx,
++							  link_conf->link_id,
++							  mconf->dev_active, skip, ret);
++		}
+ 	} else {
+ 		mconf = &mvif->bss_conf;
+ 	}
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -358,6 +358,28 @@
+ 	),
+ 	TP_printk("bss=%u link=%u wcid=%u enabled=%u result=%d",
+ 		  __entry->bss, __entry->link, __entry->wcid, __entry->enabled, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_chanctx_unassign,
++	TP_PROTO(u8 bss, u8 link, bool active, bool skipped, int result),
++	TP_ARGS(bss, link, active, skipped, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(bool, active)
++		__field(bool, skipped)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->active = active;
++		__entry->skipped = skipped;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u link=%u active=%u skipped=%u result=%d",
++		  __entry->bss, __entry->link, __entry->active,
++		  __entry->skipped, __entry->result)
+ );
+ 
+ TRACE_EVENT(mt7925_lab_key_result,
