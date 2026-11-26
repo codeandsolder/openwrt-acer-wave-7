@@ -276,7 +276,7 @@ def mld_records(text):
         if event.endswith("_result"):
             if current is not None:
                 check_mld_record(current)
-            current = {"time": float(time), **fields, "links": []}
+            current = {"time": float(time), "query_band": 0, **fields, "links": []}
             records.append(current)
         else:
             require(current is not None and current["ret"] == 0 and
@@ -308,6 +308,7 @@ def mld_lifetimes(records, windows):
     Do not conflate a correctly populated WTBL with an active scheduler
     record. Keep observed differences as data, not trace-parse failures.
     """
+    records = [r for r in records if r.get("query_band", 0) == 0]
     result = []
     for i, window in enumerate(windows):
         start, stop = window["authorized_at"], window["deauthorized_at"]
@@ -416,6 +417,7 @@ def selftest():
     row = mld_lifetimes([live, stale], w)[0]
     assert row["membership_matches"] is True and row["record_retired"] is True
     assert mld_lifetimes([], w)[0]["record_retired"] is None
+    assert mld_lifetimes([live, stale, {**stale, "query_band": 1}], w)[0]["record_retired"] is True
     ctl = line(9, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
     ctl += line(9.5, "mt7925_lab_data_txd", txd.replace("0x0800", "0x888e"))
     ctl += line(10.2, "mt7925_lab_data_tx_free", free)
