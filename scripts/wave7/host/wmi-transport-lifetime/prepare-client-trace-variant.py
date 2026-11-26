@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 MODULES = {
@@ -23,6 +24,51 @@ def replace_once(text, old, new):
     if text.count(old) != 1:
         raise ValueError(f"expected exactly one {old!r}")
     return text.replace(old, new)
+
+
+def extend_crash_profile(text, old, new):
+    """Inherit every existing event/probe condition, including nested ones."""
+    pattern = re.compile(
+        rf"(?m)^([ \t]*)(if \[\[ )?(\$variant == {re.escape(old)})( \|\|| \]\]; then)$"
+    )
+
+    def expand(match):
+        indent, prefix, condition, suffix = match.groups()
+        prefix = prefix or ""
+        return (indent + prefix + condition + " ||\n"
+                + indent + " " * len(prefix) + "$variant == " + new + suffix)
+
+    extended, count = pattern.subn(expand, text)
+    if count < 2 or count != text.count(old):
+        raise ValueError(f"unsupported crash profile references for {old}: {count}/{text.count(old)}")
+    return extended
+
+
+def selftest():
+    old, new = "old-trace", "new-trace"
+    fixture = (
+        "if [[ $variant == old-trace ||\n"
+        "      $variant == other ]]; then\n"
+        "    if [[ $variant == old-trace ]]; then\n"
+        "        :\n"
+        "    fi\n"
+        "fi\n"
+        "if [[ $variant == other ||\n"
+        "      $variant == old-trace ]]; then\n"
+        "    :\n"
+        "fi\n"
+    )
+    result = extend_crash_profile(fixture, old, new)
+    assert result.count(old) == result.count(new) == 3
+    assert "if [[ $variant == old-trace ||\n          $variant == new-trace ]]; then" in result
+    subprocess.run(["bash", "-n"], input=result, text=True, check=True)
+    try:
+        extend_crash_profile(fixture + "echo old-trace\n", old, new)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unhandled variant reference accepted")
+    print("TRACE_VARIANT_SELFTEST_PASS")
 
 
 def main():
@@ -72,11 +118,7 @@ def main():
     s = s[:end] + "\n" + block + s[end:]
     line = f"    [{old}]=association-rxtx"
     source[names[0]] = replace_once(s, line, line + f"\n    [{new}]=association-rxtx")
-    s = source[names[1]]
-    line = f"      $variant == {old} ]]; then"
-    if s.count(line) != 2:
-        raise ValueError("unexpected crash stream profile structure")
-    source[names[1]] = s.replace(line, f"      $variant == {old} ||\n      $variant == {new} ]]; then")
+    source[names[1]] = extend_crash_profile(source[names[1]], old, new)
     source[names[2]] = replace_once(source[names[2]], f"--{old})", f"--{old}|--{new})")
     args.output.mkdir(parents=True, exist_ok=False)
     for name, content in source.items():
@@ -87,4 +129,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--selftest"]:
+        selftest()
+    else:
+        main()
