@@ -245,6 +245,45 @@ def check_mld_record(row):
                 "failed MLD query has payload")
 
 
+def mld_lifetimes(records, windows):
+    """Compare firmware scheduler bindings to peer WTBL host-band ownership.
+
+    Do not conflate a correctly populated WTBL with an active scheduler
+    record. Keep observed differences as data, not trace-parse failures.
+    """
+    result = []
+    for i, window in enumerate(windows):
+        start, stop = window["authorized_at"], window["deauthorized_at"]
+        next_start = windows[i + 1]["authorized_at"] if i + 1 < len(windows) else float("inf")
+        post_keys = [r for r in records if r["stage"] == 7 and start <= r["time"] < stop]
+        pre_remove = [r for r in records if r["stage"] == 14 and start <= r["time"] < next_start]
+        post_remove = [r for r in records if r["stage"] == 15 and start <= r["time"] < next_start]
+        # Require exactly one snapshot of each phase when interpreting a
+        # complete MLD lifetime. Missing or failed queries stay explicit.
+        wt = [row for row in window["wtbl"] if row["stage"] == 7]
+        expected = sorted((row["host_band"], row["wcid"]) for row in wt)
+        observed = None
+        if len(post_keys) == 1 and post_keys[0]["ret"] == 0:
+            observed = sorted((link["band"], link["wcid"]) for link in post_keys[0]["links"]
+                              if link["active"])
+        retired = None
+        if len(post_remove) == 1 and post_remove[0]["ret"] == 0:
+            r = post_remove[0]
+            retired = (r["record"]["state"] == 0 and r["record"]["active_bitmap"] == 0
+                       and r["record"]["active_count"] == 0
+                       and not any(link["active"] for link in r["links"]))
+        result.append({
+            "authorized_at": start,
+            "expected_band_wcids": expected,
+            "observed_band_wcids": observed,
+            "membership_matches": observed == expected if observed is not None and expected else None,
+            "record_retired": retired,
+            "snapshot_counts": {"post_keys": len(post_keys), "pre_remove": len(pre_remove),
+                                "post_remove": len(post_remove)},
+        })
+    return result
+
+
 def selftest():
     def line(t, e, body):
         return f"worker [001] ..... {t:.6f}: {e}: {body}\n"
@@ -302,6 +341,24 @@ def selftest():
         pass
     else:
         raise AssertionError("duplicate MLD slot accepted")
+    w = [{"authorized_at": 10, "deauthorized_at": 20,
+          "wtbl": [{"stage": 7, "host_band": 0, "wcid": 3},
+                   {"stage": 7, "host_band": 1, "wcid": 2}]}]
+    live = {"time": 11, "stage": 7, "ret": 0,
+            "links": [{"band": 0, "wcid": 2, "active": 1},
+                      {"band": 1, "wcid": 0, "active": 0}]}
+    stale = {"time": 21, "stage": 15, "ret": 0,
+             "record": {"state": 1, "active_bitmap": 1, "active_count": 1},
+             "links": live["links"]}
+    row = mld_lifetimes([live, stale], w)[0]
+    assert row["membership_matches"] is False and row["record_retired"] is False
+    live["links"] = [{"band": 0, "wcid": 3, "active": 1},
+                     {"band": 1, "wcid": 2, "active": 1}]
+    stale["record"] = {"state": 0, "active_bitmap": 0, "active_count": 0}
+    stale["links"] = [{"active": 0}, {"active": 0}]
+    row = mld_lifetimes([live, stale], w)[0]
+    assert row["membership_matches"] is True and row["record_retired"] is True
+    assert mld_lifetimes([], w)[0]["record_retired"] is None
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -329,6 +386,7 @@ if __name__ == "__main__":
                                        args.allow_open_ap_peer and side == "ap")
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
+                result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
         print(json.dumps(result, indent=2))
