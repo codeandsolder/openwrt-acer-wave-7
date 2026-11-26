@@ -302,6 +302,44 @@ def check_mld_record(row):
                 "failed MLD query has payload")
 
 
+def mld_transitions(records):
+    """Report observed firmware record changes and paired band-query results."""
+    changes = []
+    paired = []
+    previous = None
+    baseline = None
+    for row in records:
+        band = row.get("query_band", 0)
+        # Failed queries are missing observations, never inactive records.
+        value = None
+        if row["ret"] == 0:
+            value = {"record": row["record"], "links": sorted(row["links"],
+                                                               key=lambda x: x["slot"])}
+        if band == 0:
+            baseline = row
+            if value is None:
+                previous = None
+                continue
+            if value != previous:
+                changes.append({"time": row["time"], "stage": row["stage"],
+                                "previous": previous, "observed": value})
+            previous = value
+        elif band == 1:
+            require(baseline is not None and baseline["stage"] == row["stage"],
+                    "unpaired band query")
+            compare = None
+            if baseline["ret"] == row["ret"] == 0:
+                compare = (baseline["record"] == row["record"] and
+                           sorted(baseline["links"], key=lambda x: x["slot"]) ==
+                           sorted(row["links"], key=lambda x: x["slot"]))
+            paired.append({"stage": row["stage"], "time": row["time"],
+                           "reply_band_0": baseline.get("reply_band"),
+                           "reply_band_1": row.get("reply_band"),
+                           "identical": compare})
+            baseline = None
+    return {"changes": changes, "band_comparisons": paired}
+
+
 def mld_lifetimes(records, windows):
     """Compare firmware scheduler bindings to peer WTBL host-band ownership.
 
@@ -426,6 +464,17 @@ def selftest():
     assert cr["pre_authorize_pending"] == 1
     assert cr["control_events"][0]["acked"] is False
     assert cr["descriptors"][0]["return"]["header_count"] == 0
+    inactive = {"time": 9, "stage": 20, "ret": 0, "query_band": 0,
+                "reply_band": 0, "record": {"state": 0}, "links": []}
+    created = {**inactive, "stage": 23, "time": 10, "record": {"state": 1}}
+    trans = mld_transitions([inactive, {**inactive, "query_band": 1},
+                             created, {**created, "query_band": 1},
+                             {**created, "stage": 7, "time": 11}])
+    assert [x["stage"] for x in trans["changes"]] == [20, 23]
+    assert all(x["identical"] for x in trans["band_comparisons"])
+    failed = {**inactive, "stage": 22, "ret": -71}
+    assert mld_transitions([failed, {**failed, "query_band": 1}])["band_comparisons"][0]["identical"] is None
+    assert mld_transitions([inactive, {**created, "stage": 20, "query_band": 1}])["band_comparisons"][0]["identical"] is False
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -454,6 +503,7 @@ if __name__ == "__main__":
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
                 result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
+                result["mld_transitions"] = mld_transitions(result["mld_records"])
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
                 result["control_port"] = control_port_windows(text, result[side])
