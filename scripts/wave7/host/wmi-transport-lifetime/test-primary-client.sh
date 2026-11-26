@@ -65,6 +65,7 @@ for arg in "$@"; do
         --client-mgmt-fixed-link-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ;;
         --client-mgmt-wmm-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ;;
         --client-mgmt-mat-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-mat-trace ;;
+        --client-host-flush-trace) variant=upstream-prefix22-authorize-delayed-links-host-flush-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -335,7 +336,8 @@ for band in "${bands[@]}"; do
     if [[ $variant == upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-mat-trace ]]; then
+          $variant == upstream-prefix22-authorize-delayed-links-mgmt-mat-trace ||
+          $variant == upstream-prefix22-authorize-delayed-links-host-flush-trace ]]; then
         control_profile=--mgmt-tx
     fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
