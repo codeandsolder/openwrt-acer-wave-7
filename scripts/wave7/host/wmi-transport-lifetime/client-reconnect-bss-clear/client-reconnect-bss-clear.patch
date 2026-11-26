@@ -1,0 +1,85 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -2727,6 +2727,39 @@
+ 	rem->action = 0;
+ }
+ 
++/* Vendor cnmStaFreeAllStaByNetwork sends STA_REC_REMOVE action BSS
++ * after network deactivation. The WLAN index is ignored for this action.
++ * This is not a device-wide purge.
++ */
++int mt7925_lab_sta_clear_bss(struct mt792x_dev *dev,
++			    struct mt792x_bss_conf *mconf)
++{
++	struct sta_req_hdr *hdr;
++	struct sta_rec_remove *rem;
++	struct sk_buff *skb;
++	int ret;
++
++	if (WARN_ON_ONCE(mconf->dev_active))
++		return -EBUSY;
++
++	skb = __mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mconf->mt76,
++					      NULL, MT7925_STA_UPDATE_MAX_SIZE);
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++
++	hdr = (void *)skb->data;
++	hdr->wlan_idx_lo = to_wcid_lo(0x7ff);
++	hdr->wlan_idx_hi = to_wcid_hi(0x7ff);
++	rem = (void *)mt76_connac_mcu_add_tlv(skb, STA_REC_REMOVE,
++					     sizeof(*rem));
++	rem->action = 1; /* STA_REC_CMD_ACTION_BSS */
++	ret = mt76_mcu_skb_send_msg(&dev->mt76, skb,
++				    MCU_UNI_CMD(STA_REC_UPDATE), true);
++	trace_mt7925_lab_sta_result(0x7ff, mconf->mt76.idx,
++				    mconf->link_id, false, MT76_STA_INFO_STATE_NONE, ret);
++	return ret;
++}
++
+ static int
+ mt7925_mcu_sta_cmd(struct mt76_phy *phy,
+ 		   struct mt76_sta_cmd_info *info, bool include_mld)
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -328,6 +328,8 @@
+ 			      struct ieee80211_vif *vif,
+ 			      struct ieee80211_sta *sta,
+ 			      struct mt792x_link_sta *mlink);
++int mt7925_lab_sta_clear_bss(struct mt792x_dev *dev,
++			    struct mt792x_bss_conf *mconf);
+ int mt7925_mcu_set_chan_info(struct mt792x_phy *phy, u16 tag);
+ int mt7925_mcu_set_tx(struct mt792x_dev *dev, struct ieee80211_bss_conf *bss_conf);
+ int mt7925_mcu_set_eeprom(struct mt792x_dev *dev);
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1879,6 +1879,29 @@
+ 			msta->deflink_id = IEEE80211_LINK_UNSPECIFIED;
+ 	}
+ 
++	/* Complete station teardown only: all peers have been removed and
++	 * the addressed BSSes deactivated. Never clear a live/partial BSS.
++	 */
++	if (removing_sta && is_mt7925(mdev) && !msta->valid_links &&
++	    vif->type == NL80211_IFTYPE_STATION && !sta->tdls &&
++	    ieee80211_vif_is_mld(vif)) {
++		mt7925_lab_mld_snapshot(dev, vif, 27);
++		for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
++			struct mt792x_bss_conf *conf;
++			int ret;
++
++			conf = mt792x_vif_to_link(msta->vif, link_id);
++			if (!conf || conf->dev_active) {
++				mt792x_reset(mdev);
++				continue;
++			}
++			ret = mt7925_lab_sta_clear_bss(dev, conf);
++			if (ret) {
++				dev_err(mdev->dev, "BSS station clear failed: %d\n", ret);
++				mt792x_reset(mdev);
++			}
++		}
++	}
+ 	if (removing_sta)
+ 		mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_POST_REMOVE);
+ 
