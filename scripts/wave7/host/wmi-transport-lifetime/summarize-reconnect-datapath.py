@@ -148,7 +148,7 @@ def parse_trace(text, side, min_associations=2, allow_open_peer=False):
 
 
 
-def token_windows(text, windows):
+def data_token_submissions(text):
     """Pair each submitted descriptor with its eventual token return."""
     events = []
     for line in text.splitlines():
@@ -181,6 +181,11 @@ def token_windows(text, windows):
                 "header_count": (header >> 24) & 15 if fields["header_valid"] == "1" else None,
                 "header_status": (header >> 28) & 3 if fields["header_valid"] == "1" else None,
             }
+    return submissions, unmatched_free
+
+
+def token_windows(text, windows):
+    submissions, unmatched_free = data_token_submissions(text)
     result = []
     for window in windows:
         start, stop = window["authorized_at"], window["deauthorized_at"]
@@ -202,6 +207,58 @@ def token_windows(text, windows):
             "descriptors": rows,
         })
     return {"unmatched_free": unmatched_free, "windows": result}
+
+def control_port_windows(text, windows):
+    """Report PAE descriptor completion relative to host authorization.
+
+    cfg80211 cookies are a different namespace from skb cookies. Keep
+    cfg80211 request/status events as independent timestamped evidence;
+    never pair them by assuming FIFO status delivery.
+    """
+    submissions, _ = data_token_submissions(text)
+    control = []
+    starts = []
+    for line in text.splitlines():
+        m = LINE.search(line)
+        if not m:
+            continue
+        time, event, body = m.groups()
+        time = float(time)
+        if event == "drv_sta_state":
+            state = STATE.search(body)
+            if state and state.group(2, 3) == ("0", "1"):
+                starts.append(time)
+        elif event == "rdev_tx_control_port" and "proto: 0x888e" in body:
+            control.append({"time": time, "event": "request"})
+        elif event == "cfg80211_rx_control_port" and "proto: 0x888e" in body:
+            match = re.search(r"len=(\d+).*link: (-?\d+)", body)
+            require(match, "malformed control-port RX")
+            control.append({"time": time, "event": "receive",
+                            "length": int(match[1]), "link": int(match[2])})
+        elif event == "cfg80211_control_port_tx_status":
+            match = re.search(r"cookie: (\d+), ack: (true|false)", body)
+            require(match, "malformed control-port status")
+            control.append({"time": time, "event": "status",
+                            "cookie": int(match[1]), "acked": match[2] == "true"})
+    result = []
+    for i, window in enumerate(windows):
+        auth, stop = window["authorized_at"], window["deauthorized_at"]
+        preceding = [t for t in starts if t <= auth]
+        if not preceding:
+            continue
+        start = preceding[-1]
+        next_start = min((t for t in starts if t > auth), default=float("inf"))
+        pae = [row for row in submissions if row["protocol"] == "0x888e"
+               and start <= row["submitted_at"] < stop]
+        pending = [row for row in pae if row["submitted_at"] < auth and
+                   ("return" not in row or row["return"]["time"] >= auth)]
+        result.append({"start": start, "authorized_at": auth,
+                       "pre_authorize_pending": len(pending),
+                       "descriptors": pae,
+                       "control_events": [row for row in control
+                                          if start <= row["time"] < next_start]})
+    return result
+
 
 def mld_records(text):
     """Keep snapshots outside authorization windows, including teardown."""
@@ -359,6 +416,14 @@ def selftest():
     row = mld_lifetimes([live, stale], w)[0]
     assert row["membership_matches"] is True and row["record_retired"] is True
     assert mld_lifetimes([], w)[0]["record_retired"] is None
+    ctl = line(9, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
+    ctl += line(9.5, "mt7925_lab_data_txd", txd.replace("0x0800", "0x888e"))
+    ctl += line(10.2, "mt7925_lab_data_tx_free", free)
+    ctl += line(10.3, "cfg80211_control_port_tx_status", "wdev(1), cookie: 9, ack: false")
+    cr = control_port_windows(ctl, [{"authorized_at": 10, "deauthorized_at": 11}])[0]
+    assert cr["pre_authorize_pending"] == 1
+    assert cr["control_events"][0]["acked"] is False
+    assert cr["descriptors"][0]["return"]["header_count"] == 0
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -389,4 +454,5 @@ if __name__ == "__main__":
                 result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
+                result["control_port"] = control_port_windows(text, result[side])
         print(json.dumps(result, indent=2))
