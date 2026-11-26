@@ -42,6 +42,73 @@ def sections(text):
     return lines[:2], result
 
 
+LINK_COUNTERS = {"rx bytes", "rx packets", "tx bytes", "tx packets",
+                 "tx retries", "tx failed", "rx drop misc", "tx duration",
+                 "rx duration", "beacon rx", "beacon loss"}
+LINK_RATES = {"signal", "signal avg", "tx bitrate", "rx bitrate",
+              "last ack signal", "avg ack signal"}
+
+
+def parse_link_station(lines, sta, links):
+    """Parse multipart nl80211 link replies, not the aggregate station rate."""
+    result = {}
+    current = None
+    for line in lines:
+        if line.startswith("Station"):
+            current = None
+            require(line in (f"Station {sta[0]} (on {sta[1]})",
+                             f"Station links {sta[0]} (on {sta[1]})"),
+                    "unexpected link station identity")
+        elif m := re.fullmatch(r"\tLink (\d+):", line):
+            current = int(m[1])
+            require(current not in result, "duplicate station link reply")
+            result[current] = {"address": None, "counters": {}, "rates": {}}
+        elif current is not None and line.startswith("\t\t"):
+            key, value = map(str.strip, line.strip().split(":", 1))
+            entry = result[current]
+            if key == "address":
+                require(entry["address"] is None, "duplicate link address")
+                entry["address"] = value
+            elif key in LINK_COUNTERS:
+                require(key not in entry["counters"], "duplicate link counter")
+                entry["counters"][key] = int(value.split()[0])
+            elif key in LINK_RATES:
+                require(key not in entry["rates"], "duplicate link rate")
+                entry["rates"][key] = value
+    require(result.keys() == links.keys(), "missing per-link station reply")
+    for k, v in result.items():
+        require(v["address"] == links[k]["addr"], "link address mismatch")
+        require({"rx bytes", "rx packets", "tx bytes", "tx packets"} <= v["counters"].keys(),
+                "missing per-link packet/byte counters")
+    return result
+
+
+def parse_link_datapath(lines, links):
+    result = {}
+    for line in lines:
+        if not line or set(line) == {"-"}:
+            continue
+        m = re.fullmatch(r"link\[(\d+)\] (.+?)\s*=\s*(.*)", line)
+        require(m, "unparsed link datapath counter")
+        link, key, value = int(m[1]), m[2], m[3]
+        entry = result.setdefault(link, {})
+        if value.isdigit():
+            require(key not in entry, "duplicate link datapath counter")
+            entry[key] = int(value)
+        else:
+            for pair in value.split():
+                name, count = pair.split(":")
+                subkey = f"{key}/{name}"
+                require(subkey not in entry, "duplicate link datapath counter")
+                entry[subkey] = int(count)
+    require(result.keys() == links.keys(), "missing link datapath counters")
+    for v in result.values():
+        require({"Tx Unicast Frames Enqueued", "Tx Broadcast Frames Enqueued",
+                 "Tx Frames Completed", "Tx Frames Dropped"} <= v.keys(),
+                "incomplete link datapath counters")
+    return result
+
+
 def parse(text):
     header, sections_ = sections(text)
     required = {"CPU", "SOFTIRQ", "IRQ", "STATION", "AQL"}
@@ -132,6 +199,13 @@ def parse(text):
                 all(set(v) == {"addr", "rx_duplicates", "rx_fragments"} for v in links.values()),
                 "incomplete aggregation or MLO link data")
         extra["aggregation"] = {"tids": tids, "links": links}
+    require(("LINK_STATION" in sections_) == ("LINK_DATAPATH" in sections_),
+            "incomplete per-link telemetry")
+    if "LINK_STATION" in sections_:
+        require("aggregation" in extra, "missing independent link identity")
+        links = extra["aggregation"]["links"]
+        extra["link_station"] = parse_link_station(sections_["LINK_STATION"], sta[0], links)
+        extra["link_datapath"] = parse_link_datapath(sections_["LINK_DATAPATH"], links)
     if "AFFINITY" in sections_:
         affinity = {int(irq): cpulist for irq, cpulist in
                     (line.split() for line in sections_["AFFINITY"])}
@@ -189,6 +263,23 @@ def compare(before, after):
             link_delta[k] = subtract({k: v for k, v in link.items() if k != "addr"},
                                      {k: v for k, v in later.items() if k != "addr"})
         extra["aggregation"] = {"before": aa, "after": bb, "link_delta": link_delta}
+    if "link_station" in a["extra"]:
+        before_links = a["extra"]["link_station"]
+        after_links = b["extra"]["link_station"]
+        require(before_links.keys() == after_links.keys(), "link set changed")
+        extra["link_station"] = {}
+        for k, v in before_links.items():
+            later = after_links[k]
+            require(v["address"] == later["address"], "link peer changed")
+            extra["link_station"][k] = {
+                "address": v["address"],
+                "delta": subtract(v["counters"], later["counters"]),
+                "rates": {"before": v["rates"], "after": later["rates"]},
+            }
+        extra["link_datapath_delta"] = {
+            k: subtract(v, b["extra"]["link_datapath"][k])
+            for k, v in a["extra"]["link_datapath"].items()
+        }
     if "affinity" in a["extra"]:
         require(a["extra"]["affinity"] == b["extra"]["affinity"],
                 "IRQ affinity changed during case")
