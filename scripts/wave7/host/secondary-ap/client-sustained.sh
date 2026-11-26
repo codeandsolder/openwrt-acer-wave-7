@@ -61,7 +61,7 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
 fi
 
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* || $2 == --early-load-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
+   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* || $2 == --early-load-upstream-* || $2 == --early-reconnect-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
 association_preference=${3:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
@@ -85,6 +85,7 @@ early_tap=0
 early_dual=0
 early_soak=0
 early_load=0
+early_reconnect=0
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -103,8 +104,13 @@ case "${2:-}" in
     --scan-timing-rocwire) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocwire_experiment=1; pm_experiment=1 ;;
     --scan-timing-roccontract) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; roccontract_experiment=1; pm_experiment=1 ;;
     --scan-timing-rocgeometry) scope_experiment=1; mode_experiment=1; timing_experiment=1; trace_window=1; rocgeometry_experiment=1; pm_experiment=1 ;;
-    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*|--early-soak-upstream-*|--early-load-upstream-*)
-        if [[ $2 == --early-load-upstream-* ]]; then
+    --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*|--early-soak-upstream-*|--early-load-upstream-*|--early-reconnect-upstream-*)
+        if [[ $2 == --early-reconnect-upstream-* ]]; then
+            early_only=1
+            early_dual=1
+            early_reconnect=1
+            upstream_stack_variant=${2#--early-reconnect-}
+        elif [[ $2 == --early-load-upstream-* ]]; then
             early_only=1
             early_dual=1
             early_load=1
@@ -276,7 +282,7 @@ probe_start() {
     local -a id_args=()
 
     if (( timing_experiment )) &&
-       [[ $name == steady-* || $name == short-hold-* ]]; then
+       [[ $name == steady-* || $name == short-hold-* || $name == reconnect-hold-* ]]; then
         interval=.05
     fi
     if (( early_tap )) && [[ $name == short-hold-2 ]]; then
@@ -668,6 +674,41 @@ if (( early_only )); then
             rg -qx 'mac80211_valid_links=0x3' "$out/$f" || short_failed=1
         done
         printf 'short_dual_hold_pass=%s\n' "$((1 - short_failed))" > "$out/short-dual-hold-result.txt"
+        if (( early_reconnect && !short_failed )); then
+            # Keep the temporary profile and module stack unchanged.
+            # No wait for AP inactivity aging, no forced AP peer deletion.
+            printf 'down_start=%s\n' "$(date +%s.%N)" > "$out/reconnect-timing.txt"
+            rootcmd nmcli --wait 15 connection down "$tmp" > "$out/reconnect-down.txt" 2>&1
+            for ((attempt=0; attempt<40; attempt++)); do
+                [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] && break
+                sleep .1
+            done
+            [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] || exit 3
+            printf 'up_start=%s\n' "$(date +%s.%N)" >> "$out/reconnect-timing.txt"
+            rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/reconnect-up.txt" 2>&1
+            printf 'up_complete=%s\n' "$(date +%s.%N)" >> "$out/reconnect-timing.txt"
+            v4=$(ip -4 -o addr show dev "$iface" | lab_ipv4_from_ip)
+            v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
+            [[ -n $v4 && -n $v6 ]] || exit 3
+            path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+            reconnect_links(){
+                local a v d
+                a=$(rootcmd cat "$path/active_links") || return 1
+                v=$(rootcmd cat "$path/valid_links") || return 1
+                d=$(rootcmd cat "$path/dormant_links") || return 1
+                printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
+                [[ $a == 0x3 && $v == 0x3 && $d == 0x0 ]]
+            }
+            reconnect_links > "$out/reconnect-links-before.txt" || exit 3
+            probe_start reconnect-hold-ap 440 "$v4" 192.168.76.1 -4
+            probe_start reconnect-hold-asus 440 "$v4" 192.168.76.2 -4
+            probe_start reconnect-hold-v6 440 "$v6" fd76:7::2 -6
+            for index in "${!pings[@]}"; do
+                probe_wait_one "$index" || short_failed=1
+            done
+            reconnect_links > "$out/reconnect-links-after.txt" || short_failed=1
+            printf 'reconnect_pass=%s\n' "$((1 - short_failed))" > "$out/reconnect-result.txt"
+        fi
         if (( early_load && !short_failed )); then
             load_failed=0
             path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
