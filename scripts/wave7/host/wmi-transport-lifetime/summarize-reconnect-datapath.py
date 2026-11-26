@@ -756,7 +756,7 @@ if __name__ == "__main__":
     parser.add_argument("--selftest", action="store_true")
     parser.add_argument("--allow-open-ap-peer", action="store_true",
                         help="report AP authorization still open at trace end, not a synthetic deauth")
-    parser.add_argument("--min-associations", type=int, choices=(1, 2), default=2,
+    parser.add_argument("--min-associations", type=int, choices=(1, 2, 3), default=2,
                         help="use 1 for an initial-hold failure before reconnect")
     args = parser.parse_args()
     if args.selftest:
