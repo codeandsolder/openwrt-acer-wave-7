@@ -367,6 +367,70 @@ def mld_command_windows(lifecycle, control, windows):
                 without_bss_group(r) == without_bss_group(rows[0]) for r in rows[1:])}
 
 
+def band_group_refresh_windows(lifecycle, control, windows):
+    """Match BSS BASIC, optional MLD tag and synchronous ACK by lifetime.
+
+    Only a successful update between two concrete hardware bands counts
+    as migration. An AUTO assignment or a different peer is not a move.
+    """
+    starts = []
+    for line in control.splitlines():
+        m = LINE.search(line)
+        if m and m[2] == "drv_sta_state":
+            state = STATE.search(m[3])
+            if state and state.group(2, 3) == ("0", "1"):
+                starts.append(float(m[1]))
+    kinds = {"mt7925_lab_bss_basic", "mt7925_lab_bss_mld",
+             "mt7925_lab_bss_result", "mt7925_lab_sta_mld_update"}
+    events = [(float(m[1]), m[2], {k: int(v) for k, v in FIELD.findall(m[3])})
+              for line in lifecycle.splitlines() if (m := LINE.search(line))
+              and m[2] in kinds]
+    rows = []
+    for window in windows:
+        auth, stop = window["authorized_at"], window["deauthorized_at"]
+        start = max((t for t in starts if t <= auth), default=None)
+        relevant = [e for e in events if start is not None and start <= e[0] < stop]
+        pending, previous, moves = {}, {}, []
+        for t, kind, f in relevant:
+            if kind == "mt7925_lab_sta_mld_update":
+                continue
+            key = (f["bss"], f["link"])
+            if kind == "mt7925_lab_bss_basic":
+                pending[key] = {"time": t, "basic": f, "tags": []}
+            elif kind == "mt7925_lab_bss_mld" and key in pending:
+                pending[key]["tags"].append({"time": t, **f})
+            elif kind == "mt7925_lab_bss_result" and key in pending:
+                request = pending.pop(key)
+                basic = request["basic"]
+                if (f["result"] != 0 or f["wcid"] != basic["peer"]
+                        or f["enabled"] != basic["enabled"]):
+                    continue
+                # Disconnect or reassignment of the BSS invalidates
+                # its previous concrete peer-band binding.
+                old = previous.pop(key, None)
+                if not basic["enabled"] or not basic.get("active") or basic.get("peer_link") == 255:
+                    continue
+                if basic["band"] not in (0, 1):
+                    continue
+                previous[key] = basic
+                if (old is None or old["peer"] != basic["peer"]
+                        or old["band"] == basic["band"]):
+                    continue
+                tags = request["tags"]
+                first_sta = min((time for time, event, fields in relevant
+                                 if event == "mt7925_lab_sta_mld_update"
+                                 and time >= request["time"]), default=None)
+                moves.append({"bss": key[0], "link": key[1], "wcid": basic["peer"],
+                              "from_band": old["band"], "to_band": basic["band"],
+                              "basic_at": request["time"], "ack_at": t, "mld_tags": tags,
+                              "first_sta_mld_update_at": first_sta,
+                              "group_refresh_before_sta": len(tags) == 1 and
+                              first_sta is not None and request["time"] <= tags[0]["time"]
+                              <= t < first_sta})
+        rows.append({"authorized_at": auth, "migrations": moves})
+    return rows
+
+
 def band_retirement_windows(lifecycle, control, windows):
     """Observe peer disconnect, station removal and DEV deactivation in order.
 
@@ -769,6 +833,23 @@ def selftest():
         three_groups.replace("30.000000: mt7925_lab_sta_mld_slot: target=3",
                              "30.000000: mt7925_lab_sta_mld_slot: target=4"),
         three_ctl, three_windows)["same_sequence_except_bss_group"]
+    basic = "bss=0 link=0 peer=2 peer_link=0 enabled=1 active=1 band="
+    ack = "bss=0 link=0 wcid=2 enabled=1 result=0"
+    migration = (
+        line(9.1, "mt7925_lab_bss_basic", basic + "0")
+        + line(9.2, "mt7925_lab_bss_result", ack)
+        + line(9.3, "mt7925_lab_bss_basic", basic + "1")
+        + line(9.4, "mt7925_lab_bss_mld", "bss=0 link=0 group=0 own=32")
+        + line(9.5, "mt7925_lab_bss_result", ack)
+        + line(9.6, "mt7925_lab_sta_mld_update", "bss=1 wcid=3 result=0")
+    )
+    def moves(trace):
+        return band_group_refresh_windows(trace, ctl, w[:1])[0]["migrations"]
+    assert moves(migration)[0]["group_refresh_before_sta"]
+    assert not moves(migration.replace("mt7925_lab_bss_mld", "other"))[0]["group_refresh_before_sta"]
+    assert not moves(migration.replace("band=0", "band=255"))
+    assert not moves(migration.replace("result=0", "result=-5"))
+    assert not moves(migration.replace("peer=2 peer_link=0", "peer=2 peer_link=255"))
     peer = {"stage": 7, "bss": 1, "link": 1, "wcid": 3, "host_band": 0}
     retire_window = [{"authorized_at": 10, "deauthorized_at": 11, "wtbl": [peer]}]
     retirement = (
@@ -854,6 +935,8 @@ if __name__ == "__main__":
                     lifecycle = (args.trial / lifecycle_name).read_text()
                     result["mld_commands"] = mld_command_windows(lifecycle, text, result[side])
                     result["band_retirement"] = band_retirement_windows(
+                        lifecycle, text, result[side])
+                    result["band_group_refresh"] = band_group_refresh_windows(
                         lifecycle, text, result[side])
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
