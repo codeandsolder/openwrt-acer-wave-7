@@ -1,0 +1,299 @@
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -279,6 +279,9 @@
+ 	bool roc_grant;
+ 	bool roc_notify; /* mac80211 expects the expiry of this ROC */
+ 	bool roc_is_mlo;
++	bool roc_mgmt; /* synchronous associated management exchange */
++	u8 roc_mgmt_bss;
++	u8 roc_mgmt_band;
+ 	struct mt792x_bss_conf *roc_mconf;
+ };
+ 
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -589,6 +589,13 @@
+ 
+ 	cancel_work(&phy->roc_work);
+ 
++	if (READ_ONCE(phy->roc_mgmt)) {
++		mt7925_mcu_abort_roc_bss(phy, phy->roc_mgmt_bss,
++					 phy->roc_token_id, phy->roc_mgmt_band);
++		WRITE_ONCE(phy->roc_mgmt, false);
++		return;
++	}
++
+ 	ieee80211_iterate_interfaces(mt76_hw(dev),
+ 				     IEEE80211_IFACE_ITER_RESUME_ALL,
+ 				     mt7925_roc_iter, (void *)phy);
+@@ -604,18 +611,24 @@
+ 						roc_work);
+ 
+ 	data.phy = phy;
+-	data.token = phy->roc_token_id;
++	data.token = READ_ONCE(phy->roc_token_id);
+ 
+-	if (!test_and_clear_bit(MT76_STATE_ROC, &phy->mt76->state))
+-		return;
++	mt792x_mutex_acquire(phy->dev);
++	/* Old timer work must not consume a replacement ROC. Synchronous
++	 * management privilege does not arm a host expiry timer at all.
++	 */
++	if (data.token != phy->roc_token_id || phy->roc_mgmt ||
++	    timer_pending(&phy->roc_timer) ||
++	    !test_and_clear_bit(MT76_STATE_ROC, &phy->mt76->state))
++		goto out;
+ 
+-	/* Before the abort round trip, so that no mgmt_tx joins the dead ROC */
+-	ieee80211_remain_on_channel_expired(phy->mt76->hw);
++	if (phy->roc_notify)
++		ieee80211_remain_on_channel_expired(phy->mt76->hw);
+ 
+-	mt792x_mutex_acquire(phy->dev);
+ 	ieee80211_iterate_active_interfaces(phy->mt76->hw,
+ 					    IEEE80211_IFACE_ITER_RESUME_ALL,
+ 					    mt7925_roc_token_iter, &data);
++out:
+ 	mt792x_mutex_release(phy->dev);
+ }
+ 
+@@ -643,7 +656,7 @@
+ 		.token = phy->roc_token_id,
+ 	};
+ 
+-	if (!test_bit(MT76_STATE_ROC, &phy->mt76->state) ||
++	if (phy->roc_mgmt || !test_bit(MT76_STATE_ROC, &phy->mt76->state) ||
+ 	    timer_pending(&phy->roc_timer))
+ 		return;
+ 
+@@ -682,6 +695,9 @@
+ 	phy->roc_mconf = mconf;
+ 	phy->roc_grant = false;
+ 	phy->roc_notify = type == MT7925_ROC_REQ_ROC;
++	phy->roc_mgmt_bss = mconf->mt76.idx;
++	phy->roc_mgmt_band = mconf->mt76.band_idx;
++	WRITE_ONCE(phy->roc_mgmt, type == MT7925_ROC_REQ_OFFCHNL_TX);
+ 
+ 	err = mt7925_mcu_set_roc(phy, mconf, chan, duration, type, token);
+ 	if (err < 0) {
+@@ -692,11 +708,17 @@
+ 	if (!wait_event_timeout(phy->roc_wait, phy->roc_grant, 4 * HZ)) {
+ 		clear_bit(MT76_STATE_ROC, &phy->mt76->state);
+ 		timer_delete_sync(&phy->roc_timer);
+-		mt7925_mcu_abort_roc(phy, mconf, phy->roc_token_id);
++		if (phy->roc_mgmt)
++			mt7925_mcu_abort_roc_bss(phy, phy->roc_mgmt_bss,
++						 phy->roc_token_id, phy->roc_mgmt_band);
++		else
++			mt7925_mcu_abort_roc(phy, mconf, phy->roc_token_id);
+ 		err = -ETIMEDOUT;
+ 	}
+ 
+ out:
++	if (err)
++		WRITE_ONCE(phy->roc_mgmt, false);
+ 	trace_mt7925_lab_roc_sync(1, mconf->mt76.idx, phy->roc_token_id,
+ 		phy->roc_is_mlo, phy->roc_grant,
+ 		test_bit(MT76_STATE_ROC, &phy->mt76->state), err);
+@@ -709,22 +731,23 @@
+ {
+ 	int err;
+ 
+-	/* The plain and MLO ROC share MT76_STATE_ROC. Clear it with test_and_clear
+-	 * so a concurrent mt7925_roc_work() self-no-ops before taking the mt792x
+-	 * mutex this caller holds, otherwise the cancel_work_sync() below would
+-	 * deadlock on it.
++	/* The synchronous management exchange owns its token until completion.
++	 * Timer work serializes on the same mutex and checks token/expiry.
+ 	 */
++	if (phy->roc_mgmt)
++		return -EBUSY;
++
+ 	if (WARN_ON_ONCE(test_and_clear_bit(MT76_STATE_ROC, &phy->mt76->state))) {
+ 		struct mt792x_bss_conf *old = phy->roc_mconf;
+ 
+-		if (!phy->roc_is_mlo)
++		if (phy->roc_notify)
+ 			/* the ROC being taken over told mac80211 it is ready;
+ 			 * notify expiry so its state machine can move on
+ 			 */
+ 			ieee80211_remain_on_channel_expired(phy->mt76->hw);
+ 
+ 		timer_delete_sync(&phy->roc_timer);
+-		cancel_work_sync(&phy->roc_work);
++		cancel_work(&phy->roc_work);
+ 		/* abort on the link the previous ROC was started on; using the
+ 		 * new request's mconf would carry the wrong bss_idx
+ 		 */
+@@ -2541,8 +2564,23 @@
+ 	u16 duration = info->duration ? info->duration :
+ 		       jiffies_to_msecs(HZ);
+ 
+-	if (info->was_assoc)
++	if (info->was_assoc) {
++		if (vif->type != NL80211_IFTYPE_STATION ||
++		    !ieee80211_vif_is_mld(vif) ||
++		    info->link_id < 0 ||
++		    info->link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
++			return;
++
++		mt792x_mutex_acquire(dev);
++		mconf = rcu_dereference_protected(mvif->link_conf[info->link_id],
++						 lockdep_is_held(&dev->mt76.mutex));
++		if (mconf && mconf->mt76.ctx && READ_ONCE(mconf->absent) &&
++		    mconf->mt76.band_idx < MT792x_BAND_NUM)
++			mt7925_set_roc(mvif->phy, mconf, mconf->mt76.ctx->def.chan,
++				       duration, MT7925_ROC_REQ_OFFCHNL_TX);
++		mt792x_mutex_release(dev);
+ 		return;
++	}
+ 
+ 	if (!info->duration && vif->p2p)
+ 		duration = MT7925_P2P_GC_JOIN_CH_REQ_INTERVAL_MS;
+@@ -2567,8 +2605,26 @@
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 	struct mt792x_bss_conf *mconf;
+ 
+-	if (info->was_assoc)
++	if (info->was_assoc) {
++		struct mt792x_phy *phy = mvif->phy;
++
++		if (!ieee80211_vif_is_mld(vif) ||
++		    info->link_id < 0 ||
++		    info->link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
++			return;
++
++		mt792x_mutex_acquire(dev);
++		mconf = rcu_dereference_protected(mvif->link_conf[info->link_id],
++						 lockdep_is_held(&dev->mt76.mutex));
++		if (mconf && phy->roc_mgmt && phy->roc_mconf == mconf &&
++		    test_and_clear_bit(MT76_STATE_ROC, &phy->mt76->state)) {
++			mt7925_mcu_abort_roc_bss(phy, phy->roc_mgmt_bss,
++						 phy->roc_token_id, phy->roc_mgmt_band);
++			WRITE_ONCE(phy->roc_mgmt, false);
++		}
++		mt792x_mutex_release(dev);
+ 		return;
++	}
+ 
+ 	/* Keep the join ROC until the station is authorized, so that it
+ 	 * covers the 4-way handshake. mt7925_mac_sta_event() releases it.
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -505,6 +505,21 @@
+ 	    !test_bit(MT76_STATE_ROC, &dev->phy.mt76->state))
+ 		return;
+ 
++	/* A synchronous associated management exchange owns the privilege
++	 * until mgd_complete_tx. Never change the established hardware band.
++	 */
++	if (READ_ONCE(dev->phy.roc_mgmt)) {
++		if (grant->status || grant->reqtype != MT7925_ROC_REQ_OFFCHNL_TX ||
++		    grant->bss_idx != READ_ONCE(dev->phy.roc_mgmt_bss) ||
++		    grant->dbdcband != READ_ONCE(dev->phy.roc_mgmt_band))
++			return;
++		trace_mt7925_lab_roc_sync(0, grant->bss_idx, grant->tokenid,
++					0, 0, 1, 0);
++		WRITE_ONCE(dev->phy.roc_grant, true);
++		wake_up(&dev->phy.roc_wait);
++		return;
++	}
++
+ 	/* timer_pending() signals the grant to mt7925_set_roc() and the TX path */
+ 	mod_timer(&dev->phy.roc_timer,
+ 		  jiffies + msecs_to_jiffies(duration));
+@@ -604,6 +619,15 @@
+ 			    sizeof(struct mt7925_roc_grant_tlv))
+ 				break;
+ 
++			/* Ignore stale sublink grants, especially during a
++			 * synchronous associated management exchange.
++			 */
++			if (!READ_ONCE(dev->phy.roc_is_mlo) ||
++			    ((struct mt7925_roc_grant_tlv *)tlv)->tokenid !=
++			    READ_ONCE(dev->phy.roc_token_id) ||
++			    !test_bit(MT76_STATE_ROC, &dev->phy.mt76->state))
++				break;
++
+ 			/* per-link grant: only update the link band */
+ 			ieee80211_iterate_active_interfaces_atomic(dev->mt76.hw,
+ 								   IEEE80211_IFACE_ITER_RESUME_ALL,
+@@ -1925,7 +1949,9 @@
+ 		       enum mt7925_roc_req type,
+ 		       struct cfg80211_chan_def *chandef)
+ {
+-	if ((type == MT7925_ROC_REQ_JOIN || type == MT7925_ROC_REQ_GO_START_BSS) &&
++	if ((type == MT7925_ROC_REQ_JOIN ||
++	     type == MT7925_ROC_REQ_GO_START_BSS ||
++	     type == MT7925_ROC_REQ_OFFCHNL_TX) &&
+ 	    mconf->mt76.ctx && mconf->mt76.ctx->def.chan == chan) {
+ 		*chandef = mconf->mt76.ctx->def;
+ 		return;
+@@ -1960,6 +1986,9 @@
+ 	int center_ch, pri40_freq;
+ 	u8 bw;
+ 
++	if (type == MT7925_ROC_REQ_OFFCHNL_TX)
++		req.roc.dbdcband = mconf->mt76.band_idx;
++
+ 	mt7925_mcu_roc_chandef(mconf, chan, type, &chandef);
+ 	center_ch = ieee80211_frequency_to_channel(chandef.center_freq1);
+ 	bw = mt7925_chandef_to_cw(&chandef);
+@@ -2001,8 +2030,8 @@
+ 				 &req, sizeof(req), true);
+ }
+ 
+-int mt7925_mcu_abort_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
+-			 u8 token_id)
++int mt7925_mcu_abort_roc_bss(struct mt792x_phy *phy, u8 bss_idx,
++			    u8 token_id, u8 band)
+ {
+ 	struct mt792x_dev *dev = phy->dev;
+ 	int ret;
+@@ -2023,8 +2052,8 @@
+ 			.tag = cpu_to_le16(UNI_ROC_ABORT),
+ 			.len = cpu_to_le16(sizeof(struct roc_abort_tlv)),
+ 			.tokenid = token_id,
+-			.bss_idx = mconf->mt76.idx,
+-			.dbdcband = MT792x_BAND_AUTO,
++			.bss_idx = bss_idx,
++			.dbdcband = band,
+ 		},
+ 	};
+ 
+@@ -2035,6 +2064,13 @@
+ 	return ret;
+ }
+ 
++int mt7925_mcu_abort_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
++			 u8 token_id)
++{
++	return mt7925_mcu_abort_roc_bss(phy, mconf->mt76.idx, token_id,
++				       MT792x_BAND_AUTO);
++}
++
+ int mt7925_mcu_set_eeprom(struct mt792x_dev *dev)
+ {
+ 	struct {
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -434,6 +434,8 @@
+ int mt7925_mcu_set_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
+ 		       struct ieee80211_channel *chan, int duration,
+ 		       enum mt7925_roc_req type, u8 token_id);
++int mt7925_mcu_abort_roc_bss(struct mt792x_phy *phy, u8 bss_idx,
++			    u8 token_id, u8 band);
+ int mt7925_mcu_abort_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
+ 			 u8 token_id);
+ void mt7925_roc_abort_sync(struct mt792x_dev *dev);
+--- a/mt7925/p2p.c
++++ b/mt7925/p2p.c
+@@ -483,7 +483,7 @@
+ 	}
+ 
+ 	if (mconf)
+-		mconf->absent = !!data->is_absent;
++		WRITE_ONCE(mconf->absent, !!data->is_absent);
+ }
+ 
+ void mt7925_p2p_mcu_bss_is_absence_event(struct mt792x_dev *dev, struct sk_buff *skb)
