@@ -1,0 +1,161 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -2645,6 +2645,29 @@
+ 	return ret;
+ }
+ 
++/* Explicit group teardown while the firmware peer and BSS still exist.
++ * Vendor nicUniCmdMldStaTeardown sends this standalone tag.
++ */
++int mt7925_mcu_sta_mld_teardown(struct mt792x_dev *dev,
++			       struct mt792x_bss_conf *mconf,
++			       struct mt792x_link_sta *mlink)
++{
++	struct sk_buff *skb;
++	int ret;
++
++	skb = __mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mconf->mt76,
++					      &mlink->wcid,
++					      MT7925_STA_UPDATE_MAX_SIZE);
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++
++	mt76_connac_mcu_add_tlv(skb, STA_REC_MLD_OFF, sizeof(struct tlv));
++	ret = mt76_mcu_skb_send_msg(&dev->mt76, skb,
++				    MCU_UNI_CMD(STA_REC_UPDATE), true);
++	trace_mt7925_lab_sta_mld_teardown(mlink->wcid.idx, mconf->mt76.idx, ret);
++	return ret;
++}
++
+ static void
+ mt7925_mcu_sta_remove_tlv(struct sk_buff *skb)
+ {
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -328,6 +328,9 @@
+ 			      struct ieee80211_vif *vif,
+ 			      struct ieee80211_sta *sta,
+ 			      struct mt792x_link_sta *mlink);
++int mt7925_mcu_sta_mld_teardown(struct mt792x_dev *dev,
++			       struct mt792x_bss_conf *mconf,
++			       struct mt792x_link_sta *mlink);
+ int mt7925_mcu_set_chan_info(struct mt792x_phy *phy, u16 tag);
+ int mt7925_mcu_set_tx(struct mt792x_dev *dev, struct ieee80211_bss_conf *bss_conf);
+ int mt7925_mcu_set_eeprom(struct mt792x_dev *dev);
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -323,6 +323,23 @@
+ );
+ 
+ TRACE_EVENT(mt7925_lab_sta_mld_update,
++	TP_PROTO(u16 wcid, u8 bss, int result),
++	TP_ARGS(wcid, bss, result),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u8, bss)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->bss = bss;
++		__entry->result = result;
++	),
++	TP_printk("wcid=%u bss=%u result=%d",
++		  __entry->wcid, __entry->bss, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_sta_mld_teardown,
+ 	TP_PROTO(u16 wcid, u8 bss, int result),
+ 	TP_ARGS(wcid, bss, result),
+ 	TP_STRUCT__entry(
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -787,6 +787,8 @@
+ 	MT7925_LAB_CNM_ASSOC_WITHOUT_MLD,
+ 	MT7925_LAB_CNM_SECONDARY_MLD,
+ 	MT7925_LAB_CNM_SECONDARY_EHT_MLD,
++	MT7925_LAB_WTBL_PRE_TEARDOWN,
++	MT7925_LAB_WTBL_POST_TEARDOWN,
+ };
+ 
+ /*
+@@ -1721,6 +1723,55 @@
+ 	mt76_connac_power_save_sched(&dev->mphy, &dev->pm);
+ }
+ 
++/* Tear down the complete group once, addressed to its firmware primary.
++ * Partial link removal must not tear down the surviving group's state.
++ */
++static int mt7925_sta_mld_teardown(struct mt792x_dev *dev,
++				  struct ieee80211_vif *vif,
++				  struct mt792x_sta *msta)
++{
++	unsigned long links = msta->valid_links;
++	struct mt792x_vif *mvif = msta->vif;
++	struct mt792x_link_sta *primary;
++	struct mt792x_bss_conf *mconf;
++	unsigned int link;
++	u8 band0 = IEEE80211_LINK_UNSPECIFIED;
++	u8 band1 = IEEE80211_LINK_UNSPECIFIED;
++	u8 primary_id = msta->deflink_id;
++	int ret;
++
++	/* Match the two-band role ordering in mt7925_mcu_sta_mld_tlv,
++	 * preserving the distinct over-air setup link.
++	 */
++	if (is_mt7925(&dev->mt76) && hweight16(links) == 2) {
++		for_each_set_bit(link, &links, IEEE80211_MLD_MAX_NUM_LINKS) {
++			mconf = mt792x_vif_to_link(mvif, link);
++			if (!mconf || !mt792x_sta_to_link(msta, link))
++				return -ENOLINK;
++			if (mconf->mt76.band_idx == 0)
++				band0 = link;
++			else if (mconf->mt76.band_idx == 1)
++				band1 = link;
++		}
++		if (band0 != IEEE80211_LINK_UNSPECIFIED &&
++		    band1 != IEEE80211_LINK_UNSPECIFIED)
++			primary_id = band0;
++	}
++	if (primary_id >= IEEE80211_MLD_MAX_NUM_LINKS ||
++	    !(links & BIT(primary_id)))
++		return -ENOLINK;
++
++	mconf = mt792x_vif_to_link(mvif, primary_id);
++	primary = mt792x_sta_to_link(msta, primary_id);
++	if (!mconf || !primary || !primary->wcid.sta)
++		return -ENOLINK;
++
++	mt7925_lab_wtbl_snapshot(dev, vif, msta, MT7925_LAB_WTBL_PRE_TEARDOWN);
++	ret = mt7925_mcu_sta_mld_teardown(dev, mconf, primary);
++	mt7925_lab_wtbl_snapshot(dev, vif, msta, MT7925_LAB_WTBL_POST_TEARDOWN);
++	return ret;
++}
++
+ static int
+ mt7925_mac_sta_remove_links(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+ 			    struct ieee80211_sta *sta, unsigned long old_links,
+@@ -1729,6 +1780,23 @@
+ 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 	struct mt76_dev *mdev = &dev->mt76;
+ 	unsigned int link_id;
++
++	/* The firmware group must be retired while all its BSS and peer
++	 * records are still addressable. Keep the ordinary per-link remove
++	 * commands unchanged; this is an isolated lifecycle experiment.
++	 */
++	if (removing_sta && old_links == msta->valid_links &&
++	    hweight16(msta->valid_links) > 1 &&
++	    vif->type == NL80211_IFTYPE_STATION && !sta->tdls) {
++		int ret;
++
++		mt7925_roc_abort_sync(dev);
++		ret = mt7925_sta_mld_teardown(dev, vif, msta);
++		if (ret) {
++			dev_err(mdev->dev, "MLD teardown failed: %d\n", ret);
++			mt792x_reset(mdev);
++		}
++	}
+ 
+ 	/* clean up bss before starec */
+ 	for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
