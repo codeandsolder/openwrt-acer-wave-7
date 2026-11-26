@@ -8,6 +8,7 @@ from pathlib import Path
 EVENT = re.compile(r"\[\d+\]\s+\S+\s+(\d+\.\d+): (mt7925_lab_mgmt_\w+): (.*)")
 FIELDS = re.compile(r"\b(\w+)=(\S+)")
 ABSENCE = re.compile(r"\[\d+\]\s+\S+\s+(\d+\.\d+): mt7925_lab_absence: (.*)")
+ROC_EVENT = re.compile(r"\[\d+\]\s+\S+\s+(\d+\.\d+): mt7925_lab_roc_(wire|sync|abort|band): (.*)")
 COUNTER = re.compile(r"^(?:entries|overrun|commit overrun|dropped events): (\d+)$", re.M)
 KIND = {0x00: "association_request", 0x10: "association_response",
         0x20: "reassociation_request", 0x30: "reassociation_response",
@@ -118,8 +119,42 @@ def summarize(text):
     return {"frames": records, "unmatched": unmatched, "bss_absence_events": absence_events}
 
 
+def roc_events(text):
+    """Return validated firmware ROC wire events, not inferred channel state."""
+    stats = COUNTER.findall(text)
+    if not stats or len(stats) % 4 or any(int(v) for v in stats):
+        raise ValueError("lifecycle trace incomplete, unread or lost events")
+    if text.count("CRASH_STREAM_END rc=0") != 1:
+        raise ValueError("missing successful lifecycle trace cleanup")
+    events = []
+    for line in text.splitlines():
+        m = ROC_EVENT.search(line)
+        if m:
+            t, name, raw = m.groups()
+            fields = dict(FIELDS.findall(raw))
+            required = {
+                "wire": {"tag", "len", "bss", "token", "expected", "status",
+                         "type", "band", "channel", "dbdc", "duration", "pending"},
+                "sync": {"phase", "bss", "token", "mlo", "granted", "pending", "result"},
+                "abort": {"bss", "token", "expected", "band", "result"},
+                "band": {"bss", "link", "old", "new", "token", "tag"},
+            }[name]
+            if not required <= fields.keys():
+                raise ValueError(f"incomplete ROC trace event: {line}")
+            events.append({"time": float(t), "event": name,
+                           **{k: int(v) for k, v in fields.items()}})
+        elif re.search(r"mt7925_lab_roc_(wire|sync|abort|band):", line):
+            raise ValueError(f"unparsed ROC trace line: {line}")
+    return sorted(events, key=lambda e: e["time"])
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("trace", type=Path)
+    parser.add_argument("--lifecycle", type=Path,
+                        help="sealed companion client trace from the same boot")
     args = parser.parse_args()
-    print(json.dumps(summarize(args.trace.read_text()), indent=2))
+    result = summarize(args.trace.read_text())
+    if args.lifecycle:
+        result["roc_events"] = roc_events(args.lifecycle.read_text())
+    print(json.dumps(result, indent=2))
