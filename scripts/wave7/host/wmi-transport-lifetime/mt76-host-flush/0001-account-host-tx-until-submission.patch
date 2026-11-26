@@ -1,0 +1,138 @@
+--- a/mt76.h
++++ b/mt76.h
+@@ -867,6 +867,8 @@
+ 	struct mt76_queue *q_tx[__MT_TXQ_MAX];
+ 
+ 	atomic_t mgmt_tx_pending;
++	/* Direct TX skbs still owned by the host, including PM deferral. */
++	atomic_t host_tx_pending;
+ 
+ 	struct cfg80211_chan_def chandef;
+ 	struct cfg80211_chan_def main_chandef;
+@@ -1395,6 +1397,20 @@
+ 	return &dev->phy;
+ }
+ 
++/* Keep the host count until hardware submission (or disposal) completes.
++ * A flush checks this before the hardware queues/token count.
++ */
++static inline void mt76_host_tx_get(struct mt76_phy *phy)
++{
++	atomic_inc(&phy->host_tx_pending);
++}
++
++static inline void mt76_host_tx_put(struct mt76_phy *phy)
++{
++	if (atomic_dec_and_test(&phy->host_tx_pending))
++		wake_up(&phy->dev->tx_wait);
++}
++
+ static inline struct ieee80211_hw *
+ mt76_phy_hw(struct mt76_dev *dev, u8 phy_idx)
+ {
+--- a/tx.c
++++ b/tx.c
+@@ -388,6 +388,7 @@
+ 	else
+ 		head = &wcid->tx_pending;
+ 
++	mt76_host_tx_get(phy);
+ 	spin_lock_bh(&head->lock);
+ 	__skb_queue_tail(head, skb);
+ 	spin_unlock_bh(&head->lock);
+@@ -727,6 +728,7 @@
+ 		__mt76_tx_queue_skb(phy, qid, skb, wcid, sta, NULL);
+ 		dev->queue_ops->kick(dev, q);
+ 		spin_unlock(&q->lock);
++		mt76_host_tx_put(phy);
+ 
+ 		spin_lock(&head->lock);
+ 	}
+--- a/mac80211.c
++++ b/mac80211.c
+@@ -431,6 +431,7 @@
+ 
+ 	INIT_LIST_HEAD(&phy->tx_list);
+ 	spin_lock_init(&phy->tx_lock);
++	atomic_set(&phy->host_tx_pending, 0);
+ 	INIT_DELAYED_WORK(&phy->roc_work, mt76_roc_complete_work);
+ 	INIT_DELAYED_WORK(&phy->scan_work, mt76_scan_work);
+ 
+@@ -1788,8 +1789,14 @@
+ 	spin_unlock_bh(&phy->tx_lock);
+ 
+ 	while ((skb = __skb_dequeue(&list)) != NULL) {
++		struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++		struct mt76_phy *tx_phy =
++			mt76_dev_phy(dev, FIELD_GET(MT_TX_HW_QUEUE_PHY,
++						   info->hw_queue));
++
+ 		hw = mt76_tx_status_get_hw(dev, skb);
+ 		ieee80211_free_txskb(hw, skb);
++		mt76_host_tx_put(tx_phy);
+ 	}
+ }
+ EXPORT_SYMBOL_GPL(mt76_wcid_cleanup);
+--- a/mt76_connac.h
++++ b/mt76_connac.h
+@@ -100,6 +100,7 @@
+ 	struct {
+ 		struct mt76_wcid *wcid;
+ 		struct sk_buff *skb;
++		struct mt76_phy *phy;
+ 	} tx_q[IEEE80211_NUM_ACS];
+ 
+ 	struct work_struct wake_work;
+--- a/mt76_connac_mac.c
++++ b/mt76_connac_mac.c
+@@ -92,8 +92,12 @@
+ 		if (wcid && pm->tx_q[i].wcid != wcid)
+ 			continue;
+ 
++		if (!pm->tx_q[i].skb)
++			continue;
++
+ 		dev_kfree_skb(pm->tx_q[i].skb);
+ 		pm->tx_q[i].skb = NULL;
++		mt76_host_tx_put(pm->tx_q[i].phy);
+ 	}
+ 	spin_unlock_bh(&pm->txq_lock);
+ }
+@@ -110,7 +114,9 @@
+ 	spin_lock_bh(&pm->txq_lock);
+ 	if (!pm->tx_q[qid].skb) {
+ 		ieee80211_stop_queues(hw);
++		mt76_host_tx_get(phy);
+ 		pm->tx_q[qid].wcid = wcid;
++		pm->tx_q[qid].phy = phy;
+ 		pm->tx_q[qid].skb = skb;
+ 		queue_work(phy->dev->wq, &pm->wake_work);
+ 	} else {
+@@ -135,8 +141,12 @@
+ 
+ 		sta = wcid_to_sta(wcid);
+ 
++		/* mt76_tx accounts for the new host queue before we release
++		 * the PM queue's ownership; there must be no empty window.
++		 */
+ 		mt76_tx(phy, sta, wcid, pm->tx_q[i].skb);
+ 		pm->tx_q[i].skb = NULL;
++		mt76_host_tx_put(pm->tx_q[i].phy);
+ 	}
+ 	spin_unlock_bh(&pm->txq_lock);
+ 
+--- a/mt792x_core.c
++++ b/mt792x_core.c
+@@ -478,7 +478,12 @@
+ {
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 
++	/* DMA queues and tokens do not cover the interval between the
++	 * .tx callback and the worker submitting its skb. Read host
++	 * ownership first, with acquire ordering against the final put.
++	 */
+ 	wait_event_timeout(dev->mt76.tx_wait,
++			   !atomic_read_acquire(&dev->mphy.host_tx_pending) &&
+ 			   !mt76_has_tx_pending(&dev->mphy), HZ / 2);
+ }
+ EXPORT_SYMBOL_GPL(mt792x_flush);
