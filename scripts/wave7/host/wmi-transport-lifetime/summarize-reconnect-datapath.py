@@ -38,7 +38,7 @@ def verify_seal(path):
     return seen
 
 
-def parse_trace(text, side):
+def parse_trace(text, side, min_associations=2):
     marker = {"client": "CLIENT_CONTROL_TRACE", "ap": "AP_CONTROL_TRACE"}[side]
     require(text.count(marker + "_READY ") == 1 and
             text.count(marker + "_END rc=0") == 1, f"{side}: incomplete trace")
@@ -48,6 +48,7 @@ def parse_trace(text, side):
     windows = []
     active = {}
     observations = []
+    wtbl = []
     for line in text.splitlines():
         m = LINE.search(line)
         if not m:
@@ -64,6 +65,20 @@ def parse_trace(text, side):
             elif old == "4" and new == "3":
                 require(address in active, f"{side}: unpaired deauthorization")
                 windows.append((active.pop(address), time, address))
+        elif event == "mt7925_lab_wtbl_peer":
+            fields = dict(FIELD.findall(body))
+            dw28 = int(fields["dw28"], 16)
+            # MediaTek MT7925 CODA wf_ds_lwtbl.h, DW28/DW29.
+            related = [{"wcid": (dw28 >> shift) & 0xfff,
+                        "band": (dw28 >> (shift + 12)) & 3}
+                       for shift in (0, 16)]
+            wtbl.append({"time": time, "stage": int(fields["stage"]),
+                         "wcid": int(fields["wcid"]), "link": int(fields["link"]),
+                         "bss": int(fields["bss"]), "host_band": int(fields["host_band"]),
+                         "own_mld_id": int(fields["mld"]), "dw28": fields["dw28"],
+                         "related": related,
+                         "primary_mld_band": (dw28 >> 14) & 3,
+                         "secondary_mld_band": (dw28 >> 30) & 3})
         elif event in NET | RX:
             fields = dict(FIELD.findall(body))
             if event in NET:
@@ -86,7 +101,8 @@ def parse_trace(text, side):
                 key = (event, fields["bss"], fields["absent"], fields["quota"])
             observations.append((time, key))
     require(not active, f"{side}: unclosed authorized peer lifetime")
-    require(len(windows) >= 2, f"{side}: missing reassociation window")
+    require(len(windows) >= min_associations,
+            f"{side}: insufficient authorized lifetimes: {len(windows)} < {min_associations}")
     windows.sort()
     require(len({w[2] for w in windows}) == 1, f"{side}: unrelated stations in trace")
     # Count every tracepoint separately; RX paths may see the same skb at
@@ -112,8 +128,11 @@ def parse_trace(text, side):
                  "last_s": round(last[key] - start, 6)}
                 for key, count in sorted(counts.items())
             ]
-        results.append({"authorized_at": start, "deauthorized_at": stop,
-                        "duration_s": stop - start, "station": address, **rows})
+        result = {"authorized_at": start, "deauthorized_at": stop,
+                  "duration_s": stop - start, "station": address, **rows}
+        if side == "client":
+            result["wtbl"] = [row for row in wtbl if start <= row["time"] < stop]
+        results.append(result)
     require(any(row["fields"][0] in NET for row in results[0]["whole"]),
             f"{side}: initial association lacks net trace")
     if side == "client":
@@ -191,6 +210,14 @@ def selftest():
     s += "overrun: 0\ncommit overrun: 0\ndropped events: 0\nAP_CONTROL_TRACE_END rc=0\n"
     result = parse_trace(s, "ap")
     assert len(result) == 2 and result[1]["whole"][0]["count"] == 1
+    first_only = "\n".join(l for l in s.splitlines() if "20." not in l and "21." not in l)
+    assert len(parse_trace(first_only, "ap", 1)) == 1
+    try:
+        parse_trace(first_only, "ap")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("missing reassociation accepted")
     for broken in (s.replace("overrun: 0", "overrun: 1", 1),
                    s.replace("AP_CONTROL_TRACE_END rc=0", ""),
                    s.replace("dev=ap-mld0", "dev=lan1")):
@@ -218,6 +245,8 @@ if __name__ == "__main__":
     parser.add_argument("trial", type=Path, nargs="?")
     parser.add_argument("--band", choices=("24", "5"))
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--min-associations", type=int, choices=(1, 2), default=2,
+                        help="use 1 for an initial-hold failure before reconnect")
     args = parser.parse_args()
     if args.selftest:
         selftest()
@@ -229,7 +258,7 @@ if __name__ == "__main__":
             name = f"band-{args.band}.{side}-control-trace.txt"
             require(name in sealed, f"unsealed {side} trace")
             text = (args.trial / name).read_text()
-            result[side] = parse_trace(text, side)
+            result[side] = parse_trace(text, side, args.min_associations)
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
         print(json.dumps(result, indent=2))
