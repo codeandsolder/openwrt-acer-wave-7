@@ -24,6 +24,13 @@ ap_irq_spread=0
 ap_link_stats=0
 ap_link_tool=""
 client_rx_arg=--none
+variant_mgmt_profile=--none
+variant_reconnect_profile=--none
+select_variant() {
+    variant=$1
+    variant_mgmt_profile=${2:---none}
+    variant_reconnect_profile=${3:---none}
+}
 for arg in "$@"; do
     case "$arg" in
         --band=5) bands=(5) ;;
@@ -43,62 +50,52 @@ for arg in "$@"; do
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
-        --client-single-link) variant=upstream-prefix22-authorize-single-link-trace ;;
-        --client-delayed-links) variant=upstream-prefix22-authorize-delayed-links-trace ;;
-        --client-delayed-links-fw20261016) variant=upstream-prefix22-authorize-delayed-links-fw20261016 ;;
-        --client-header-trace) variant=upstream-prefix22-authorize-delayed-links-header-trace ;;
-        --client-wtbl-trace) variant=upstream-prefix22-authorize-delayed-links-wtbl-trace ;;
-        --client-mld-order-trace) variant=upstream-prefix22-authorize-delayed-links-mld-order-trace ;;
-        --client-mld-rebind-trace) variant=upstream-prefix22-authorize-delayed-links-mld-rebind-trace ;;
-        --client-mld-len-trace) variant=upstream-prefix22-authorize-delayed-links-mld-len-trace ;;
-        --client-bss-presetup-trace) variant=upstream-prefix22-authorize-delayed-links-bss-presetup-trace ;;
-        --client-roc-duration-trace) variant=upstream-prefix22-authorize-delayed-links-roc-duration-trace ;;
-        --client-cnm-trace) variant=upstream-prefix22-authorize-delayed-links-cnm-trace ;;
-        --client-omac-trace) variant=upstream-prefix22-authorize-delayed-links-omac-trace ;;
-        --client-starec-split-trace) variant=upstream-prefix22-authorize-delayed-links-starec-split-trace ;;
-        --client-eht-first-trace) variant=upstream-prefix22-authorize-delayed-links-eht-first-trace ;;
-        --client-band-primary-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-trace ;;
-        --client-band-primary-tx-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-tx-trace ;;
-        --client-join-band1-trace) variant=upstream-prefix22-authorize-delayed-links-join-band1-trace ;;
-        --client-band-primary-txd-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-txd-trace ;;
-        --client-band-primary-immediate-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace ;;
-        --client-group-raw-trace) variant=upstream-prefix22-authorize-delayed-links-group-raw-trace ;;
-        --client-mgmt-tx-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ;;
-        --client-mgmt-fixed-link-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ;;
-        --client-mgmt-wmm-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ;;
-        --client-mgmt-mat-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-mat-trace ;;
-        --client-host-flush-trace) variant=upstream-prefix22-authorize-delayed-links-host-flush-trace ;;
-        --client-data-txs-trace) variant=upstream-prefix22-authorize-delayed-links-data-txs-trace ;;
-        --client-mgmt-privilege-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace ;;
-        --client-mgmt-privilege-flush-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ;;
-        --client-reconnect-data-tokens-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ;;
-        --client-reconnect-roc-owner-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ;;
-        --client-reconnect-roc-owner-auto-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace ;;
-        --client-reconnect-mld-teardown-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ;;
-        --client-reconnect-mld-record-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ;;
-        --client-reconnect-bss-detach-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace ;;
-        --client-reconnect-bss-retire-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace ;;
-        --client-reconnect-wcid-rotate-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace ;;
-        --client-reconnect-wcid-device-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ;;
-        --client-reconnect-primary-eht-mld-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ;;
+        --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
+        --client-delayed-links) select_variant upstream-prefix22-authorize-delayed-links-trace --none --none ;;
+        --client-delayed-links-fw20261016) select_variant upstream-prefix22-authorize-delayed-links-fw20261016 --none --none ;;
+        --client-header-trace) select_variant upstream-prefix22-authorize-delayed-links-header-trace --none --none ;;
+        --client-wtbl-trace) select_variant upstream-prefix22-authorize-delayed-links-wtbl-trace --none --none ;;
+        --client-mld-order-trace) select_variant upstream-prefix22-authorize-delayed-links-mld-order-trace --none --none ;;
+        --client-mld-rebind-trace) select_variant upstream-prefix22-authorize-delayed-links-mld-rebind-trace --none --none ;;
+        --client-mld-len-trace) select_variant upstream-prefix22-authorize-delayed-links-mld-len-trace --none --none ;;
+        --client-bss-presetup-trace) select_variant upstream-prefix22-authorize-delayed-links-bss-presetup-trace --none --none ;;
+        --client-roc-duration-trace) select_variant upstream-prefix22-authorize-delayed-links-roc-duration-trace --none --none ;;
+        --client-cnm-trace) select_variant upstream-prefix22-authorize-delayed-links-cnm-trace --none --none ;;
+        --client-omac-trace) select_variant upstream-prefix22-authorize-delayed-links-omac-trace --none --none ;;
+        --client-starec-split-trace) select_variant upstream-prefix22-authorize-delayed-links-starec-split-trace --none --none ;;
+        --client-eht-first-trace) select_variant upstream-prefix22-authorize-delayed-links-eht-first-trace --none --none ;;
+        --client-band-primary-trace) select_variant upstream-prefix22-authorize-delayed-links-band-primary-trace --none --none ;;
+        --client-band-primary-tx-trace) select_variant upstream-prefix22-authorize-delayed-links-band-primary-tx-trace --none --none ;;
+        --client-join-band1-trace) select_variant upstream-prefix22-authorize-delayed-links-join-band1-trace --none --none ;;
+        --client-band-primary-txd-trace) select_variant upstream-prefix22-authorize-delayed-links-band-primary-txd-trace --none --none ;;
+        --client-band-primary-immediate-trace) select_variant upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace --none --none ;;
+        --client-group-raw-trace) select_variant upstream-prefix22-authorize-delayed-links-group-raw-trace --none --none ;;
+        --client-mgmt-tx-trace) select_variant upstream-prefix22-authorize-delayed-links-mgmt-tx-trace --mgmt-tx --none ;;
+        --client-mgmt-fixed-link-trace) select_variant upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace --mgmt-tx --none ;;
+        --client-mgmt-wmm-trace) select_variant upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace --mgmt-tx --none ;;
+        --client-mgmt-mat-trace) select_variant upstream-prefix22-authorize-delayed-links-mgmt-mat-trace --mgmt-tx --none ;;
+        --client-host-flush-trace) select_variant upstream-prefix22-authorize-delayed-links-host-flush-trace --mgmt-tx --none ;;
+        --client-data-txs-trace) select_variant upstream-prefix22-authorize-delayed-links-data-txs-trace --mgmt-tx --none ;;
+        --client-mgmt-privilege-trace) select_variant upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace --mgmt-tx --none ;;
+        --client-mgmt-privilege-flush-trace) select_variant upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace --mgmt-tx --reconnect-datapath ;;
+        --client-reconnect-data-tokens-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace --mgmt-tx --reconnect-data-tokens ;;
+        --client-reconnect-roc-owner-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace --mgmt-tx --reconnect-data-tokens ;;
+        --client-reconnect-roc-owner-auto-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace --mgmt-tx --reconnect-data-tokens ;;
+        --client-reconnect-mld-teardown-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace --mgmt-tx --reconnect-data-tokens ;;
+        --client-reconnect-mld-record-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-bss-detach-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-bss-retire-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-wcid-rotate-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-wcid-device-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-primary-eht-mld-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace --mgmt-tx --reconnect-mld-record ;;
         *) fail 'invalid argument' ;;
     esac
 done
 if (( (dual_soak || dual_load || dual_reconnect) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
 if (( dual_soak + dual_load + dual_reconnect > 1 )); then fail "select one extended trial mode"; fi
 if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
-    [[ $variant != upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; }; then
-    fail "reconnect datapath capture requires the combined privilege/flush reconnect variant"
+    [[ $variant_reconnect_profile == --none ]]; }; then
+    fail "reconnect datapath capture requires a reconnect-capable variant"
 fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
@@ -363,43 +360,11 @@ for band in "${bands[@]}"; do
     ap_trace_pid=$!
     control_profile=$client_rx_arg
     if (( dual_load )); then control_profile=--none; fi
-    if [[ $variant == upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-mat-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-host-flush-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-data-txs-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; then
-        control_profile=--mgmt-tx
+    if [[ $variant_mgmt_profile != --none ]]; then
+        control_profile=$variant_mgmt_profile
     fi
     if (( reconnect_datapath )); then
-        control_profile=--reconnect-datapath
-        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; then
-            control_profile=--reconnect-data-tokens
-        fi
-        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; then
-            control_profile=--reconnect-mld-record
-        fi
+        control_profile=$variant_reconnect_profile
     fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
         control_profile=--rx-cnm-group
