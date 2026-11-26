@@ -7,7 +7,7 @@ boot=$1
 tag=$2
 seconds=$3
 case "$seconds" in 90|150|300) ;; *) exit 2 ;; esac
-case "$4" in full|control) ;; *) exit 2 ;; esac
+case "$4" in full|control|reconnect) ;; *) exit 2 ;; esac
 case "$tag" in *[!a-zA-Z0-9_-]*|'') exit 2 ;; esac
 [ "$(cat /proc/sys/kernel/random/boot_id)" = "$boot" ]
 root=/sys/kernel/tracing
@@ -27,6 +27,15 @@ cfg80211/cfg80211_mgmt_tx_status
 mac80211/drv_sta_state
 mac80211/drv_ampdu_action
 mac80211/drv_change_sta_links'
+net_events='net/net_dev_start_xmit
+net/netif_receive_skb_entry
+net/netif_receive_skb_list_entry
+net/napi_gro_receive_entry
+net/netif_rx_entry'
+if [ "$4" = reconnect ]; then
+    events="$events
+$net_events"
+fi
 if [ "$4" = full ]; then
 for fn in $functions; do
     grep -Eq "^$fn([[:space:]]|$)" "$root/available_filter_functions"
@@ -47,7 +56,14 @@ trap cleanup EXIT
 trap 'exit 143' HUP INT TERM
 echo 0 > "$inst/tracing_on"
 echo mono > "$inst/trace_clock"
-echo 1024 > "$inst/buffer_size_kb"
+if [ "$4" = reconnect ]; then
+    echo 4096 > "$inst/buffer_size_kb"
+    for ev in $net_events; do
+        echo '(name == "ap-mld0" || name == "br-lan") && (protocol == 0x0800 || protocol == 0x0806 || protocol == 0x86dd)' > "$inst/events/$ev/filter"
+    done
+else
+    echo 1024 > "$inst/buffer_size_kb"
+fi
 if [ "$4" = full ]; then
     echo "$functions" > "$inst/set_ftrace_filter"
     echo function > "$inst/current_tracer"

@@ -57,7 +57,8 @@ def ping(text, expected, strict=False):
 
 
 def check_link(text):
-    require(re.search(r"\bactive=0x3 valid=0x3\b", text), "dual-link state lost")
+    require(re.search(r"\bactive=0x0*3 valid=0x0*3 dormant=0x0+\b", text),
+            "dual-link state lost")
 
 
 def iperf(text, server_text, mode, target, *, source="192.168.76.2", port=52231,
