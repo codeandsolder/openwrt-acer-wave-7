@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -62,6 +62,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -1189,6 +1190,29 @@
+     [mt7925e]=a8155f9c9bbf73839f8c20ac531555bda551fa7a
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace)
++declare -A candidate_hash=(
++    [mt76]=4dc4a9332c6026ca110c1c288eb43df7bdcc74cf7c8107c0c8991641a77d08eb
++    [mt76_connac_lib]=d47d918ae6bb9df6425ae247c41207d985e290cd73ed8139de16a9081db91bba
++    [mt792x_lib]=e37e7f44728fdbd3609c245bbe386e91c2e101ae094ba422c6fd0fcda97310c0
++    [mt7925_common]=f1628ae03cbee08f0e2b4c4846ffb0a7973bb70e8b1d193020a87239b42a5ad5
++    [mt7925e]=1d465df2a15b14ee9c7480634915d4cfcad49fb6157f95cc6a6454ab93424e37
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=335587A93E5336C3C1D3503
++    [mt792x_lib]=4F03FB265B3E87D87C59552
++    [mt7925_common]=C176ABD8EBE9AF3E27C358D
++    [mt7925e]=7C32FAC559BFD8CF0F4362C
++)
++declare -A candidate_id=(
++    [mt76]=ea9dd1cf5b77df6ae49049f1a1efaca9e1601f95
++    [mt76_connac_lib]=dec8760f904f23141f35bf0d304e79bb5b592693
++    [mt792x_lib]=5e42445eb20f8f9a8503dd6d1ca3b0b15b7194c0
++    [mt7925_common]=79fecabae214f850496f8b12e4bedda182b19c13
++    [mt7925e]=a8155f9c9bbf73839f8c20ac531555bda551fa7a
++)
++;;
+ upstream-prefix22-authorize-single-link-trace)
+ declare -A candidate_hash=(
+     [mt76]=9755bbdb8bcb58f86f23893b01d89033384589480913cfb88898493dab271430
