@@ -7,6 +7,7 @@ from pathlib import Path
 
 EVENT = re.compile(r"\[\d+\]\s+\S+\s+(\d+\.\d+): (mt7925_lab_mgmt_\w+): (.*)")
 FIELDS = re.compile(r"\b(\w+)=(\S+)")
+ABSENCE = re.compile(r"\[\d+\]\s+\S+\s+(\d+\.\d+): mt7925_lab_absence: (.*)")
 COUNTER = re.compile(r"^(?:entries|overrun|commit overrun|dropped events): (\d+)$", re.M)
 KIND = {0x00: "association_request", 0x10: "association_response",
         0x20: "reassociation_request", 0x30: "reassociation_response",
@@ -40,7 +41,7 @@ def summarize(text):
         raise ValueError("trace incomplete, unread or lost events")
     if text.count("CLIENT_CONTROL_TRACE_END rc=0") != 1:
         raise ValueError("missing successful trace cleanup")
-    events = []
+    events, absence_events = [], []
     for line in text.splitlines():
         m = EVENT.search(line)
         if m:
@@ -49,6 +50,14 @@ def summarize(text):
             fields["time"] = float(t)
             fields["event"] = name.removeprefix("mt7925_lab_mgmt_")
             events.append(fields)
+        elif m := ABSENCE.search(line):
+            t, raw = m.groups()
+            f = {key: int(value) for key, value in FIELDS.findall(raw)}
+            if f["tag"] != 0 or f["len"] < 8 or f["absent"] not in (0, 1):
+                raise ValueError(f"unexpected BSS absence event: {line}")
+            absence_events.append({"time": float(t), **f})
+        elif "mt7925_lab_absence:" in line:
+            raise ValueError(f"unparsed absence event: {line}")
         elif "mt7925_lab_mgmt_" in line:
             raise ValueError(f"unparsed management trace line: {line}")
     events.sort(key=lambda e: e["time"])
@@ -88,10 +97,25 @@ def summarize(text):
             raise ValueError(f"unexpected management event {e['event']}")
     if not records:
         raise ValueError("no management submissions")
+    absence_events.sort(key=lambda e: e["time"])
+    def last_observed(t):
+        state = {}
+        for e in absence_events:
+            if e["time"] > t:
+                break
+            state[e["bss"]] = {**e, "age_ms": (t - e["time"]) * 1000}
+        return state
+
     for rec in records:
+        # This is the last *observed* event per BSS, not a proof of
+        # current channel privilege. Unknown BSSes are left absent from
+        # the map rather than interpreted as available.
+        rec["last_bss_absence_at_submission"] = last_observed(rec["submission"]["time"])
+        for event in rec["completions"]:
+            event["last_bss_absence_at_completion"] = last_observed(event["time"])
         rec["firmware_token_released"] = any(e["event"] == "tx_free" for e in rec["completions"])
         rec["matched_tx_status"] = any(e["event"] == "txs" for e in rec["completions"])
-    return {"frames": records, "unmatched": unmatched}
+    return {"frames": records, "unmatched": unmatched, "bss_absence_events": absence_events}
 
 
 if __name__ == "__main__":
