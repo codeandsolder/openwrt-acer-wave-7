@@ -373,7 +373,8 @@ def band_retirement_windows(lifecycle, control, windows):
             if state and state.group(2, 3) == ("0", "1"):
                 starts.append(float(m[1]))
     kinds = {"mt7925_lab_bss_basic", "mt7925_lab_bss_result",
-             "mt7925_lab_sta_result", "mt7925_lab_band_retire"}
+             "mt7925_lab_sta_result", "mt7925_lab_band_retire",
+             "mt7925_lab_bss_mld", "mt7925_lab_chanctx_unassign"}
     events = []
     for line in lifecycle.splitlines():
         m = LINE.search(line)
@@ -419,8 +420,41 @@ def band_retirement_windows(lifecycle, control, windows):
                             "bss_ack": bss_ack, "station_remove": remove,
                             "dev_retire": dev, "bss_band_matches": bss_band_ok,
                             "dev_band_matches": dev_band_ok, "complete": complete})
+        removed_at = None
+        if details and all(len(p["station_remove"]) == 1 and
+                           p["station_remove"][0]["result"] == 0 for p in details):
+            removed_at = max(p["station_remove"][0]["time"] for p in details)
+        late = []
+        unassign = []
+        if removed_at is not None:
+            tail = [(t, event, f) for t, event, f in events if removed_at <= t < end]
+            for i, (t, event, f) in enumerate(tail):
+                if event == "mt7925_lab_chanctx_unassign":
+                    unassign.append({"time": t, **f})
+                if (event != "mt7925_lab_bss_basic" or f["enabled"] or
+                        not f.get("active") or f.get("peer_link") != 255 or
+                        f.get("conn_state") != 1):
+                    continue
+                # Match the MLD tag and ACK belonging to this particular
+                # BASIC update; do not assume every late BASIC carries MLD.
+                tags = []
+                replies = []
+                for t2, e2, f2 in tail[i + 1:]:
+                    if f2["bss"] != f["bss"] or f2["link"] != f["link"]:
+                        continue
+                    if e2 == "mt7925_lab_bss_basic":
+                        break
+                    if e2 == "mt7925_lab_bss_mld":
+                        tags.append({"time": t2, **f2})
+                    if (e2 == "mt7925_lab_bss_result" and not f2["enabled"] and
+                            f2["wcid"] == f["peer"]):
+                        replies.append({"time": t2, **f2})
+                late.append({"time": t, **f, "mld_tags": tags, "acks": replies})
         result.append({"authorized_at": window["authorized_at"],
-                       "deauthorized_at": stop, "peers": details})
+                       "deauthorized_at": stop, "peers": details,
+                       "all_peers_removed_at": removed_at,
+                       "late_active_bss_updates": late if removed_at is not None else None,
+                       "chanctx_unassignments": unassign if removed_at is not None else None})
     return result
 
 
@@ -678,6 +712,24 @@ def selftest():
     assert retire_result(retirement.replace("11.400000", "20.000000"))["complete"] is None
     assert retire_result(retirement + retirement)["complete"] is None
     assert retire_result(retirement.replace("mt7925_lab_band_retire", "other"))["complete"] is None
+    late = retirement + (
+        line(11.5, "mt7925_lab_bss_basic",
+             "bss=1 link=1 enabled=0 peer=18 peer_link=255 active=1 conn_state=1 band=255")
+        + line(11.51, "mt7925_lab_bss_mld", "bss=1 link=1 group=0 own=33")
+        + line(11.52, "mt7925_lab_bss_result", "bss=1 link=1 enabled=0 wcid=18 result=0")
+    )
+    retired = band_retirement_windows(late, ctl, retire_window)[0]
+    assert retired["all_peers_removed_at"] == 11.3
+    assert len(retired["late_active_bss_updates"]) == 1
+    update = retired["late_active_bss_updates"][0]
+    assert update["mld_tags"][0]["group"] == 0 and update["acks"][0]["result"] == 0
+    skipped = retirement + line(11.5, "mt7925_lab_chanctx_unassign",
+                                "bss=1 link=1 active=0 skipped=1 result=0")
+    retired = band_retirement_windows(skipped, ctl, retire_window)[0]
+    assert retired["late_active_bss_updates"] == []
+    assert retired["chanctx_unassignments"][0]["skipped"] == 1
+    assert band_retirement_windows(late.replace("mt7925_lab_sta_result", "other"),
+                                   ctl, retire_window)[0]["late_active_bss_updates"] is None
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
