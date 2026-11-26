@@ -36,7 +36,7 @@
  				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_CNM_SECONDARY_EHT_MLD);
  				err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_CNM_SECONDARY_EHT_MLD);
  				if (err)
-@@ -3173,6 +3183,35 @@
+@@ -3173,6 +3183,36 @@
  			err = mt7925_mcu_sta_mld_update(dev, vif, sta, primary);
  			if (err)
  				goto out;
@@ -45,10 +45,11 @@
 +			    vif->type == NL80211_IFTYPE_STATION &&
 +			    hweight16(new_links) == 2) {
 +				struct mt792x_link_sta *peers[2] = {};
++				unsigned long links = new_links;
 +				unsigned int link, band;
 +				struct mt792x_vif *mvif = (void *)vif->drv_priv;
 +
-+				for_each_set_bit(link, &new_links, IEEE80211_MLD_MAX_NUM_LINKS) {
++				for_each_set_bit(link, &links, IEEE80211_MLD_MAX_NUM_LINKS) {
 +					struct mt792x_bss_conf *conf = mt792x_vif_to_link(mvif, link);
 +
 +					if (!conf || conf->mt76.band_idx >= ARRAY_SIZE(peers) ||
