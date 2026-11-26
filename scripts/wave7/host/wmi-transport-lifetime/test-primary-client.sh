@@ -89,6 +89,7 @@ for arg in "$@"; do
         --client-reconnect-wcid-device-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-primary-eht-mld-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-initial-split-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-initial-split-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-record-bands-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-record-bands-trace --mgmt-tx --reconnect-mld-record ;;
         *) fail 'invalid argument' ;;
     esac
 done
