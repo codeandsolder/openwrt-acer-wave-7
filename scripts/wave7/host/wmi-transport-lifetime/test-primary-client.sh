@@ -262,6 +262,33 @@ wired_capture_pid=''
 ip6_pid=''
 load_client_pid=''
 ap_irq_pid=''
+restore_client(){
+    local deadline=$((SECONDS + $1)) request_rc=0
+    local check="sudo -n bash $client/client-module-stack.sh $variant --check-original"
+    # The watchdog may already have recovered the original boot. Never
+    # request another reboot merely because candidate activation was attempted.
+    if wyse "$check" > "$out/client-original-after.txt" 2>&1 &&
+        grep -Eq '^STACK_ORIGINAL_PASS boot=[0-9a-f-]{36}$' "$out/client-original-after.txt"; then
+        printf 'already_original=1\n' > "$out/client-restore-status.txt"
+        return 0
+    fi
+    wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || request_rc=$?
+    printf 'request_exit=%s\n' "$request_rc" > "$out/client-restore-status.txt"
+    # SSH may disappear during reboot; verify the original closure instead
+    # of treating the reboot request's transport exit as the outcome.
+    while :; do
+        if wyse "$check" > "$out/client-original-after.txt" 2>&1 &&
+            grep -Eq '^STACK_ORIGINAL_PASS boot=[0-9a-f-]{36}$' "$out/client-original-after.txt"; then
+            printf 'verified=1\n' >> "$out/client-restore-status.txt"
+            return 0
+        fi
+        if (( SECONDS >= deadline )); then
+            printf 'verified=0\n' >> "$out/client-restore-status.txt"
+            return 1
+        fi
+        sleep 3
+    done
+}
 cleanup(){
     local rc=$?
     trap - EXIT
@@ -281,7 +308,7 @@ cleanup(){
         remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_link_tool/iw'; rmdir '$ap_link_tool'" || rc=1
     fi
     if (( active )); then
-        wyse "sudo -n bash $client/client-module-stack.sh $variant --restore" > "$out/client-restore.txt" 2>&1 || rc=1
+        restore_client 90 || rc=1
     fi
     if [[ -n $ssh_socket ]]; then
         ssh -S "$ssh_socket" -O exit acer > "$out/ssh-control-close.txt" 2>&1 || :
