@@ -71,13 +71,15 @@ for arg in "$@"; do
         --client-data-txs-trace) variant=upstream-prefix22-authorize-delayed-links-data-txs-trace ;;
         --client-mgmt-privilege-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace ;;
         --client-mgmt-privilege-flush-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ;;
+        --client-reconnect-data-tokens-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
 if (( (dual_soak || dual_load || dual_reconnect) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
 if (( dual_soak + dual_load + dual_reconnect > 1 )); then fail "select one extended trial mode"; fi
 if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
-    [[ $variant != upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ]]; }; then
+    [[ $variant != upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace &&
+       $variant != upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ]]; }; then
     fail "reconnect datapath capture requires the combined privilege/flush reconnect variant"
 fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
@@ -350,10 +352,16 @@ for band in "${bands[@]}"; do
           $variant == upstream-prefix22-authorize-delayed-links-host-flush-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-data-txs-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ]]; then
+          $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ||
+          $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ]]; then
         control_profile=--mgmt-tx
     fi
-    if (( reconnect_datapath )); then control_profile=--reconnect-datapath; fi
+    if (( reconnect_datapath )); then
+        control_profile=--reconnect-datapath
+        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ]]; then
+            control_profile=--reconnect-data-tokens
+        fi
+    fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
         control_profile=--rx-cnm-group
     fi

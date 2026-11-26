@@ -6,13 +6,18 @@ set -Eeuo pipefail
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
    $4 =~ ^(90|150|300)$ ]]
 case $3 in
-    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath) ;;
+    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath|--reconnect-data-tokens) ;;
     *) exit 2 ;;
 esac
 seconds=$4
 group=0
 reconnect=0
 profile=$3
+tokens=0
+if [[ $profile == --reconnect-data-tokens ]]; then
+    tokens=1
+    profile=--reconnect-datapath
+fi
 if [[ $profile == --reconnect-datapath ]]; then
     reconnect=1
     group=1
@@ -72,6 +77,9 @@ net_events=(net/net_dev_start_xmit net/netif_receive_skb_entry
             net/netif_rx_entry)
 if (( reconnect )); then
     events+=("${net_events[@]}")
+fi
+if (( tokens )); then
+    events+=(mt7925_lab/mt7925_lab_data_txd mt7925_lab/mt7925_lab_data_tx_free)
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
