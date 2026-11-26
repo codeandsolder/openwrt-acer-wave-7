@@ -1,0 +1,64 @@
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -344,6 +344,10 @@
+ 
+ 	struct mac_address macaddr_list[8];
+ 
++	/* Lab-only: alternate group identity across complete station MLD lifetimes. */
++	u8 lab_mld_group;
++	u8 lab_next_mld_group;
++
+ 	const struct mt76_bus_ops *bus_ops;
+ 	struct mt792x_phy phy;
+ 
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -504,6 +504,17 @@
+ 
+ 	mt792x_mutex_acquire(dev);
+ 
++	/* Reserve the group namespace for one station VIF. The standalone
++	 * P2P-device uses the special BSS slot outside the group namespace.
++	 */
++	if (is_mt7925(&dev->mt76) &&
++	    vif->type != NL80211_IFTYPE_P2P_DEVICE &&
++	    ((dev->mt76.vif_mask & GENMASK_ULL(MT792x_MAX_INTERFACES - 1, 0)) ||
++	     vif->type != NL80211_IFTYPE_STATION)) {
++		ret = -EOPNOTSUPP;
++		goto out;
++	}
++
+ 	wiphy_delayed_work_init(&mvif->mlo_activate_work,
+ 				mt7925_delayed_mlo_activate);
+ 	mvif->phy = phy;
+@@ -2903,6 +2914,15 @@
+ 		mt7925_p2p_bmc_remove(dev, &mvif->bss_conf);
+ 		legacy_released = true;
+ 		mvif->deflink_id = primary;
++		if (is_mt7925(&dev->mt76) &&
++		    vif->type == NL80211_IFTYPE_STATION) {
++			/* Group IDs 0 and 1 are legal independently of the
++			 * single scheduler record slot. Leave BSS and WCID
++			 * allocation unchanged; only rotate on a new lifetime.
++			 */
++			dev->lab_mld_group = dev->lab_next_mld_group;
++			dev->lab_next_mld_group ^= 1;
++		}
+ 	}
+ 
+ 	/* The embedded primary retains slot zero even if its link is dormant. */
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3559,8 +3559,11 @@
+ 	mld = (struct bss_mld_tlv *)tlv;
+ 
+ 	mld->link_id = is_mld ? link_conf->link_id : 0xff;
+-	/* apply the index of the primary link */
++	/* Keep scheduler query index 0: it is not a group ID. */
+ 	mld->group_mld_id = is_mld ? mvif->bss_conf.mt76.idx : 0xff;
++	if (is_mld && is_mt7925(&phy->dev->mt76) &&
++	    vif->type == NL80211_IFTYPE_STATION)
++		mld->group_mld_id = phy->dev->lab_mld_group;
+ 	mld->own_mld_id = mconf->mt76.idx + 32;
+ 	mld->remap_idx = 0xff;
+ 

@@ -341,10 +341,22 @@ def mld_command_windows(lifecycle, control, windows):
         start = preceding[-1]
         commands = [{"event": event, "fields": fields}
                     for time, event, fields in events if start <= time < stop]
-        rows.append({"authorized_at": auth, "commands": commands})
+        groups = sorted({int(c["fields"]["group"]) for c in commands
+                         if c["event"] == "mt7925_lab_bss_mld"})
+        rows.append({"authorized_at": auth, "commands": commands,
+                     "bss_group_ids": groups})
+
+    def without_bss_group(row):
+        return [{"event": c["event"], "fields": {
+            key: value for key, value in c["fields"].items()
+            if not (c["event"] == "mt7925_lab_bss_mld" and key == "group")}}
+                for c in row["commands"]]
+
     return {"windows": rows,
             "same_sequence": len(rows) >= 2 and
-                             all(r["commands"] == rows[0]["commands"] for r in rows[1:])}
+                             all(r["commands"] == rows[0]["commands"] for r in rows[1:]),
+            "same_sequence_except_bss_group": len(rows) >= 2 and all(
+                without_bss_group(r) == without_bss_group(rows[0]) for r in rows[1:])}
 
 
 def wtbl_pair_bindings(windows):
@@ -577,6 +589,13 @@ def selftest():
     assert mld_command_windows(lifecycle.replace("20.000000: mt7925_lab_sta_mld_slot: target=3",
                                                 "20.000000: mt7925_lab_sta_mld_slot: target=4"),
                                ctl, w)["same_sequence"] is False
+    groups = lifecycle + line(10, "mt7925_lab_bss_mld", "bss=0 group=0")
+    groups += line(20, "mt7925_lab_bss_mld", "bss=0 group=1")
+    changed = mld_command_windows(groups, ctl, w)
+    assert [r["bss_group_ids"] for r in changed["windows"]] == [[0], [1]]
+    assert not changed["same_sequence"] and changed["same_sequence_except_bss_group"]
+    assert not mld_command_windows(groups.replace("bss=0 group=1", "bss=1 group=1"),
+                                   ctl, w)["same_sequence_except_bss_group"]
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
