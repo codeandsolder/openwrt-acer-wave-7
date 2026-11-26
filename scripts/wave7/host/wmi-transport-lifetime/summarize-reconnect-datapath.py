@@ -38,7 +38,7 @@ def verify_seal(path):
     return seen
 
 
-def parse_trace(text, side, min_associations=2):
+def parse_trace(text, side, min_associations=2, allow_open_peer=False):
     marker = {"client": "CLIENT_CONTROL_TRACE", "ap": "AP_CONTROL_TRACE"}[side]
     require(text.count(marker + "_READY ") == 1 and
             text.count(marker + "_END rc=0") == 1, f"{side}: incomplete trace")
@@ -49,12 +49,14 @@ def parse_trace(text, side, min_associations=2):
     active = {}
     observations = []
     wtbl = []
+    last_time = 0.0
     for line in text.splitlines():
         m = LINE.search(line)
         if not m:
             continue
         timestamp, event, body = m.groups()
         time = float(timestamp)
+        last_time = max(last_time, time)
         if event == "drv_sta_state":
             state = STATE.search(body)
             require(state, f"{side}: malformed station state")
@@ -64,7 +66,7 @@ def parse_trace(text, side, min_associations=2):
                 active[address] = time
             elif old == "4" and new == "3":
                 require(address in active, f"{side}: unpaired deauthorization")
-                windows.append((active.pop(address), time, address))
+                windows.append((active.pop(address), time, address, True))
         elif event == "mt7925_lab_wtbl_peer":
             fields = dict(FIELD.findall(body))
             dw28 = int(fields["dw28"], 16)
@@ -100,7 +102,9 @@ def parse_trace(text, side, min_associations=2):
             else:
                 key = (event, fields["bss"], fields["absent"], fields["quota"])
             observations.append((time, key))
-    require(not active, f"{side}: unclosed authorized peer lifetime")
+    require(not active or allow_open_peer, f"{side}: unclosed authorized peer lifetime")
+    for address, start in active.items():
+        windows.append((start, last_time, address, False))
     require(len(windows) >= min_associations,
             f"{side}: insufficient authorized lifetimes: {len(windows)} < {min_associations}")
     windows.sort()
@@ -108,7 +112,7 @@ def parse_trace(text, side, min_associations=2):
     # Count every tracepoint separately; RX paths may see the same skb at
     # multiple layers. Counts are not unique packets or RF transmission counts.
     results = []
-    for start, stop, address in windows:
+    for start, stop, address, closed in windows:
         require(stop > start, f"{side}: inverted window")
         rows = {}
         for name, end in (("first_2s", min(stop, start + 2)),
@@ -118,7 +122,7 @@ def parse_trace(text, side, min_associations=2):
             first = {}
             last = {}
             for timestamp, key in observations:
-                if start <= timestamp < end:
+                if start <= timestamp < end or (not closed and timestamp == end == stop):
                     counts[key] += 1
                     first[key] = min(first.get(key, timestamp), timestamp)
                     last[key] = max(last.get(key, timestamp), timestamp)
@@ -128,7 +132,9 @@ def parse_trace(text, side, min_associations=2):
                  "last_s": round(last[key] - start, 6)}
                 for key, count in sorted(counts.items())
             ]
-        result = {"authorized_at": start, "deauthorized_at": stop,
+        result = {"authorized_at": start,
+                  "deauthorized_at": stop if closed else None,
+                  "observed_until": stop, "right_censored": not closed,
                   "duration_s": stop - start, "station": address, **rows}
         if side == "client":
             result["wtbl"] = [row for row in wtbl if start <= row["time"] < stop]
@@ -218,7 +224,11 @@ def selftest():
         pass
     else:
         raise AssertionError("missing reassociation accepted")
-    for broken in (s.replace("overrun: 0", "overrun: 1", 1),
+    open_peer = s.replace(line(21, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 4->3"), "")
+    censored = parse_trace(open_peer, "ap", allow_open_peer=True)[1]
+    assert censored["right_censored"] and censored["deauthorized_at"] is None
+    assert censored["whole"][0]["count"] == 1
+    for broken in (open_peer, s.replace("overrun: 0", "overrun: 1", 1),
                    s.replace("AP_CONTROL_TRACE_END rc=0", ""),
                    s.replace("dev=ap-mld0", "dev=lan1")):
         try:
@@ -245,6 +255,8 @@ if __name__ == "__main__":
     parser.add_argument("trial", type=Path, nargs="?")
     parser.add_argument("--band", choices=("24", "5"))
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--allow-open-ap-peer", action="store_true",
+                        help="report AP authorization still open at trace end, not a synthetic deauth")
     parser.add_argument("--min-associations", type=int, choices=(1, 2), default=2,
                         help="use 1 for an initial-hold failure before reconnect")
     args = parser.parse_args()
@@ -258,7 +270,8 @@ if __name__ == "__main__":
             name = f"band-{args.band}.{side}-control-trace.txt"
             require(name in sealed, f"unsealed {side} trace")
             text = (args.trial / name).read_text()
-            result[side] = parse_trace(text, side, args.min_associations)
+            result[side] = parse_trace(text, side, args.min_associations,
+                                       args.allow_open_ap_peer and side == "ap")
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
         print(json.dumps(result, indent=2))
