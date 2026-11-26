@@ -72,6 +72,7 @@ for arg in "$@"; do
         --client-mgmt-privilege-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace ;;
         --client-mgmt-privilege-flush-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ;;
         --client-reconnect-data-tokens-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ;;
+        --client-reconnect-roc-owner-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -79,7 +80,8 @@ if (( (dual_soak || dual_load || dual_reconnect) && ${#bands[@]} != 1 )); then f
 if (( dual_soak + dual_load + dual_reconnect > 1 )); then fail "select one extended trial mode"; fi
 if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
     [[ $variant != upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ]]; }; then
+       $variant != upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace &&
+       $variant != upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ]]; }; then
     fail "reconnect datapath capture requires the combined privilege/flush reconnect variant"
 fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
@@ -353,12 +355,14 @@ for band in "${bands[@]}"; do
           $variant == upstream-prefix22-authorize-delayed-links-data-txs-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ]]; then
+          $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ||
+          $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ]]; then
         control_profile=--mgmt-tx
     fi
     if (( reconnect_datapath )); then
         control_profile=--reconnect-datapath
-        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ]]; then
+        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace ||
+              $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ]]; then
             control_profile=--reconnect-data-tokens
         fi
     fi
