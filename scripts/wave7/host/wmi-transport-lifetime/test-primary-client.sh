@@ -56,6 +56,7 @@ for arg in "$@"; do
         --client-band-primary-txd-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-txd-trace ;;
         --client-band-primary-immediate-trace) variant=upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace ;;
         --client-group-raw-trace) variant=upstream-prefix22-authorize-delayed-links-group-raw-trace ;;
+        --client-mgmt-tx-trace) variant=upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -305,6 +306,9 @@ for band in "${bands[@]}"; do
     ap_trace_pid=$!
     control_profile=$client_rx_arg
     if (( dual_load )); then control_profile=--none; fi
+    if [[ $variant == upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ]]; then
+        control_profile=--mgmt-tx
+    fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
         control_profile=--rx-cnm-group
     fi

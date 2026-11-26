@@ -6,7 +6,7 @@ set -Eeuo pipefail
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
    $4 =~ ^(90|150|300)$ ]]
 case $3 in
-    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group) ;;
+    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx) ;;
     *) exit 2 ;;
 esac
 seconds=$4
@@ -54,6 +54,11 @@ if (( group )); then
 fi
 if [[ $profile == --rx-txd ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_descriptor)
+fi
+if [[ $profile == --mgmt-tx ]]; then
+    events+=(mt7925_lab/mt7925_lab_mgmt_txd
+             mt7925_lab/mt7925_lab_mgmt_tx_free
+             mt7925_lab/mt7925_lab_mgmt_txs)
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
