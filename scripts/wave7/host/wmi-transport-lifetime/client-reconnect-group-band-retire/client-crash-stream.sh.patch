@@ -35,3 +35,16 @@
      # BTF field fetching avoids hard-coded structures/offsets. Register only
      # these two named probes and remove the exact definitions at cleanup.
      [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
+@@ -183,6 +188,12 @@
+     probes+=(wcid_cleanup)
+     printf '%s\n' "f:$probe_group/bss_remove mt792x_mac_link_bss_remove bss=mconf->mt76.idx link=mconf->link_id owner=mlink->wcid.idx sta=mlink->wcid.sta" >> "$root/dynamic_events"
+     probes+=(bss_remove)
++    # Group-ID reuse must not be credited across a driver firmware reset.
++    if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++        printf '%s\n' "f:$probe_group/reset_work mt7925_mac_reset_work" >> "$root/dynamic_events"
++        probes+=(reset_work)
++    fi
+     for event in "${probes[@]}"; do
+         events+=("$probe_group/$event")
+         printf 'CRASH_PROBE_FORMAT %s\n' "$event"
