@@ -28,6 +28,23 @@ lab_ipv4_from_ip() {
     }'
 }
 
+# Validate hex before arithmetic, accepting the kernel's zero padding.
+dual_link_masks() {
+    [[ $1 =~ ^0x0*3$ && $2 =~ ^0x0*3$ && $3 =~ ^0x0+$ ]]
+}
+
+if [[ $# == 1 && $1 == --selftest-link-masks ]]; then
+    dual_link_masks 0x3 0x3 0x0
+    dual_link_masks 0x0003 0x03 0x0000
+    dual_link_masks 0x1 0x3 0x2 && exit 1
+    dual_link_masks 0x3 0x3 0x1 && exit 1
+    dual_link_masks 0x3 0x7 0x0 && exit 1
+    dual_link_masks 3 0x3 0x0 && exit 1
+    dual_link_masks 0x3 0x3 '' && exit 1
+    echo LINK_MASK_SELFTEST_PASS
+    exit 0
+fi
+
 if [[ $# == 1 && $1 == --selftest-early-ipv4 ]]; then
     [[ $(printf '%s\n' \
         '5: wlp2s0 inet 10.1.0.221/24 scope global wlp2s0' \
@@ -647,7 +664,7 @@ if (( early_only )); then
                 dormant=$(rootcmd cat "$path/dormant_links")
                 printf 'sample=%d epoch=%s active=%s valid=%s dormant=%s\n' \
                     "$i" "$(date +%s.%N)" "$active" "$valid" "$dormant"
-                [[ $active == 0x3 && $valid == 0x3 ]] || exit 1
+                dual_link_masks "$active" "$valid" "$dormant" || exit 1
                 if (( i < 23 )); then sleep 5; fi
             done
         ) > "$out/soak-link-masks.txt" 2>&1 &
@@ -677,8 +694,9 @@ if (( early_only )); then
     if (( early_dual )); then
         # A successful ping on one active link is not dual-link evidence.
         for f in early-only-snapshot.txt early-only-final.txt; do
-            rg -qx 'mac80211_active_links=0x3' "$out/$f" || short_failed=1
-            rg -qx 'mac80211_valid_links=0x3' "$out/$f" || short_failed=1
+            rg -qx 'mac80211_active_links=0x0*3' "$out/$f" || short_failed=1
+            rg -qx 'mac80211_valid_links=0x0*3' "$out/$f" || short_failed=1
+            rg -qx 'mac80211_dormant_links=0x0+' "$out/$f" || short_failed=1
         done
         printf 'short_dual_hold_pass=%s\n' "$((1 - short_failed))" > "$out/short-dual-hold-result.txt"
         if (( early_reconnect && !short_failed )); then
@@ -737,7 +755,7 @@ if (( early_only )); then
                 v=$(rootcmd cat "$path/valid_links") || return 1
                 d=$(rootcmd cat "$path/dormant_links") || return 1
                 printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
-                [[ $a == 0x3 && $v == 0x3 && $d == 0x0 ]]
+                dual_link_masks "$a" "$v" "$d"
             }
             reconnect_links > "$out/reconnect-links-before.txt" || exit 3
             probe_start reconnect-hold-ap 440 "$v4" 192.168.76.1 -4
@@ -758,7 +776,7 @@ if (( early_only )); then
                 v=$(rootcmd cat "$path/valid_links") || return 1
                 d=$(rootcmd cat "$path/dormant_links") || return 1
                 printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
-                [[ $a == 0x3 && $v == 0x3 ]]
+                dual_link_masks "$a" "$v" "$d"
             }
             for mode in uplink downlink bidirectional; do
                 load_link > "$out/load-$mode-before.txt" || exit 3
