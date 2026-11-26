@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -72,6 +72,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -1429,6 +1430,29 @@
+     [mt7925e]=98223cebb31fca0aa1c89ec3c07a91022089b190
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace)
++declare -A candidate_hash=(
++    [mt76]=96cea13e2cbb4f12f7fb3f8ceef0f033467ffb16117971466a761e5f79104613
++    [mt76_connac_lib]=745cd92408a15d541324630f5a0863f6aca371602b18be2e37b98b548990d1f0
++    [mt792x_lib]=70be460c96e67066ea836d55c1bba4e04bea35cb69925c86f100caf3954630d7
++    [mt7925_common]=ffddebe9eb7456c63d5036fb34e06e2f00d6714ad5c1225d074a5a39d21f568e
++    [mt7925e]=3eaca6836bd9249e382c39b548bdf521dbb74bf3da62b65834d29f3de66caf0f
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=0D021BBC6F8F138D1814665
++    [mt792x_lib]=4F03FB265B3E87D87C59552
++    [mt7925_common]=9CF5079FC38C8B597D0251B
++    [mt7925e]=BC24E004CDEBC5191BEA6BD
++)
++declare -A candidate_id=(
++    [mt76]=0df83ccc40a638633769eddc43a47ec54f88b83b
++    [mt76_connac_lib]=306905903a060ef3333787b7fc54aa6e9a92a0e7
++    [mt792x_lib]=d70fa64a4a2bd65eff59bf4e8c5197b8cb8c4de2
++    [mt7925_common]=7d027e3f5d0f7a2a3e1b0c3a68565d1ef19ac23a
++    [mt7925e]=3b92c11ae85c4198c93dee3dfd82e8d53e327096
++)
++;;
+ upstream-prefix22-authorize-single-link-trace)
+ declare -A candidate_hash=(
+     [mt76]=9755bbdb8bcb58f86f23893b01d89033384589480913cfb88898493dab271430
