@@ -1,0 +1,17 @@
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -880,9 +880,12 @@
+ 	else
+ 		val = MT_TXD6_DAS | FIELD_PREP(MT_TXD6_MSDU_CNT, 1);
+ 
++	/* The WMM destination needs the same MLO address translation as
++	 * ordinary peer management frames. ALTX/beacon and non-MLO traffic
++	 * retain their original translation policy.
++	 */
+ 	if (vif && (!ieee80211_vif_is_mld(vif) ||
+-	    (qid >= MT_TXQ_PSD ||
+-	     (q_idx >= MT_LMAC_ALTX0 && q_idx <= MT_LMAC_BCN0))))
++	    (q_idx >= MT_LMAC_ALTX0 && q_idx <= MT_LMAC_BCN0)))
+ 		val |= MT_TXD6_DIS_MAT;
+ 	txwi[6] = cpu_to_le32(val);
+ 	txwi[7] = 0;
