@@ -28,6 +28,7 @@ def decode_descriptor(fields):
         "remaining_tx_count": (d3 >> 11) & 31,
         "pid": d5 & 0xff,
         "status_requested": bool(d5 & (1 << 10)),
+        "fixed_link": bool(d5 & (1 << 15)),
         "disable_mat": bool(d6 & 8),
         "fixed_rate_index": (d6 >> 16) & 0x3f,
     }
