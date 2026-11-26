@@ -103,7 +103,7 @@
 +			if (trace_mt7925_lab_mgmt_tx_free_enabled()) {
 +				const struct ieee80211_hdr *hdr =
 +					mt7925_lab_mgmt_header(txwi->skb);
-+				const __le32 *txd = mt76_get_txwi_ptr(mdev, txwi);
++				const __le32 *txd = (const void *)mt76_get_txwi_ptr(mdev, txwi);
 +
 +				if (hdr)
 +					trace_mt7925_lab_mgmt_tx_free(txwi->skb,
@@ -154,7 +154,7 @@
 +		__entry->txd[1] = le32_to_cpu(txd[1]);
 +		__entry->txd[2] = le32_to_cpu(txd[2]);
 +		__entry->txd[3] = le32_to_cpu(txd[3]);
-+		__entry->txd[4] = le32_to_cpu(txd[5]);
++		__entry->txd[4] = le32_to_cpu(txd[5]) & 0xffff;
 +		__entry->txd[5] = le32_to_cpu(txd[6]);
 +	),
 +	TP_printk("cookie=%p fc=0x%04x seq=%u requested=%u wcid=%u link=%u band=%u a1=%pM a2=%pM a3=%pM d0=%08x d1=%08x d2=%08x d3=%08x d5=%08x d6=%08x",
