@@ -1,0 +1,50 @@
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -220,7 +220,6 @@
+ 
+ 	struct mt792x_phy *phy;
+ 	bool roc_join_held; /* join ROC kept until the STA is authorized */
+-	u8 lab_next_peer_wcid;
+ 	u16 valid_links;
+ 	u8 deflink_id;
+ 	enum mt792x_mlo_pm_state mlo_pm_state;
+@@ -368,6 +367,7 @@
+ 
+ 	u8 fw_debug;
+ 	u8 fw_features;
++	u8 lab_next_peer_wcid;
+ 
+ 	struct mt76_connac_pm pm;
+ 	struct mt76_connac_coredump coredump;
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1214,12 +1214,13 @@
+ 
+ /* Lab-only allocation discriminator. Keep the first lifetime's ordinary
+  * first-fit order, then cycle through legal free peer slots without
+- * retaining a reservation or altering normal free/unwind paths.
++ * retaining a reservation or altering normal free/unwind paths. The
++ * cursor belongs to the device, not the recreated interface.
+  */
+ static int mt7925_lab_alloc_peer_wcid(struct mt76_dev *mdev,
+ 				    struct ieee80211_vif *vif)
+ {
+-	struct mt792x_vif *mvif = (void *)vif->drv_priv;
++	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+ 	const unsigned int limit = MT792x_WTBL_STA - 1;
+ 	unsigned int i, idx;
+ 
+@@ -1229,11 +1230,11 @@
+ 
+ 	lockdep_assert_held(&mdev->mutex);
+ 	for (i = 0; i < limit; i++) {
+-		idx = (mvif->lab_next_peer_wcid + i) % limit;
++		idx = (dev->lab_next_peer_wcid + i) % limit;
+ 		if (mdev->wcid_mask[idx / 32] & BIT(idx % 32))
+ 			continue;
+ 		mdev->wcid_mask[idx / 32] |= BIT(idx % 32);
+-		mvif->lab_next_peer_wcid = (idx + 1) % limit;
++		dev->lab_next_peer_wcid = (idx + 1) % limit;
+ 		return idx;
+ 	}
+ 
