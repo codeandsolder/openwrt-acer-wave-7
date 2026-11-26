@@ -90,6 +90,7 @@ for arg in "$@"; do
         --client-reconnect-primary-eht-mld-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-initial-split-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-initial-split-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-record-bands-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-record-bands-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-defer-eht-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-defer-eht-trace --mgmt-tx --reconnect-mld-record ;;
         *) fail 'invalid argument' ;;
     esac
 done
