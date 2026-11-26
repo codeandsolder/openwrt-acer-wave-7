@@ -1,0 +1,22 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -80,7 +80,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-group-raw-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ]]; then
+     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
+ fi
+ if [[ $variant == upstream-prefix22-lifecycle-trace ||
+@@ -115,7 +116,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-band-primary-immediate-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-group-raw-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-mgmt-tx-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-mgmt-fixed-link-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-mgmt-wmm-trace ]]; then
+     # BTF field fetching avoids hard-coded structures/offsets. Register only
+     # these two named probes and remove the exact definitions at cleanup.
+     [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
