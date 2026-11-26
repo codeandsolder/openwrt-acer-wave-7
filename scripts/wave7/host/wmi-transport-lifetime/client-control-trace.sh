@@ -6,7 +6,7 @@ set -Eeuo pipefail
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
    $4 =~ ^(90|150|300)$ ]]
 case $3 in
-    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath|--reconnect-data-tokens) ;;
+    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath|--reconnect-data-tokens|--reconnect-mld-record) ;;
     *) exit 2 ;;
 esac
 seconds=$4
@@ -14,6 +14,11 @@ group=0
 reconnect=0
 profile=$3
 tokens=0
+mld_record=0
+if [[ $profile == --reconnect-mld-record ]]; then
+    mld_record=1
+    profile=--reconnect-data-tokens
+fi
 if [[ $profile == --reconnect-data-tokens ]]; then
     tokens=1
     profile=--reconnect-datapath
@@ -80,6 +85,11 @@ if (( reconnect )); then
 fi
 if (( tokens )); then
     events+=(mt7925_lab/mt7925_lab_data_txd mt7925_lab/mt7925_lab_data_tx_free)
+fi
+if (( mld_record )); then
+    events+=(mt7925_lab/mt7925_lab_mld_record_result
+             mt7925_lab/mt7925_lab_mld_record
+             mt7925_lab/mt7925_lab_mld_record_link)
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
