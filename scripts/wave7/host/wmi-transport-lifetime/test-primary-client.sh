@@ -19,6 +19,7 @@ dual_hold=0
 dual_soak=0
 dual_load=0
 dual_reconnect=0
+reconnect_datapath=0
 ap_irq_spread=0
 ap_link_stats=0
 ap_link_tool=""
@@ -38,6 +39,7 @@ for arg in "$@"; do
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
         --client-reconnect) dual_hold=1; dual_reconnect=1 ;;
+        --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
@@ -74,6 +76,10 @@ for arg in "$@"; do
 done
 if (( (dual_soak || dual_load || dual_reconnect) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
 if (( dual_soak + dual_load + dual_reconnect > 1 )); then fail "select one extended trial mode"; fi
+if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
+    [[ $variant != upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ]]; }; then
+    fail "reconnect datapath capture requires the combined privilege/flush reconnect variant"
+fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
@@ -332,6 +338,7 @@ for band in "${bands[@]}"; do
     sample_pid=$!
     ap_profile=full
     if (( dual_load || dual_reconnect )); then ap_profile=control; fi
+    if (( reconnect_datapath )); then ap_profile=reconnect; fi
     remote_stream "sh -s -- $boot $tag $observe_seconds $ap_profile" < "$helper" > "$prefix.ap-control-trace.txt" 2>&1 &
     ap_trace_pid=$!
     control_profile=$client_rx_arg
@@ -346,6 +353,7 @@ for band in "${bands[@]}"; do
           $variant == upstream-prefix22-authorize-delayed-links-mgmt-privilege-flush-trace ]]; then
         control_profile=--mgmt-tx
     fi
+    if (( reconnect_datapath )); then control_profile=--reconnect-datapath; fi
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
         control_profile=--rx-cnm-group
     fi

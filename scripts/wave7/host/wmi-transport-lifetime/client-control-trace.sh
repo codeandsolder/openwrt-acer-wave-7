@@ -6,12 +6,18 @@ set -Eeuo pipefail
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
    $4 =~ ^(90|150|300)$ ]]
 case $3 in
-    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx) ;;
+    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath) ;;
     *) exit 2 ;;
 esac
 seconds=$4
 group=0
+reconnect=0
 profile=$3
+if [[ $profile == --reconnect-datapath ]]; then
+    reconnect=1
+    group=1
+    profile=--rx-cnm
+fi
 if [[ $profile == --rx-cnm-group ]]; then
     group=1
     profile=--rx-cnm
@@ -55,11 +61,17 @@ fi
 if [[ $profile == --rx-txd ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_descriptor)
 fi
-if [[ $profile == --mgmt-tx ]]; then
+if [[ $profile == --mgmt-tx ]] || (( reconnect )); then
     events+=(mt7925_lab/mt7925_lab_mgmt_txd
              mt7925_lab/mt7925_lab_mgmt_tx_free
              mt7925_lab/mt7925_lab_mgmt_txs
              mt7925_lab/mt7925_lab_absence)
+fi
+net_events=(net/net_dev_start_xmit net/netif_receive_skb_entry
+            net/netif_receive_skb_list_entry net/napi_gro_receive_entry
+            net/netif_rx_entry)
+if (( reconnect )); then
+    events+=("${net_events[@]}")
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
@@ -92,6 +104,13 @@ if (( rx_data )); then
     fi
 else
     echo 256 > "$inst/buffer_size_kb"
+fi
+if (( reconnect )); then
+    # Ethernet protocol and skb length only; restrict to the isolated
+    # Wi-Fi interface and the address-configuration/data protocols.
+    for e in "${net_events[@]}"; do
+        echo 'name == "wlp2s0" && (protocol == 0x0800 || protocol == 0x0806 || protocol == 0x86dd)' > "$inst/events/$e/filter"
+    done
 fi
 for e in "${events[@]}"; do echo 1 > "$inst/events/$e/enable"; done
 echo 1 > "$inst/tracing_on"
