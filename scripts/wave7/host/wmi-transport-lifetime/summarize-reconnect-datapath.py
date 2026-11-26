@@ -203,6 +203,48 @@ def token_windows(text, windows):
         })
     return {"unmatched_free": unmatched_free, "windows": result}
 
+def mld_records(text):
+    """Keep snapshots outside authorization windows, including teardown."""
+    records = []
+    current = None
+    for line in text.splitlines():
+        m = LINE.search(line)
+        if not m or m[2] not in {
+            "mt7925_lab_mld_record_result", "mt7925_lab_mld_record",
+            "mt7925_lab_mld_record_link",
+        }:
+            continue
+        time, event, body = m.groups()
+        fields = {k: int(v) for k, v in FIELD.findall(body)}
+        if event.endswith("_result"):
+            if current is not None:
+                check_mld_record(current)
+            current = {"time": float(time), **fields, "links": []}
+            records.append(current)
+        else:
+            require(current is not None and current["ret"] == 0 and
+                    current["stage"] == fields.pop("stage"),
+                    "unpaired MLD record")
+            if event.endswith("_link"):
+                current["links"].append(fields)
+            else:
+                require("record" not in current, "duplicate MLD record")
+                current["record"] = fields
+    if current is not None:
+        check_mld_record(current)
+    return records
+
+
+def check_mld_record(row):
+    if row["ret"] == 0:
+        require("record" in row and row["record"]["index"] == 0 and
+                sorted(link["slot"] for link in row["links"]) == [0, 1],
+                "incomplete MT7925 MLD record")
+    else:
+        require("record" not in row and not row["links"],
+                "failed MLD query has payload")
+
+
 def selftest():
     def line(t, e, body):
         return f"worker [001] ..... {t:.6f}: {e}: {body}\n"
@@ -247,6 +289,19 @@ def selftest():
     assert tokens[0]["groups"][0]["fields"][-1] == "after_deauthorize"
     assert tokens[0]["descriptors"][0]["return"]["header_count"] == 0
     assert tokens[1]["returned"] == 1
+    rec = line(10, "mt7925_lab_mld_record_result", "stage=14 ret=0")
+    rec += line(10, "mt7925_lab_mld_record", "stage=14 index=0 state=1")
+    rec += line(10, "mt7925_lab_mld_record_link", "stage=14 slot=0 wcid=2")
+    rec += line(10, "mt7925_lab_mld_record_link", "stage=14 slot=1 wcid=0")
+    rec += line(11, "mt7925_lab_mld_record_result", "stage=15 ret=-71")
+    assert len(mld_records(rec)) == 2
+    assert mld_records(rec)[0]["links"][0]["wcid"] == 2
+    try:
+        mld_records(rec.replace("slot=1", "slot=0"))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate MLD slot accepted")
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -272,6 +327,8 @@ if __name__ == "__main__":
             text = (args.trial / name).read_text()
             result[side] = parse_trace(text, side, args.min_associations,
                                        args.allow_open_ap_peer and side == "ap")
+            if side == "client" and "mt7925_lab_mld_record_result:" in text:
+                result["mld_records"] = mld_records(text)
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
         print(json.dumps(result, indent=2))
