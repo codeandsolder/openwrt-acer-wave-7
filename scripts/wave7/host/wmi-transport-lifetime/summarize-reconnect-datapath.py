@@ -305,6 +305,48 @@ def check_mld_record(row):
                 "failed MLD query has payload")
 
 
+def mld_command_windows(lifecycle, control, windows):
+    """Compare metadata emitted for actual MLD MCU commands, not TX contents."""
+    require(lifecycle.count("CRASH_STREAM_END rc=0") == 1,
+            "incomplete lifecycle trace")
+    loss = LOSS.findall(lifecycle)
+    require(loss and len(loss) % 3 == 0 and not any(map(int, loss)),
+            "lifecycle trace losses or missing stats")
+    boot = re.search(r"STACK_CANDIDATE_PASS .* boot=([0-9a-f-]+)", lifecycle)
+    control_boot = re.search(r"CLIENT_CONTROL_TRACE_READY boot=([0-9a-f-]+)", control)
+    require(boot and control_boot and boot[1] == control_boot[1],
+            "lifecycle/control boot mismatch")
+    require(re.search(r"CRASH_STREAM_CLOCK .*\[mono\]", lifecycle),
+            "lifecycle clock is not monotonic")
+    starts = []
+    for line in control.splitlines():
+        m = LINE.search(line)
+        if m and m[2] == "drv_sta_state":
+            state = STATE.search(m[3])
+            if state and state.group(2, 3) == ("0", "1"):
+                starts.append(float(m[1]))
+    events = []
+    kinds = {"mt7925_lab_bss_mld", "mt7925_lab_sta_mld_slot",
+             "mt7925_lab_sta_mld_update", "mt7925_lab_sta_eht_mld"}
+    for line in lifecycle.splitlines():
+        m = LINE.search(line)
+        if m and m[2] in kinds:
+            events.append((float(m[1]), m[2], dict(FIELD.findall(m[3]))))
+    rows = []
+    for window in windows:
+        auth, stop = window["authorized_at"], window["deauthorized_at"]
+        preceding = [t for t in starts if t <= auth]
+        if not preceding:
+            continue
+        start = preceding[-1]
+        commands = [{"event": event, "fields": fields}
+                    for time, event, fields in events if start <= time < stop]
+        rows.append({"authorized_at": auth, "commands": commands})
+    return {"windows": rows,
+            "same_sequence": len(rows) >= 2 and
+                             all(r["commands"] == rows[0]["commands"] for r in rows[1:])}
+
+
 def wtbl_pair_bindings(windows):
     """Check the dual-link peer table independently of scheduler records.
 
@@ -521,6 +563,20 @@ def selftest():
     q["own_mld_id"] = 33
     q["related"] = [{"wcid": 4095, "band": 1}, {"wcid": 4095, "band": 2}]
     assert wtbl_pair_bindings(windows)[0]["complete_pair"] is False
+    lifecycle = ("STACK_CANDIDATE_PASS variant=fixture boot=abc\n"
+                 "CRASH_STREAM_CLOCK [mono]\n"
+                 "overrun: 0\ncommit overrun: 0\ndropped events: 0\n"
+                 "CRASH_STREAM_END rc=0\n")
+    lifecycle += line(10, "mt7925_lab_sta_mld_slot", "target=3 slot=0 count=2")
+    lifecycle += line(20, "mt7925_lab_sta_mld_slot", "target=3 slot=0 count=2")
+    ctl = "CLIENT_CONTROL_TRACE_READY boot=abc\n"
+    ctl += line(9, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
+    ctl += line(19, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
+    w = [{"authorized_at": t, "deauthorized_at": t+1} for t in (10, 20)]
+    assert mld_command_windows(lifecycle, ctl, w)["same_sequence"] is True
+    assert mld_command_windows(lifecycle.replace("20.000000: mt7925_lab_sta_mld_slot: target=3",
+                                                "20.000000: mt7925_lab_sta_mld_slot: target=4"),
+                               ctl, w)["same_sequence"] is False
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -548,6 +604,10 @@ if __name__ == "__main__":
                                        args.allow_open_ap_peer and side == "ap")
             if side == "client":
                 result["wtbl_bindings"] = wtbl_pair_bindings(result[side])
+                lifecycle_name = f"band-{args.band}.client-trace.txt"
+                if lifecycle_name in sealed:
+                    lifecycle = (args.trial / lifecycle_name).read_text()
+                    result["mld_commands"] = mld_command_windows(lifecycle, text, result[side])
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
                 result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
