@@ -58,7 +58,8 @@ fi
 if [[ $profile == --mgmt-tx ]]; then
     events+=(mt7925_lab/mt7925_lab_mgmt_txd
              mt7925_lab/mt7925_lab_mgmt_tx_free
-             mt7925_lab/mt7925_lab_mgmt_txs)
+             mt7925_lab/mt7925_lab_mgmt_txs
+             mt7925_lab/mt7925_lab_absence)
 fi
 for e in "${events[@]}"; do [[ -r $root/events/$e/format ]]; done
 [[ ! -e $inst ]]
