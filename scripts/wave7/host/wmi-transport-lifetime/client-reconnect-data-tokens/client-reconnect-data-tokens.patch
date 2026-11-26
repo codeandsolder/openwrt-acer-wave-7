@@ -1,0 +1,126 @@
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -858,6 +858,69 @@
+ 		  __entry->link, __entry->pid, __entry->band, __entry->ack_error)
+ );
+ 
++/* Correlate host data descriptor construction and firmware token return.
++ * Deliberately omit packet payload, key bytes and PN fields.
++ */
++TRACE_EVENT(mt7925_lab_data_txd,
++	TP_PROTO(const void *cookie, u32 length, u16 protocol, u16 wcid,
++		 u8 link, u8 band, u8 qid, const __le32 *txd),
++	TP_ARGS(cookie, length, protocol, wcid, link, band, qid, txd),
++	TP_STRUCT__entry(
++		__field(const void *, cookie)
++		__field(u32, length)
++		__field(u16, protocol)
++		__field(u16, wcid)
++		__field(u8, link)
++		__field(u8, band)
++		__field(u8, qid)
++		__array(u32, txd, 5)
++	),
++	TP_fast_assign(
++		__entry->cookie = cookie;
++		__entry->length = length;
++		__entry->protocol = protocol;
++		__entry->wcid = wcid;
++		__entry->link = link;
++		__entry->band = band;
++		__entry->qid = qid;
++		__entry->txd[0] = le32_to_cpu(txd[0]);
++		__entry->txd[1] = le32_to_cpu(txd[1]);
++		__entry->txd[2] = le32_to_cpu(txd[2]);
++		__entry->txd[3] = le32_to_cpu(txd[3]);
++		__entry->txd[4] = le32_to_cpu(txd[5]) & 0xffff;
++	),
++	TP_printk("cookie=%p length=%u protocol=0x%04x wcid=%u link=%u band=%u qid=%u d0=%08x d1=%08x d2=%08x d3=%08x d5=%08x",
++		  __entry->cookie, __entry->length, __entry->protocol,
++		  __entry->wcid, __entry->link, __entry->band, __entry->qid,
++		  __entry->txd[0], __entry->txd[1], __entry->txd[2],
++		  __entry->txd[3], __entry->txd[4])
++);
++
++TRACE_EVENT(mt7925_lab_data_tx_free,
++	TP_PROTO(const void *cookie, u16 token, u16 desc_wcid, u16 fw_wcid,
++		 bool header_valid, u32 header),
++	TP_ARGS(cookie, token, desc_wcid, fw_wcid, header_valid, header),
++	TP_STRUCT__entry(
++		__field(const void *, cookie)
++		__field(u16, token)
++		__field(u16, desc_wcid)
++		__field(u16, fw_wcid)
++		__field(bool, header_valid)
++		__field(u32, header)
++	),
++	TP_fast_assign(
++		__entry->cookie = cookie;
++		__entry->token = token;
++		__entry->desc_wcid = desc_wcid;
++		__entry->fw_wcid = fw_wcid;
++		__entry->header_valid = header_valid;
++		__entry->header = header;
++	),
++	TP_printk("cookie=%p token=%u desc_wcid=%u fw_wcid=%u header_valid=%u header=%08x",
++		  __entry->cookie, __entry->token, __entry->desc_wcid,
++		  __entry->fw_wcid, __entry->header_valid, __entry->header)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -780,6 +780,21 @@
+ 	return hdr;
+ }
+ 
++static bool mt7925_lab_data_skb(const struct sk_buff *skb)
++{
++	const struct ieee80211_hdr *hdr;
++
++	if (!skb)
++		return false;
++	if (IEEE80211_SKB_CB(skb)->flags & IEEE80211_TX_CTL_HW_80211_ENCAP)
++		return true;
++	if (skb_headlen(skb) < sizeof(hdr->frame_control))
++		return false;
++
++	hdr = (const void *)skb->data;
++	return ieee80211_is_data_present(hdr->frame_control);
++}
++
+ void
+ mt7925_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
+ 		      struct sk_buff *skb, struct mt76_wcid *wcid,
+@@ -904,6 +919,13 @@
+ 
+ 	mt7925_p2p_txwi_override(dev, txwi, skb);
+ 
++	if (trace_mt7925_lab_data_txd_enabled() && vif &&
++	    ieee80211_vif_is_mld(vif) &&
++	    vif->type == NL80211_IFTYPE_STATION && mt7925_lab_data_skb(skb))
++		trace_mt7925_lab_data_txd(skb, skb->len,
++					 be16_to_cpu(skb->protocol), wcid->idx,
++					 wcid->link_id, band_idx, qid, txwi);
++
+ 	if (trace_mt7925_lab_mgmt_txd_enabled()) {
+ 		const struct ieee80211_hdr *hdr = mt7925_lab_mgmt_header(skb);
+ 
+@@ -1469,6 +1491,15 @@
+ 						le32_get_bits(txd[1], MT_TXD1_WLAN_IDX),
+ 						fw_wcid, header_valid, last_header);
+ 			}
++			if (trace_mt7925_lab_data_tx_free_enabled() &&
++			    mt7925_lab_data_skb(txwi->skb)) {
++				const __le32 *txd =
++					(const void *)mt76_get_txwi_ptr(mdev, txwi);
++
++				trace_mt7925_lab_data_tx_free(txwi->skb, msdu,
++					le32_get_bits(txd[1], MT_TXD1_WLAN_IDX),
++					fw_wcid, header_valid, last_header);
++			}
+ 			mt7925_txwi_free(dev, txwi, sta, wcid, &free_list);
+ 		}
+ 	}
