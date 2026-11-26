@@ -1,0 +1,39 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -65,6 +65,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-record-bands-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-defer-eht-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace]=association-rxtx
+@@ -105,6 +106,9 @@
+ if [[ $variant == upstream-prefix22-authorize-delayed-links-fw20261016 ]]; then
+     bundle_variant=upstream-prefix22-authorize-delayed-links-trace
+ fi
++if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ]]; then
++    bundle_variant=upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace
++fi
+ bundle=/home/jan/firmware/wave7/kernel-tests/mt7925-single-channel-split/$bundle_variant
+ stage=/run/wave7-$variant-stack
+ timer=wave7-$variant-rollback.timer
+@@ -112,6 +116,9 @@
+ if [[ $variant == upstream-prefix22-authorize-delayed-links-fw20261016 ]]; then
+     firmware_variant=$variant
+ fi
++if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ]]; then
++    firmware_variant=$variant
++fi
+ firmware_source=/home/jan/firmware/wave7/mt7925-fw-trials/20261016-official
+ firmware_ram_sha=329c0e27f780550789e4eba47452731b1723f69f9e67f525d0e50bf3cd2978ac
+ firmware_patch_sha=67ff85f1a39d1a100a51abd8e2a26edd2f198d7052514b6b8981948b231e5016
+@@ -1249,7 +1256,7 @@
+     [mt7925e]=0818d939035f1164ddbef0f67831c031ee4daa93
+ )
+ ;;
+-upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace)
++upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace|upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace)
+ declare -A candidate_hash=(
+     [mt76]=4dc4a9332c6026ca110c1c288eb43df7bdcc74cf7c8107c0c8991641a77d08eb
+     [mt76_connac_lib]=66362145b27187da1443406b5ff6ff4636372aa1ca74b2e14feab2b396eadb44
