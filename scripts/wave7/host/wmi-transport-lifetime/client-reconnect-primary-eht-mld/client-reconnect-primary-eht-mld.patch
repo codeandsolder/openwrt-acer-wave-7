@@ -1,0 +1,61 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -789,6 +789,7 @@
+ 	MT7925_LAB_CNM_SECONDARY_EHT_MLD,
+ 	MT7925_LAB_MLD_PRE_REMOVE,
+ 	MT7925_LAB_MLD_POST_REMOVE,
++	MT7925_LAB_MLD_PRIMARY_EHT,
+ };
+ 
+ /*
+@@ -906,8 +907,8 @@
+ 	}
+ out:
+ 	kfree(info);
+-	if (!ret && (stage == MT7925_LAB_CNM_SECONDARY_MLD ||
+-		     stage == MT7925_LAB_WTBL_POST_KEYS))
++	/* Stage6 is sampled directly before the primary EHT refresh. */
++	if (!ret && stage != MT7925_LAB_WTBL_POST_MLD)
+ 		mt7925_lab_mld_snapshot(dev, vif, stage);
+ 	return ret;
+ }
+@@ -3115,6 +3116,7 @@
+ 			struct mt792x_sta *msta = (void *)sta->drv_priv;
+ 			unsigned int primary_id = msta->deflink_id;
+ 			struct mt792x_link_sta *primary;
++			struct mt792x_bss_conf *primary_conf;
+ 
+ 			/* Rebind primary MLD membership after the secondary peer
+ 			 * is associated, without rewriting the primary PTK,
+@@ -3126,13 +3128,30 @@
+ 				goto out;
+ 			}
+ 			primary = mt792x_sta_to_link(msta, primary_id);
+-			if (!primary) {
++			primary_conf = mt792x_vif_to_link(msta->vif, primary_id);
++			if (!primary || !primary_conf) {
+ 				err = -EINVAL;
+ 				goto out;
+ 			}
+ 			err = mt7925_mcu_sta_mld_update(dev, vif, sta, primary);
+ 			if (err)
+ 				goto out;
++
++			/* Band migration moved the setup peer from firmware band
++			 * 0 to 1. Refresh its EHT-MLD state after the membership
++			 * update, just as for the newly associated link. Do not
++			 * rewrite the key, packet number or ordinary STAREC.
++			 */
++			mt7925_lab_mld_snapshot(dev, vif,
++					      MT7925_LAB_WTBL_POST_MLD);
++			if (is_mt7925(&dev->mt76) && hweight16(new_links) == 2 &&
++			    primary_conf->mt76.band_idx == 1) {
++				err = mt7925_lab_sta_eht_mld_update(dev, vif, sta, primary);
++				if (err)
++					goto out;
++				mt7925_lab_mld_snapshot(dev, vif,
++						      MT7925_LAB_MLD_PRIMARY_EHT);
++			}
+ 		}
+ 		if (add)
+ 			mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_MLD);
