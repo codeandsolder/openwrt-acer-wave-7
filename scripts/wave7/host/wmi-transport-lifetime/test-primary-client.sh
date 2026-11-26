@@ -80,6 +80,7 @@ for arg in "$@"; do
         --client-reconnect-bss-retire-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace ;;
         --client-reconnect-wcid-rotate-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace ;;
         --client-reconnect-wcid-device-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ;;
+        --client-reconnect-primary-eht-mld-trace) variant=upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -95,7 +96,8 @@ if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
        $variant != upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace &&
        $variant != upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace &&
        $variant != upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace &&
-       $variant != upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ]]; }; then
+       $variant != upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace &&
+       $variant != upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; }; then
     fail "reconnect datapath capture requires the combined privilege/flush reconnect variant"
 fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
@@ -377,7 +379,8 @@ for band in "${bands[@]}"; do
           $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace ||
           $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace ||
-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ]]; then
+          $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ||
+          $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; then
         control_profile=--mgmt-tx
     fi
     if (( reconnect_datapath )); then
@@ -390,10 +393,11 @@ for band in "${bands[@]}"; do
               $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace ||
               $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace ||
               $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace ||
-              $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ]]; then
+              $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ||
+              $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; then
             control_profile=--reconnect-data-tokens
         fi
-        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace ]]; then
+        if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-retire-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-rotate-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-wcid-device-trace || $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-eht-mld-trace ]]; then
             control_profile=--reconnect-mld-record
         fi
     fi
