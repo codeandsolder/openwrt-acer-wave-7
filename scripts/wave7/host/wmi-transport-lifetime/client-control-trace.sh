@@ -27,7 +27,8 @@ events=(cfg80211/rdev_tx_control_port
         mac80211/drv_mgd_complete_tx
         mac80211/drv_flush
         mac80211/drv_flush_sta
-        mac80211/drv_sta_state)
+        mac80211/drv_sta_state
+        mac80211/drv_ampdu_action)
 rx_data=0
 rx_header=0
 if [[ $profile == --rx-data || $profile == --rx-header || $profile == --rx-wtbl || $profile == --rx-cnm || $profile == --rx-txd ]]; then
