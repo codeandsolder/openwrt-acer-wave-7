@@ -1,0 +1,50 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -3139,6 +3139,31 @@
+ 				if (err)
+ 					goto out;
+ 
++				/* Lab: establish the setup peer's group before the
++				 * first secondary membership update. Both ordinary
++				 * STARECs and their granted bands already exist.
++				 */
++				if (is_mt7925(&dev->mt76) &&
++				    hweight16(new_links) == 2) {
++					struct mt792x_link_sta *primary;
++					unsigned int primary_id = msta->deflink_id;
++
++					if (primary_id >= IEEE80211_MLD_MAX_NUM_LINKS ||
++					    !(old_links & new_links & BIT(primary_id))) {
++						err = -EINVAL;
++						goto out;
++					}
++					primary = mt792x_sta_to_link(msta, primary_id);
++					if (!primary) {
++						err = -EINVAL;
++						goto out;
++					}
++					err = mt7925_mcu_sta_mld_update(dev, vif, sta, primary);
++					if (err)
++						goto out;
++					mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, 28);
++					mt7925_lab_mld_snapshot(dev, vif, 28);
++				}
+ 				err = mt7925_mcu_sta_mld_update(dev, vif, sta, mlink);
+ 				if (err)
+ 					goto out;
+@@ -3186,9 +3211,12 @@
+ 				err = -EINVAL;
+ 				goto out;
+ 			}
+-			err = mt7925_mcu_sta_mld_update(dev, vif, sta, primary);
+-			if (err)
+-				goto out;
++			if (!is_mt7925(&dev->mt76) ||
++			    hweight16(new_links) != 2) {
++				err = mt7925_mcu_sta_mld_update(dev, vif, sta, primary);
++				if (err)
++					goto out;
++			}
+ 
+ 			if (is_mt7925(&dev->mt76) &&
+ 			    vif->type == NL80211_IFTYPE_STATION &&
