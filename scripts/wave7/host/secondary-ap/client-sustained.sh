@@ -77,6 +77,15 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
     exit 0
 fi
 
+# Two immediate reconnects exercise reuse of an alternating two-ID group.
+# Keep the existing bounded observer lifetime and ordinary single-reconnect test.
+reconnect_count=1
+if (( $# == 4 )); then
+    [[ $2 == --early-reconnect-upstream-* && $4 == --reconnect-count=2 ]] || exit 2
+    reconnect_count=2
+    set -- "$1" "$2" "$3"
+fi
+
 [[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
    ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* || $2 == --early-load-upstream-* || $2 == --early-reconnect-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
    $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
@@ -700,71 +709,80 @@ if (( early_only )); then
         done
         printf 'short_dual_hold_pass=%s\n' "$((1 - short_failed))" > "$out/short-dual-hold-result.txt"
         if (( early_reconnect && !short_failed )); then
-            # Keep the temporary profile and module stack unchanged.
-            # No wait for AP inactivity aging, no forced AP peer deletion.
-            printf 'down_start=%s\n' "$(date +%s.%N)" > "$out/reconnect-timing.txt"
-            rootcmd nmcli --wait 15 connection down "$tmp" > "$out/reconnect-down.txt" 2>&1
-            for ((attempt=0; attempt<40; attempt++)); do
-                [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] && break
-                sleep .1
-            done
-            [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] || exit 3
-            reconnect_epoch=$(date +%s)
-            printf 'up_start=%s\n' "$(date +%s.%N)" >> "$out/reconnect-timing.txt"
-            # Observe L2/L3 activation separately, including failures.
-            # No extra traffic, scan, profile mutation or AP intervention.
-            rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/reconnect-up.txt" 2>&1 &
-            activation_pid=$!
-            reconnect_snapshot() {
-                printf 'snapshot_epoch=%s\n' "$(date +%s.%N)"
-                nmcli -g GENERAL.STATE,GENERAL.REASON,IP4.ADDRESS,IP6.ADDRESS device show "$iface" || :
-                ip -4 -o addr show dev "$iface" || :
-                ip -6 -o addr show dev "$iface" || :
-                ip -s neigh show dev "$iface" || :
-                iw dev "$iface" link || :
-                local mask
-                for mask in active_links valid_links dormant_links; do
-                    printf 'mac80211_%s=' "$mask"
-                    rootcmd cat "/sys/kernel/debug/ieee80211/$phy/netdev:$iface/$mask" || :
+            printf 'expected=%s\n' "$reconnect_count" > "$out/reconnect-count.txt"
+            printf 'reconnect_pass=0\n' > "$out/reconnect-result.txt"
+            for ((cycle=1; cycle<=reconnect_count; cycle++)); do
+                reconnect_suffix=''
+                if (( cycle > 1 )); then reconnect_suffix=-$cycle; fi
+                reconnect_prefix=reconnect$reconnect_suffix
+                # Keep the temporary profile and module stack unchanged.
+                # No wait for AP inactivity aging, no forced AP peer deletion.
+                printf 'down_start=%s\n' "$(date +%s.%N)" > "$out/${reconnect_prefix}-timing.txt"
+                rootcmd nmcli --wait 15 connection down "$tmp" > "$out/${reconnect_prefix}-down.txt" 2>&1
+                for ((attempt=0; attempt<40; attempt++)); do
+                    [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] && break
+                    sleep .1
                 done
-            }
-            while kill -0 "$activation_pid" 2>/dev/null; do
-                reconnect_snapshot
-                sleep 1
-            done > "$out/reconnect-activation.txt" 2>&1
-            activation_rc=0
-            wait "$activation_pid" || activation_rc=$?
-            activation_pid=''
-            printf 'up_complete=%s rc=%s\n' "$(date +%s.%N)" "$activation_rc" >> "$out/reconnect-timing.txt"
-            reconnect_snapshot >> "$out/reconnect-activation.txt" 2>&1
-            # Only device-specific NetworkManager state/IP transitions,
-            # not profile settings or supplicant key material.
-            journalctl -b -u NetworkManager --since "@$reconnect_epoch" --no-pager -o short-unix |
-                awk -v iface="$iface" 'index($0, "(" iface ")") && /state change|dhcp[46]|ip-config|ip-check|activation|Activation|carrier|supplicant interface state/'                 > "$out/reconnect-nm-state.txt" || :
-            if (( activation_rc )); then
-                printf 'reconnect_pass=0\n' > "$out/reconnect-result.txt"
-                exit 3
-            fi
-            v4=$(ip -4 -o addr show dev "$iface" | lab_ipv4_from_ip)
-            v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
-            [[ -n $v4 && -n $v6 ]] || exit 3
-            path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
-            reconnect_links(){
-                local a v d
-                a=$(rootcmd cat "$path/active_links") || return 1
-                v=$(rootcmd cat "$path/valid_links") || return 1
-                d=$(rootcmd cat "$path/dormant_links") || return 1
-                printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
-                dual_link_masks "$a" "$v" "$d"
-            }
-            reconnect_links > "$out/reconnect-links-before.txt" || exit 3
-            probe_start reconnect-hold-ap 440 "$v4" 192.168.76.1 -4
-            probe_start reconnect-hold-asus 440 "$v4" 192.168.76.2 -4
-            probe_start reconnect-hold-v6 440 "$v6" fd76:7::2 -6
-            for index in "${!pings[@]}"; do
-                probe_wait_one "$index" || short_failed=1
+                [[ $(nmcli -g GENERAL.STATE device show "$iface") == '30 (disconnected)' ]] || exit 3
+                reconnect_epoch=$(date +%s)
+                printf 'up_start=%s\n' "$(date +%s.%N)" >> "$out/${reconnect_prefix}-timing.txt"
+                # Observe L2/L3 activation separately, including failures.
+                # No extra traffic, scan, profile mutation or AP intervention.
+                rootcmd nmcli --wait 40 connection up "$tmp" ifname "$iface" > "$out/${reconnect_prefix}-up.txt" 2>&1 &
+                activation_pid=$!
+                reconnect_snapshot() {
+                    printf 'snapshot_epoch=%s\n' "$(date +%s.%N)"
+                    nmcli -g GENERAL.STATE,GENERAL.REASON,IP4.ADDRESS,IP6.ADDRESS device show "$iface" || :
+                    ip -4 -o addr show dev "$iface" || :
+                    ip -6 -o addr show dev "$iface" || :
+                    ip -s neigh show dev "$iface" || :
+                    iw dev "$iface" link || :
+                    local mask
+                    for mask in active_links valid_links dormant_links; do
+                        printf 'mac80211_%s=' "$mask"
+                        rootcmd cat "/sys/kernel/debug/ieee80211/$phy/netdev:$iface/$mask" || :
+                    done
+                }
+                while kill -0 "$activation_pid" 2>/dev/null; do
+                    reconnect_snapshot
+                    sleep 1
+                done > "$out/${reconnect_prefix}-activation.txt" 2>&1
+                activation_rc=0
+                wait "$activation_pid" || activation_rc=$?
+                activation_pid=''
+                printf 'up_complete=%s rc=%s\n' "$(date +%s.%N)" "$activation_rc" >> "$out/${reconnect_prefix}-timing.txt"
+                reconnect_snapshot >> "$out/${reconnect_prefix}-activation.txt" 2>&1
+                # Only device-specific NetworkManager state/IP transitions,
+                # not profile settings or supplicant key material.
+                journalctl -b -u NetworkManager --since "@$reconnect_epoch" --no-pager -o short-unix |
+                    awk -v iface="$iface" 'index($0, "(" iface ")") && /state change|dhcp[46]|ip-config|ip-check|activation|Activation|carrier|supplicant interface state/'                 > "$out/${reconnect_prefix}-nm-state.txt" || :
+                if (( activation_rc )); then
+                    printf 'reconnect_pass=0\n' > "$out/reconnect-result.txt"
+                    exit 3
+                fi
+                v4=$(ip -4 -o addr show dev "$iface" | lab_ipv4_from_ip)
+                v6=$(ip -6 -o addr show dev "$iface" | awk '$3=="inet6" && $4 ~ /^fd76:7:/ && $0 !~ /tentative|dadfailed/ {split($4,parts,"/"); print parts[1]; exit}')
+                [[ -n $v4 && -n $v6 ]] || exit 3
+                path=/sys/kernel/debug/ieee80211/$phy/netdev:$iface
+                reconnect_links(){
+                    local a v d
+                    a=$(rootcmd cat "$path/active_links") || return 1
+                    v=$(rootcmd cat "$path/valid_links") || return 1
+                    d=$(rootcmd cat "$path/dormant_links") || return 1
+                    printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
+                    dual_link_masks "$a" "$v" "$d"
+                }
+                reconnect_links > "$out/${reconnect_prefix}-links-before.txt" || exit 3
+                probe_start "reconnect-hold${reconnect_suffix}-ap" 440 "$v4" 192.168.76.1 -4
+                probe_start "reconnect-hold${reconnect_suffix}-asus" 440 "$v4" 192.168.76.2 -4
+                probe_start "reconnect-hold${reconnect_suffix}-v6" 440 "$v6" fd76:7::2 -6
+                for index in "${!pings[@]}"; do
+                    probe_wait_one "$index" || short_failed=1
+                done
+                reconnect_links > "$out/${reconnect_prefix}-links-after.txt" || short_failed=1
+                (( !short_failed )) || break
+                printf 'cycle=%s result=pass\n' "$cycle" >> "$out/reconnect-cycles.txt"
             done
-            reconnect_links > "$out/reconnect-links-after.txt" || short_failed=1
             printf 'reconnect_pass=%s\n' "$((1 - short_failed))" > "$out/reconnect-result.txt"
         fi
         if (( early_load && !short_failed )); then
