@@ -1,0 +1,230 @@
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -757,6 +757,29 @@
+ 	}
+ }
+ 
++static const struct ieee80211_hdr *
++mt7925_lab_mgmt_header(struct sk_buff *skb)
++{
++	const struct ieee80211_hdr *hdr;
++	const struct ieee80211_tx_info *info;
++
++	if (!skb || skb_headlen(skb) < 24)
++		return NULL;
++
++	info = IEEE80211_SKB_CB(skb);
++	if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP)
++		return NULL;
++
++	hdr = (const struct ieee80211_hdr *)skb->data;
++	if (!ieee80211_is_mgmt(hdr->frame_control) ||
++	    ieee80211_is_beacon(hdr->frame_control) ||
++	    ieee80211_is_probe_resp(hdr->frame_control) ||
++	    ieee80211_is_probe_req(hdr->frame_control))
++		return NULL;
++
++	return hdr;
++}
++
+ void
+ mt7925_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
+ 		      struct sk_buff *skb, struct mt76_wcid *wcid,
+@@ -880,6 +903,18 @@
+ 	}
+ 
+ 	mt7925_p2p_txwi_override(dev, txwi, skb);
++
++	if (trace_mt7925_lab_mgmt_txd_enabled()) {
++		const struct ieee80211_hdr *hdr = mt7925_lab_mgmt_header(skb);
++
++		if (hdr)
++			trace_mt7925_lab_mgmt_txd(skb,
++				le16_to_cpu(hdr->frame_control),
++				le16_to_cpu(hdr->seq_ctrl),
++				u32_get_bits(info->control.flags, IEEE80211_TX_CTRL_MLO_LINK),
++				wcid->idx, wcid->link_id, band_idx,
++				hdr->addr1, txwi);
++	}
+ }
+ EXPORT_SYMBOL_GPL(mt7925_mac_write_txwi);
+ 
+@@ -959,6 +994,17 @@
+ 
+ 	txs = le32_to_cpu(txs_data[0]);
+ 	info = IEEE80211_SKB_CB(skb);
++	if (trace_mt7925_lab_mgmt_txs_enabled()) {
++		const struct ieee80211_hdr *hdr = mt7925_lab_mgmt_header(skb);
++
++		if (hdr)
++			trace_mt7925_lab_mgmt_txs(skb,
++				le16_to_cpu(hdr->frame_control),
++				le16_to_cpu(hdr->seq_ctrl), wcid->idx,
++				wcid->link_id, pid,
++				le32_get_bits(txs_data[2], MT_TXS2_BAND),
++				FIELD_GET(MT_TXS0_ACK_ERROR_MASK, txs));
++	}
+ 	/* Trace only a matched host skb containing peer data, using the
+ 	 * firmware-reported hardware band, without payload or addresses.
+ 	 * Do not request additional status or alter TX policy.
+@@ -1348,6 +1394,9 @@
+ 	void *end = data + len;
+ 	bool wake = false;
+ 	u16 total, count = 0;
++	u16 fw_wcid = U16_MAX;
++	u32 last_header = 0;
++	bool header_valid = false;
+ 
+ 	/* clean DMA queues and unmap buffers first */
+ 	mt76_queue_tx_cleanup(dev, dev->mphy.q_tx[MT_TXQ_PSD], false);
+@@ -1372,6 +1421,9 @@
+ 			u16 idx;
+ 
+ 			idx = FIELD_GET(MT_TXFREE_INFO_WLAN_ID, info);
++			fw_wcid = idx;
++			header_valid = false;
++			last_header = 0;
+ 			wcid = mt76_wcid_ptr(dev, idx);
+ 			sta = wcid_to_sta(wcid);
+ 			if (!sta)
+@@ -1383,6 +1435,8 @@
+ 		}
+ 
+ 		if (info & MT_TXFREE_INFO_HEADER) {
++			last_header = info;
++			header_valid = true;
+ 			if (wcid) {
+ 				u32 count = FIELD_GET(MT_TXFREE_INFO_COUNT, info);
+ 
+@@ -1403,6 +1457,18 @@
+ 			if (!txwi)
+ 				continue;
+ 
++			if (trace_mt7925_lab_mgmt_tx_free_enabled()) {
++				const struct ieee80211_hdr *hdr =
++					mt7925_lab_mgmt_header(txwi->skb);
++				const __le32 *txd = mt76_get_txwi_ptr(mdev, txwi);
++
++				if (hdr)
++					trace_mt7925_lab_mgmt_tx_free(txwi->skb,
++						le16_to_cpu(hdr->frame_control),
++						le16_to_cpu(hdr->seq_ctrl), msdu,
++						le32_get_bits(txd[1], MT_TXD1_WLAN_IDX),
++						fw_wcid, header_valid, last_header);
++			}
+ 			mt7925_txwi_free(dev, txwi, sta, wcid, &free_list);
+ 		}
+ 	}
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -754,6 +754,110 @@
+ 		  __entry->length)
+ );
+ 
++
++/* Management metadata only. The skb cookie correlates host submission and
++ * actual firmware completion without requesting additional TX statuses.
++ */
++TRACE_EVENT(mt7925_lab_mgmt_txd,
++	TP_PROTO(const void *cookie, u16 fc, u16 seq, u8 requested,
++		 u16 wcid, u8 link, u8 band, const u8 *addresses,
++		 const __le32 *txd),
++	TP_ARGS(cookie, fc, seq, requested, wcid, link, band, addresses, txd),
++	TP_STRUCT__entry(
++		__field(const void *, cookie)
++		__field(u16, fc)
++		__field(u16, seq)
++		__field(u8, requested)
++		__field(u16, wcid)
++		__field(u8, link)
++		__field(u8, band)
++		__array(u8, addresses, 18)
++		__array(u32, txd, 6)
++	),
++	TP_fast_assign(
++		__entry->cookie = cookie;
++		__entry->fc = fc;
++		__entry->seq = seq;
++		__entry->requested = requested;
++		__entry->wcid = wcid;
++		__entry->link = link;
++		__entry->band = band;
++		memcpy(__entry->addresses, addresses, 18);
++		__entry->txd[0] = le32_to_cpu(txd[0]);
++		__entry->txd[1] = le32_to_cpu(txd[1]);
++		__entry->txd[2] = le32_to_cpu(txd[2]);
++		__entry->txd[3] = le32_to_cpu(txd[3]);
++		__entry->txd[4] = le32_to_cpu(txd[5]);
++		__entry->txd[5] = le32_to_cpu(txd[6]);
++	),
++	TP_printk("cookie=%p fc=0x%04x seq=%u requested=%u wcid=%u link=%u band=%u a1=%pM a2=%pM a3=%pM d0=%08x d1=%08x d2=%08x d3=%08x d5=%08x d6=%08x",
++		  __entry->cookie, __entry->fc, __entry->seq,
++		  __entry->requested, __entry->wcid, __entry->link,
++		  __entry->band, __entry->addresses, __entry->addresses + 6,
++		  __entry->addresses + 12, __entry->txd[0], __entry->txd[1],
++		  __entry->txd[2], __entry->txd[3], __entry->txd[4],
++		  __entry->txd[5])
++);
++
++TRACE_EVENT(mt7925_lab_mgmt_tx_free,
++	TP_PROTO(const void *cookie, u16 fc, u16 seq, u16 token,
++		 u16 desc_wcid, u16 fw_wcid, bool header_valid, u32 header),
++	TP_ARGS(cookie, fc, seq, token, desc_wcid, fw_wcid, header_valid, header),
++	TP_STRUCT__entry(
++		__field(const void *, cookie)
++		__field(u16, fc)
++		__field(u16, seq)
++		__field(u16, token)
++		__field(u16, desc_wcid)
++		__field(u16, fw_wcid)
++		__field(bool, header_valid)
++		__field(u32, header)
++	),
++	TP_fast_assign(
++		__entry->cookie = cookie;
++		__entry->fc = fc;
++		__entry->seq = seq;
++		__entry->token = token;
++		__entry->desc_wcid = desc_wcid;
++		__entry->fw_wcid = fw_wcid;
++		__entry->header_valid = header_valid;
++		__entry->header = header;
++	),
++	TP_printk("cookie=%p fc=0x%04x seq=%u token=%u desc_wcid=%u fw_wcid=%u header_valid=%u header=%08x",
++		  __entry->cookie, __entry->fc, __entry->seq, __entry->token,
++		  __entry->desc_wcid, __entry->fw_wcid, __entry->header_valid,
++		  __entry->header)
++);
++
++TRACE_EVENT(mt7925_lab_mgmt_txs,
++	TP_PROTO(const void *cookie, u16 fc, u16 seq, u16 wcid,
++		 u8 link, u8 pid, u8 band, u8 ack_error),
++	TP_ARGS(cookie, fc, seq, wcid, link, pid, band, ack_error),
++	TP_STRUCT__entry(
++		__field(const void *, cookie)
++		__field(u16, fc)
++		__field(u16, seq)
++		__field(u16, wcid)
++		__field(u8, link)
++		__field(u8, pid)
++		__field(u8, band)
++		__field(u8, ack_error)
++	),
++	TP_fast_assign(
++		__entry->cookie = cookie;
++		__entry->fc = fc;
++		__entry->seq = seq;
++		__entry->wcid = wcid;
++		__entry->link = link;
++		__entry->pid = pid;
++		__entry->band = band;
++		__entry->ack_error = ack_error;
++	),
++	TP_printk("cookie=%p fc=0x%04x seq=%u wcid=%u link=%u pid=%u band=%u ack_error=%u",
++		  __entry->cookie, __entry->fc, __entry->seq, __entry->wcid,
++		  __entry->link, __entry->pid, __entry->band, __entry->ack_error)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
