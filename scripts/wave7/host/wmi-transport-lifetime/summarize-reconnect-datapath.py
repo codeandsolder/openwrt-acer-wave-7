@@ -590,6 +590,17 @@ def selftest():
     s += "overrun: 0\ncommit overrun: 0\ndropped events: 0\nAP_CONTROL_TRACE_END rc=0\n"
     result = parse_trace(s, "ap")
     assert len(result) == 2 and result[1]["whole"][0]["count"] == 1
+    third = (line(30, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 3->4")
+             + line(30.1, "net_dev_start_xmit", "dev=ap-mld0 protocol=0x0800 len=300")
+             + line(31, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 4->3"))
+    three = s.replace("overrun: 0", third + "overrun: 0", 1)
+    assert len(parse_trace(three, "ap", 3)) == 3
+    try:
+        parse_trace(s, "ap", 3)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("missing third lifetime accepted")
     first_only = "\n".join(l for l in s.splitlines() if "20." not in l and "21." not in l)
     assert len(parse_trace(first_only, "ap", 1)) == 1
     try:
@@ -703,6 +714,17 @@ def selftest():
     assert not changed["same_sequence"] and changed["same_sequence_except_bss_group"]
     assert not mld_command_windows(groups.replace("bss=0 group=1", "bss=1 group=1"),
                                    ctl, w)["same_sequence_except_bss_group"]
+    three_groups = groups + line(30, "mt7925_lab_sta_mld_slot", "target=3 slot=0 count=2")
+    three_groups += line(30, "mt7925_lab_bss_mld", "bss=0 group=0")
+    three_ctl = ctl + line(29, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
+    three_windows = w + [{"authorized_at": 30, "deauthorized_at": 31}]
+    rotated = mld_command_windows(three_groups, three_ctl, three_windows)
+    assert [r["bss_group_ids"] for r in rotated["windows"]] == [[0], [1], [0]]
+    assert rotated["same_sequence_except_bss_group"]
+    assert not mld_command_windows(
+        three_groups.replace("30.000000: mt7925_lab_sta_mld_slot: target=3",
+                             "30.000000: mt7925_lab_sta_mld_slot: target=4"),
+        three_ctl, three_windows)["same_sequence_except_bss_group"]
     peer = {"stage": 7, "bss": 1, "link": 1, "wcid": 3, "host_band": 0}
     retire_window = [{"authorized_at": 10, "deauthorized_at": 11, "wtbl": [peer]}]
     retirement = (
