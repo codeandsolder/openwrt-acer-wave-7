@@ -1,0 +1,277 @@
+--- a/mt7925/mcu.h
++++ b/mt7925/mcu.h
+@@ -734,6 +734,24 @@
+ 
+ int mt7925_lab_cnm_get_info(struct mt792x_dev *dev,
+ 			   struct mt7925_lab_cnm_info *info);
++
++/* gen4m MT7925 PARAM_MLD_REC, two links, 4 ACs. */
++struct mt7925_lab_mld_record_link {
++	u8 active, suspended, parent, band;
++	__le16 wcid;
++	u8 agc_overlap[84];
++} __packed;
++
++struct mt7925_lab_mld_record {
++	u8 state, index;
++	__le16 mld, primary, secondary;
++	u8 all_str, str_bitmap, emlsr_bitmap, active_count, active_bitmap;
++	u8 agc[2], pad;
++	struct mt7925_lab_mld_record_link link[2];
++} __packed;
++
++int mt7925_lab_mld_get_record(struct mt792x_dev *dev,
++			     struct mt7925_lab_mld_record *record);
+ 
+ int mt7925_mcu_set_dbdc(struct mt76_phy *phy, bool enable);
+ int mt7925_mcu_hw_scan(struct mt76_phy *phy, struct ieee80211_vif *vif,
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -10,6 +10,9 @@
+ #include "nan.h"
+ #include "p2p.h"
+ #include "lab_trace.h"
++
++/* Vendor MLO management command/event; distinct from MLD 0x82. */
++enum { MCU_UNI_CMD_MLO = 0x59, MCU_UNI_EVENT_MLO = 0x59 };
+ 
+ #define MT_STA_BFER			BIT(0)
+ #define MT_STA_BFEE			BIT(1)
+@@ -124,6 +127,10 @@
+ 			 cmd != MCU_CMD(CB_PATCH_FINISH_REQ))
+ 			return -EAGAIN;
+ 	}
++
++	if (cmd == MCU_WM_UNI_CMD_QUERY(MLO) &&
++	    rxd->eid != MCU_UNI_EVENT_MLO)
++		return -EPROTO;
+ 
+ 	if (cmd == MCU_WM_UNI_CMD_QUERY(ROC) &&
+ 	    rxd->eid != MCU_UNI_EVENT_ROC)
+@@ -1284,6 +1291,68 @@
+ 	if (!ret)
+ 		ret = skb ? mt7925_lab_cnm_decode(skb->data, skb->len, info) :
+ 			    -ENODATA;
++	dev_kfree_skb(skb);
++	return ret;
++}
++
++static int mt7925_lab_mld_decode(const u8 *data, size_t len,
++				 struct mt7925_lab_mld_record *record)
++{
++	const struct tlv *tlv;
++	u32 rem;
++	bool found = false;
++
++	static_assert(sizeof(*record) == 196);
++	static_assert(sizeof(record->link[0]) == 90);
++	static_assert(offsetof(struct mt7925_lab_mld_record, link) == 16);
++	if (len < 4 || len - 4 > U32_MAX)
++		return -EPROTO;
++	rem = len - 4;
++	tlv = (const void *)(data + 4);
++	while (rem) {
++		u16 size;
++
++		if (!mt7925_mcu_tlv_valid(tlv, rem))
++			return -EPROTO;
++		size = le16_to_cpu(tlv->len);
++		if (le16_to_cpu(tlv->tag) == 2) {
++			if (found || size != sizeof(*tlv) + sizeof(*record))
++				return -EPROTO;
++			memcpy(record, tlv + 1, sizeof(*record));
++			if (record->index != 0)
++				return -EPROTO;
++			found = true;
++		}
++		rem -= size;
++		tlv = (const void *)((const u8 *)tlv + size);
++	}
++	return found ? 0 : -ENODATA;
++}
++
++int mt7925_lab_mld_get_record(struct mt792x_dev *dev,
++			     struct mt7925_lab_mld_record *record)
++{
++	struct {
++		u8 reserved[4];
++		__le16 tag, len;
++		__le32 index;
++	} __packed req = {
++		.tag = cpu_to_le16(2),
++		.len = cpu_to_le16(8),
++		.index = cpu_to_le32(0),
++	};
++	struct sk_buff *skb = NULL;
++	int ret;
++
++	lockdep_assert_held(&dev->mt76.mutex);
++	if (!is_mt7925(&dev->mt76) || !mt76_is_mmio(&dev->mt76))
++		return -EOPNOTSUPP;
++	ret = mt76_mcu_send_and_get_msg(&dev->mt76,
++					MCU_WM_UNI_CMD_QUERY(MLO),
++					&req, sizeof(req), true, &skb);
++	if (!ret)
++		ret = skb ? mt7925_lab_mld_decode(skb->data, skb->len, record) :
++			-ENODATA;
+ 	dev_kfree_skb(skb);
+ 	return ret;
+ }
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -705,6 +705,79 @@
+ 		  __entry->rx_nss)
+ );
+ 
++TRACE_EVENT(mt7925_lab_mld_record_result,
++	TP_PROTO(u8 stage, int ret),
++	TP_ARGS(stage, ret),
++	TP_STRUCT__entry(
++		__field(u8, stage)
++		__field(int, ret)
++	),
++	TP_fast_assign(
++		__entry->stage = stage;
++		__entry->ret = ret;
++	),
++	TP_printk("stage=%u ret=%d",
++		  __entry->stage, __entry->ret)
++);
++
++TRACE_EVENT(mt7925_lab_mld_record,
++	TP_PROTO(u8 stage, u8 state, u8 index, u16 mld, u16 primary, u16 secondary, u8 all_str, u8 str_bitmap, u8 emlsr_bitmap, u8 active_count, u8 active_bitmap),
++	TP_ARGS(stage, state, index, mld, primary, secondary, all_str, str_bitmap, emlsr_bitmap, active_count, active_bitmap),
++	TP_STRUCT__entry(
++		__field(u8, stage)
++		__field(u8, state)
++		__field(u8, index)
++		__field(u16, mld)
++		__field(u16, primary)
++		__field(u16, secondary)
++		__field(u8, all_str)
++		__field(u8, str_bitmap)
++		__field(u8, emlsr_bitmap)
++		__field(u8, active_count)
++		__field(u8, active_bitmap)
++	),
++	TP_fast_assign(
++		__entry->stage = stage;
++		__entry->state = state;
++		__entry->index = index;
++		__entry->mld = mld;
++		__entry->primary = primary;
++		__entry->secondary = secondary;
++		__entry->all_str = all_str;
++		__entry->str_bitmap = str_bitmap;
++		__entry->emlsr_bitmap = emlsr_bitmap;
++		__entry->active_count = active_count;
++		__entry->active_bitmap = active_bitmap;
++	),
++	TP_printk("stage=%u state=%u index=%u mld=%u primary=%u secondary=%u all_str=%u str_bitmap=%u emlsr_bitmap=%u active_count=%u active_bitmap=%u",
++		  __entry->stage, __entry->state, __entry->index, __entry->mld, __entry->primary, __entry->secondary, __entry->all_str, __entry->str_bitmap, __entry->emlsr_bitmap, __entry->active_count, __entry->active_bitmap)
++);
++
++TRACE_EVENT(mt7925_lab_mld_record_link,
++	TP_PROTO(u8 stage, u8 slot, u8 active, u8 suspended, u8 parent, u8 band, u16 wcid),
++	TP_ARGS(stage, slot, active, suspended, parent, band, wcid),
++	TP_STRUCT__entry(
++		__field(u8, stage)
++		__field(u8, slot)
++		__field(u8, active)
++		__field(u8, suspended)
++		__field(u8, parent)
++		__field(u8, band)
++		__field(u16, wcid)
++	),
++	TP_fast_assign(
++		__entry->stage = stage;
++		__entry->slot = slot;
++		__entry->active = active;
++		__entry->suspended = suspended;
++		__entry->parent = parent;
++		__entry->band = band;
++		__entry->wcid = wcid;
++	),
++	TP_printk("stage=%u slot=%u active=%u suspended=%u parent=%u band=%u wcid=%u",
++		  __entry->stage, __entry->slot, __entry->active, __entry->suspended, __entry->parent, __entry->band, __entry->wcid)
++);
++
+ TRACE_EVENT(mt7925_lab_cnm_result,
+ 	TP_PROTO(u8 stage, int ret, u8 count),
+ 	TP_ARGS(stage, ret, count),
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -787,6 +787,8 @@
+ 	MT7925_LAB_CNM_ASSOC_WITHOUT_MLD,
+ 	MT7925_LAB_CNM_SECONDARY_MLD,
+ 	MT7925_LAB_CNM_SECONDARY_EHT_MLD,
++	MT7925_LAB_MLD_PRE_REMOVE,
++	MT7925_LAB_MLD_POST_REMOVE,
+ };
+ 
+ /*
+@@ -834,6 +836,34 @@
+ 	}
+ }
+ 
++static void mt7925_lab_mld_snapshot(struct mt792x_dev *dev,
++				    struct ieee80211_vif *vif, u8 stage)
++{
++	struct mt7925_lab_mld_record r;
++	unsigned int i;
++	int ret;
++
++	if (!trace_mt7925_lab_mld_record_result_enabled() ||
++	    vif->type != NL80211_IFTYPE_STATION ||
++	    !ieee80211_vif_is_mld(vif))
++		return;
++
++	ret = mt7925_lab_mld_get_record(dev, &r);
++	trace_mt7925_lab_mld_record_result(stage, ret);
++	if (ret)
++		return;
++	trace_mt7925_lab_mld_record(stage, r.state, r.index,
++		le16_to_cpu(r.mld), le16_to_cpu(r.primary),
++		le16_to_cpu(r.secondary), r.all_str, r.str_bitmap,
++		r.emlsr_bitmap, r.active_count, r.active_bitmap);
++	for (i = 0; i < ARRAY_SIZE(r.link); i++) {
++		const struct mt7925_lab_mld_record_link *l = &r.link[i];
++
++		trace_mt7925_lab_mld_record_link(stage, i, l->active,
++			l->suspended, l->parent, l->band, le16_to_cpu(l->wcid));
++	}
++}
++
+ static int mt7925_lab_cnm_snapshot(struct mt792x_dev *dev,
+ 				  struct ieee80211_vif *vif, u8 stage)
+ {
+@@ -876,6 +906,9 @@
+ 	}
+ out:
+ 	kfree(info);
++	if (!ret && (stage == MT7925_LAB_CNM_SECONDARY_MLD ||
++		     stage == MT7925_LAB_WTBL_POST_KEYS))
++		mt7925_lab_mld_snapshot(dev, vif, stage);
+ 	return ret;
+ }
+ 
+@@ -1730,6 +1763,9 @@
+ 	struct mt76_dev *mdev = &dev->mt76;
+ 	unsigned int link_id;
+ 
++	if (removing_sta)
++		mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_PRE_REMOVE);
++
+ 	/* clean up bss before starec */
+ 	for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
+ 		struct ieee80211_link_sta *link_sta;
+@@ -1790,6 +1826,9 @@
+ 		if (msta->deflink_id == link_id)
+ 			msta->deflink_id = IEEE80211_LINK_UNSPECIFIED;
+ 	}
++
++	if (removing_sta)
++		mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_POST_REMOVE);
+ 
+ 	return 0;
+ }
