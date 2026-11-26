@@ -1,0 +1,25 @@
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -874,10 +874,20 @@
+ 	txwi[6] = cpu_to_le32(val);
+ 	txwi[7] = 0;
+ 
+-	if (is_8023)
++	if (is_8023) {
+ 		mt7925_mac_write_txwi_8023(txwi, skb, wcid);
+-	else
++	} else {
++		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
++
+ 		mt7925_mac_write_txwi_80211(dev, txwi, skb, key);
++		/* mac80211 selected a link and mt792x_tx() translated the
++		 * addresses to that link. Keep peer management frames on
++		 * the same link, as on Connac3 MT7996.
++		 */
++		if (vif && ieee80211_vif_is_mld(vif) && wcid->sta &&
++		    ieee80211_is_mgmt(hdr->frame_control))
++			txwi[5] |= cpu_to_le32(MT_TXD5_FL);
++	}
+ 
+ 	if (txwi[1] & cpu_to_le32(MT_TXD1_FIXED_RATE)) {
+ 		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
