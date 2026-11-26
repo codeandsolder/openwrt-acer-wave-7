@@ -1,0 +1,22 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -91,7 +91,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-initial-split-trace ]]; then
+     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ]]; then
+         events+=(mt7925_lab/mt7925_lab_sta_mld_teardown)
+@@ -140,7 +141,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-initial-split-trace ]]; then
+     # BTF field fetching avoids hard-coded structures/offsets. Register only
+     # these two named probes and remove the exact definitions at cleanup.
+     [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
