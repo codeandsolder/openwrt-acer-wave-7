@@ -122,6 +122,62 @@ def parse_trace(text, side):
     return results
 
 
+
+def token_windows(text, windows):
+    """Pair each submitted descriptor with its eventual token return."""
+    events = []
+    for line in text.splitlines():
+        m = LINE.search(line)
+        if m and m[2] in {"mt7925_lab_data_txd", "mt7925_lab_data_tx_free"}:
+            events.append((float(m[1]), m[2], dict(FIELD.findall(m[3]))))
+    pending = {}
+    submissions = []
+    unmatched_free = 0
+    for time, event, fields in sorted(events, key=lambda row: row[0]):
+        cookie = fields["cookie"]
+        require(cookie not in {"0000000000000000", "(null)"}, "invalid skb cookie")
+        if event == "mt7925_lab_data_txd":
+            require(cookie not in pending, "duplicate outstanding skb cookie")
+            row = {"submitted_at": time, **fields}
+            submissions.append(row)
+            pending[cookie] = row
+        else:
+            row = pending.pop(cookie, None)
+            if row is None:
+                # Return tracing also covers data outside the MLD station.
+                unmatched_free += 1
+                continue
+            require(row["wcid"] == fields["desc_wcid"], "descriptor WCID mismatch")
+            header = int(fields["header"], 16)
+            row["return"] = {
+                "time": time,
+                "latency_ms": round((time - row["submitted_at"]) * 1000, 3),
+                **fields,
+                "header_count": (header >> 24) & 15 if fields["header_valid"] == "1" else None,
+                "header_status": (header >> 28) & 3 if fields["header_valid"] == "1" else None,
+            }
+    result = []
+    for window in windows:
+        start, stop = window["authorized_at"], window["deauthorized_at"]
+        rows = [row for row in submissions if start <= row["submitted_at"] < stop]
+        counts = Counter()
+        for row in rows:
+            returned = row.get("return")
+            key = (row["protocol"], row["wcid"], row["band"],
+                   "missing" if returned is None else str(returned["header_count"]),
+                   "missing" if returned is None else
+                   "after_deauthorize" if returned["time"] >= stop else "before_deauthorize")
+            counts[key] += 1
+        result.append({
+            "authorized_at": start, "deauthorized_at": stop,
+            "submitted": len(rows),
+            "returned": sum("return" in row for row in rows),
+            "groups": [{"fields": list(key), "count": count}
+                       for key, count in sorted(counts.items())],
+            "descriptors": rows,
+        })
+    return {"unmatched_free": unmatched_free, "windows": result}
+
 def selftest():
     def line(t, e, body):
         return f"worker [001] ..... {t:.6f}: {e}: {body}\n"
@@ -144,6 +200,16 @@ def selftest():
             pass
         else:
             raise AssertionError("bad trace accepted")
+    txd = "cookie=00000000abcd1234 protocol=0x0800 wcid=2 band=1"
+    free = "cookie=00000000abcd1234 desc_wcid=2 header_valid=1 header=40000000"
+    token_trace = line(10.1, "mt7925_lab_data_txd", txd)
+    token_trace += line(11.2, "mt7925_lab_data_tx_free", free)
+    token_trace += line(20.1, "mt7925_lab_data_txd", txd)
+    token_trace += line(20.2, "mt7925_lab_data_tx_free", free)
+    tokens = token_windows(token_trace, result)["windows"]
+    assert tokens[0]["groups"][0]["fields"][-1] == "after_deauthorize"
+    assert tokens[0]["descriptors"][0]["return"]["header_count"] == 0
+    assert tokens[1]["returned"] == 1
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -162,5 +228,8 @@ if __name__ == "__main__":
         for side in ("client", "ap"):
             name = f"band-{args.band}.{side}-control-trace.txt"
             require(name in sealed, f"unsealed {side} trace")
-            result[side] = parse_trace((args.trial / name).read_text(), side)
+            text = (args.trial / name).read_text()
+            result[side] = parse_trace(text, side)
+            if side == "client" and "mt7925_lab_data_txd:" in text:
+                result["data_tokens"] = token_windows(text, result[side])
         print(json.dumps(result, indent=2))
