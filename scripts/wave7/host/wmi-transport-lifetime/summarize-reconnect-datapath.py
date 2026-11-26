@@ -77,6 +77,9 @@ def parse_trace(text, side, min_associations=2, allow_open_peer=False):
             wtbl.append({"time": time, "stage": int(fields["stage"]),
                          "wcid": int(fields["wcid"]), "link": int(fields["link"]),
                          "bss": int(fields["bss"]), "host_band": int(fields["host_band"]),
+                         "hardware_band": (int(fields["dw0"], 16) >> 26) & 3,
+                         "valid_peer": bool((int(fields["dw0"], 16) >> 28) & 1),
+                         "cipher": int(fields["cipher"]),
                          "own_mld_id": int(fields["mld"]), "dw28": fields["dw28"],
                          "related": related,
                          "primary_mld_band": (dw28 >> 14) & 3,
@@ -302,6 +305,39 @@ def check_mld_record(row):
                 "failed MLD query has payload")
 
 
+def wtbl_pair_bindings(windows):
+    """Check the dual-link peer table independently of scheduler records.
+
+    The related-index slots describe other peers, not the current peer.
+    Compare their concrete WCID and band against the other active peer.
+    This diagnostic deliberately does not assert any fixed group ID.
+    """
+    result = []
+    for window in windows:
+        final = [r for r in window["wtbl"] if r["stage"] == 7]
+        if len(final) != 2 or len({r["link"] for r in final}) != 2:
+            result.append({"authorized_at": window["authorized_at"],
+                           "complete_pair": None})
+            continue
+        details = []
+        for peer, other in (final, final[::-1]):
+            refs = [r for r in peer["related"] if r["wcid"] != 4095]
+            wanted = {"wcid": other["wcid"], "band": other["host_band"]}
+            valid = (peer["valid_peer"] and
+                     peer["hardware_band"] == peer["host_band"] and
+                     peer["own_mld_id"] == other["own_mld_id"] and
+                     refs == [wanted])
+            details.append({"link": peer["link"], "wcid": peer["wcid"],
+                            "hardware_band": peer["hardware_band"],
+                            "own_mld_id": peer["own_mld_id"],
+                            "related": refs, "expected_related": wanted,
+                            "bound": valid})
+        result.append({"authorized_at": window["authorized_at"],
+                       "complete_pair": all(row["bound"] for row in details),
+                       "peers": details})
+    return result
+
+
 def mld_transitions(records):
     """Report observed firmware record changes and paired band-query results."""
     changes = []
@@ -475,6 +511,16 @@ def selftest():
     failed = {**inactive, "stage": 22, "ret": -71}
     assert mld_transitions([failed, {**failed, "query_band": 1}])["band_comparisons"][0]["identical"] is None
     assert mld_transitions([inactive, {**created, "stage": 20, "query_band": 1}])["band_comparisons"][0]["identical"] is False
+    p = {"stage": 7, "link": 0, "wcid": 2, "host_band": 1,
+         "hardware_band": 1, "valid_peer": True, "own_mld_id": 0,
+         "related": [{"wcid": 3, "band": 0}, {"wcid": 4095, "band": 2}]}
+    q = {**p, "link": 1, "wcid": 3, "host_band": 0, "hardware_band": 0,
+         "related": [{"wcid": 2, "band": 1}, {"wcid": 4095, "band": 2}]}
+    windows = [{"authorized_at": 10, "wtbl": [p, q]}]
+    assert wtbl_pair_bindings(windows)[0]["complete_pair"] is True
+    q["own_mld_id"] = 33
+    q["related"] = [{"wcid": 4095, "band": 1}, {"wcid": 4095, "band": 2}]
+    assert wtbl_pair_bindings(windows)[0]["complete_pair"] is False
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -500,6 +546,8 @@ if __name__ == "__main__":
             text = (args.trial / name).read_text()
             result[side] = parse_trace(text, side, args.min_associations,
                                        args.allow_open_ap_peer and side == "ap")
+            if side == "client":
+                result["wtbl_bindings"] = wtbl_pair_bindings(result[side])
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
                 result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
