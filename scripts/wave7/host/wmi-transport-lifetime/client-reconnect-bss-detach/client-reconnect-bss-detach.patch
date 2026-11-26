@@ -1,0 +1,132 @@
+--- a/mt76_connac_mcu.h
++++ b/mt76_connac_mcu.h
+@@ -1541,6 +1541,20 @@
+ 	__le16 nonht_basic_phy;
+ 	u8 phymode_ext; /* bit(0) AX_6G */
+ 	u8 link_idx;
++} __packed;
++
++struct mt76_connac_bss_mld_tlv {
++	__le16 tag;
++	__le16 len;
++	u8 group_mld_id;
++	u8 own_mld_id;
++	u8 mac_addr[ETH_ALEN];
++	u8 remap_idx;
++	u8 link_id;
++	u8 eml_enable;
++	u8 max_link_num;
++	u8 hybrid_mode;
++	u8 __rsv[3];
+ } __packed;
+ 
+ struct mt76_connac_bss_qos_tlv {
+--- a/mt76_connac_mcu.c
++++ b/mt76_connac_mcu.c
+@@ -1229,6 +1229,7 @@
+ 			u8 pad[3];
+ 		} __packed hdr;
+ 		struct mt76_connac_bss_basic_tlv basic;
++		struct mt76_connac_bss_mld_tlv mld;
+ 	} basic_req = {
+ 		.hdr = {
+ 			.bss_idx = mvif->idx,
+@@ -1247,7 +1248,7 @@
+ 			.link_idx = mvif->link_idx,
+ 		},
+ 	};
+-	int err, idx, cmd, len;
++	int err, idx, cmd, len, basic_len;
+ 	void *data;
+ 
+ 	switch (bss_conf->vif->type) {
+@@ -1280,9 +1281,28 @@
+ 
+ 	memcpy(dev_req.tlv.omac_addr, bss_conf->addr, ETH_ALEN);
+ 
++	/* MT7925 firmware requires explicit detachment of a BSS from
++	 * its MLD group when deactivating the network. Match gen4m
++	 * nicUniCmdBssActivateCtrl (BASIC followed by MLD, then DEV).
++	 * Leave active BSS updates and other chip families unchanged.
++	 */
++	basic_len = offsetof(typeof(basic_req), mld);
++	if (!enable && is_mt7925(dev) &&
++	    bss_conf->vif->type == NL80211_IFTYPE_STATION) {
++		basic_req.mld.tag = cpu_to_le16(UNI_BSS_INFO_MLD);
++		basic_req.mld.len = cpu_to_le16(sizeof(basic_req.mld));
++		basic_req.mld.group_mld_id = 0xff;
++		basic_req.mld.own_mld_id = mvif->idx + 32;
++		basic_req.mld.remap_idx = 0xff;
++		basic_req.mld.link_id = 0xff;
++		memcpy(basic_req.mld.mac_addr, bss_conf->addr, ETH_ALEN);
++		basic_len += sizeof(basic_req.mld);
++	}
++
++
+ 	cmd = enable ? MCU_UNI_CMD(DEV_INFO_UPDATE) : MCU_UNI_CMD(BSS_INFO_UPDATE);
+ 	data = enable ? (void *)&dev_req : (void *)&basic_req;
+-	len = enable ? sizeof(dev_req) : sizeof(basic_req);
++	len = enable ? sizeof(dev_req) : basic_len;
+ 
+ 	err = mt76_mcu_send_msg(dev, cmd, data, len, true);
+ 	if (err && cmd == MCU_UNI_CMD(BSS_INFO_UPDATE))
+@@ -1293,7 +1313,7 @@
+ 
+ 	cmd = enable ? MCU_UNI_CMD(BSS_INFO_UPDATE) : MCU_UNI_CMD(DEV_INFO_UPDATE);
+ 	data = enable ? (void *)&basic_req : (void *)&dev_req;
+-	len = enable ? sizeof(basic_req) : sizeof(dev_req);
++	len = enable ? basic_len : sizeof(dev_req);
+ 
+ 	err = mt76_mcu_send_msg(dev, cmd, data, len, true);
+ 	if (err && cmd == MCU_UNI_CMD(BSS_INFO_UPDATE))
+--- a/mt7925/mcu.h
++++ b/mt7925/mcu.h
+@@ -384,19 +384,6 @@
+ 	u8 __rsv2;
+ } __packed;
+ 
+-struct bss_mld_tlv {
+-	__le16 tag;
+-	__le16 len;
+-	u8 group_mld_id;
+-	u8 own_mld_id;
+-	u8 mac_addr[ETH_ALEN];
+-	u8 remap_idx;
+-	u8 link_id;
+-	u8 eml_enable;
+-	u8 max_link_num;
+-	u8 hybrid_mode;
+-	u8 __rsv[3];
+-} __packed;
+ 
+ struct bss_eht_tlv {
+ 	__le16 tag;
+@@ -549,7 +536,7 @@
+ 					 sizeof(struct mt76_connac_bss_basic_tlv) +	\
+ 					 sizeof(struct mt76_connac_bss_qos_tlv) +	\
+ 					 sizeof(struct bss_rate_tlv) +			\
+-					 sizeof(struct bss_mld_tlv) +			\
++					 sizeof(struct mt76_connac_bss_mld_tlv) +			\
+ 					 sizeof(struct bss_info_uni_he) +		\
+ 					 sizeof(struct bss_info_uni_bss_color) +	\
+ 					 sizeof(struct bss_ifs_time_tlv) +		\
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3545,7 +3545,7 @@
+ 	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)link_conf->vif->drv_priv;
+ 	struct mt792x_phy *phy = mvif->phy;
+-	struct bss_mld_tlv *mld;
++	struct mt76_connac_bss_mld_tlv *mld;
+ 	struct tlv *tlv;
+ 	bool is_mld;
+ 	bool is_supported_ap = false;
+@@ -3554,7 +3554,7 @@
+ 		 (hweight16(mvif->valid_links) > 1);
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, UNI_BSS_INFO_MLD, sizeof(*mld));
+-	mld = (struct bss_mld_tlv *)tlv;
++	mld = (struct mt76_connac_bss_mld_tlv *)tlv;
+ 
+ 	mld->link_id = is_mld ? link_conf->link_id : 0xff;
+ 	/* apply the index of the primary link */
