@@ -1,0 +1,32 @@
+--- a/mt7925/pci_mac.c
++++ b/mt7925/pci_mac.c
+@@ -32,7 +32,12 @@
+ 	if (id < 0)
+ 		return id;
+ 
+-	if (sta) {
++	/* Sample data rates, not fixed-rate management/control traffic.
++	 * Preserve any status request already made by mac80211.
++	 */
++	if (sta && ((info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
++		    ieee80211_is_data_present(
++			    ((struct ieee80211_hdr *)tx_info->skb->data)->frame_control))) {
+ 		struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 
+ 		if (time_after(jiffies, msta->deflink.last_txs + HZ / 4)) {
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -1809,7 +1809,12 @@
+ 	if (err)
+ 		return err;
+ 
+-	if (sta) {
++	/* Sample data rates, not fixed-rate management/control traffic.
++	 * Preserve any status request already made by mac80211.
++	 */
++	if (sta && ((info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
++		    ieee80211_is_data_present(
++			    ((struct ieee80211_hdr *)skb->data)->frame_control))) {
+ 		struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 
+ 		if (time_after(jiffies, msta->deflink.last_txs + HZ / 4)) {
