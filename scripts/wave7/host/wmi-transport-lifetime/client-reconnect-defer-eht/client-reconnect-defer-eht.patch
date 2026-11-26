@@ -1,0 +1,74 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1663,9 +1663,15 @@
+ 	if (ret)
+ 		goto out;
+ 	mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_INITIAL_SETUP);
+-	ret = mt7925_lab_sta_eht_mld_update(dev, vif, link_sta->sta, mlink);
+-	if (ret)
+-		goto out;
++	if (hweight16(vif->valid_links) != 2) {
++		ret = mt7925_lab_sta_eht_mld_update(dev, vif, link_sta->sta, mlink);
++		if (ret)
++			goto out;
++	}
++	/* The setup link may migrate to the other hardware band when
++	 * MLO is activated. Defer scheduler registration until the final
++	 * hardware-band assignments and both station records are ready.
++	 */
+ 	mt7925_lab_mld_snapshot(dev, vif, MT7925_LAB_MLD_INITIAL_EHT);
+ 
+ out:
+@@ -3135,9 +3141,13 @@
+ 				if (err)
+ 					goto out;
+ 
+-				err = mt7925_lab_sta_eht_mld_update(dev, vif, sta, mlink);
+-				if (err)
+-					goto out;
++				if (!is_mt7925(&dev->mt76) ||
++				    vif->type != NL80211_IFTYPE_STATION ||
++				    hweight16(new_links) != 2) {
++					err = mt7925_lab_sta_eht_mld_update(dev, vif, sta, mlink);
++					if (err)
++						goto out;
++				}
+ 				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_CNM_SECONDARY_EHT_MLD);
+ 				err = mt7925_lab_cnm_snapshot(dev, vif, MT7925_LAB_CNM_SECONDARY_EHT_MLD);
+ 				if (err)
+@@ -3173,6 +3183,35 @@
+ 			err = mt7925_mcu_sta_mld_update(dev, vif, sta, primary);
+ 			if (err)
+ 				goto out;
++
++			if (is_mt7925(&dev->mt76) &&
++			    vif->type == NL80211_IFTYPE_STATION &&
++			    hweight16(new_links) == 2) {
++				struct mt792x_link_sta *peers[2] = {};
++				unsigned int link, band;
++				struct mt792x_vif *mvif = (void *)vif->drv_priv;
++
++				for_each_set_bit(link, &new_links, IEEE80211_MLD_MAX_NUM_LINKS) {
++					struct mt792x_bss_conf *conf = mt792x_vif_to_link(mvif, link);
++
++					if (!conf || conf->mt76.band_idx >= ARRAY_SIZE(peers) ||
++					    peers[conf->mt76.band_idx]) {
++						err = -EINVAL;
++						goto out;
++					}
++					peers[conf->mt76.band_idx] = mt792x_sta_to_link(msta, link);
++				}
++				for (band = 0; band < ARRAY_SIZE(peers); band++) {
++					if (!peers[band]) {
++						err = -EINVAL;
++						goto out;
++					}
++					err = mt7925_lab_sta_eht_mld_update(dev, vif, sta, peers[band]);
++					if (err)
++						goto out;
++					mt7925_lab_mld_snapshot(dev, vif, 24 + band);
++				}
++			}
+ 		}
+ 		if (add)
+ 			mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, MT7925_LAB_WTBL_POST_MLD);
