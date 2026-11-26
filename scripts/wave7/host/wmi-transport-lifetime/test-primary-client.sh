@@ -164,6 +164,30 @@ snapshot_load(){
         cat /proc/interrupts
         echo ==== STATION
         iw dev ap-mld0 station dump
+        echo ==== AGGREGATION
+        for sta in /sys/kernel/debug/ieee80211/phy0/netdev:ap-mld0/stations/*; do
+            [ -d \"\$sta\" ] || exit 1
+            printf '%s\\n' \"\$sta\"
+            cat \"\$sta/agg_status\"
+            for link in \"\$sta\"/link-*; do
+                [ -d \"\$link\" ] || continue
+                echo \"\$link\"
+                for f in addr rx_duplicates rx_fragments; do
+                    printf '%s=' \"\$f\"
+                    cat \"\$link/\$f\"
+                done
+            done
+        done
+        echo ==== AFFINITY
+        for irq in \$(sed -n 's/^[[:space:]]*\\([0-9][0-9]*\\):.* pci2_wlan_dp_[0-9][0-9]*$/\\1/p' /proc/interrupts); do
+            printf '%s ' \"\$irq\"
+            cat \"/proc/irq/\$irq/effective_affinity_list\"
+        done
+        echo ==== CPUFREQ
+        for f in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do
+            printf '%s ' \"\$f\"
+            cat \"\$f\"
+        done
         echo ==== AQL
         cat /sys/kernel/debug/ieee80211/phy0/aql_pending
         for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do

@@ -25,6 +25,7 @@ cfg80211/cfg80211_control_port_tx_status
 cfg80211/cfg80211_rx_mgmt
 cfg80211/cfg80211_mgmt_tx_status
 mac80211/drv_sta_state
+mac80211/drv_ampdu_action
 mac80211/drv_change_sta_links'
 if [ "$4" = full ]; then
 for fn in $functions; do
