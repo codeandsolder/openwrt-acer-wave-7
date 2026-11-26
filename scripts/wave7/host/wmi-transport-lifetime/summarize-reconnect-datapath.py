@@ -352,7 +352,15 @@ def mld_command_windows(lifecycle, control, windows):
             if not (c["event"] == "mt7925_lab_bss_mld" and key == "group")}}
                 for c in row["commands"]]
 
+    reset_observed = bool(re.search(r"^CRASH_PROBE_FORMAT reset_work$", lifecycle, re.M))
+    resets = []
+    if reset_observed:
+        for line in lifecycle.splitlines():
+            m = LINE.search(line)
+            if m and m[2] == "reset_work":
+                resets.append(float(m[1]))
     return {"windows": rows,
+            "firmware_reset_work": resets if reset_observed else None,
             "same_sequence": len(rows) >= 2 and
                              all(r["commands"] == rows[0]["commands"] for r in rows[1:]),
             "same_sequence_except_bss_group": len(rows) >= 2 and all(
@@ -721,6 +729,11 @@ def selftest():
     rotated = mld_command_windows(three_groups, three_ctl, three_windows)
     assert [r["bss_group_ids"] for r in rotated["windows"]] == [[0], [1], [0]]
     assert rotated["same_sequence_except_bss_group"]
+    assert rotated["firmware_reset_work"] is None
+    reset_probe = three_groups + "CRASH_PROBE_FORMAT reset_work\n"
+    assert mld_command_windows(reset_probe, three_ctl, three_windows)["firmware_reset_work"] == []
+    reset_probe += line(25, "reset_work", "mt7925_mac_reset_work")
+    assert mld_command_windows(reset_probe, three_ctl, three_windows)["firmware_reset_work"] == [25.0]
     assert not mld_command_windows(
         three_groups.replace("30.000000: mt7925_lab_sta_mld_slot: target=3",
                              "30.000000: mt7925_lab_sta_mld_slot: target=4"),
