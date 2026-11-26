@@ -561,17 +561,27 @@ def mld_transitions(records):
     return {"changes": changes, "band_comparisons": paired}
 
 
-def mld_lifetimes(records, windows):
+def mld_lifetimes(records, windows, control=""):
     """Compare firmware scheduler bindings to peer WTBL host-band ownership.
 
     Do not conflate a correctly populated WTBL with an active scheduler
     record. Keep observed differences as data, not trace-parse failures.
     """
     records = [r for r in records if r.get("query_band", 0) == 0]
+    # A new STA lifetime starts at 0->1, not at authorization. Failed
+    # preauthorization attempts must not contaminate the previous teardown.
+    starts = []
+    for line in control.splitlines():
+        m = LINE.search(line)
+        if m and m[2] == "drv_sta_state":
+            state = STATE.search(m[3])
+            if state and state.group(2, 3) == ("0", "1"):
+                starts.append(float(m[1]))
     result = []
     for i, window in enumerate(windows):
         start, stop = window["authorized_at"], window["deauthorized_at"]
-        next_start = windows[i + 1]["authorized_at"] if i + 1 < len(windows) else float("inf")
+        next_auth = windows[i + 1]["authorized_at"] if i + 1 < len(windows) else float("inf")
+        next_start = min((t for t in starts if stop < t <= next_auth), default=next_auth)
         post_keys = [r for r in records if r["stage"] == 7 and start <= r["time"] < stop]
         pre_remove = [r for r in records if r["stage"] == 14 and start <= r["time"] < next_start]
         post_remove = [r for r in records if r["stage"] == 15 and start <= r["time"] < next_start]
@@ -688,6 +698,11 @@ def selftest():
     assert row["membership_matches"] is True and row["record_retired"] is True
     assert mld_lifetimes([], w)[0]["record_retired"] is None
     assert mld_lifetimes([live, stale, {**stale, "query_band": 1}], w)[0]["record_retired"] is True
+    # Subsequent unassociated retries each produce their own snapshots.
+    retry = line(30, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
+    retry_records = [live, stale, {**stale, "time": 31}]
+    assert mld_lifetimes(retry_records, w)[0]["record_retired"] is None
+    assert mld_lifetimes(retry_records, w, retry)[0]["record_retired"] is True
     ctl = line(9, "drv_sta_state", "sta:aa:bb:cc:dd:ee:ff state: 0->1")
     ctl += line(9.5, "mt7925_lab_data_txd", txd.replace("0x0800", "0x888e"))
     ctl += line(10.2, "mt7925_lab_data_tx_free", free)
@@ -842,7 +857,7 @@ if __name__ == "__main__":
                         lifecycle, text, result[side])
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
-                result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side])
+                result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side], text)
                 result["mld_transitions"] = mld_transitions(result["mld_records"])
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
