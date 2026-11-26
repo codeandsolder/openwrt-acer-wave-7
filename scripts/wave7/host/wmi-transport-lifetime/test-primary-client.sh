@@ -137,8 +137,15 @@ helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
 [[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'
 [[ $(cat "$run/status") == SOAK_PASS ]] || fail 'trial not soaked'
-exec 8<>"$lab/.lab-control.lock"
-flock -n 8 || fail 'lab already reserved'
+acquire_lab_lock(){
+    # A staging wrapper may hold the same open file description on fd 8.
+    # Reopening it would lose atomicity or conflict with our own lock.
+    if [[ ! /proc/self/fd/8 -ef "$lab/.lab-control.lock" ]]; then
+        exec 8<>"$lab/.lab-control.lock"
+    fi
+    flock -n 8 || fail 'lab already reserved'
+}
+acquire_lab_lock
 [[ $(id -un) == jan && -s $run/known_hosts ]] || fail 'host identity'
 boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
 rev=$(jq -r .revision "$base/report.json")
