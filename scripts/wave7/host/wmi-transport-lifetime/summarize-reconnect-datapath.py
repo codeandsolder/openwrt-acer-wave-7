@@ -383,7 +383,7 @@ def band_retirement_windows(lifecycle, control, windows):
     kinds = {"mt7925_lab_bss_basic", "mt7925_lab_bss_result",
              "mt7925_lab_sta_result", "mt7925_lab_band_retire",
              "mt7925_lab_bss_mld", "mt7925_lab_chanctx_unassign",
-             "mt7925_lab_group_retire"}
+             "mt7925_lab_group_retire", "mt7925_lab_group_detach_active"}
     events = []
     for line in lifecycle.splitlines():
         m = LINE.search(line)
@@ -415,6 +415,7 @@ def band_retirement_windows(lifecycle, control, windows):
                               lambda f: not f["enabled"] and f["wcid"] == wcid)
             dev = matching("mt7925_lab_band_retire", lambda f: True)
             group = matching("mt7925_lab_group_retire", lambda f: True)
+            detach = matching("mt7925_lab_group_detach_active", lambda f: True)
             group_complete = None
             if len(remove) == len(group) == 1:
                 group_complete = (remove[0]["result"] == group[0]["result"] == 0
@@ -435,11 +436,25 @@ def band_retirement_windows(lifecycle, control, windows):
                             "bss_ack": bss_ack, "station_remove": remove,
                             "dev_retire": dev, "bss_band_matches": bss_band_ok,
                             "dev_band_matches": dev_band_ok, "complete": complete,
-                            "group_retire": group, "group_retire_complete": group_complete})
+                            "group_retire": group, "group_retire_complete": group_complete,
+                            "active_detach": detach})
         removed_at = None
         if details and all(len(p["station_remove"]) == 1 and
                            p["station_remove"][0]["result"] == 0 for p in details):
             removed_at = max(p["station_remove"][0]["time"] for p in details)
+        # Every peer remove must succeed before any standalone detach,
+        # and every standalone detach before either BSS/DEV is retired.
+        active_detach_complete = None
+        if details and all(len(p["station_remove"]) == len(p["active_detach"])
+                           == len(p["group_retire"]) == 1 for p in details):
+            removes = [p["station_remove"][0] for p in details]
+            detaches = [p["active_detach"][0] for p in details]
+            retires = [p["group_retire"][0] for p in details]
+            active_detach_complete = (
+                all(e["result"] == 0 for e in removes + detaches + retires)
+                and all(e["was_active"] == 1 for e in detaches + retires)
+                and max(e["time"] for e in removes) <= min(e["time"] for e in detaches)
+                and max(e["time"] for e in detaches) <= min(e["time"] for e in retires))
         late = []
         unassign = []
         if removed_at is not None:
@@ -469,6 +484,7 @@ def band_retirement_windows(lifecycle, control, windows):
         result.append({"authorized_at": window["authorized_at"],
                        "deauthorized_at": stop, "peers": details,
                        "all_peers_removed_at": removed_at,
+                       "active_detach_complete": active_detach_complete,
                        "late_active_bss_updates": late if removed_at is not None else None,
                        "chanctx_unassignments": unassign if removed_at is not None else None})
     return result
@@ -763,6 +779,16 @@ def selftest():
     assert retire_result(detached.replace("11.450000", "11.250000"))["group_retire_complete"] is False
     assert retire_result(retirement)["group_retire_complete"] is None
     assert retire_result(detached + detached)["group_retire_complete"] is None
+    active = detached + line(11.35, "mt7925_lab_group_detach_active",
+                              "bss=1 link=1 was_active=1 result=0")
+    assert band_retirement_windows(active, ctl, retire_window)[0]["active_detach_complete"] is True
+    assert band_retirement_windows(detached, ctl, retire_window)[0]["active_detach_complete"] is None
+    assert band_retirement_windows(active.replace("11.350000", "11.250000"), ctl,
+                                   retire_window)[0]["active_detach_complete"] is False
+    assert band_retirement_windows(active.replace("11.350000", "11.550000"), ctl,
+                                   retire_window)[0]["active_detach_complete"] is False
+    assert band_retirement_windows(active.replace("was_active=1 result=0", "was_active=0 result=0"),
+                                   ctl, retire_window)[0]["active_detach_complete"] is False
     late = retirement + (
         line(11.5, "mt7925_lab_bss_basic",
              "bss=1 link=1 enabled=0 peer=18 peer_link=255 active=1 conn_state=1 band=255")
