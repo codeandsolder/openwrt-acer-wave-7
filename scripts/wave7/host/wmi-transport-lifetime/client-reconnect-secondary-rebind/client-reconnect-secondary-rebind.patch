@@ -1,0 +1,30 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -3208,11 +3208,24 @@
+ 					}
+ 					peers[conf->mt76.band_idx] = mt792x_sta_to_link(msta, link);
+ 				}
++				/* Refresh the newly associated member after the setup
++				 * peer's MLD group has been rebound. This is membership
++				 * only, before EHT registration and secondary PTK.
++				 */
++				if (!peers[0] || !peers[1]) {
++					err = -EINVAL;
++					goto out;
++				}
+ 				for (band = 0; band < ARRAY_SIZE(peers); band++) {
+-					if (!peers[band]) {
+-						err = -EINVAL;
++					if (peers[band] == primary)
++						continue;
++					err = mt7925_mcu_sta_mld_update(dev, vif, sta, peers[band]);
++					if (err)
+ 						goto out;
+-					}
++				}
++				mt7925_lab_wtbl_snapshot(dev, vif, lab_msta, 26);
++				mt7925_lab_mld_snapshot(dev, vif, 26);
++				for (band = 0; band < ARRAY_SIZE(peers); band++) {
+ 					err = mt7925_lab_sta_eht_mld_update(dev, vif, sta, peers[band]);
+ 					if (err)
+ 						goto out;
