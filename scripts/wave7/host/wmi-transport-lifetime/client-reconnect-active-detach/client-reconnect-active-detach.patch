@@ -1,0 +1,171 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1746,6 +1746,24 @@
+ }
+ EXPORT_SYMBOL_GPL(mt7925_mac_sta_event);
+ 
++/* Keep both BSSes active until the entire peer group is removed. */
++static int mt7925_mac_link_sta_remove_peer(struct mt792x_dev *dev,
++					   struct ieee80211_vif *vif,
++					   struct ieee80211_link_sta *link_sta,
++					   struct mt792x_link_sta *mlink)
++{
++	int ret;
++
++	mt7925_roc_abort_sync(dev);
++	mt76_connac_free_pending_tx_skbs(&dev->pm, &mlink->wcid);
++	mt76_connac_pm_wake(&dev->mphy, &dev->pm);
++	ret = mt7925_mcu_sta_update(dev, link_sta, vif, mlink, false,
++				    MT76_STA_INFO_STATE_NONE);
++	mt7925_mac_wtbl_update(dev, mlink->wcid.idx,
++			       MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
++	return ret;
++}
++
+ static void mt7925_mac_link_sta_remove(struct mt76_dev *mdev,
+ 				       struct ieee80211_vif *vif,
+ 				       struct ieee80211_link_sta *link_sta,
+@@ -1753,19 +1771,11 @@
+ 				       bool release_wcid, bool retire_mld)
+ {
+ 	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+-	struct mt76_wcid *wcid = &mlink->wcid;
+ 	struct ieee80211_bss_conf *link_conf;
+ 	u8 link_id = link_sta->link_id;
+ 
+-	mt7925_roc_abort_sync(dev);
+-
+-	mt76_connac_free_pending_tx_skbs(&dev->pm, wcid);
+-	mt76_connac_pm_wake(&dev->mphy, &dev->pm);
+-
+-	mt7925_mcu_sta_update(dev, link_sta, vif, mlink, false,
+-			      MT76_STA_INFO_STATE_NONE);
+-	mt7925_mac_wtbl_update(dev, mlink->wcid.idx,
+-			       MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
++	if (!retire_mld)
++		mt7925_mac_link_sta_remove_peer(dev, vif, link_sta, mlink);
+ 
+ 	link_conf = mt792x_vif_to_bss_conf(vif, link_id);
+ 
+@@ -1871,6 +1881,41 @@
+ 
+ 		mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx, link_conf,
+ 					link_sta, false);
++	}
++
++	/* The firmware MLD tag may be ignored once BASIC.active is zero.
++	 * Remove both peers first, then detach each still-active BSS with
++	 * a standalone MLD tag, before deactivating either DEV.
++	 */
++	if (retire_mld) {
++		struct mt792x_vif *mvif = (void *)vif->drv_priv;
++		bool removed = true;
++
++		for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
++			struct ieee80211_link_sta *link_sta;
++			struct mt792x_link_sta *mlink;
++
++			link_sta = mt792x_sta_to_link_sta(vif, sta, link_id);
++			mlink = mt792x_sta_to_link(msta, link_id);
++			if (!link_sta || !mlink ||
++			    mt7925_mac_link_sta_remove_peer(dev, vif, link_sta, mlink))
++				removed = false;
++		}
++
++		if (removed) {
++			for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
++				struct ieee80211_bss_conf *link_conf;
++				struct mt792x_bss_conf *mconf;
++
++				link_conf = mt792x_vif_to_bss_conf(vif, link_id);
++				mconf = mt792x_vif_to_link(mvif, link_id);
++				if (!link_conf || !mconf || !mconf->dev_active ||
++				    mt7925_lab_bss_detach_active(dev, link_conf, mconf))
++					removed = false;
++			}
++		}
++		if (!removed)
++			mt792x_reset(mdev);
+ 	}
+ 
+ 	for_each_set_bit(link_id, &old_links, IEEE80211_MLD_MAX_NUM_LINKS) {
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3586,6 +3586,36 @@
+ 		vif->valid_links, vif->active_links);
+ }
+ 
++/* Vendor nicUniCmdSetBssMld uses this standalone BSS_INFO_MLD format.
++ * A detached BSS carries its own identity, not its former group address.
++ */
++int mt7925_lab_bss_detach_active(struct mt792x_dev *dev,
++				struct ieee80211_bss_conf *link_conf,
++				struct mt792x_bss_conf *mconf)
++{
++	struct mt76_connac_bss_mld_tlv *mld;
++	struct sk_buff *skb;
++	int ret;
++
++	skb = __mt7925_mcu_alloc_bss_req(&dev->mt76, &mconf->mt76,
++					 sizeof(struct bss_req_hdr) + sizeof(*mld));
++	if (IS_ERR(skb))
++		return PTR_ERR(skb);
++	mld = (void *)mt76_connac_mcu_add_tlv(skb, UNI_BSS_INFO_MLD,
++					     sizeof(*mld));
++	mld->group_mld_id = 0xff;
++	mld->own_mld_id = mconf->mt76.idx + 32;
++	mld->remap_idx = 0xff;
++	mld->link_id = 0xff;
++	memcpy(mld->mac_addr, link_conf->addr, ETH_ALEN);
++	ret = mt76_mcu_skb_send_msg(&dev->mt76, skb,
++				    MCU_UNI_CMD(BSS_INFO_UPDATE), true);
++	trace_mt7925_lab_group_detach_active(mconf->mt76.idx,
++					     link_conf->link_id,
++					     mconf->dev_active, ret);
++	return ret;
++}
++
+ static void
+ mt7925_mcu_bss_qos_tlv(struct sk_buff *skb, struct ieee80211_bss_conf *link_conf)
+ {
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -347,6 +347,9 @@
+ 			 struct ieee80211_sta *sta, enum mt76_sta_event ev);
+ void mt7925_mac_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
+ 			   struct ieee80211_sta *sta);
++int mt7925_lab_bss_detach_active(struct mt792x_dev *dev,
++				struct ieee80211_bss_conf *link_conf,
++				struct mt792x_bss_conf *mconf);
+ void mt7925_mac_reset_work(struct work_struct *work);
+ int mt7925e_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
+ 			   enum mt76_txq_id qid, struct mt76_wcid *wcid,
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -361,6 +361,26 @@
+ );
+ 
+ TRACE_EVENT(mt7925_lab_group_retire,
++	TP_PROTO(u8 bss, u8 link, bool was_active, int result),
++	TP_ARGS(bss, link, was_active, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(bool, was_active)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->was_active = was_active;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u link=%u was_active=%u result=%d",
++		  __entry->bss, __entry->link, __entry->was_active,
++		  __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_group_detach_active,
+ 	TP_PROTO(u8 bss, u8 link, bool was_active, int result),
+ 	TP_ARGS(bss, link, was_active, result),
+ 	TP_STRUCT__entry(
