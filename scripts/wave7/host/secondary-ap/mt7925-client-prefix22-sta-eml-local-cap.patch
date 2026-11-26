@@ -1,0 +1,19 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -2400,8 +2400,14 @@
+ 
+ 	if ((eml_cap & IEEE80211_EML_CAP_EMLSR_SUPP) &&
+ 	    hweight16(mvif->valid_links) < 3) {
+-		eht_mld->eml_cap[0] = u16_get_bits(eml_cap, GENMASK(7, 0));
+-		eht_mld->eml_cap[1] = u16_get_bits(eml_cap, GENMASK(15, 8));
++		/* Lab diagnostic: do not program EMLSR capabilities into
++		 * STAREC when the local firmware did not advertise EMLSR.
++		 * Keep the STR bitmap unchanged for this experiment.
++		 */
++		if (ext_capa->eml_capabilities & IEEE80211_EML_CAP_EMLSR_SUPP) {
++			eht_mld->eml_cap[0] = u16_get_bits(eml_cap, GENMASK(7, 0));
++			eht_mld->eml_cap[1] = u16_get_bits(eml_cap, GENMASK(15, 8));
++		}
+ 	} else {
+ 		eht_mld->str_cap[0] = BIT(1);
+ 	}

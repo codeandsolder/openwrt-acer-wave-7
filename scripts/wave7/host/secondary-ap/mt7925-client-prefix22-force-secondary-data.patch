@@ -1,0 +1,41 @@
+--- a/mt792x_core.c
++++ b/mt792x_core.c
+@@ -203,6 +203,38 @@
+ 			mlink = rcu_dereference(sta->link[link_id]);
+ 		if (!mlink)
+ 			goto drop;
++
++		/* Lab-only discriminator: on the 5 GHz-primary MT7925 MLD,
++		 * send normal unicast Ethernet data through its associated
++		 * active secondary 2.4 GHz link. Never redirect EAPOL, native
++		 * 802.11 management/control, group traffic, or an inactive link.
++		 * This tests whether the secondary peer WCID can carry data
++		 * without mac80211/firmware active-link teardown.
++		 */
++		if (vif && vif->type == NL80211_IFTYPE_STATION &&
++		    ieee80211_vif_is_mld(vif) &&
++		    sta->deflink_id == 1 &&
++		    mlink == &sta->deflink &&
++		    (READ_ONCE(vif->active_links) & GENMASK(1, 0)) ==
++		    GENMASK(1, 0) &&
++		    (READ_ONCE(sta->valid_links) & GENMASK(1, 0)) ==
++		    GENMASK(1, 0) &&
++		    (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
++		    skb->len >= ETH_HLEN &&
++		    skb->protocol != cpu_to_be16(ETH_P_PAE) &&
++		    ((const struct ethhdr *)skb->data)->h_proto !=
++		    cpu_to_be16(ETH_P_PAE) &&
++		    is_unicast_ether_addr(skb->data)) {
++			struct mt792x_link_sta *secondary;
++
++			secondary = rcu_dereference(sta->link[0]);
++			if (secondary && secondary->wcid.link_valid) {
++				mlink = secondary;
++				info->control.flags = u32_replace_bits(
++					info->control.flags, 0,
++					IEEE80211_TX_CTRL_MLO_LINK);
++			}
++		}
+ 		wcid = &mlink->wcid;
+ 	}
+ 

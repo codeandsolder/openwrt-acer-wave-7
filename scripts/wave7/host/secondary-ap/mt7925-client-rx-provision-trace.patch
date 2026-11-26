@@ -1,0 +1,429 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -248,6 +248,274 @@
+ 		  __entry->bss, __entry->link, __entry->wcid, __entry->pid, __entry->qid, __entry->word1, __entry->word6, __entry->encap, __entry->sta)
+ );
+ 
++TRACE_EVENT(mt7925_lab_rxdesc,
++	TP_PROTO(u32 word1, u32 word2, u32 word3, u32 length, int result, u16 resolved_wcid, u8 link, u8 valid, u8 sta, u16 freq, u8 encap),
++	TP_ARGS(word1, word2, word3, length, result, resolved_wcid, link, valid, sta, freq, encap),
++	TP_STRUCT__entry(
++		__field(u32, word1)
++		__field(u32, word2)
++		__field(u32, word3)
++		__field(u32, length)
++		__field(int, result)
++		__field(u16, resolved_wcid)
++		__field(u8, link)
++		__field(u8, valid)
++		__field(u8, sta)
++		__field(u16, freq)
++		__field(u8, encap)
++	),
++	TP_fast_assign(
++		__entry->word1 = word1;
++		__entry->word2 = word2;
++		__entry->word3 = word3;
++		__entry->length = length;
++		__entry->result = result;
++		__entry->resolved_wcid = resolved_wcid;
++		__entry->link = link;
++		__entry->valid = valid;
++		__entry->sta = sta;
++		__entry->freq = freq;
++		__entry->encap = encap;
++	),
++	TP_printk("word1=%u word2=%u word3=%u length=%u result=%d resolved_wcid=%u link=%u valid=%u sta=%u freq=%u encap=%u",
++		  __entry->word1, __entry->word2, __entry->word3, __entry->length, __entry->result, __entry->resolved_wcid, __entry->link, __entry->valid, __entry->sta, __entry->freq, __entry->encap)
++);
++
++TRACE_EVENT(mt7925_lab_bss_basic,
++	TP_PROTO(u8 bss, u8 link, u8 peer_link, u8 enabled, u8 active, u8 conn_state, u16 peer, u16 bmc, u8 omac, u8 band, u8 fw_link),
++	TP_ARGS(bss, link, peer_link, enabled, active, conn_state, peer, bmc, omac, band, fw_link),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u8, peer_link)
++		__field(u8, enabled)
++		__field(u8, active)
++		__field(u8, conn_state)
++		__field(u16, peer)
++		__field(u16, bmc)
++		__field(u8, omac)
++		__field(u8, band)
++		__field(u8, fw_link)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->peer_link = peer_link;
++		__entry->enabled = enabled;
++		__entry->active = active;
++		__entry->conn_state = conn_state;
++		__entry->peer = peer;
++		__entry->bmc = bmc;
++		__entry->omac = omac;
++		__entry->band = band;
++		__entry->fw_link = fw_link;
++	),
++	TP_printk("bss=%u link=%u peer_link=%u enabled=%u active=%u conn_state=%u peer=%u bmc=%u omac=%u band=%u fw_link=%u",
++		  __entry->bss, __entry->link, __entry->peer_link, __entry->enabled, __entry->active, __entry->conn_state, __entry->peer, __entry->bmc, __entry->omac, __entry->band, __entry->fw_link)
++);
++
++TRACE_EVENT(mt7925_lab_bss_mld,
++	TP_PROTO(u8 bss, u8 link, u8 group, u8 own, u8 remap, u8 eml, u8 max_links, u8 hybrid, u16 valid, u16 active),
++	TP_ARGS(bss, link, group, own, remap, eml, max_links, hybrid, valid, active),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u8, group)
++		__field(u8, own)
++		__field(u8, remap)
++		__field(u8, eml)
++		__field(u8, max_links)
++		__field(u8, hybrid)
++		__field(u16, valid)
++		__field(u16, active)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->group = group;
++		__entry->own = own;
++		__entry->remap = remap;
++		__entry->eml = eml;
++		__entry->max_links = max_links;
++		__entry->hybrid = hybrid;
++		__entry->valid = valid;
++		__entry->active = active;
++	),
++	TP_printk("bss=%u link=%u group=%u own=%u remap=%u eml=%u max_links=%u hybrid=%u valid=%u active=%u",
++		  __entry->bss, __entry->link, __entry->group, __entry->own, __entry->remap, __entry->eml, __entry->max_links, __entry->hybrid, __entry->valid, __entry->active)
++);
++
++TRACE_EVENT(mt7925_lab_bss_rlm,
++	TP_PROTO(u8 bss, u8 link, u8 band, u8 channel, u8 center, u8 bw, u8 sco),
++	TP_ARGS(bss, link, band, channel, center, bw, sco),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u8, band)
++		__field(u8, channel)
++		__field(u8, center)
++		__field(u8, bw)
++		__field(u8, sco)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->band = band;
++		__entry->channel = channel;
++		__entry->center = center;
++		__entry->bw = bw;
++		__entry->sco = sco;
++	),
++	TP_printk("bss=%u link=%u band=%u channel=%u center=%u bw=%u sco=%u",
++		  __entry->bss, __entry->link, __entry->band, __entry->channel, __entry->center, __entry->bw, __entry->sco)
++);
++
++TRACE_EVENT(mt7925_lab_sta_mld,
++	TP_PROTO(u16 target, u16 primary, u16 secondary, u16 wlan, u8 n, u16 wcid0, u8 bss0, u16 wcid1, u8 bss1, u16 valid),
++	TP_ARGS(target, primary, secondary, wlan, n, wcid0, bss0, wcid1, bss1, valid),
++	TP_STRUCT__entry(
++		__field(u16, target)
++		__field(u16, primary)
++		__field(u16, secondary)
++		__field(u16, wlan)
++		__field(u8, n)
++		__field(u16, wcid0)
++		__field(u8, bss0)
++		__field(u16, wcid1)
++		__field(u8, bss1)
++		__field(u16, valid)
++	),
++	TP_fast_assign(
++		__entry->target = target;
++		__entry->primary = primary;
++		__entry->secondary = secondary;
++		__entry->wlan = wlan;
++		__entry->n = n;
++		__entry->wcid0 = wcid0;
++		__entry->bss0 = bss0;
++		__entry->wcid1 = wcid1;
++		__entry->bss1 = bss1;
++		__entry->valid = valid;
++	),
++	TP_printk("target=%u primary=%u secondary=%u wlan=%u n=%u wcid0=%u bss0=%u wcid1=%u bss1=%u valid=%u",
++		  __entry->target, __entry->primary, __entry->secondary, __entry->wlan, __entry->n, __entry->wcid0, __entry->bss0, __entry->wcid1, __entry->bss1, __entry->valid)
++);
++
++TRACE_EVENT(mt7925_lab_sta_eht_mld,
++	TP_PROTO(u16 wcid, u16 eml_peer, u16 eml_local, u8 mld_type, u8 str0, u16 eml_sent),
++	TP_ARGS(wcid, eml_peer, eml_local, mld_type, str0, eml_sent),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u16, eml_peer)
++		__field(u16, eml_local)
++		__field(u8, mld_type)
++		__field(u8, str0)
++		__field(u16, eml_sent)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->eml_peer = eml_peer;
++		__entry->eml_local = eml_local;
++		__entry->mld_type = mld_type;
++		__entry->str0 = str0;
++		__entry->eml_sent = eml_sent;
++	),
++	TP_printk("wcid=%u eml_peer=%u eml_local=%u mld_type=%u str0=%u eml_sent=%u",
++		  __entry->wcid, __entry->eml_peer, __entry->eml_local, __entry->mld_type, __entry->str0, __entry->eml_sent)
++);
++
++TRACE_EVENT(mt7925_lab_sta_result,
++	TP_PROTO(u16 wcid, u8 bss, u8 link, u8 enabled, u8 state, int result),
++	TP_ARGS(wcid, bss, link, enabled, state, result),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u8, enabled)
++		__field(u8, state)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->enabled = enabled;
++		__entry->state = state;
++		__entry->result = result;
++	),
++	TP_printk("wcid=%u bss=%u link=%u enabled=%u state=%u result=%d",
++		  __entry->wcid, __entry->bss, __entry->link, __entry->enabled, __entry->state, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_bss_result,
++	TP_PROTO(u8 bss, u8 link, u16 wcid, u8 enabled, int result),
++	TP_ARGS(bss, link, wcid, enabled, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u16, wcid)
++		__field(u8, enabled)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->wcid = wcid;
++		__entry->enabled = enabled;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u link=%u wcid=%u enabled=%u result=%d",
++		  __entry->bss, __entry->link, __entry->wcid, __entry->enabled, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_mlo_roc_req,
++	TP_PROTO(u8 slot, u16 tag, u8 bss, u8 token, u8 type, u8 band, u8 channel, u8 dbdc, u32 duration, u16 selected, u16 active),
++	TP_ARGS(slot, tag, bss, token, type, band, channel, dbdc, duration, selected, active),
++	TP_STRUCT__entry(
++		__field(u8, slot)
++		__field(u16, tag)
++		__field(u8, bss)
++		__field(u8, token)
++		__field(u8, type)
++		__field(u8, band)
++		__field(u8, channel)
++		__field(u8, dbdc)
++		__field(u32, duration)
++		__field(u16, selected)
++		__field(u16, active)
++	),
++	TP_fast_assign(
++		__entry->slot = slot;
++		__entry->tag = tag;
++		__entry->bss = bss;
++		__entry->token = token;
++		__entry->type = type;
++		__entry->band = band;
++		__entry->channel = channel;
++		__entry->dbdc = dbdc;
++		__entry->duration = duration;
++		__entry->selected = selected;
++		__entry->active = active;
++	),
++	TP_printk("slot=%u tag=%u bss=%u token=%u type=%u band=%u channel=%u dbdc=%u duration=%u selected=%u active=%u",
++		  __entry->slot, __entry->tag, __entry->bss, __entry->token, __entry->type, __entry->band, __entry->channel, __entry->dbdc, __entry->duration, __entry->selected, __entry->active)
++);
++
++TRACE_EVENT(mt7925_lab_mlo_roc_result,
++	TP_PROTO(u8 token, int result),
++	TP_ARGS(token, result),
++	TP_STRUCT__entry(
++		__field(u8, token)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->token = token;
++		__entry->result = result;
++	),
++	TP_printk("token=%u result=%d",
++		  __entry->token, __entry->result)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -1467,12 +1467,35 @@
+ 		dev_kfree_skb(skb);
+ 		break;
+ 	case PKT_TYPE_NORMAL_MCU:
+-	case PKT_TYPE_NORMAL:
+-		if (!mt7925_mac_fill_rx(dev, skb)) {
++	case PKT_TYPE_NORMAL: {
++		int ret;
++		bool observe = trace_mt7925_lab_rxdesc_enabled() &&
++			       skb_headlen(skb) >= 4 * sizeof(*rxd);
++		u32 word1 = 0, word2 = 0, word3 = 0, length = skb->len;
++
++		if (observe) {
++			word1 = le32_to_cpu(rxd[1]);
++			word2 = le32_to_cpu(rxd[2]);
++			word3 = le32_to_cpu(rxd[3]);
++		}
++		ret = mt7925_mac_fill_rx(dev, skb);
++		if (observe) {
++			struct mt76_rx_status *status = (void *)skb->cb;
++			struct mt76_wcid *wcid = ret ? NULL : status->wcid;
++
++			trace_mt7925_lab_rxdesc(word1, word2, word3, length, ret,
++				wcid ? wcid->idx : 0xffff,
++				wcid ? wcid->link_id : 0xff,
++				wcid && wcid->link_valid, wcid && wcid->sta,
++				ret ? 0 : status->freq,
++				!ret && !!(status->flag & RX_FLAG_8023));
++		}
++		if (!ret) {
+ 			mt76_rx(&dev->mt76, q, skb);
+ 			return;
+ 		}
+ 		fallthrough;
++	}
+ 	default:
+ 		dev_kfree_skb(skb);
+ 		break;
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -1564,8 +1564,16 @@
+ 		req.roc[i].band = ch_band[chan->band];
+ 	}
+ 
+-	return mt76_mcu_send_msg(&mvif->phy->dev->mt76, MCU_UNI_CMD(ROC),
+-				 &req, sizeof(req), true);
++	for (i = 0; i < ARRAY_SIZE(req.roc); i++)
++		trace_mt7925_lab_mlo_roc_req(i, le16_to_cpu(req.roc[i].tag),
++			req.roc[i].bss_idx, req.roc[i].tokenid, req.roc[i].reqtype,
++			req.roc[i].band, req.roc[i].control_channel,
++			req.roc[i].dbdcband, le32_to_cpu(req.roc[i].maxinterval),
++			sel_links, vif->active_links);
++	i = mt76_mcu_send_msg(&mvif->phy->dev->mt76, MCU_UNI_CMD(ROC),
++			      &req, sizeof(req), true);
++	trace_mt7925_lab_mlo_roc_result(token_id, i);
++	return i;
+ }
+ 
+ int mt7925_mcu_set_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
+@@ -2097,6 +2105,10 @@
+ 	} else {
+ 		eht_mld->str_cap[0] = BIT(1);
+ 	}
++	trace_mt7925_lab_sta_eht_mld(
++		((struct mt792x_sta *)sta->drv_priv)->deflink.wcid.idx,
++		vif->cfg.eml_cap, ext_capa->eml_capabilities, eht_mld->mld_type,
++		eht_mld->str_cap[0], eht_mld->eml_cap[0] | eht_mld->eml_cap[1] << 8);
+ }
+ 
+ static void
+@@ -2179,6 +2191,10 @@
+ 	}
+ 
+ 	mld->link_num = cnt;
++	trace_mt7925_lab_sta_mld(mlink->wcid.idx, le16_to_cpu(mld->primary_id),
++		le16_to_cpu(mld->secondary_id), le16_to_cpu(mld->wlan_id),
++		mld->link_num, le16_to_cpu(mld->link[0].wlan_id), mld->link[0].bss_idx,
++		le16_to_cpu(mld->link[1].wlan_id), mld->link[1].bss_idx, valid);
+ }
+ 
+ static void
+@@ -2202,7 +2218,7 @@
+ 	struct mt792x_bss_conf *mconf;
+ 	struct mt792x_link_sta *mlink;
+ 	struct sk_buff *skb;
+-	int conn_state;
++	int conn_state, ret;
+ 
+ 	mconf = mt792x_vif_to_link(mvif, info->wcid->link_id);
+ 	mlink = container_of(info->wcid, struct mt792x_link_sta, wcid);
+@@ -2253,7 +2269,10 @@
+ 		mt7925_mcu_sta_hdr_trans_tlv(skb, info->vif, mlink);
+ 	}
+ 
+-	return mt76_mcu_skb_send_msg(dev, skb, info->cmd, true);
++	ret = mt76_mcu_skb_send_msg(dev, skb, info->cmd, true);
++	trace_mt7925_lab_sta_result(info->wcid->idx, mconf->mt76.idx,
++		info->wcid->link_id, info->enable, info->state, ret);
++	return ret;
+ }
+ 
+ int mt7925_mcu_sta_update(struct mt792x_dev *dev,
+@@ -2622,6 +2641,13 @@
+ 		req->sco = 1; /* SCA */
+ 	else if (req->control_channel > req->center_chan)
+ 		req->sco = 3; /* SCB */
++	if (trace_mt7925_lab_bss_rlm_enabled()) {
++		struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
++
++		trace_mt7925_lab_bss_rlm(mconf ? mconf->mt76.idx : 0xff,
++			link_conf->link_id, req->band, req->control_channel,
++			req->center_chan, req->bw, req->sco);
++	}
+ }
+ 
+ static struct sk_buff *
+@@ -2855,6 +2881,10 @@
+ 		WARN_ON(1);
+ 		break;
+ 	}
++	trace_mt7925_lab_bss_basic(mconf->mt76.idx, link_conf->link_id,
++		link_sta ? link_sta->link_id : 0xff, enable, basic_req->active,
++		basic_req->conn_state, sta_wlan_idx, bmc_tx_wlan_idx,
++		basic_req->omac_idx, basic_req->band_idx, basic_req->link_idx);
+ }
+ 
+ static void
+@@ -2971,6 +3001,10 @@
+ 	}
+ 
+ 	memcpy(mld->mac_addr, vif->addr, ETH_ALEN);
++	trace_mt7925_lab_bss_mld(mconf->mt76.idx, mld->link_id,
++		mld->group_mld_id, mld->own_mld_id, mld->remap_idx,
++		mld->eml_enable, mld->max_link_num, mld->hybrid_mode,
++		vif->valid_links, vif->active_links);
+ }
+ 
+ static void
+@@ -3177,6 +3211,8 @@
+ 
+ 	err = mt76_mcu_skb_send_msg(&dev->mt76, skb,
+ 				    MCU_UNI_CMD(BSS_INFO_UPDATE), true);
++	trace_mt7925_lab_bss_result(mconf->mt76.idx, link_conf->link_id,
++		sta_wlan_idx, enable, err);
+ 	return mt76_connac_mcu_bss_deact_err(&dev->mt76, err, enable);
+ }
+ 
