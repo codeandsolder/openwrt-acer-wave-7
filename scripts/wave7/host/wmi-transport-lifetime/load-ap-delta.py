@@ -106,9 +106,50 @@ def parse(text):
                 tx[device][m[1]] = int(m[2])
         require(TX_MATRIX == {k.split("/")[0] for k in tx[device] if "/" in k},
                 "incomplete TX matrices")
+    extra = {}
+    if "AGGREGATION" in sections_:
+        agg = sections_["AGGREGATION"]
+        require(agg[0].endswith("/stations/" + sta[0][0]), "wrong aggregation station")
+        tids = {}
+        links = {}
+        link = None
+        for line in agg[1:]:
+            if m := re.fullmatch(r"(\d+)\s+([01])\s+(0x[0-9a-f]+)\s+(0x[0-9a-f]+)\s+([01])\s+(0x[0-9a-f]+)\s+(\d+)", line):
+                tid = int(m[1])
+                require(tid not in tids, "duplicate aggregation TID")
+                tids[tid] = {"rx": bool(int(m[2])), "rx_token": int(m[3], 16),
+                             "rx_ssn": int(m[4], 16), "tx": bool(int(m[5])),
+                             "tx_token": int(m[6], 16), "pending": int(m[7])}
+            elif m := re.fullmatch(re.escape(agg[0]) + r"/link-(\d+)", line):
+                link = int(m[1])
+                require(link not in links, "duplicate station link")
+                links[link] = {}
+            elif link is not None:
+                key, value = line.split("=", 1)
+                require(key not in links[link], "duplicate link metadata")
+                links[link][key] = value if key == "addr" else int(value)
+        require(set(tids) == set(range(16)) and set(links) == {0, 1} and
+                all(set(v) == {"addr", "rx_duplicates", "rx_fragments"} for v in links.values()),
+                "incomplete aggregation or MLO link data")
+        extra["aggregation"] = {"tids": tids, "links": links}
+    if "AFFINITY" in sections_:
+        affinity = {int(irq): cpulist for irq, cpulist in
+                    (line.split() for line in sections_["AFFINITY"])}
+        require(len(affinity) == len(sections_["AFFINITY"]) == 12,
+                "incomplete QCN6432 DP IRQ affinities")
+        extra["affinity"] = affinity
+    if "CPUFREQ" in sections_:
+        freq = {}
+        for line in sections_["CPUFREQ"]:
+            path, khz = line.split()
+            m = re.fullmatch(r"/sys/devices/system/cpu/cpu(\d+)/cpufreq/scaling_cur_freq", path)
+            require(m and int(m[1]) not in freq and int(khz) > 0, "bad CPU frequency sample")
+            freq[int(m[1])] = int(khz)
+        require(freq.keys() == cpus.keys(), "incomplete CPU frequency sample")
+        extra["frequency_khz"] = freq
     return dict(rx=rx_text, cpu=cpus, softirq=softirqs, irq=irqs, sta=sta[0],
                 assoc=fields["associated at [boottime]"], sta_counters=sta_counters,
-                rates=sta_rates, aql=aql, tx=tx)
+                rates=sta_rates, aql=aql, tx=tx, extra=extra)
 
 
 def subtract(a, b):
@@ -137,7 +178,25 @@ def compare(before, after):
         cpu[str(k)] = {"busy_pct": 100 * (total - values[3] - values[4]) / total,
                        "softirq_pct": 100 * values[6] / total,
                        "irq_pct": 100 * values[5] / total}
-    return {"radio": radio, "cpu": cpu,
+    require(a["extra"].keys() == b["extra"].keys(), "telemetry schema changed")
+    extra = {}
+    if "aggregation" in a["extra"]:
+        aa, bb = a["extra"]["aggregation"], b["extra"]["aggregation"]
+        link_delta = {}
+        for k, link in aa["links"].items():
+            later = bb["links"][k]
+            require(link["addr"] == later["addr"], "station link changed")
+            link_delta[k] = subtract({k: v for k, v in link.items() if k != "addr"},
+                                     {k: v for k, v in later.items() if k != "addr"})
+        extra["aggregation"] = {"before": aa, "after": bb, "link_delta": link_delta}
+    if "affinity" in a["extra"]:
+        require(a["extra"]["affinity"] == b["extra"]["affinity"],
+                "IRQ affinity changed during case")
+        extra["affinity"] = a["extra"]["affinity"]
+    if "frequency_khz" in a["extra"]:
+        extra["frequency_khz"] = {"before": a["extra"]["frequency_khz"],
+                                  "after": b["extra"]["frequency_khz"]}
+    return {"radio": radio, "cpu": cpu, "extra": extra,
             "softirq_delta": subtract(a["softirq"], b["softirq"]),
             "irq_delta": subtract(a["irq"], b["irq"]),
             "station_delta": subtract(a["sta_counters"], b["sta_counters"]),
@@ -157,6 +216,18 @@ def main():
     for mode in MODES:
         result[mode] = compare(Path(f"{prefix}.load-{mode}-ap-before.txt").read_text(),
                                Path(f"{prefix}.load-{mode}-ap-after.txt").read_text())
+    event = re.compile(r"(\d+\.\d+): drv_ampdu_action: .* tid (\d+), ssn (\d+), buf_size (\d+), amsdu (\d+), timeout (\d+) action (\d+)")
+    actions = ("rx_start", "rx_stop", "tx_start", "tx_stop_cont",
+               "tx_stop_flush", "tx_stop_flush_cont", "tx_operational")
+    for endpoint in ("ap", "client"):
+        trace = Path(f"{prefix}.{endpoint}-control-trace.txt").read_text()
+        events = []
+        for m in event.finditer(trace):
+            ts, tid, ssn, size, amsdu, timeout, action = m.groups()
+            events.append(dict(monotonic_s=float(ts), tid=int(tid), ssn=int(ssn),
+                               window=int(size), amsdu=bool(int(amsdu)), timeout=int(timeout),
+                               action=actions[int(action)]))
+        result[f"{endpoint}_ba_events"] = events
     print(json.dumps(result, indent=2))
 
 
