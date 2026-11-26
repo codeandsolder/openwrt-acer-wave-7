@@ -1,0 +1,14 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3406,7 +3406,10 @@
+ 	basic_req->bcn_interval = cpu_to_le16(link_conf->beacon_int);
+ 	basic_req->dtim_period = link_conf->dtim_period;
+ 	basic_req->bmc_tx_wlan_idx = cpu_to_le16(bmc_tx_wlan_idx);
+-	basic_req->link_idx = mconf->mt76.idx;
++	/* Match DEV_INFO_ACTIVE and the allocated per-MLD link slot.
++	 * A global BSS index can exceed the MLD's link count.
++	 */
++	basic_req->link_idx = mconf->mt76.link_idx;
+ 	basic_req->sta_idx = cpu_to_le16(sta_wlan_idx);
+ 	basic_req->omac_idx = mconf->mt76.omac_idx;
+ 	basic_req->band_idx = READ_ONCE(mconf->mt76.band_idx);
