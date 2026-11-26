@@ -19,6 +19,7 @@ dual_hold=0
 dual_soak=0
 dual_load=0
 dual_reconnect=0
+reconnect_count=1
 reconnect_datapath=0
 ap_irq_spread=0
 ap_link_stats=0
@@ -46,6 +47,7 @@ for arg in "$@"; do
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
         --client-reconnect) dual_hold=1; dual_reconnect=1 ;;
+        --client-reconnect-twice) dual_hold=1; dual_reconnect=1; reconnect_count=2 ;;
         --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
@@ -534,7 +536,11 @@ for band in "${bands[@]}"; do
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
     else
-        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+        if (( reconnect_count == 2 )); then
+            wyse "timeout $client_seconds bash $client/client-sustained-cycle.sh $tag --$mode-$variant --bssid-$band --reconnect-count=2" > "$prefix.client-run.txt" 2>&1 || rc=$?
+        else
+            wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+        fi
     fi
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
     # Let the bounded independent observers complete even if a client fault
@@ -599,6 +605,13 @@ for band in "${bands[@]}"; do
             cases_failed=1
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
+    if (( reconnect_count == 2 )); then
+        cycle_count=$(tar -xOf "$prefix.client.tar" "$tag/reconnect-count.txt" 2>/dev/null || :)
+        cycle_passes=$(tar -xOf "$prefix.client.tar" "$tag/reconnect-cycles.txt" 2>/dev/null || :)
+        if [[ $cycle_count != expected=2 || $cycle_passes != $'cycle=1 result=pass\ncycle=2 result=pass' ]]; then
+            cases_failed=1
+        fi
+    fi
     if [[ $rc != 0 || $result != "$expected" ]]; then
         cases_failed=1
     fi
