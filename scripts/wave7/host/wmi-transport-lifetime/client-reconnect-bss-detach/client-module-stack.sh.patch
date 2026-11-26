@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -61,6 +61,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-mld-record-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -1165,6 +1166,29 @@
+     [mt7925e]=f9e0f17ed6831892f124752ae5a357a17cee9ef4
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-reconnect-bss-detach-trace)
++declare -A candidate_hash=(
++    [mt76]=4dc4a9332c6026ca110c1c288eb43df7bdcc74cf7c8107c0c8991641a77d08eb
++    [mt76_connac_lib]=2a3e80193ed8762e7c783783ca4a2476c5927c88c2d4123c192bb92fced10a68
++    [mt792x_lib]=90af4b6766a9e0f4c3728768be71cba35a62bdb8fc1e8c0132b72fc6339a3625
++    [mt7925_common]=629458a1aef4401369ba21fad707f3d20b740fa02c6357c037bf6a8582af0d8c
++    [mt7925e]=1d465df2a15b14ee9c7480634915d4cfcad49fb6157f95cc6a6454ab93424e37
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=46C6FD2445E24DB4293D706
++    [mt792x_lib]=63926C309F12E2CD4C5FA1F
++    [mt7925_common]=E525F3124BBC18F74813BCB
++    [mt7925e]=7C32FAC559BFD8CF0F4362C
++)
++declare -A candidate_id=(
++    [mt76]=ea9dd1cf5b77df6ae49049f1a1efaca9e1601f95
++    [mt76_connac_lib]=c224bb79d1c50c150c4453ea43c0947731105b56
++    [mt792x_lib]=2c19c0200370393010acc178dbf11133ff38bd4c
++    [mt7925_common]=565f21533be74ebe2c4a980c117d027b07340c2e
++    [mt7925e]=a8155f9c9bbf73839f8c20ac531555bda551fa7a
++)
++;;
+ upstream-prefix22-authorize-single-link-trace)
+ declare -A candidate_hash=(
+     [mt76]=9755bbdb8bcb58f86f23893b01d89033384589480913cfb88898493dab271430
