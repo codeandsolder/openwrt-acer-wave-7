@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -59,6 +59,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-data-tokens-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-roc-owner-auto-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -1117,6 +1118,29 @@
+     [mt7925e]=19fd47caa7ce501cc49f48de4463929e767ea942
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace)
++declare -A candidate_hash=(
++    [mt76]=4dc4a9332c6026ca110c1c288eb43df7bdcc74cf7c8107c0c8991641a77d08eb
++    [mt76_connac_lib]=66362145b27187da1443406b5ff6ff4636372aa1ca74b2e14feab2b396eadb44
++    [mt792x_lib]=bff943ee09d2d6a0240eb7f8613f5f71b3cf39de7109738078e705bf13c9e2da
++    [mt7925_common]=745ecfd5a0dcc242e1ea7c5d5c88e7206783c63d0d4c30de3cc17ad344cf2010
++    [mt7925e]=bbadb04bfe495efeb5f3bcb7d6941b9a7fd1d848662c1054c771bd8d28f796b6
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=ADD818A926C4EEF003B07F6
++    [mt792x_lib]=63926C309F12E2CD4C5FA1F
++    [mt7925_common]=BAAE3EDD6C66C9D629BEB78
++    [mt7925e]=21B54321D0D2BFA2DD4549E
++)
++declare -A candidate_id=(
++    [mt76]=ea9dd1cf5b77df6ae49049f1a1efaca9e1601f95
++    [mt76_connac_lib]=9a244987debdc28c75e81fb9f8711e0add98ac49
++    [mt792x_lib]=9d9a2c6b323b7da7e32cef40aa19921b7a8eacf2
++    [mt7925_common]=30688a4525f9ead9fa67b3ec61ccc8426e5b7f68
++    [mt7925e]=26453474ebee484e7900ebfebfdbd050037ce872
++)
++;;
+ upstream-prefix22-authorize-single-link-trace)
+ declare -A candidate_hash=(
+     [mt76]=9755bbdb8bcb58f86f23893b01d89033384589480913cfb88898493dab271430
