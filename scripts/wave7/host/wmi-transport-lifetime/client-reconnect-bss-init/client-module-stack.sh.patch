@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -68,6 +68,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -1333,6 +1334,29 @@
+     [mt7925e]=5aeb2530a4a64062da13666e703a8a5c0c05b869
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace)
++declare -A candidate_hash=(
++    [mt76]=4dc4a9332c6026ca110c1c288eb43df7bdcc74cf7c8107c0c8991641a77d08eb
++    [mt76_connac_lib]=997f8c212de53bbdaf3d5c603083bf33ccf39d69b33ff9b892365d44d52f071c
++    [mt792x_lib]=8f36ae7fe372b37bbe0416bc3611c2186622b6d3dbc55998599b33b9bc4836e3
++    [mt7925_common]=f0b1056f9990f850fcbe9903be18773f7c9f1bfc5913777528f0491a07a2e09b
++    [mt7925e]=fb10f2b562de6bf86344f15d2197180430680750f5f5261157a2c7a7ca69b3d5
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=DF1886C9FECB6D7B488C2DE
++    [mt792x_lib]=B66078DC201A5170869CCDD
++    [mt7925_common]=C19DCDBAE0474ED140B8D43
++    [mt7925e]=BC24E004CDEBC5191BEA6BD
++)
++declare -A candidate_id=(
++    [mt76]=ea9dd1cf5b77df6ae49049f1a1efaca9e1601f95
++    [mt76_connac_lib]=0a4fd327452189edf800450b9de539df002e4018
++    [mt792x_lib]=b36523df6148f677c020cae9b182545fb2f70331
++    [mt7925_common]=0d4ff8e48c38d8ef19bf9051651e70b4f275a3d6
++    [mt7925e]=ae42190257ebdc1241800cf9ed12263e30666248
++)
++;;
+ upstream-prefix22-authorize-single-link-trace)
+ declare -A candidate_hash=(
+     [mt76]=9755bbdb8bcb58f86f23893b01d89033384589480913cfb88898493dab271430
