@@ -647,6 +647,8 @@ for band in "${bands[@]}"; do
     fi
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
+    # WBM routing changes RX return buffers as well as TX completions.
+    jq -e '(.increments | keys | sort) == ["ahb-c000000.wifi", "ahb-soc@0:wifi"] and all(.increments[]; (."RX totals/Invalid RBM" // 0) == 0)' "$prefix.rx-delta.json" >/dev/null || cases_failed=1
     result_file=short-hold-result.txt
     expected=short_hold_all_replies=1
     if (( dual_hold )); then
