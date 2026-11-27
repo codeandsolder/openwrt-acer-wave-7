@@ -30,13 +30,13 @@ def main():
     retire = one(tx, r'^static void ath12k_wifi7_tx_retire\(.*?^\}')
     parse = one(tx, r'^static void\nath12k_wifi7_dp_tx_status_parse\(.*?^\}')
     ext = one(tx, r'^static void\nath12k_wifi7_hal_tx_cmd_ext_desc_setup\(.*?^\}')
-    handler = one(tx, r'^void ath12k_wifi7_dp_tx_completion_handler\(.*?^\}')
+    handler = one(tx, r'^static void\nath12k_wifi7_dp_tx_complete_record\(.*?^\}')
     assert handler.index('ath12k_wifi7_tx_completion_is_release(') < handler.index('desc_va =')
     assert handler.index('guard(rcu)();') < handler.index('ath12k_dp_tx_take_completed(')
     assert handler.index('ath12k_dp_tx_take_completed(') < handler.index('ath12k_wifi7_tx_retire(')
     assert handler.index('ath12k_wifi7_tx_retire(') < handler.index('ath12k_dp_tx_process_htt_tx_complete(')
     assert handler.index('ath12k_wifi7_dp_tx_complete_msdu(') < handler.index('atomic_dec_and_test(')
-    assert handler.index('while (ATH12K_TX_COMPL_NEXT(ab, tx_ring->tx_status_tail)') < handler.index('struct hal_tx_status ts = {};')
+    assert handler.index('struct hal_tx_status ts = {};') < handler.index('ath12k_wifi7_dp_tx_status_parse(')
     for name in ('ath12k_dp_tx_htt_tx_complete_buf','ath12k_dp_tx_process_htt_tx_complete','ath12k_wifi7_dp_tx_complete_msdu'):
         fn = one(tx, rf'^static void\s+{name}\(.*?^\}}')
         assert 'dma_unmap_single(' not in fn and 'num_tx_pending' not in fn

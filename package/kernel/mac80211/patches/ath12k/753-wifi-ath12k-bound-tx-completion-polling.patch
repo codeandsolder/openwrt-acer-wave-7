@@ -1,0 +1,368 @@
+From: Wave7 development <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: bound TX completion polling
+
+Consume completion records in small private batches, releasing the HAL
+ring lock before DMA retirement and mac80211 status reporting. Keep
+unconsumed records in the hardware ring rather than allocating a second
+full-size ring per TX queue. Repoll NAPI on reaching the TX work limit,
+even if RX has not consumed its budget. Service all mapped TX rings and
+preserve the RX budget; zero-budget polls must not process RX.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1180,7 +1180,6 @@
+ static void ath12k_dp_cleanup(struct ath12k_base *ab)
+ {
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+-	int i;
+ 
+ 	ath12k_dp_link_peer_rhash_tbl_destroy(dp);
+ 
+@@ -1197,11 +1196,6 @@
+ 	ath12k_dp_srng_common_cleanup(ab);
+ 
+ 	ath12k_dp_rx_reo_cmd_cleanup(ab);
+-
+-	for (i = 0; i < ab->hw_params->max_tx_ring; i++) {
+-		kfree(dp->tx_ring[i].tx_status);
+-		dp->tx_ring[i].tx_status = NULL;
+-	}
+ 
+ 	ath12k_dp_rx_free(ab);
+ 	/* Deinit any SOC level resource */
+@@ -1555,7 +1549,6 @@
+ {
+ 	struct ath12k_dp *dp;
+ 	struct hal_srng *srng = NULL;
+-	size_t size = 0;
+ 	u32 n_link_desc = 0;
+ 	int ret;
+ 	int i;
+@@ -1613,29 +1606,14 @@
+ 	if (ret)
+ 		goto fail_dp_bank_profiles_cleanup;
+ 
+-	size = ab->hal.hal_wbm_release_ring_tx_size *
+-	       DP_TX_COMP_RING_SIZE(ab);
+-
+ 	ret = ath12k_dp_reoq_lut_setup(ab);
+ 	if (ret) {
+ 		ath12k_warn(ab, "failed to setup reoq table %d\n", ret);
+ 		goto fail_cmn_srng_cleanup;
+ 	}
+ 
+-	for (i = 0; i < ab->hw_params->max_tx_ring; i++) {
++	for (i = 0; i < ab->hw_params->max_tx_ring; i++)
+ 		dp->tx_ring[i].tcl_data_ring_id = i;
+-
+-		dp->tx_ring[i].tx_status_head = 0;
+-		dp->tx_ring[i].tx_status_tail = DP_TX_COMP_RING_SIZE(ab) - 1;
+-		dp->tx_ring[i].tx_status = kmalloc(size, GFP_KERNEL);
+-		if (!dp->tx_ring[i].tx_status) {
+-			ret = -ENOMEM;
+-			/* FIXME: The allocated tx status is not freed
+-			 * properly here
+-			 */
+-			goto fail_cmn_reoq_cleanup;
+-		}
+-	}
+ 
+ 	for (i = 0; i < HAL_DSCP_TID_MAP_TBL_NUM_ENTRIES_MAX; i++)
+ 		ath12k_hal_tx_set_dscp_tid_map(ab, i);
+@@ -1652,7 +1630,6 @@
+ fail_dp_rx_free:
+ 	ath12k_dp_rx_free(ab);
+ 
+-fail_cmn_reoq_cleanup:
+ 	ath12k_dp_reoq_lut_cleanup(ab);
+ 
+ fail_cmn_srng_cleanup:
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -52,15 +52,10 @@
+ 	int bufs_max;
+ };
+ 
+-#define ATH12K_TX_COMPL_NEXT(ab, x)	(((x) + 1) % DP_TX_COMP_RING_SIZE(ab))
+-
+ struct dp_tx_ring {
+ 	u8 tcl_data_ring_id;
+ 	struct dp_srng tcl_data_ring;
+ 	struct dp_srng tcl_comp_ring;
+-	struct hal_wbm_completion_ring_tx *tx_status;
+-	int tx_status_head;
+-	int tx_status_tail;
+ };
+ 
+ struct ath12k_pdev_mon_stats {
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp.c
+@@ -23,6 +23,8 @@
+ 	struct napi_struct *napi = &irq_grp->napi;
+ 	int grp_id = irq_grp->grp_id;
+ 	int work_done = 0;
++	int poll_budget = budget;
++	bool tx_more = false;
+ 	int i = 0, j;
+ 	int tot_work_done = 0;
+ 	enum dp_monitor_mode monitor_mode;
+@@ -32,8 +34,13 @@
+ 	while (tx_mask) {
+ 		i = fls(tx_mask) - 1;
+ 		tx_mask ^= BIT(i);
+-		ath12k_wifi7_dp_tx_completion_handler(dp, i);
++		tx_more |= ath12k_wifi7_dp_tx_completion_handler(dp, i,
++							      budget ?: NAPI_POLL_WEIGHT);
+ 	}
++
++	/* A zero-budget poll may reap TX but must not consume RX. */
++	if (!budget)
++		return 0;
+ 
+ 	if (dp->hw_params->ring_mask->rx_err[grp_id]) {
+ 		work_done = ath12k_wifi7_dp_rx_process_err(dp, napi, budget);
+@@ -138,7 +145,7 @@
+ 	/* TODO: Implement handler for other interrupts */
+ 
+ done:
+-	return tot_work_done;
++	return tx_more ? poll_budget : tot_work_done;
+ }
+ 
+ static struct ath12k_dp_arch_ops ath12k_wifi7_dp_arch_ops = {
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -810,112 +810,132 @@
+ 	}
+ }
+ 
+-void ath12k_wifi7_dp_tx_completion_handler(struct ath12k_dp *dp, int ring_id)
++static void
++ath12k_wifi7_dp_tx_complete_record(struct ath12k_dp *dp,
++				   struct dp_tx_ring *tx_ring,
++				   struct hal_wbm_completion_ring_tx *tx_status)
+ {
+ 	struct ath12k_base *ab = dp->ab;
+-	struct ath12k_pdev_dp *dp_pdev;
+-	int hal_ring_id = dp->tx_ring[ring_id].tcl_comp_ring.ring_id;
+-	struct hal_srng *status_ring = &dp->hal->srng_list[hal_ring_id];
+-	struct ath12k_tx_desc_info *tx_desc = NULL;
+-	struct ath12k_tx_desc_params desc_params;
+-	struct dp_tx_ring *tx_ring = &dp->tx_ring[ring_id];
+ 	struct ath12k_tx_completion_stats *stats =
+ 		&dp->device_stats.tx_completion[tx_ring->tcl_data_ring_id];
+-	struct hal_wbm_release_ring *desc;
++	struct ath12k_tx_desc_params desc_params;
++	struct ath12k_tx_desc_info *tx_desc;
++	struct ath12k_pdev_dp *dp_pdev;
++	struct hal_tx_status ts = {};
++	u8 release_status;
++	u32 desc_id;
+ 	u64 desc_va;
+ 
++	ath12k_wifi7_dp_tx_status_parse(tx_status, &ts);
++	/* FW and TQM use the same four-bit field in the WBM entry. */
++	release_status = le32_get_bits(tx_status->info0,
++				       HAL_WBM_COMPL_TX_INFO0_TQM_RELEASE_REASON);
++	if (!ath12k_wifi7_tx_completion_is_release(dp, stats,
++						   ts.buf_rel_source,
++						   release_status))
++		return;
++
++	guard(rcu)();
++
++	if (le32_get_bits(tx_status->info0, HAL_WBM_COMPL_TX_INFO0_CC_DONE)) {
++		/* HW done cookie conversion */
++		desc_va = ((u64)le32_to_cpu(tx_status->buf_va_hi) << 32 |
++			   le32_to_cpu(tx_status->buf_va_lo));
++		tx_desc = (struct ath12k_tx_desc_info *)((unsigned long)desc_va);
++	} else {
++		/* SW does cookie conversion to VA */
++		desc_id = le32_get_bits(tx_status->buf_va_hi,
++					BUFFER_ADDR_INFO1_SW_COOKIE);
++
++		tx_desc = ath12k_dp_get_tx_desc(dp, desc_id);
++	}
++	if (!tx_desc) {
++		ath12k_warn(ab, "unable to retrieve tx_desc!");
++		return;
++	}
++
++	dp_pdev = ath12k_dp_tx_take_completed(dp, tx_desc, &desc_params);
++	if (!dp_pdev) {
++		ath12k_warn(ab, "TX completion without a live descriptor owner\n");
++		return;
++	}
++
++	ath12k_wifi7_tx_retire(dp_pdev, &desc_params,
++			       tx_ring->tcl_data_ring_id);
++
++	if (!rcu_dereference(ab->pdevs_active[dp_pdev->mac_id]) ||
++	    !ATH12K_SKB_CB(desc_params.skb)->vif) {
++		ieee80211_free_txskb(ath12k_pdev_dp_to_hw(dp_pdev),
++				     desc_params.skb);
++	} else if (ts.buf_rel_source == HAL_WBM_REL_SRC_MODULE_FW) {
++		ath12k_dp_tx_process_htt_tx_complete(dp_pdev, tx_status,
++						     &desc_params, release_status);
++	} else if (release_status >= MAX_TQM_RELEASE_REASON) {
++		ieee80211_free_txskb(ath12k_pdev_dp_to_hw(dp_pdev),
++				     desc_params.skb);
++	} else {
++		ath12k_wifi7_dp_tx_complete_msdu(dp_pdev, &desc_params, &ts);
++	}
++
++	/* The flush barrier includes DMA unmap and mac80211 status. */
++	if (atomic_dec_and_test(&dp_pdev->num_tx_pending))
++		wake_up(&dp_pdev->tx_empty_waitq);
++}
++
++static unsigned int
++ath12k_wifi7_dp_tx_read_batch(struct ath12k_dp *dp, struct hal_srng *status_ring,
++			      struct hal_wbm_completion_ring_tx *batch,
++			      unsigned int limit)
++{
++	struct ath12k_base *ab = dp->ab;
++	unsigned int count = 0;
++	void *desc;
++
+ 	spin_lock_bh(&status_ring->lock);
+-
+ 	ath12k_hal_srng_access_begin(ab, status_ring);
+ 
+-	while (ATH12K_TX_COMPL_NEXT(ab, tx_ring->tx_status_head) !=
+-	       tx_ring->tx_status_tail) {
++	while (count < limit) {
+ 		desc = ath12k_hal_srng_dst_get_next_entry(ab, status_ring);
+ 		if (!desc)
+ 			break;
+ 
+-		memcpy(&tx_ring->tx_status[tx_ring->tx_status_head],
+-		       desc, sizeof(*desc));
+-		tx_ring->tx_status_head =
+-			ATH12K_TX_COMPL_NEXT(ab, tx_ring->tx_status_head);
+-	}
+-
+-	if (ath12k_hal_srng_dst_peek(ab, status_ring) &&
+-	    (ATH12K_TX_COMPL_NEXT(ab, tx_ring->tx_status_head) ==
+-	     tx_ring->tx_status_tail)) {
+-		/* TODO: Process pending tx_status messages when kfifo_is_full() */
+-		ath12k_warn(ab, "Unable to process some of the tx_status ring desc because status_fifo is full\n");
++		memcpy(&batch[count++], desc, sizeof(*batch));
+ 	}
+ 
+ 	ath12k_hal_srng_access_end(ab, status_ring);
+-
+ 	spin_unlock_bh(&status_ring->lock);
+ 
+-	while (ATH12K_TX_COMPL_NEXT(ab, tx_ring->tx_status_tail) !=
+-	       tx_ring->tx_status_head) {
+-		struct hal_wbm_completion_ring_tx *tx_status;
+-		struct hal_tx_status ts = {};
+-		u8 release_status;
+-		u32 desc_id;
+-
+-		tx_ring->tx_status_tail =
+-			ATH12K_TX_COMPL_NEXT(ab, tx_ring->tx_status_tail);
+-		tx_status = &tx_ring->tx_status[tx_ring->tx_status_tail];
+-		ath12k_wifi7_dp_tx_status_parse(tx_status, &ts);
+-		/* FW and TQM use the same four-bit field in the WBM entry. */
+-		release_status = le32_get_bits(tx_status->info0,
+-					       HAL_WBM_COMPL_TX_INFO0_TQM_RELEASE_REASON);
+-		if (!ath12k_wifi7_tx_completion_is_release(dp, stats,
+-							   ts.buf_rel_source,
+-							   release_status))
+-			continue;
+-
+-		guard(rcu)();
+-
+-		if (le32_get_bits(tx_status->info0, HAL_WBM_COMPL_TX_INFO0_CC_DONE)) {
+-			/* HW done cookie conversion */
+-			desc_va = ((u64)le32_to_cpu(tx_status->buf_va_hi) << 32 |
+-				   le32_to_cpu(tx_status->buf_va_lo));
+-			tx_desc = (struct ath12k_tx_desc_info *)((unsigned long)desc_va);
+-		} else {
+-			/* SW does cookie conversion to VA */
+-			desc_id = le32_get_bits(tx_status->buf_va_hi,
+-						BUFFER_ADDR_INFO1_SW_COOKIE);
+-
+-			tx_desc = ath12k_dp_get_tx_desc(dp, desc_id);
+-		}
+-		if (!tx_desc) {
+-			ath12k_warn(ab, "unable to retrieve tx_desc!");
+-			continue;
+-		}
+-
+-		dp_pdev = ath12k_dp_tx_take_completed(dp, tx_desc, &desc_params);
+-		if (!dp_pdev) {
+-			ath12k_warn(ab, "TX completion without a live descriptor owner\n");
+-			continue;
+-		}
+-
+-		ath12k_wifi7_tx_retire(dp_pdev, &desc_params,
+-				       tx_ring->tcl_data_ring_id);
+-
+-		if (!rcu_dereference(ab->pdevs_active[dp_pdev->mac_id]) ||
+-		    !ATH12K_SKB_CB(desc_params.skb)->vif) {
+-			ieee80211_free_txskb(ath12k_pdev_dp_to_hw(dp_pdev),
+-					     desc_params.skb);
+-		} else if (ts.buf_rel_source == HAL_WBM_REL_SRC_MODULE_FW) {
+-			ath12k_dp_tx_process_htt_tx_complete(dp_pdev, tx_status,
+-							     &desc_params, release_status);
+-		} else if (release_status >= MAX_TQM_RELEASE_REASON) {
+-			ieee80211_free_txskb(ath12k_pdev_dp_to_hw(dp_pdev),
+-					     desc_params.skb);
+-		} else {
+-			ath12k_wifi7_dp_tx_complete_msdu(dp_pdev, &desc_params, &ts);
+-		}
+-
+-		/* The flush barrier includes DMA unmap and mac80211 status. */
+-		if (atomic_dec_and_test(&dp_pdev->num_tx_pending))
+-			wake_up(&dp_pdev->tx_empty_waitq);
+-	}
++	return count;
++}
++
++/* Return true on reaching the TX work limit; NAPI must then repoll even
++ * when RX has used less than its budget. The hardware ring retains any
++ * unconsumed entries, so no full-size software shadow is needed.
++ */
++bool ath12k_wifi7_dp_tx_completion_handler(struct ath12k_dp *dp, int ring_id,
++					   unsigned int budget)
++{
++	/* Half a normal NAPI budget is a 1 KiB batch of 32-byte WBM entries. */
++	struct hal_wbm_completion_ring_tx batch[NAPI_POLL_WEIGHT / 2];
++	struct dp_tx_ring *tx_ring = &dp->tx_ring[ring_id];
++	struct hal_srng *status_ring =
++		&dp->hal->srng_list[tx_ring->tcl_comp_ring.ring_id];
++	unsigned int count, limit, i;
++
++	while (budget) {
++		limit = min_t(unsigned int, budget, ARRAY_SIZE(batch));
++		count = ath12k_wifi7_dp_tx_read_batch(dp, status_ring, batch,
++						      limit);
++
++		for (i = 0; i < count; i++)
++			ath12k_wifi7_dp_tx_complete_record(dp, tx_ring, &batch[i]);
++
++		budget -= count;
++		if (count < limit)
++			return false;
++	}
++
++	return true;
+ }
+ 
+ u32 ath12k_wifi7_dp_tx_get_vdev_bank_config(struct ath12k_base *ab,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.h
+@@ -10,7 +10,8 @@
+ int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev, struct ath12k_link_vif *arvif,
+ 		       struct ath12k_link_sta *arsta, struct sk_buff *skb,
+ 		       bool gsn_valid, int mcbc_gsn, bool is_mcast);
+-void ath12k_wifi7_dp_tx_completion_handler(struct ath12k_dp *dp, int ring_id);
++bool ath12k_wifi7_dp_tx_completion_handler(struct ath12k_dp *dp, int ring_id,
++					   unsigned int budget);
+ u32 ath12k_wifi7_dp_tx_get_vdev_bank_config(struct ath12k_base *ab,
+ 					    struct ath12k_link_vif *arvif);
+ #endif
