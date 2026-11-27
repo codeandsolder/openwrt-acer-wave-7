@@ -20,6 +20,10 @@ def main():
     header = (a.source / 'dp_rx.h').read_text()
     states = header[header.index('enum ath12k_reo_queue_state {'):header.index('#define ATH12K_DP_RX_FRAGMENT_TIMEOUT_MS')]
     constants = '\n'.join(re.search(r'^#define\s+' + n + r'\s+[^\n]+', header, re.M).group() for n in ('ATH12K_DP_RX_REO_RETRY_MS', 'ATH12K_DP_RX_REO_DESC_FREE_TIMEOUT_MS'))
+    for f, names in (('hal.h', ('HAL_LINK_DESC_ALIGN', 'HAL_DESC_REO_NON_QOS_TID')),
+                     ('wifi7/hal.h', ('HAL_REO_CMD_FLG_NEED_STATUS', 'HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS', 'HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC'))):
+        h = (a.source / f).read_text()
+        constants += '\n' + '\n'.join(re.search(r'^#define\s+' + n + r'\s+[^\n]+', h, re.M).group() for n in names)
     actual = '\n'.join(extract(common,s) for s in (
         'static void ath12k_dp_rx_tid_cleanup(',
         'static void ath12k_dp_reo_retire_work(',
@@ -30,6 +34,7 @@ def main():
         'void ath12k_dp_reo_flush_done(',
         'bool ath12k_dp_mark_tid_as_inactive(',
         'static void ath12k_dp_register_reo_queue('))
+    actual += '\n' + extract((a.source / 'wifi7/dp_rx.c').read_text(), 'int ath12k_wifi7_dp_reo_cache_flush(')
     shim = r'''#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -40,6 +45,9 @@ def main():
 #include <stddef.h>
 typedef uint8_t u8;typedef uint16_t u16;typedef uint32_t u32;typedef uint64_t dma_addr_t;
 #define BIT(n) (1U<<(n))
+#define round_down(x,y) ((x)&~((y)-1))
+#define lower_32_bits(x) ((u32)(x))
+#define upper_32_bits(x) ((u32)((x)>>32))
 #define IEEE80211_NUM_TIDS 16
 #define DMA_BIDIRECTIONAL 0
 #define WARN_ON_ONCE(x) (!!(x))
@@ -88,15 +96,28 @@ static void *alloc(size_t n) {allocations++;return calloc(1,n);}
 static void kfree(void *p) {assert(p);frees++;free(p);}
 static void dma_unmap_single(void *d,dma_addr_t p,u32 size,int dir) {(void)d;(void)dir;assert(p&&size);unmaps++;}
 static int ath12k_dp_arch_rx_tid_delete_handler(struct ath12k_dp *dp,struct ath12k_reo_queue *q) {assert(dp->reo_queue_lock&&q->state==ATH12K_REO_QUEUE_DELETE_PENDING);delete_submits++;return submit_error;}
-static int ath12k_dp_arch_reo_cache_flush(struct ath12k_dp *dp,struct ath12k_reo_queue *q) {assert(dp->reo_queue_lock&&q->state==ATH12K_REO_QUEUE_FLUSH_PENDING);flush_submits++;return submit_error;}
+struct ath12k_hal_reo_cmd {u32 addr_lo,addr_hi,flag;};
+enum hal_reo_cmd_type {HAL_REO_CMD_FLUSH_CACHE};
+void ath12k_dp_reo_flush_done(struct ath12k_dp *,void *,enum hal_reo_cmd_status);
+int ath12k_wifi7_dp_reo_cache_flush(struct ath12k_base *,struct ath12k_reo_queue *);
+static unsigned last_offset;static dma_addr_t last_address;static u32 last_flags;
+static int ath12k_wifi7_dp_reo_cmd_send(struct ath12k_base *ab,enum hal_reo_cmd_type t,struct ath12k_hal_reo_cmd *cmd,void (*cb)(struct ath12k_dp *,void *,enum hal_reo_cmd_status),void *ctx) {
+    struct ath12k_reo_queue *q=ctx;assert(ab->dp.reo_queue_lock&&q->state==ATH12K_REO_QUEUE_FLUSH_PENDING&&t==HAL_REO_CMD_FLUSH_CACHE&&cb==ath12k_dp_reo_flush_done);
+    last_offset=q->flush_offset;last_address=((dma_addr_t)cmd->addr_hi<<32)|cmd->addr_lo;last_flags=cmd->flag;
+    assert(last_address==q->qbuf.paddr_aligned+q->flush_offset);
+    u32 want=HAL_REO_CMD_FLG_NEED_STATUS;if(!q->flush_offset){want|=HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS;if(q->tid!=HAL_DESC_REO_NON_QOS_TID)want|=HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC;}
+    assert(last_flags==want);flush_submits++;return submit_error;
+}
+static int ath12k_dp_arch_reo_cache_flush(struct ath12k_dp *dp,struct ath12k_reo_queue *q) {assert(dp->reo_queue_lock&&q->state==ATH12K_REO_QUEUE_FLUSH_PENDING);return ath12k_wifi7_dp_reo_cache_flush(dp->ab,q);}
 static void ath12k_dp_arch_peer_rx_tid_qref_reset(struct ath12k_dp *dp,u16 peer,u16 tid,dma_addr_t expected) {assert(dp->dp_lock&&dp->reo_queue_lock);unsigned i=peer==0x8042?1:0;assert(peer==0x42||peer==0x8042);if(refs[i][tid]==expected){refs[i][tid]=0;resets++;}}
 #define EXPORT_SYMBOL(x)
 /* ACTUAL */
 static void tick(struct ath12k_dp *dp,unsigned long time) {jiffies=time;struct delayed_work *w=&dp->reo_retire_work;if(w->pending&&!time_before(jiffies,w->due)){w->pending=false;w->work.fn(&w->work);}}
-static struct ath12k_reo_queue *setup(struct ath12k_dp *dp,struct ath12k_dp_link_peer *peer,u8 tid,dma_addr_t addr) {
-    struct ath12k_dp_rx_tid *rx=&peer->dp_peer->rx_tid[tid];rx->tid=tid;rx->qbuf=(struct ath12k_reoq_buf){alloc(128),addr,128};
+static struct ath12k_reo_queue *setup_size(struct ath12k_dp *dp,struct ath12k_dp_link_peer *peer,u8 tid,dma_addr_t addr,u32 size) {
+    struct ath12k_dp_rx_tid *rx=&peer->dp_peer->rx_tid[tid];rx->tid=tid;rx->qbuf=(struct ath12k_reoq_buf){alloc(size),addr,size};
     struct ath12k_reo_queue *q=alloc(sizeof(*q));ath12k_dp_register_reo_queue(dp,peer,rx,q);peer->rx_tid_active_bitmask|=BIT(tid);refs[peer->mlo][tid]=addr;return q;
 }
+static struct ath12k_reo_queue *setup(struct ath12k_dp *dp,struct ath12k_dp_link_peer *peer,u8 tid,dma_addr_t addr) {return setup_size(dp,peer,tid,addr,HAL_LINK_DESC_ALIGN);}
 int main(void) {
     struct ath12k_base ab={0};struct ath12k_dp *dp=&ab.dp;dp->ab=&ab;dp->dp_lock=1;
     ath12k_dp_rx_reo_stop(dp);ath12k_dp_rx_reo_cmd_cleanup(&ab); /* not initialized */
@@ -125,6 +146,34 @@ int main(void) {
         assert(ath12k_dp_mark_tid_as_inactive(dp,&peer,3));tick(dp,jiffies);ath12k_dp_reo_delete_done(dp,new,HAL_REO_CMD_SUCCESS);tick(dp,jiffies+ATH12K_DP_RX_REO_DESC_FREE_TIMEOUT_MS+ATH12K_DP_RX_REO_RETRY_MS);ath12k_dp_reo_flush_done(dp,new,HAL_REO_CMD_SUCCESS);
         assert(count(&dp->reo_retired_queues)==0&&count(&dp->reo_live_queues)==0&&unmaps==prior_unmaps+2&&allocations==frees);cases++;
     }
+    unsigned line_cases=0;
+    /* Real geometries and one partial terminal line, with high DMA address
+     * crossing the 32-bit boundary. Fail each command independently. */
+    const u32 sizes[]={128,256,384,512,1536,385};
+    for(unsigned size_i=0;size_i<sizeof(sizes)/sizeof(sizes[0]);size_i++) for(unsigned tid_i=0;tid_i<2;tid_i++) {
+        u32 size=sizes[size_i],tid=tid_i?HAL_DESC_REO_NON_QOS_TID:3;
+        struct ath12k_reo_queue *q=setup_size(dp,&peer,tid,UINT64_C(0xffffff80),size);
+        assert(ath12k_dp_mark_tid_as_inactive(dp,&peer,tid));tick(dp,jiffies);ath12k_dp_reo_delete_done(dp,q,HAL_REO_CMD_SUCCESS);
+        unsigned offset=round_down(size-1,HAL_LINK_DESC_ALIGN),before=unmaps;
+        assert(q->flush_offset==offset);tick(dp,jiffies+ATH12K_DP_RX_REO_DESC_FREE_TIMEOUT_MS-1);assert(q->state==ATH12K_REO_QUEUE_FLUSH_PENDING);
+        jiffies+=ATH12K_DP_RX_REO_RETRY_MS;
+        while(true) {
+            submit_error=-ENOBUFS;tick(dp,jiffies);assert(last_offset==offset&&q->state==ATH12K_REO_QUEUE_FLUSH_PENDING&&q->flush_offset==offset&&unmaps==before);
+            submit_error=0;tick(dp,jiffies+ATH12K_DP_RX_REO_RETRY_MS);assert(q->state==ATH12K_REO_QUEUE_FLUSH_INFLIGHT&&last_offset==offset);
+            for(unsigned fail=1;fail<=3;fail++) {
+                ath12k_dp_reo_flush_done(dp,q,(enum hal_reo_cmd_status)fail);
+                assert(q->flush_offset==offset&&unmaps==before&&q->state==ATH12K_REO_QUEUE_FLUSH_PENDING);
+                tick(dp,jiffies+ATH12K_DP_RX_REO_RETRY_MS);assert(q->state==ATH12K_REO_QUEUE_FLUSH_INFLIGHT&&last_offset==offset);
+            }
+            ath12k_dp_reo_flush_done(dp,q,HAL_REO_CMD_SUCCESS);line_cases++;
+            if(!offset){assert(unmaps==before+1);break;}
+            offset-=HAL_LINK_DESC_ALIGN;assert(q->flush_offset==offset&&q->state==ATH12K_REO_QUEUE_FLUSH_PENDING&&unmaps==before);
+        }
+        assert(allocations==frees&&count(&dp->reo_retired_queues)==0);
+    }
+    /* Invalid offsets must not publish. */
+    struct ath12k_reo_queue invalid={.qbuf={0,0x1000,128},.flush_offset=128};unsigned submits=flush_submits;
+    assert(ath12k_wifi7_dp_reo_cache_flush(&ab,&invalid)==-EINVAL);invalid.flush_offset=1;assert(ath12k_wifi7_dp_reo_cache_flush(&ab,&invalid)==-EINVAL&&flush_submits==submits);
     /* Stop with live, delete-in-flight and aged/flush-in-flight owners. */
     struct ath12k_reo_queue *a=setup(dp,&peer,2,9001),*b=setup(dp,&peer,3,9002);setup(dp,&peer,4,9003);
     assert(ath12k_dp_mark_tid_as_inactive(dp,&peer,2));tick(dp,jiffies);ath12k_dp_reo_delete_done(dp,a,HAL_REO_CMD_SUCCESS);tick(dp,jiffies+ATH12K_DP_RX_REO_DESC_FREE_TIMEOUT_MS+ATH12K_DP_RX_REO_RETRY_MS);
@@ -133,7 +182,7 @@ int main(void) {
     assert(unmaps==before&&!dp->reo_retire_work.pending);dp->reo_cmd_pending[0]=1;ath12k_dp_rx_reo_cmd_cleanup(&ab);
     assert(unmaps==before+3&&allocations==frees&&!dp->reo_cmd_pending[0]&&!dp->reo_retire_initialized);
     ath12k_dp_rx_reo_init(dp);assert(!dp->reo_retire_stopped);ath12k_dp_rx_reo_stop(dp);ath12k_dp_rx_reo_cmd_cleanup(&ab);
-    printf("REO_RETIREMENT_PASS %u failure combinations, ID reuse, stop/restart; %u allocations, %u DMA unmaps\n",cases,allocations,unmaps);
+    printf("REO_RETIREMENT_PASS %u failure combinations, %u individually retried lines, ID reuse, stop/restart; %u allocations, %u DMA unmaps\n",cases,line_cases,allocations,unmaps);
 }
 '''
     a.output.mkdir(parents=True, exist_ok=True)

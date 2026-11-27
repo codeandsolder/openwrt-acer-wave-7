@@ -1,0 +1,120 @@
+From: Wave7 development <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: confirm every REO cache line invalidation
+
+Adapt the separately cached extension-line observation in Sebastian
+Salmhofer's upstream report to the persistent retirement owner. Track
+one status-required command at a time for each allocation; do not free
+on any failed line, and do not assume that a successful base flush
+implies success for earlier extension invalidations.
+
+Link: https://lore.kernel.org/r/20260831151011.2336305-1-sebastian.salmhofer@salmtek.com
+Fixes: b706fb4e580b ("wifi: ath12k: Use 1KB Cache Flush Command for QoS TID Descriptors")
+---
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.h
+@@ -47,6 +47,7 @@
+ 	struct list_head list;
+ 	struct ath12k_reoq_buf qbuf;
+ 	unsigned long retry_at;
++	u32 flush_offset;
+ 	enum ath12k_reo_queue_state state;
+ 	int peer_id;
+ 	bool is_ml_peer;
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -468,6 +468,11 @@
+ 		goto out;
+ 
+ 	if (status == HAL_REO_CMD_SUCCESS) {
++		/* The mapped allocation includes individually cached extension
++		 * descriptors. Start at its highest line; flush the base last.
++		 */
++		queue->flush_offset = round_down(queue->qbuf.size - 1,
++						 HAL_LINK_DESC_ALIGN);
+ 		queue->state = ATH12K_REO_QUEUE_FLUSH_PENDING;
+ 		queue->retry_at = jiffies +
+ 			msecs_to_jiffies(ATH12K_DP_RX_REO_DESC_FREE_TIMEOUT_MS);
+@@ -498,15 +503,24 @@
+ 	if (WARN_ON_ONCE(queue->state != ATH12K_REO_QUEUE_FLUSH_INFLIGHT))
+ 		goto out;
+ 
+-	/* Only a successful invalidation transfers ownership back to software. */
++	/* Advance only after an individually confirmed invalidation. Retain
++	 * ownership until all extension lines and the final base are flushed.
++	 */
+ 	if (status == HAL_REO_CMD_SUCCESS) {
+-		list_del(&queue->list);
+-		ath12k_dp_rx_tid_cleanup(dp->ab, &queue->qbuf);
+-		kfree(queue);
++		if (queue->flush_offset) {
++			queue->flush_offset -= HAL_LINK_DESC_ALIGN;
++			queue->state = ATH12K_REO_QUEUE_FLUSH_PENDING;
++			queue->retry_at = jiffies;
++			mod_delayed_work(system_wq, &dp->reo_retire_work, 0);
++		} else {
++			list_del(&queue->list);
++			ath12k_dp_rx_tid_cleanup(dp->ab, &queue->qbuf);
++			kfree(queue);
++		}
+ 	} else {
+ 		dev_warn_ratelimited(dp->ab->dev,
+-				     "REO queue flush failed: tid %u status %d\n",
+-				     queue->tid, status);
++				     "REO queue flush failed: tid %u offset %#x status %d\n",
++				     queue->tid, queue->flush_offset, status);
+ 		queue->state = ATH12K_REO_QUEUE_FLUSH_PENDING;
+ 		queue->retry_at = jiffies +
+ 			msecs_to_jiffies(ATH12K_DP_RX_REO_RETRY_MS);
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -268,28 +268,29 @@
+ 				    struct ath12k_reo_queue *queue)
+ {
+ 	struct ath12k_hal_reo_cmd cmd = {};
+-	int ret;
+-
+-	cmd.addr_lo = lower_32_bits(queue->qbuf.paddr_aligned);
+-	cmd.addr_hi = upper_32_bits(queue->qbuf.paddr_aligned);
+-	/* HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS - all pending MPDUs
+-	 *in the bitmap will be forwarded/flushed to REO output rings
++	dma_addr_t paddr;
++
++	if (WARN_ON_ONCE(queue->flush_offset >= queue->qbuf.size ||
++			 queue->flush_offset % HAL_LINK_DESC_ALIGN))
++		return -EINVAL;
++
++	paddr = queue->qbuf.paddr_aligned + queue->flush_offset;
++	cmd.addr_lo = lower_32_bits(paddr);
++	cmd.addr_hi = upper_32_bits(paddr);
++	cmd.flag = HAL_REO_CMD_FLG_NEED_STATUS;
++
++	/* The 1K flag only extends the base flush to the bitmap descriptor,
++	 * not the separately cached extension descriptors. Flush those lines
++	 * individually and confirm their status before flushing the base.
+ 	 */
+-	cmd.flag = HAL_REO_CMD_FLG_NEED_STATUS |
+-		   HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS;
+-
+-	/* For all QoS TIDs (except NON_QOS), the driver allocates a maximum
+-	 * window size of 1024. In such cases, the driver can issue a single
+-	 * 1KB descriptor flush command instead of sending multiple 128-byte
+-	 * flush commands for each QoS TID, improving efficiency.
+-	 */
+-
+-	if (queue->tid != HAL_DESC_REO_NON_QOS_TID)
+-		cmd.flag |= HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC;
+-
+-	ret = ath12k_wifi7_dp_reo_cmd_send(ab, HAL_REO_CMD_FLUSH_CACHE,
+-					    &cmd, ath12k_dp_reo_flush_done, queue);
+-	return ret;
++	if (!queue->flush_offset) {
++		cmd.flag |= HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS;
++		if (queue->tid != HAL_DESC_REO_NON_QOS_TID)
++			cmd.flag |= HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC;
++	}
++
++	return ath12k_wifi7_dp_reo_cmd_send(ab, HAL_REO_CMD_FLUSH_CACHE,
++					   &cmd, ath12k_dp_reo_flush_done, queue);
+ }
+ 
+ int ath12k_wifi7_dp_rx_assign_reoq(struct ath12k_base *ab, struct ath12k_dp_rx_tid *rx_tid,
