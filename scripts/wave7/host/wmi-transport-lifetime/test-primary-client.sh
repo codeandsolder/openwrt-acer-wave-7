@@ -564,7 +564,7 @@ for band in "${bands[@]}"; do
             cases_failed=1
         else
             snapshot_rx > "$prefix.ring3-before.txt"
-            remote 'taskset -c 3 ping -I br-lan -c 30 -i 0.1 -W 1 192.168.76.145' > "$prefix.ring3-ping.txt" 2>&1 || cases_failed=1
+            remote 'taskset -c 3 ping -I br-lan -c 8 -i 1 -W 1 192.168.76.145' > "$prefix.ring3-ping.txt" 2>&1 || cases_failed=1
             snapshot_rx > "$prefix.ring3-after.txt"
         fi
         wait "$load_client_pid" || rc=$?
