@@ -297,6 +297,87 @@ def token_windows(text, windows):
         })
     return {"unmatched_free": unmatched_free, "windows": result}
 
+def startup_tx_windows(text, token_report):
+    """Report contiguous nonempty firmware-token periods after authorization.
+
+    A period is based on actual outstanding descriptors, not a latency
+    threshold or assumed correspondence between an absence event and RF TX.
+    Include both sampled and ordinary data, exclude preauthorization EAPOL.
+    Follow periods starting within the existing first-8s analysis window
+    until they drain or authorization ends.
+    """
+    absence = []
+    for line in text.splitlines():
+        m = LINE.search(line)
+        if m and m[2] == "mt7925_lab_absence":
+            fields = dict(FIELD.findall(m[3]))
+            absence.append(dict(time=float(m[1]), **fields))
+    absence.sort(key=lambda e: e["time"])
+    results = []
+    for window in token_report["windows"]:
+        start, stop = window["authorized_at"], window["deauthorized_at"]
+        horizon = min(start + 8, stop)
+        events = []
+        for i, d in enumerate(window["descriptors"]):
+            if int(d["protocol"], 16) not in PROTOCOLS:
+                continue
+            events.append((d["submitted_at"], 0, i, d))
+            if "return" in d and d["return"]["time"] < stop:
+                events.append((d["return"]["time"], 1, i, d))
+        pending = set()
+        episodes = []
+        current = None
+        for time, phase, i, d in sorted(events, key=lambda e: e[:3]):
+            if phase == 0:
+                if not pending:
+                    if time >= horizon:
+                        break
+                    current = {"start": time, "first_return": None,
+                               "submitted": 0, "returned": 0, "peak_pending": 0,
+                               "sampled": 0, "ordinary": 0,
+                               "unknown_status_request": 0, "protocols": Counter(),
+                               "bands": Counter(), "zero_attempts": 0}
+                require(current is not None, "missing startup episode")
+                pending.add(i)
+                current["submitted"] += 1
+                current["peak_pending"] = max(current["peak_pending"], len(pending))
+                current["protocols"][PROTOCOLS[int(d["protocol"], 16)]] += 1
+                current["bands"][d["band"]] += 1
+                if "d5" not in d:
+                    current["unknown_status_request"] += 1
+                elif int(d["d5"], 16) & (1 << 10):  # MT_TXD5_TX_STATUS_HOST
+                    current["sampled"] += 1
+                else:
+                    current["ordinary"] += 1
+            else:
+                require(i in pending and current is not None, "startup token return without submit")
+                pending.remove(i)
+                if current["first_return"] is None:
+                    current["first_return"] = time
+                    current["pending_at_first_return"] = len(pending) + 1
+                current["returned"] += 1
+                current["zero_attempts"] += d["return"]["header_count"] == 0
+                if not pending:
+                    current["end"] = time
+                    current["right_censored"] = False
+                    episodes.append(current)
+                    current = None
+        if current is not None:
+            current["end"] = stop
+            current["right_censored"] = True
+            episodes.append(current)
+        for e in episodes:
+            e["duration_ms"] = round((e["end"] - e["start"]) * 1000, 3)
+            e["first_return_ms"] = (None if e["first_return"] is None else
+                                    round((e["first_return"] - e["start"]) * 1000, 3))
+            e["drain_ms"] = (None if e["first_return"] is None or e["right_censored"] else
+                             round((e["end"] - e["first_return"]) * 1000, 3))
+            e["absence_during"] = [a for a in absence if e["start"] <= a["time"] <= e["end"]]
+        results.append({"authorized_at": start, "analysis_horizon": horizon,
+                        "episodes": episodes})
+    return results
+
+
 def control_port_windows(text, windows):
     """Report PAE descriptor completion relative to host authorization.
 
@@ -1005,6 +1086,27 @@ def selftest():
     assert txs[1]["frames"][0]["privilege_witness"] is None
     assert teardown_tx_windows(teardown, grant.replace("dbdc=1", "dbdc=0"),
                                result)["windows"][0]["frames"][0]["privilege_witness"] is None
+    # Contiguous token occupancy must include ordinary and sampled IP
+    # packets, without inventing a firmware scheduling cause.
+    def ip_desc(t, end, protocol, d5):
+        row = dict(submitted_at=t, protocol=protocol, band="1", d5=d5)
+        if end is not None:
+            row["return"] = dict(time=end, header_count=1)
+        return row
+    report = {"windows": [{"authorized_at": 10, "deauthorized_at": 20,
+                          "descriptors": [ip_desc(10.2, 14.2, "0x0800", "00000403"),
+                                          ip_desc(11.0, 14.3, "0x86dd", "00000001"),
+                                          ip_desc(14.5, 14.51, "0x0806", "00000001"),
+                                          ip_desc(17.9, None, "0x0800", "00000001"),
+                                          ip_desc(10.1, 10.11, "0x888e", "00000403")]}]}
+    early = startup_tx_windows(line(14.19, "mt7925_lab_absence",
+                                   "bss=1 absent=0 quota=0"), report)[0]["episodes"]
+    assert len(early) == 3 and early[0]["first_return_ms"] == 4000
+    assert early[0]["peak_pending"] == early[0]["pending_at_first_return"] == 2
+    assert early[0]["sampled"] == early[0]["ordinary"] == 1
+    assert early[0]["drain_ms"] == 100 and early[0]["absence_during"][0]["bss"] == "1"
+    assert early[1]["duration_ms"] == 10 and early[2]["right_censored"]
+    assert early[2]["drain_ms"] is None and early[2]["returned"] == 0
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -1049,5 +1151,6 @@ if __name__ == "__main__":
                 result["mld_transitions"] = mld_transitions(result["mld_records"])
             if side == "client" and "mt7925_lab_data_txd:" in text:
                 result["data_tokens"] = token_windows(text, result[side])
+                result["startup_tx"] = startup_tx_windows(text, result["data_tokens"])
                 result["control_port"] = control_port_windows(text, result[side])
         print(json.dumps(result, indent=2))
