@@ -1,0 +1,110 @@
+Subject: [PATCH] wifi: ath12k: expose read-only AHB SRNG pointer state
+
+Report the configured physical ring, hardware head/tail, DMA shadow,
+and software pointer under the existing ring lock. Restrict this
+file to active AHB devices and do not advance or acknowledge rings.
+
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -4,7 +4,10 @@
+  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+  */
+ 
++#include <linux/seq_file.h>
++
+ #include "core.h"
++#include "hif.h"
+ #include "dp_tx.h"
+ #include "debug.h"
+ #include "qdss.h"
+@@ -1213,6 +1216,78 @@
+ 	.llseek = default_llseek,
+ };
+ 
++/* Read producer/consumer indices without advancing a ring. This is useful
++ * for distinguishing an absent completion from an unserviced interrupt.
++ */
++static void ath12k_debugfs_show_srng(struct seq_file *s,
++				    struct ath12k_base *ab,
++				    const char *name, int idx, u8 ring_id)
++{
++	struct hal_srng *ring = &ab->hal.srng_list[ring_id];
++	u32 sw, shadow, cached, hp, tp, reg;
++
++	if (!ring->initialized)
++		return;
++
++	reg = ring->hwreg_base[HAL_SRNG_REG_GRP_R2];
++	spin_lock_bh(&ring->lock);
++	if (ring->ring_dir == HAL_SRNG_DIR_SRC) {
++		sw = ring->u.src_ring.hp;
++		shadow = READ_ONCE(*ring->u.src_ring.tp_addr);
++		cached = ring->u.src_ring.cached_tp;
++	} else {
++		sw = ring->u.dst_ring.tp;
++		shadow = READ_ONCE(*ring->u.dst_ring.hp_addr);
++		cached = ring->u.dst_ring.cached_hp;
++	}
++	hp = ath12k_hif_read32(ab, reg);
++	tp = ath12k_hif_read32(ab, reg + sizeof(u32));
++	spin_unlock_bh(&ring->lock);
++
++	seq_printf(s, "%s%d id=%u hp=%u tp=%u sw=%u shadow=%u cached=%u entry=%u size=%u\n",
++		   name, idx, ring_id, hp, tp, sw, shadow, cached,
++		   ring->entry_size, ring->ring_size);
++}
++
++static int ath12k_debugfs_srng_state_show(struct seq_file *s, void *unused)
++{
++	struct ath12k_base *ab = s->private;
++	struct ath12k_dp *dp;
++	const struct ath12k_hal_tcl_to_wbm_rbm_map *map;
++	int i;
++
++	if (!mutex_trylock(&ab->core_lock))
++		return -EBUSY;
++	if (!test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags) || !ab->dp) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODEV;
++	}
++
++	dp = ath12k_ab_to_dp(ab);
++	map = ab->hal.tcl_to_wbm_rbm_map;
++	seq_printf(s, "rx_release=%u rx_rbm=%u rx_buffer_rbm=%u\n",
++		   ab->hal.hal_params->rx_rel_ring_num,
++		   ath12k_hal_rx_rel_rbm(ab->hal.hal_params),
++		   ab->hal.hal_params->rx_buf_rbm);
++	for (i = 0; i < ab->hw_params->max_tx_ring; i++) {
++		seq_printf(s, "map tcl=%d wbm=%u rbm=%u\n",
++			   i, map[i].wbm_ring_num, map[i].rbm_id);
++		ath12k_debugfs_show_srng(s, ab, "TCL", i,
++				       dp->tx_ring[i].tcl_data_ring.ring_id);
++		ath12k_debugfs_show_srng(s, ab, "WBM", map[i].wbm_ring_num,
++				       dp->tx_ring[i].tcl_comp_ring.ring_id);
++	}
++	ath12k_debugfs_show_srng(s, ab, "WBM_RX",
++			       ab->hal.hal_params->rx_rel_ring_num,
++			       dp->rx_rel_ring.ring_id);
++	mutex_unlock(&ab->core_lock);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_srng_state);
++
+ void ath12k_debugfs_pdev_create(struct ath12k_base *ab)
+ {
+ 	debugfs_create_file("simulate_fw_crash", 0600, ab->debugfs_soc, ab,
+@@ -1220,6 +1295,11 @@
+ 
+ 	debugfs_create_file("device_dp_stats", 0400, ab->debugfs_soc, ab,
+ 			    &fops_device_dp_stats);
++
++	/* AHB register access is direct; avoid waking windowed PCI devices. */
++	if (ab->hif.bus == ATH12K_BUS_AHB)
++		debugfs_create_file("srng_state", 0400, ab->debugfs_soc, ab,
++				    &ath12k_debugfs_srng_state_fops);
+ }
+ 
+ void ath12k_debugfs_soc_create(struct ath12k_base *ab)
