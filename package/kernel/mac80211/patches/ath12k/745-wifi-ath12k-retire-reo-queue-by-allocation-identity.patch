@@ -1,0 +1,436 @@
+--- a/drivers/net/wireless/ath/ath12k/dp_peer.h
++++ b/drivers/net/wireless/ath/ath12k/dp_peer.h
+@@ -142,7 +142,6 @@
+ 	struct ieee80211_key_conf *keys[WMI_MAX_KEY_INDEX + 1];
+ 	unsigned long link_peers_map;
+ 	struct ath12k_dp_link_peer __rcu *link_peers[ATH12K_NUM_MAX_LINKS];
+-	struct ath12k_reoq_buf reoq_bufs[IEEE80211_NUM_TIDS + 1];
+ 	struct ath12k_dp_rx_tid rx_tid[IEEE80211_NUM_TIDS + 1];
+ 
+ 	bool use_4addr;
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -416,12 +416,12 @@
+ 				      struct ath12k_dp_rx_tid *rx_tid,
+ 				      u32 ba_win_sz, u16 ssn,
+ 				      bool update_ssn);
+-	int (*rx_assign_reoq)(struct ath12k_base *ab, struct ath12k_dp_peer *dp_peer,
+-			      struct ath12k_dp_rx_tid *rx_tid,
++	int (*rx_assign_reoq)(struct ath12k_base *ab, struct ath12k_dp_rx_tid *rx_tid,
+ 			      u16 ssn, enum hal_pn_type pn_type);
+ 	void (*peer_rx_tid_qref_setup)(struct ath12k_base *ab, u16 peer_id, u16 tid,
+ 				       dma_addr_t paddr);
+-	void (*peer_rx_tid_qref_reset)(struct ath12k_base *ab, u16 peer_id, u16 tid);
++	void (*peer_rx_tid_qref_reset)(struct ath12k_base *ab, u16 peer_id, u16 tid,
++				       dma_addr_t expected);
+ 	int (*rx_tid_delete_handler)(struct ath12k_base *ab,
+ 				     struct ath12k_dp_rx_tid_rxq *rx_tid);
+ };
+@@ -622,11 +622,10 @@
+ }
+ 
+ static inline int ath12k_dp_arch_rx_assign_reoq(struct ath12k_dp *dp,
+-						struct ath12k_dp_peer *dp_peer,
+ 						struct ath12k_dp_rx_tid *rx_tid,
+ 						u16 ssn, enum hal_pn_type pn_type)
+ {
+-	return dp->ops->rx_assign_reoq(dp->ab, dp_peer, rx_tid, ssn, pn_type);
++	return dp->ops->rx_assign_reoq(dp->ab, rx_tid, ssn, pn_type);
+ }
+ 
+ static inline void ath12k_dp_arch_peer_rx_tid_qref_setup(struct ath12k_dp *dp,
+@@ -637,9 +636,10 @@
+ }
+ 
+ static inline void ath12k_dp_arch_peer_rx_tid_qref_reset(struct ath12k_dp *dp,
+-							 u16 peer_id, u16 tid)
+-{
+-	dp->ops->peer_rx_tid_qref_reset(dp->ab, peer_id, tid);
++							 u16 peer_id, u16 tid,
++							 dma_addr_t expected)
++{
++	dp->ops->peer_rx_tid_qref_reset(dp->ab, peer_id, tid, expected);
+ }
+ 
+ static inline
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.h
+@@ -26,8 +26,7 @@
+ void ath12k_wifi7_dp_setup_pn_check_reo_cmd(struct ath12k_hal_reo_cmd *cmd,
+ 					    struct ath12k_dp_rx_tid *rx_tid,
+ 					    u32 cipher, enum set_key_cmd key_cmd);
+-int ath12k_wifi7_dp_rx_assign_reoq(struct ath12k_base *ab, struct ath12k_dp_peer *dp_peer,
+-				   struct ath12k_dp_rx_tid *rx_tid,
++int ath12k_wifi7_dp_rx_assign_reoq(struct ath12k_base *ab, struct ath12k_dp_rx_tid *rx_tid,
+ 				   u16 ssn, enum hal_pn_type pn_type);
+ int ath12k_wifi7_dp_rx_link_desc_return(struct ath12k_dp *dp,
+ 					struct ath12k_buffer_addr *buf_addr_info,
+@@ -51,7 +50,8 @@
+ 					struct ath12k_dp_rx_tid *rx_tid,
+ 					u32 ba_win_sz, u16 ssn,
+ 					bool update_ssn);
+-void ath12k_wifi7_peer_rx_tid_qref_reset(struct ath12k_base *ab, u16 peer_id, u16 tid);
++void ath12k_wifi7_peer_rx_tid_qref_reset(struct ath12k_base *ab, u16 peer_id, u16 tid,
++					 dma_addr_t expected);
+ bool
+ ath12k_wifi7_dp_rxdesc_mpdu_valid(struct ath12k_base *ab,
+ 				  struct hal_rx_desc *rx_desc);
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -35,62 +35,62 @@
+ 	}
+ }
+ 
++static struct ath12k_reo_queue_ref *
++ath12k_wifi7_peer_rx_tid_qref(struct ath12k_base *ab, u16 peer_id, u16 tid)
++{
++	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
++	struct ath12k_reo_q_addr_lut *lut;
++	bool ml_peer = peer_id & ATH12K_PEER_ML_ID_VALID;
++
++	lockdep_assert_held(&dp->dp_lock);
++	if (!ab->hw_params->reoq_lut_support)
++		return NULL;
++
++	peer_id &= ~ATH12K_PEER_ML_ID_VALID;
++	lut = ml_peer ? &dp->ml_reoq_lut : &dp->reoq_lut;
++	if (WARN_ON_ONCE(peer_id > DP_MAX_PEER_ID ||
++			 tid > IEEE80211_NUM_TIDS || !lut->vaddr))
++		return NULL;
++
++	return (struct ath12k_reo_queue_ref *)lut->vaddr +
++		peer_id * (IEEE80211_NUM_TIDS + 1) + tid;
++}
++
+ void ath12k_wifi7_peer_rx_tid_qref_setup(struct ath12k_base *ab, u16 peer_id, u16 tid,
+ 					 dma_addr_t paddr)
+ {
+-	struct ath12k_reo_queue_ref *qref;
+-	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+-	bool ml_peer = false;
+-
+-	if (!ab->hw_params->reoq_lut_support)
++	struct ath12k_reo_queue_ref *qref = ath12k_wifi7_peer_rx_tid_qref(ab, peer_id, tid);
++
++	if (!qref)
+ 		return;
+ 
+-	if (peer_id & ATH12K_PEER_ML_ID_VALID) {
+-		peer_id &= ~ATH12K_PEER_ML_ID_VALID;
+-		ml_peer = true;
+-	}
+-
+-	if (ml_peer)
+-		qref = (struct ath12k_reo_queue_ref *)dp->ml_reoq_lut.vaddr +
+-				(peer_id * (IEEE80211_NUM_TIDS + 1) + tid);
+-	else
+-		qref = (struct ath12k_reo_queue_ref *)dp->reoq_lut.vaddr +
+-				(peer_id * (IEEE80211_NUM_TIDS + 1) + tid);
+-
+-	qref->info0 = u32_encode_bits(lower_32_bits(paddr),
+-				      BUFFER_ADDR_INFO0_ADDR);
+-	qref->info1 = u32_encode_bits(upper_32_bits(paddr),
+-				      BUFFER_ADDR_INFO1_ADDR) |
++	qref->info0 = u32_encode_bits(lower_32_bits(paddr), BUFFER_ADDR_INFO0_ADDR);
++	qref->info1 = u32_encode_bits(upper_32_bits(paddr), BUFFER_ADDR_INFO1_ADDR) |
+ 		      u32_encode_bits(tid, DP_REO_QREF_NUM);
+ 
++	dma_wmb();
+ 	ath12k_hal_reo_shared_qaddr_cache_clear(ab);
+ }
+ 
+ void ath12k_wifi7_peer_rx_tid_qref_reset(struct ath12k_base *ab,
+-					 u16 peer_id, u16 tid)
+-{
+-	struct ath12k_reo_queue_ref *qref;
+-	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+-	bool ml_peer = false;
+-
+-	if (!ab->hw_params->reoq_lut_support)
++					 u16 peer_id, u16 tid, dma_addr_t expected)
++{
++	struct ath12k_reo_queue_ref *qref = ath12k_wifi7_peer_rx_tid_qref(ab, peer_id, tid);
++	u64 current_addr;
++
++	if (!qref)
+ 		return;
+ 
+-	if (peer_id & ATH12K_PEER_ML_ID_VALID) {
+-		peer_id &= ~ATH12K_PEER_ML_ID_VALID;
+-		ml_peer = true;
+-	}
+-
+-	if (ml_peer)
+-		qref = (struct ath12k_reo_queue_ref *)dp->ml_reoq_lut.vaddr +
+-				(peer_id * (IEEE80211_NUM_TIDS + 1) + tid);
+-	else
+-		qref = (struct ath12k_reo_queue_ref *)dp->reoq_lut.vaddr +
+-				(peer_id * (IEEE80211_NUM_TIDS + 1) + tid);
+-
+-	qref->info0 = u32_encode_bits(0, BUFFER_ADDR_INFO0_ADDR);
+-	qref->info1 = u32_encode_bits(0, BUFFER_ADDR_INFO1_ADDR) |
+-		      u32_encode_bits(tid, DP_REO_QREF_NUM);
++	/* A delayed retirement must not erase a replacement peer's queue. */
++	current_addr = ((u64)u32_get_bits(qref->info1, BUFFER_ADDR_INFO1_ADDR) << 32) |
++		  u32_get_bits(qref->info0, BUFFER_ADDR_INFO0_ADDR);
++	if (current_addr != expected)
++		return;
++
++	qref->info0 = 0;
++	qref->info1 = u32_encode_bits(tid, DP_REO_QREF_NUM);
++	dma_wmb();
++	ath12k_hal_reo_shared_qaddr_cache_clear(ab);
+ }
+ 
+ void ath12k_wifi7_dp_rx_peer_tid_delete(struct ath12k_base *ab,
+@@ -98,11 +98,15 @@
+ {
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+ 
+-	if (!(peer->rx_tid_active_bitmask & (1 << tid)))
++	if (tid > IEEE80211_NUM_TIDS || !peer->primary_link ||
++	    !(peer->rx_tid_active_bitmask & BIT(tid)))
+ 		return;
+ 
+-	ath12k_dp_mark_tid_as_inactive(dp, peer->peer_id, tid);
+-	ath12k_dp_rx_process_reo_cmd_update_rx_queue_list(dp);
++	if (ath12k_dp_mark_tid_as_inactive(dp, peer, tid))
++		ath12k_dp_rx_process_reo_cmd_update_rx_queue_list(dp);
++	else
++		ath12k_warn(ab, "missing REO retirement owner for peer %d tid %u\n",
++			    peer->peer_id, tid);
+ }
+ 
+ int ath12k_wifi7_dp_rx_link_desc_return(struct ath12k_dp *dp,
+@@ -303,8 +307,7 @@
+ 	return ret;
+ }
+ 
+-int ath12k_wifi7_dp_rx_assign_reoq(struct ath12k_base *ab, struct ath12k_dp_peer *dp_peer,
+-				   struct ath12k_dp_rx_tid *rx_tid,
++int ath12k_wifi7_dp_rx_assign_reoq(struct ath12k_base *ab, struct ath12k_dp_rx_tid *rx_tid,
+ 				   u16 ssn, enum hal_pn_type pn_type)
+ {
+ 	u32 ba_win_sz = rx_tid->ba_win_sz;
+@@ -313,9 +316,8 @@
+ 	dma_addr_t paddr_aligned;
+ 	u8 tid = rx_tid->tid;
+ 	u32 hw_desc_sz;
+-	int ret;
+-
+-	buf = &dp_peer->reoq_bufs[tid];
++
++	buf = &rx_tid->qbuf;
+ 	if (!buf->vaddr) {
+ 		/* TODO: Optimize the memory allocation for qos tid based on
+ 		 * the actual BA window size in REO tid update path.
+@@ -337,18 +339,15 @@
+ 
+ 		paddr_aligned = dma_map_single(ab->dev, vaddr_aligned, hw_desc_sz,
+ 					       DMA_BIDIRECTIONAL);
+-		ret = dma_mapping_error(ab->dev, paddr_aligned);
+-		if (ret) {
++		if (dma_mapping_error(ab->dev, paddr_aligned)) {
+ 			kfree(vaddr);
+-			return ret;
++			return -EIO;
+ 		}
+ 
+ 		buf->vaddr = vaddr;
+ 		buf->paddr_aligned = paddr_aligned;
+ 		buf->size = hw_desc_sz;
+ 	}
+-
+-	rx_tid->qbuf = *buf;
+ 
+ 	return 0;
+ }
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -424,6 +424,7 @@
+ 	struct ath12k_base *ab = dp->ab;
+ 	struct dp_reo_update_rx_queue_elem *elem, *tmp;
+ 
++	lockdep_assert_held(&dp->dp_lock);
+ 	spin_lock_bh(&dp->reo_rxq_flush_lock);
+ 
+ 	list_for_each_entry_safe(elem, tmp, &dp->reo_cmd_update_rx_queue_list, list) {
+@@ -436,10 +437,8 @@
+ 		ath12k_dp_arch_peer_rx_tid_qref_reset(dp,
+ 						      elem->is_ml_peer ?
+ 						      elem->ml_peer_id : elem->peer_id,
+-						      elem->rx_tid.tid);
+-
+-		if (ab->hw_params->reoq_lut_support)
+-			ath12k_hal_reo_shared_qaddr_cache_clear(ab);
++						      elem->rx_tid.tid,
++						      elem->rx_tid.qbuf.paddr_aligned);
+ 
+ 		list_del(&elem->list);
+ 		kfree(elem);
+@@ -522,22 +521,40 @@
+ 	return ath12k_dp_arch_rx_tid_delete_handler(dp, rx_tid);
+ }
+ 
+-void ath12k_dp_mark_tid_as_inactive(struct ath12k_dp *dp, int peer_id, u8 tid)
++bool ath12k_dp_mark_tid_as_inactive(struct ath12k_dp *dp,
++				   struct ath12k_dp_link_peer *peer, u8 tid)
+ {
+ 	struct dp_reo_update_rx_queue_elem *elem;
+-	struct ath12k_dp_rx_tid_rxq *rx_tid;
++	struct ath12k_dp_rx_tid *live;
++	bool found = false;
++
++	lockdep_assert_held(&dp->dp_lock);
++	if (!peer->primary_link || !peer->dp_peer || tid > IEEE80211_NUM_TIDS)
++		return false;
++
++	live = &peer->dp_peer->rx_tid[tid];
++	if (!live->qbuf.vaddr)
++		return false;
+ 
+ 	spin_lock_bh(&dp->reo_rxq_flush_lock);
+ 	list_for_each_entry(elem, &dp->reo_cmd_update_rx_queue_list, list) {
+-		if (elem->peer_id == peer_id) {
+-			rx_tid = &elem->rx_tid;
+-			if (rx_tid->tid == tid) {
+-				rx_tid->active = false;
+-				break;
+-			}
+-		}
++		if (!elem->rx_tid.active || elem->peer_id != peer->peer_id ||
++		    elem->rx_tid.tid != tid ||
++		    elem->rx_tid.qbuf.vaddr != live->qbuf.vaddr ||
++		    elem->rx_tid.qbuf.paddr_aligned != live->qbuf.paddr_aligned)
++			continue;
++
++		/* Transfer ownership to the retirement record. The next setup
++		 * must allocate a different queue even if the peer object survives.
++		 */
++		elem->rx_tid.active = false;
++		live->qbuf = (struct ath12k_reoq_buf){};
++		peer->rx_tid_active_bitmask &= ~BIT(tid);
++		found = true;
++		break;
+ 	}
+ 	spin_unlock_bh(&dp->reo_rxq_flush_lock);
++	return found;
+ }
+ EXPORT_SYMBOL(ath12k_dp_mark_tid_as_inactive);
+ 
+@@ -565,33 +582,21 @@
+ 	}
+ }
+ 
+-static int ath12k_dp_prepare_reo_update_elem(struct ath12k_dp *dp,
+-					     struct ath12k_dp_link_peer *peer,
+-					     struct ath12k_dp_rx_tid *rx_tid)
+-{
+-	struct dp_reo_update_rx_queue_elem *elem;
+-
++static void ath12k_dp_register_reo_update_elem(struct ath12k_dp *dp,
++					      struct ath12k_dp_link_peer *peer,
++					      struct ath12k_dp_rx_tid *rx_tid,
++					      struct dp_reo_update_rx_queue_elem *elem)
++{
+ 	lockdep_assert_held(&dp->dp_lock);
+-
+-	if (!peer->primary_link)
+-		return 0;
+-
+-	elem = kzalloc_obj(*elem, GFP_ATOMIC);
+-	if (!elem)
+-		return -ENOMEM;
+ 
+ 	elem->peer_id = peer->peer_id;
+ 	elem->is_ml_peer = peer->mlo;
+ 	elem->ml_peer_id = peer->ml_id;
+-
+-	ath12k_dp_init_rx_tid_rxq(&elem->rx_tid, rx_tid,
+-				  (peer->rx_tid_active_bitmask & (1 << rx_tid->tid)));
++	ath12k_dp_init_rx_tid_rxq(&elem->rx_tid, rx_tid, true);
+ 
+ 	spin_lock_bh(&dp->reo_rxq_flush_lock);
+ 	list_add_tail(&elem->list, &dp->reo_cmd_update_rx_queue_list);
+ 	spin_unlock_bh(&dp->reo_rxq_flush_lock);
+-
+-	return 0;
+ }
+ 
+ int ath12k_dp_rx_peer_tid_setup(struct ath12k *ar, const u8 *peer_mac, int vdev_id,
+@@ -602,6 +607,7 @@
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+ 	struct ath12k_dp_link_peer *peer;
+ 	struct ath12k_dp_rx_tid *rx_tid;
++	struct dp_reo_update_rx_queue_elem *elem = NULL;
+ 	dma_addr_t paddr_aligned;
+ 	int ret;
+ 
+@@ -627,7 +633,11 @@
+ 		return -EINVAL;
+ 	}
+ 
+-	if (peer->peer_id > DP_MAX_PEER_ID || tid > IEEE80211_NUM_TIDS) {
++	if (peer->peer_id < 0 || peer->peer_id > DP_MAX_PEER_ID ||
++	    tid > IEEE80211_NUM_TIDS ||
++	    (ab->hw_params->reoq_lut_support && peer->mlo &&
++	     (!(peer->ml_id & ATH12K_PEER_ML_ID_VALID) ||
++	      (peer->ml_id & ~ATH12K_PEER_ML_ID_VALID) > DP_MAX_PEER_ID))) {
+ 		ath12k_warn(ab, "peer id of peer %d or tid %d doesn't allow reoq setup\n",
+ 			    peer->peer_id, tid);
+ 		spin_unlock_bh(&dp->dp_lock);
+@@ -665,28 +675,28 @@
+ 
+ 	rx_tid->ba_win_sz = ba_win_sz;
+ 
+-	ret = ath12k_dp_arch_rx_assign_reoq(dp, peer->dp_peer, rx_tid, ssn, pn_type);
++	/* Reserve retirement metadata before allocating or publishing the queue.
++	 * On allocation failure, leave any existing shared queue untouched.
++	 */
++	if (peer->primary_link) {
++		elem = kzalloc_obj(*elem, GFP_ATOMIC);
++		if (!elem) {
++			spin_unlock_bh(&dp->dp_lock);
++			return -ENOMEM;
++		}
++	}
++
++	ret = ath12k_dp_arch_rx_assign_reoq(dp, rx_tid, ssn, pn_type);
+ 	if (ret) {
++		kfree(elem);
+ 		spin_unlock_bh(&dp->dp_lock);
+ 		ath12k_warn(ab, "failed to assign reoq buf for rx tid %u\n", tid);
+ 		return ret;
+ 	}
+ 
+-	peer->rx_tid_active_bitmask |= (1 << tid);
+-
+-	/* Pre-allocate the update_rxq_list for the corresponding tid
+-	 * This will be used during the tid delete. The reason we are not
+-	 * allocating during tid delete is that, if any alloc fail in update_rxq_list
+-	 * we may not be able to delete the tid vaddr/paddr and may lead to leak
+-	 */
+-	ret = ath12k_dp_prepare_reo_update_elem(dp, peer, rx_tid);
+-	if (ret) {
+-		ath12k_warn(ab, "failed to alloc update_rxq_list for rx tid %u\n", tid);
+-		ath12k_dp_rx_tid_cleanup(ab, &rx_tid->qbuf);
+-		peer->rx_tid_active_bitmask &= ~BIT(tid);
+-		spin_unlock_bh(&dp->dp_lock);
+-		return ret;
+-	}
++	peer->rx_tid_active_bitmask |= BIT(tid);
++	if (elem)
++		ath12k_dp_register_reo_update_elem(dp, peer, rx_tid, elem);
+ 
+ 	paddr_aligned = rx_tid->qbuf.paddr_aligned;
+ 	if (ab->hw_params->reoq_lut_support) {
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.h
+@@ -268,5 +268,6 @@
+ void ath12k_dp_init_rx_tid_rxq(struct ath12k_dp_rx_tid_rxq *rx_tid_rxq,
+ 			       struct ath12k_dp_rx_tid *rx_tid,
+ 			       bool active);
+-void ath12k_dp_mark_tid_as_inactive(struct ath12k_dp *dp, int peer_id, u8 tid);
++bool ath12k_dp_mark_tid_as_inactive(struct ath12k_dp *dp,
++				   struct ath12k_dp_link_peer *peer, u8 tid);
+ #endif /* ATH12K_DP_RX_H */
