@@ -176,7 +176,26 @@ ready(){
     done
     systemctl is-active --quiet wave7-lab-upstream-guard8.service || return 1
 }
+# Non-login SSH and remote executor sessions need not export the systemd
+# user bus environment. Resolve the real login manager runtime directory;
+# scope the canonical D-Bus address to these commands only.
+resolve_user_manager(){
+    user_runtime=$(loginctl show-user "$(id -u)" -p RuntimePath --value) ||
+        fail 'cannot resolve user manager runtime directory'
+    [[ $user_runtime == "/run/user/$(id -u)" && -O $user_runtime &&
+       -S $user_runtime/bus && -O $user_runtime/bus ]] ||
+        fail 'invalid user manager bus'
+    user_systemctl show --property=Version --value >/dev/null ||
+        fail 'cannot contact user manager'
+}
+user_systemctl(){
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime/bus" systemctl --user "$@"
+}
+user_systemd_run(){
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime/bus" systemd-run --user "$@"
+}
 common_preflight(){
+    local observers
     verify_artifacts
     [[ $(id -un) == jan && -r $key ]] || fail 'Asus identity'
     physical_peer || fail 'lab physical peer'
@@ -186,10 +205,12 @@ common_preflight(){
     "$attestor" --selftest
     "$upstream" --check
     systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream inactive'
+    resolve_user_manager
     for service in wave7-q6-devcoredump-capture wave7-q6-noc-kmsg wave7-q6-noc-events; do
-        systemctl --user is-active --quiet "$service.service" || fail "$service inactive"
+        user_systemctl is-active --quiet "$service.service" || fail "$service inactive"
     done
-    [[ -z $(systemctl --user --no-pager --no-legend list-units --state=active,activating 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*' 'wave7-qdss-supervisor-*') ]] || fail 'another active observer'
+    observers=$(user_systemctl --no-pager --no-legend list-units --state=active,activating 'wave7-openwrt-watch-*' 'wave7-fallback-watch-*' 'wave7-secondary-ap-supervisor-*' 'wave7-integrated-supervisor-*' 'wave7-autonomous-observer-*' 'wave7-qdss-supervisor-*') || fail 'cannot enumerate user observers'
+    [[ -z $observers ]] || fail 'another active observer'
     (cd /home/jan/firmware/wave7/captures/20261125-vendor-fallback && sha256sum -c SHA256SUMS)
 }
 case "${1:-}" in
@@ -224,20 +245,20 @@ case "${1:-}" in
     cleanup_native(){
         local rc=$?
         if (( rc != 0 && ! flash_started )); then
-            systemctl --user stop "$unit.service" "$fallback.service" >/dev/null 2>&1 || :
+            user_systemctl stop "$unit.service" "$fallback.service" >/dev/null 2>&1 || :
             echo ABORTED_PRE_FLASH > "$out/status"
         fi
     }
     trap cleanup_native EXIT
-    systemd-run --user --quiet --unit="$unit" --property=RuntimeMaxSec=1500 -- "$(realpath "$0")" --watch "$base" "$parent" "$out"
-    systemd-run --user --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
+    user_systemd_run --quiet --unit="$unit" --property=RuntimeMaxSec=1500 -- "$(realpath "$0")" --watch "$base" "$parent" "$out"
+    user_systemd_run --quiet --unit="$fallback" --property=RuntimeMaxSec=1500 -- /home/jan/scripts/wave7/wave7-fallback-watch.sh "$tag"
     for _ in {1..15}; do
         [[ -r $out/status && $(cat "$out/status") == ARMED ]] && break
         sleep 1
     done
     [[ -r $out/status && $(cat "$out/status") == ARMED ]] || fail 'observer not armed'
-    systemctl --user is-active --quiet "$unit.service" || fail 'observer inactive'
-    systemctl --user is-active --quiet "$fallback.service" || fail 'fallback inactive'
+    user_systemctl is-active --quiet "$unit.service" || fail 'observer inactive'
+    user_systemctl is-active --quiet "$fallback.service" || fail 'fallback inactive'
     [[ $(remote 'cat /proc/sys/kernel/random/boot_id') == "$source_boot" ]] || fail 'source rebooted'
     flash_started=1
     echo FLASHING_NOW > "$out/flash.log"
@@ -248,9 +269,17 @@ case "${1:-}" in
         "root@$router" "/sbin/sysupgrade -n '$dest'" >> "$out/flash.log" 2>&1 || :
     grep -Fq 'Commencing upgrade. Closing all shell sessions.' "$out/flash.log" || { flash_started=0; fail 'native upgrade did not start'; }
     echo "RUN_DIR=$out"
-    while systemctl --user is-active --quiet "$unit.service"; do sleep 5; done
+    while :; do
+        observer_state=$(user_systemctl show "$unit.service" -p ActiveState --value) ||
+            fail 'lost user manager while observing flash'
+        case "$observer_state" in
+            active|activating|deactivating|reloading) sleep 5 ;;
+            inactive|failed) break ;;
+            *) fail "unexpected observer state: $observer_state" ;;
+        esac
+    done
     if [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]; then
-        systemctl --user stop "$fallback.service"
+        user_systemctl stop "$fallback.service"
     fi
     cat "$out/status" "$out/observer.log"
     [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
