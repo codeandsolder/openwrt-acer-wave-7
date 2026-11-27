@@ -57,6 +57,8 @@ rg -q 'ROLE_STAGED mode=static' "$work/static.result"
 rg -q "option proto 'dhcp'" "$work/dhcp/etc/config/network"
 rg -q "list ipaddr '192.168.76.1/24'" "$work/static/etc/config/network"
 for d in "$work/dhcp" "$work/static"; do
+  radio_pin=$(cat "$(dirname "$stage")/../../radio-release.txt")
+  rg -Fxq "trial_radio_release=$radio_pin" "$d/etc/wave7-role-profile"
   rg -q "option disabled '1'" "$d/etc/config/dhcp"
   rg -Fq "option piodir '/tmp/odhcpd-piodir'" "$d/etc/config/dhcp"
   rg -Fq "option hostsdir '/tmp/hosts'" "$d/etc/config/dhcp"

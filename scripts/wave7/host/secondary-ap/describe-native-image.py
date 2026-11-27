@@ -12,7 +12,6 @@ import tempfile
 
 
 MODULES = ('ath12k.ko', 'ath12k_wifi7.ko', 'mac80211.ko', 'cfg80211.ko')
-RADIO_RELEASE = 'WLAN.WBE.1.4-01734-QCAHKSWPL_SILICONZ-1.162738.2.173996.1'
 POLICY = ('etc/wave7-role-profile', 'etc/openwrt_version', 'etc/config/network',
           'etc/config/dhcp', 'etc/config/dropbear', 'etc/config/wireless',
           'etc/config/firewall', 'etc/dropbear/authorized_keys', 'etc/shadow',
@@ -49,6 +48,8 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch):
     require(digest(image) == sha256, 'image SHA256 mismatch')
     tools = host_tree / 'staging_dir/host/bin'
     repo = Path(__file__).resolve().parents[4]
+    radio_release = (repo / 'scripts/wave7/radio-release.txt').read_text().strip()
+    require(re.fullmatch(r'[a-zA-Z0-9_.-]+', radio_release), 'radio release pin')
     with tempfile.TemporaryDirectory(prefix='native-manifest-', dir=scratch) as work:
         t = Path(work)
         with tarfile.open(image) as tf:
@@ -78,6 +79,7 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch):
             require(f.is_file() and not f.is_symlink(), f'missing policy {path}')
         profile = fields(root / 'etc/wave7-role-profile')
         require(profile['revision'] == revision and profile['builder_commit'] == builder, 'role profile identity')
+        require(profile['trial_radio_release'] == radio_release, 'role radio release pin')
         require(meta['wave7_parent_image_sha256'] == profile['base_image_sha256'], 'parent image identity')
         require((root / 'etc/openwrt_version').read_text().strip() == revision, 'root revision')
         for key, value in {'role': 'secondary-ap', 'mode': 'dhcp', 'dhcpv4_server': 'off',
@@ -106,7 +108,7 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch):
         require(not any(p.is_symlink() for p in radio.rglob('*')), 'radio symlink')
         return dict(image=image.name, image_sha256=sha256, revision=revision, kernel=kernel,
                     builder_commit=builder, fit_sha256=digest(t / 'kernel'), rootfs_sha256=digest(t / 'root'),
-                    radio_release=RADIO_RELEASE, radio_sha256=actual_radio, module_sha256=module_hashes,
+                    radio_release=radio_release, radio_sha256=actual_radio, module_sha256=module_hashes,
                     policy_sha256={p: digest(root / p) for p in POLICY})
 
 
