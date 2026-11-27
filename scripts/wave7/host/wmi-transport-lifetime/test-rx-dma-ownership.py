@@ -36,21 +36,28 @@ def main():
     assert reinject.index('ATH12K_SKB_RXCB(defrag_skb)->paddr = buf_paddr;') < reinject.index('goto err_unmap_dma;')
     assert 'err_unmap_dma:\n\tath12k_dp_unmap_rx_buf(dp, defrag_skb);' in reinject
     code = r'''#include <assert.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 ''' + maximum + r'''
-struct dp_rxdma_ring { unsigned id; };
+struct page_pool { unsigned id; };
+struct page { unsigned id; };
+struct dp_rxdma_ring { unsigned id; struct page_pool *page_pool; };
 struct list_head { unsigned id; unsigned count; };
 struct ath12k_dp { unsigned id; void *dev; struct dp_rxdma_ring rx_refill_buf_ring; };
 struct ath12k_dp_hw_group { struct ath12k_dp devices[ATH12K_MAX_DEVICES]; };
-struct ath12k_skb_rxcb { uintptr_t paddr; unsigned is_frag; };
-struct sk_buff { unsigned len, tailroom; struct ath12k_skb_rxcb cb; };
+struct ath12k_skb_rxcb { uintptr_t paddr; unsigned is_frag; bool pool_mapped; };
+struct sk_buff { unsigned len, tailroom; struct ath12k_skb_rxcb cb; struct page *head; };
+#define DP_RX_BUFFER_SIZE 2048
+#define virt_to_head_page(x) (x)
 #define ATH12K_SKB_RXCB(skb) (&(skb)->cb)
 #define skb_tailroom(skb) ((skb)->tailroom)
 enum dma_data_direction { DMA_BIDIRECTIONAL, DMA_TO_DEVICE, DMA_FROM_DEVICE };
 static unsigned count[ATH12K_MAX_DEVICES];
-static unsigned unmaps;
+static unsigned unmaps, syncs;
+static void page_pool_dma_sync_for_cpu(struct page_pool *p, struct page *page, unsigned offset, unsigned size)
+{ assert(p && page && p->id == page->id && !offset && size == DP_RX_BUFFER_SIZE); ++syncs; }
 struct sk_buff_head { unsigned pending; };
 struct napi_struct { int dummy; };
 static unsigned purged, delivered;
@@ -112,11 +119,15 @@ static int finish_rx(struct ath12k_dp *dp, struct ath12k_dp_hw_group *dp_hw_grp,
 int main(void)
 {
     struct ath12k_dp_hw_group group = {0};
+    struct page_pool pools[ATH12K_MAX_DEVICES];
+    struct page pages[ATH12K_MAX_DEVICES];
     unsigned cases = 0;
     for (unsigned i = 0; i < ATH12K_MAX_DEVICES; ++i) {
         group.devices[i].id = i;
         group.devices[i].dev = &group.devices[i];
         group.devices[i].rx_refill_buf_ring.id = i;
+        pools[i].id = pages[i].id = i;
+        group.devices[i].rx_refill_buf_ring.page_pool = &pools[i];
     }
     /* Every owner/collector combination; inactive owners have no reaped buffers. */
     for (unsigned collector = 0; collector < ATH12K_MAX_DEVICES; ++collector) {
@@ -151,16 +162,21 @@ int main(void)
         }
         for (unsigned frag = 0; frag < 2; ++frag) {
             for (unsigned len = 0; len < 4096; len += 31) {
-                struct sk_buff skb = {len, 4096 - len, {0x12345000u + len, frag}};
+                struct sk_buff skb = {.len=len, .tailroom=4096-len, .cb={.paddr=0x12345000u+len,.is_frag=frag}};
                 expected_dev = group.devices[collector].dev;
                 expected_addr = skb.cb.paddr;
                 expected_len = 4096;
                 expected_dir = frag ? DMA_BIDIRECTIONAL : DMA_FROM_DEVICE;
                 ath12k_dp_unmap_rx_buf(&group.devices[collector], &skb);
+                skb.cb.pool_mapped = true;
+                skb.head = &pages[collector];
+                unsigned old_unmaps = unmaps, old_syncs = syncs;
+                ath12k_dp_unmap_rx_buf(&group.devices[collector], &skb);
+                assert(!skb.cb.pool_mapped && unmaps == old_unmaps && syncs == old_syncs + 1);
             }
         }
     }
-    printf("RX_DMA_OWNERSHIP_PASS refill_cases=%u unmaps=%u\n", cases, unmaps);
+    printf("RX_DMA_OWNERSHIP_PASS refill_cases=%u unmaps=%u pool_syncs=%u\n", cases, unmaps, syncs);
 }
 '''
     c = args.output / 'rx-dma.c'

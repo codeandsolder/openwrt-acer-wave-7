@@ -1,0 +1,286 @@
+From: Wave7 development <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: recycle RX DMA pages
+
+Adapt Lorenzo Bianconi's October 2026 page_pool series to the
+Wave7 RX ownership changes. Keep the 2048-byte device data window
+separate from skb_shared_info, provide aligned headroom, and charge
+the full allocation. Publish descriptor ownership only after ring
+admission. Recycle the unused descriptors to an initialized list.
+
+Retire cookie-owned buffers before destroying the pool, including
+setup failure. Keep the uncommon fragment reinjection path separate
+from the persistent RX mapping and correct fragment expansion size.
+Use the actual partner datapath in the RX error handler.
+
+Link: https://lore.kernel.org/ath12k/20261008-ath12k-pp-v1-0-68f888cd7eec@oss.qualcomm.com/
+---
+--- a/drivers/net/wireless/ath/ath12k/Kconfig
++++ b/drivers/net/wireless/ath/ath12k/Kconfig
+@@ -8,6 +8,7 @@
+ 	select QRTR
+ 	select QRTR_MHI
+ 	select PCI_PWRCTRL_PWRSEQ if HAVE_PWRCTRL
++	select PAGE_POOL
+ 	help
+ 	  Enable support for Qualcomm Technologies Wi-Fi 7 (IEEE
+ 	  802.11be) family of chipsets, for example WCN7850 and
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -150,6 +150,7 @@
+ 	u8 tid;
+ 	u16 peer_id;
+ 	bool is_end_of_ppdu;
++	bool pool_mapped;
+ };
+ 
+ enum ath12k_hw_rev {
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -49,6 +49,7 @@
+ 
+ struct dp_rxdma_ring {
+ 	struct dp_srng refill_buf_ring;
++	struct page_pool *page_pool;
+ 	int bufs_max;
+ };
+ 
+@@ -219,6 +220,7 @@
+ #define DP_RX_BUFFER_SIZE	2048
+ #define DP_RX_BUFFER_SIZE_LITE	1024
+ #define DP_RX_BUFFER_ALIGN_SIZE	128
++#define DP_RX_POOL_HEADROOM	ALIGN(NET_SKB_PAD, DP_RX_BUFFER_ALIGN_SIZE)
+ 
+ #define RX_MON_STATUS_BASE_BUF_SIZE	2048
+ #define RX_MON_STATUS_BUF_ALIGN		128
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1151,6 +1151,12 @@
+ 
+ 	kfree(dp->spt_info);
+ 	dp->spt_info = NULL;
++
++	/* Descriptors are retired and TX skbs released before pool teardown.
++	 * page_pool_destroy() may unmap even outstanding pages.
++	 */
++	page_pool_destroy(dp->rx_refill_buf_ring.page_pool);
++	dp->rx_refill_buf_ring.page_pool = NULL;
+ }
+ 
+ static void ath12k_dp_reoq_lut_cleanup(struct ath12k_base *ab)
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -61,8 +61,42 @@
+ 		rx_desc->in_use = false;
+ 
+ 	spin_lock_bh(&dp->rx_desc_lock);
+-	list_splice_tail(used_list, &dp->rx_desc_free_list);
++	list_splice_tail_init(used_list, &dp->rx_desc_free_list);
+ 	spin_unlock_bh(&dp->rx_desc_lock);
++}
++
++static struct sk_buff *ath12k_dp_rx_build_skb(struct page_pool *pool)
++{
++	struct ath12k_skb_rxcb *rxcb;
++	struct sk_buff *skb;
++	struct page *page;
++
++	BUILD_BUG_ON(SKB_HEAD_ALIGN(DP_RX_POOL_HEADROOM +
++				    DP_RX_BUFFER_SIZE) > PAGE_SIZE);
++
++	page = page_pool_dev_alloc_pages(pool);
++	if (!page)
++		return NULL;
++
++	skb = build_skb(page_address(page),
++			SKB_HEAD_ALIGN(DP_RX_POOL_HEADROOM + DP_RX_BUFFER_SIZE));
++	if (!skb) {
++		page_pool_put_full_page(pool, page, false);
++		return NULL;
++	}
++
++	/* Expose the same 2048-byte DMA window as RXDMA. Charge the full
++	 * page even though the unused end is not visible to the skb.
++	 */
++	skb_reserve(skb, DP_RX_POOL_HEADROOM);
++	skb->truesize = SKB_TRUESIZE(SKB_WITH_OVERHEAD(PAGE_SIZE));
++	skb_mark_for_recycle(skb);
++
++	rxcb = ATH12K_SKB_RXCB(skb);
++	rxcb->paddr = page_pool_get_dma_addr(page) + DP_RX_POOL_HEADROOM;
++	rxcb->pool_mapped = true;
++
++	return skb;
+ }
+ 
+ /* Returns number of Rx buffers replenished */
+@@ -78,7 +112,6 @@
+ 	int num_free;
+ 	int num_remain;
+ 	u32 cookie;
+-	dma_addr_t paddr;
+ 	struct ath12k_rx_desc_info *rx_desc;
+ 	enum hal_rx_buf_return_buf_manager mgr = dp->hal->hal_params->rx_buf_rbm;
+ 
+@@ -111,53 +144,32 @@
+ 	}
+ 
+ 	while (num_remain > 0) {
+-		skb = dev_alloc_skb(DP_RX_BUFFER_SIZE +
+-				    DP_RX_BUFFER_ALIGN_SIZE);
+-		if (!skb)
+-			break;
+-
+-		if (!IS_ALIGNED((unsigned long)skb->data,
+-				DP_RX_BUFFER_ALIGN_SIZE)) {
+-			skb_pull(skb,
+-				 PTR_ALIGN(skb->data, DP_RX_BUFFER_ALIGN_SIZE) -
+-				 skb->data);
+-		}
+-
+-		paddr = dma_map_single(dp->dev, skb->data,
+-				       skb->len + skb_tailroom(skb),
+-				       DMA_FROM_DEVICE);
+-		if (dma_mapping_error(dp->dev, paddr))
+-			goto fail_free_skb;
+-
+ 		rx_desc = list_first_entry_or_null(used_list,
+ 						   struct ath12k_rx_desc_info,
+ 						   list);
+ 		if (!rx_desc)
+-			goto fail_dma_unmap;
++			break;
++
++		skb = ath12k_dp_rx_build_skb(rx_ring->page_pool);
++		if (!skb)
++			break;
++
++		desc = ath12k_hal_srng_src_get_next_entry(ab, srng);
++		if (!desc) {
++			dev_kfree_skb_any(skb);
++			break;
++		}
+ 
+ 		rx_desc->skb = skb;
+ 		cookie = rx_desc->cookie;
+-
+-		desc = ath12k_hal_srng_src_get_next_entry(ab, srng);
+-		if (!desc)
+-			goto fail_dma_unmap;
+-
+ 		list_del(&rx_desc->list);
+-		ATH12K_SKB_RXCB(skb)->paddr = paddr;
+-
+ 		num_remain--;
+ 
+-		ath12k_hal_rx_buf_addr_info_set(dp->hal, desc, paddr, cookie,
+-						mgr);
+-	}
+-
+-	goto out;
+-
+-fail_dma_unmap:
+-	dma_unmap_single(dp->dev, paddr, skb->len + skb_tailroom(skb),
+-			 DMA_FROM_DEVICE);
+-fail_free_skb:
+-	dev_kfree_skb_any(skb);
++		ath12k_hal_rx_buf_addr_info_set(dp->hal, desc,
++						ATH12K_SKB_RXCB(skb)->paddr,
++						cookie, mgr);
++	}
++
+ out:
+ 	ath12k_hal_srng_access_end(ab, srng);
+ 
+@@ -232,11 +244,32 @@
+ static int ath12k_dp_rxdma_ring_buf_setup(struct ath12k_base *ab,
+ 					  struct dp_rxdma_ring *rx_ring)
+ {
++	struct page_pool_params params = {
++		.order = 0,
++		.flags = PP_FLAG_DMA_MAP | PP_FLAG_DMA_SYNC_DEV,
++		.nid = NUMA_NO_NODE,
++		.dma_dir = DMA_FROM_DEVICE,
++		.max_len = DP_RX_BUFFER_SIZE,
++		.offset = DP_RX_POOL_HEADROOM,
++		.dev = ab->dev,
++	};
+ 	LIST_HEAD(list);
++	int ret;
+ 
+ 	rx_ring->bufs_max = rx_ring->refill_buf_ring.size /
+ 			ath12k_hal_srng_get_entrysize(ab, HAL_RXDMA_BUF);
+-
++	params.pool_size = rx_ring->bufs_max;
++
++	rx_ring->page_pool = page_pool_create(&params);
++	if (IS_ERR(rx_ring->page_pool)) {
++		ret = PTR_ERR(rx_ring->page_pool);
++		rx_ring->page_pool = NULL;
++		return ret;
++	}
++
++	/* The cookie-conversion cleanup owns the pool until all published
++	 * RX descriptors have been retired, including on setup failure.
++	 */
+ 	ath12k_dp_rx_bufs_replenish(ath12k_ab_to_dp(ab), rx_ring, &list, 0);
+ 
+ 	return 0;
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.h
+@@ -6,6 +6,7 @@
+ #ifndef ATH12K_DP_RX_H
+ #define ATH12K_DP_RX_H
+ 
++#include <net/page_pool/helpers.h>
+ #include "core.h"
+ #include "debug.h"
+ 
+@@ -184,6 +185,17 @@
+ {
+ 	struct ath12k_skb_rxcb *rxcb = ATH12K_SKB_RXCB(skb);
+ 	enum dma_data_direction dir;
++
++	if (rxcb->pool_mapped) {
++		/* The page remains DMA-mapped until recycled or pool teardown.
++		 * Sync only the data range, never skb_shared_info.
++		 */
++		page_pool_dma_sync_for_cpu(dp->rx_refill_buf_ring.page_pool,
++					   virt_to_head_page(skb->head), 0,
++					   DP_RX_BUFFER_SIZE);
++		rxcb->pool_mapped = false;
++		return;
++	}
+ 
+ 	dir = rxcb->is_frag ? DMA_BIDIRECTIONAL : DMA_FROM_DEVICE;
+ 	dma_unmap_single(dp->dev, rxcb->paddr, skb->len + skb_tailroom(skb),
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -1139,10 +1139,15 @@
+ 		msdu_len += skb->len;
+ 	}
+ 
+-	extra_space = msdu_len - (DP_RX_BUFFER_SIZE + skb_tailroom(first_frag));
+-	if (extra_space > 0 &&
+-	    (pskb_expand_head(first_frag, 0, extra_space, GFP_ATOMIC) < 0))
+-		return -ENOMEM;
++	extra_space = max_t(int, 0, msdu_len - first_frag->len -
++			    skb_tailroom(first_frag));
++	if (extra_space || first_frag->pp_recycle) {
++		if (pskb_expand_head(first_frag, 0, extra_space, GFP_ATOMIC))
++			return -ENOMEM;
++
++		/* No pool-backed data or frags remain in this linear skb. */
++		first_frag->pp_recycle = 0;
++	}
+ 
+ 	__skb_unlink(first_frag, &rx_tid->rx_frags);
+ 	while ((skb = __skb_dequeue(&rx_tid->rx_frags))) {
+@@ -1552,7 +1557,7 @@
+ 
+ 		rcu_read_lock();
+ 
+-		dp_pdev = ath12k_dp_to_pdev_dp(dp, pdev_idx);
++		dp_pdev = ath12k_dp_to_pdev_dp(partner_dp, pdev_idx);
+ 		if (!dp_pdev) {
+ 			rcu_read_unlock();
+ 			continue;
