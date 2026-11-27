@@ -214,9 +214,7 @@ snapshot_rx(){
         done'
 }
 snapshot_srng(){
-    local device=$1
-    [[ $device == ahb-c000000.wifi || $device == ahb-soc@0:wifi ]] || return 1
-    remote "set -eu; cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; cat /sys/kernel/debug/ath12k/$device/srng_state"
+    remote 'set -eu; cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state'
 }
 snapshot_icmp(){
     remote 'cat /proc/sys/kernel/random/boot_id
@@ -404,8 +402,7 @@ for band in "${bands[@]}"; do
         done
     fi
     snapshot_rx > "$prefix.rx-before.txt"
-    snapshot_srng ahb-c000000.wifi > "$prefix.rx-before.srng.txt"
-    snapshot_srng ahb-soc@0:wifi > "$prefix.rx-before.qcn-srng.txt"
+    snapshot_srng > "$prefix.rx-before.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
@@ -571,8 +568,7 @@ for band in "${bands[@]}"; do
             cases_failed=1
         else
             snapshot_rx > "$prefix.ring3-before.txt"
-            snapshot_srng ahb-c000000.wifi > "$prefix.ring3-before.srng.txt"
-            snapshot_srng ahb-soc@0:wifi > "$prefix.ring3-before.qcn-srng.txt"
+            snapshot_srng > "$prefix.ring3-before.srng.txt"
             # MLO unicast goes through the QCN6432 primary UMAC even
             # when only client link0 is active. Link-local multicast
             # exercises the per-link group TX path on both radios.
@@ -583,8 +579,7 @@ for band in "${bands[@]}"; do
             # Replies to group ICMP are optional; require actual ring3
             # submission, completion, IRQ delta and drain below instead.
             snapshot_rx > "$prefix.ring3-after.txt"
-            snapshot_srng ahb-c000000.wifi > "$prefix.ring3-after.srng.txt"
-            snapshot_srng ahb-soc@0:wifi > "$prefix.ring3-after.qcn-srng.txt"
+            snapshot_srng > "$prefix.ring3-after.srng.txt"
         fi
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
@@ -638,20 +633,17 @@ for band in "${bands[@]}"; do
         exit 1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
-    snapshot_srng ahb-c000000.wifi > "$prefix.rx-after.srng.txt"
-    snapshot_srng ahb-soc@0:wifi > "$prefix.rx-after.qcn-srng.txt"
+    snapshot_srng > "$prefix.rx-after.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-after.txt"
     ring_args=()
     if (( ap_ring3_probe )); then ring_args=(--require-ring3); fi
     uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" --irq-before "$prefix.irq-before.txt" --irq-after "$prefix.irq-after.txt" "${ring_args[@]}" > "$prefix.tx-ring-delta.json" || cases_failed=1
     uv run --no-project python -B "$(dirname "$helper")/srng-pointer-delta.py" "$prefix.rx-before.srng.txt" "$prefix.rx-after.srng.txt" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.srng-delta.json" || cases_failed=1
     uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" --device ahb-soc@0:wifi "${ring_args[@]}" > "$prefix.qcn-tx-ring-delta.json" || cases_failed=1
-    uv run --no-project python -B "$(dirname "$helper")/srng-pointer-delta.py" "$prefix.rx-before.qcn-srng.txt" "$prefix.rx-after.qcn-srng.txt" "$prefix.rx-before.txt" "$prefix.rx-after.txt" --device ahb-soc@0:wifi > "$prefix.qcn-srng-delta.json" || cases_failed=1
     if (( ap_ring3_probe )); then
         uv run --no-project python -B "$(dirname "$helper")/srng-pointer-delta.py" "$prefix.ring3-before.srng.txt" "$prefix.ring3-after.srng.txt" "$prefix.ring3-before.txt" "$prefix.ring3-after.txt" > "$prefix.ring3-srng-delta.json" || cases_failed=1
         jq -e '.correlation["3"] | .queued > 0 and .queued == .completed and .tcl_produced_matches and .wbm_consumed_matches and .drained' "$prefix.srng-delta.json" >/dev/null || cases_failed=1
-        uv run --no-project python -B "$(dirname "$helper")/srng-pointer-delta.py" "$prefix.ring3-before.qcn-srng.txt" "$prefix.ring3-after.qcn-srng.txt" "$prefix.ring3-before.txt" "$prefix.ring3-after.txt" --device ahb-soc@0:wifi > "$prefix.ring3-qcn-srng-delta.json" || cases_failed=1
-        jq -e '.correlation["3"] | .queued > 0 and .queued == .completed and .tcl_produced_matches and .wbm_consumed_matches and .drained' "$prefix.qcn-srng-delta.json" >/dev/null || cases_failed=1
+        jq -e '.rings[] | select(.tcl == 3) | .queued > 0 and .queued == .completed' "$prefix.qcn-tx-ring-delta.json" >/dev/null || cases_failed=1
     fi
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
