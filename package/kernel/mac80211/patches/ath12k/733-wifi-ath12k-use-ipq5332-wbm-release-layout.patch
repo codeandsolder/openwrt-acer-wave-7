@@ -1,0 +1,366 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: use coherent WBM release layout on IPQ5332/QCN6432
+
+IPQ5332 AHB exposes four consecutive TX-completion interrupt lines. Its
+shared QCN9274 mapping skips WBM3 for TX and allocates RX release there,
+leaving physical WBM4 without its corresponding AHB completion IRQ. An
+actual group transmission queued six packets on TCL3, all of which
+remained pending even after registering the fourth interrupt.
+
+Use consecutive TX release rings and WBM5 for RX release, as indicated
+by the original BE datapath setup on this platform. Keep QCN6432's
+MLO companion on the same return-buffer manager layout. Preserve the
+existing layout on other revisions. Derive moderation and MSI lookup
+from the actual mapping, and make RX error allocation, parsing and
+reinject consistent with the selected release ring.
+
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -164,26 +164,35 @@
+ 	return -ENOENT;
+ }
+ 
++/* Convert a physical completion ring to its logical TCL producer. */
++static int ath12k_dp_wbm_tx_ring_index(const struct ath12k_base *ab,
++				       int ring_num)
++{
++	const struct ath12k_hal_tcl_to_wbm_rbm_map *map;
++	int i;
++
++	map = ab->hal.tcl_to_wbm_rbm_map;
++	for (i = 0; i < ab->hw_params->max_tx_ring; i++)
++		if (ring_num == map[i].wbm_ring_num)
++			return i;
++
++	return -ENOENT;
++}
++
+ static int ath12k_dp_srng_calculate_msi_group(struct ath12k_base *ab,
+ 					      enum hal_ring_type type, int ring_num)
+ {
+-	const struct ath12k_hal_tcl_to_wbm_rbm_map *map;
+ 	const u8 *grp_mask;
+-	int i;
+ 
+ 	switch (type) {
+ 	case HAL_WBM2SW_RELEASE:
+-		if (ring_num == HAL_WBM2SW_REL_ERR_RING_NUM) {
++		if (ring_num == ab->hal.hal_params->rx_rel_ring_num) {
+ 			grp_mask = &ab->hw_params->ring_mask->rx_wbm_rel[0];
+ 			ring_num = 0;
+ 		} else {
+-			map = ab->hal.tcl_to_wbm_rbm_map;
+-			for (i = 0; i < ab->hw_params->max_tx_ring; i++) {
+-				if (ring_num == map[i].wbm_ring_num) {
+-					ring_num = i;
+-					break;
+-				}
+-			}
++			ring_num = ath12k_dp_wbm_tx_ring_index(ab, ring_num);
++			if (ring_num < 0)
++				return ring_num;
+ 
+ 			grp_mask = &ab->hw_params->ring_mask->tx[0];
+ 		}
+@@ -327,14 +336,14 @@
+ 		params.intr_timer_thres_us = HAL_SRNG_INT_TIMER_THRESHOLD_RX;
+ 		break;
+ 	case HAL_WBM2SW_RELEASE:
+-		if (ab->hw_params->hw_ops->dp_srng_is_tx_comp_ring(ring_num)) {
++		if (ath12k_dp_wbm_tx_ring_index(ab, ring_num) >= 0) {
+ 			params.intr_batch_cntr_thres_entries =
+ 					HAL_SRNG_INT_BATCH_THRESHOLD_TX;
+ 			params.intr_timer_thres_us =
+ 					HAL_SRNG_INT_TIMER_THRESHOLD_TX;
+ 			break;
+ 		}
+-		/* follow through when ring_num != HAL_WBM2SW_REL_ERR_RING_NUM */
++		/* RX release uses the default interrupt moderation. */
+ 		fallthrough;
+ 	case HAL_REO_EXCEPTION:
+ 	case HAL_REO_REINJECT:
+@@ -484,6 +493,22 @@
+ 	struct hal_srng *srng;
+ 	int i, ret, tx_comp_ring_num;
+ 	u32 ring_hash_map;
++	unsigned long release_rings;
++	unsigned int max_wbm = ab->hal.srng_config[HAL_WBM2SW_RELEASE].max_rings;
++	unsigned int rx_rel = ab->hal.hal_params->rx_rel_ring_num;
++
++	if (rx_rel >= max_wbm || max_wbm > BITS_PER_LONG ||
++	    ab->hw_params->max_tx_ring > DP_TCL_NUM_RING_MAX)
++		return -EINVAL;
++
++	release_rings = BIT(rx_rel);
++	map = ab->hal.tcl_to_wbm_rbm_map;
++	for (i = 0; i < ab->hw_params->max_tx_ring; i++) {
++		if (map[i].wbm_ring_num >= max_wbm ||
++		    release_rings & BIT(map[i].wbm_ring_num))
++			return -EINVAL;
++		release_rings |= BIT(map[i].wbm_ring_num);
++	}
+ 
+ 	ret = ath12k_dp_srng_setup(ab, &dp->wbm_desc_rel_ring,
+ 				   HAL_SW2WBM_RELEASE, 0, 0,
+@@ -526,7 +551,7 @@
+ 	}
+ 
+ 	ret = ath12k_dp_srng_setup(ab, &dp->rx_rel_ring, HAL_WBM2SW_RELEASE,
+-				   HAL_WBM2SW_REL_ERR_RING_NUM, 0,
++				   ab->hal.hal_params->rx_rel_ring_num, 0,
+ 				   DP_RX_RELEASE_RING_SIZE);
+ 	if (ret) {
+ 		ath12k_warn(ab, "failed to set up rx_rel ring :%d\n", ret);
+--- a/drivers/net/wireless/ath/ath12k/hal.h
++++ b/drivers/net/wireless/ath/ath12k/hal.h
+@@ -53,8 +53,6 @@
+ 
+ #define HAL_ADDR_LSB_REG_MASK		0xffffffff
+ #define HAL_ADDR_MSB_REG_SHIFT		32
+-
+-#define HAL_WBM2SW_REL_ERR_RING_NUM 3
+ 
+ #define HAL_SHADOW_NUM_REGS_MAX	40
+ 
+@@ -182,7 +180,7 @@
+ 	HAL_SRNG_RING_ID_WBM2SW0_RELEASE = 128,
+ 	HAL_SRNG_RING_ID_WBM2SW1_RELEASE,
+ 	HAL_SRNG_RING_ID_WBM2SW2_RELEASE,
+-	HAL_SRNG_RING_ID_WBM2SW3_RELEASE, /* RX ERROR RING */
++	HAL_SRNG_RING_ID_WBM2SW3_RELEASE,
+ 	HAL_SRNG_RING_ID_WBM2SW4_RELEASE,
+ 	HAL_SRNG_RING_ID_WBM2SW5_RELEASE,
+ 	HAL_SRNG_RING_ID_WBM2SW6_RELEASE,
+@@ -1136,7 +1134,14 @@
+ struct ath12k_hw_hal_params {
+ 	enum hal_rx_buf_return_buf_manager rx_buf_rbm;
+ 	u32 wbm2sw_cc_enable;
+-};
++	u8 rx_rel_ring_num;
++};
++
++static inline enum hal_rx_buf_return_buf_manager
++ath12k_hal_rx_rel_rbm(const struct ath12k_hw_hal_params *params)
++{
++	return HAL_RX_BUF_RBM_SW0_BM + params->rx_rel_ring_num;
++}
+ 
+ #define ATH12K_HW_REG_UNDEFINED	0xdeadbeaf
+ 
+--- a/drivers/net/wireless/ath/ath12k/hw.h
++++ b/drivers/net/wireless/ath/ath12k/hw.h
+@@ -259,7 +259,6 @@
+ 	int (*mac_id_to_srng_id)(const struct ath12k_hw_params *hw, int mac_id);
+ 	int (*rxdma_ring_sel_config)(struct ath12k_base *ab);
+ 	u8 (*get_ring_selector)(struct sk_buff *skb);
+-	bool (*dp_srng_is_tx_comp_ring)(int ring_num);
+ 	bool (*is_frame_link_agnostic)(struct ath12k_link_vif *arvif,
+ 				       struct ieee80211_mgmt *mgmt);
+ 	void (*set_rx_link_id)(struct ath12k_dp_peer *dp_peer,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -919,7 +919,7 @@
+ 
+ 	ath12k_wifi7_hal_rx_buf_addr_info_set(&msdu0->buf_addr_info, buf_paddr,
+ 					      desc_info->cookie,
+-					      HAL_RX_BUF_RBM_SW3_BM);
++					      ath12k_hal_rx_rel_rbm(hal->hal_params));
+ 
+ 	/* Fill mpdu details into reo entrance ring */
+ 	srng = &hal->srng_list[dp->reo_reinject_ring.ring_id];
+@@ -1492,7 +1492,7 @@
+ 		ath12k_wifi7_hal_rx_msdu_link_info_get(link_desc_va, &num_msdus,
+ 						       msdu_cookies, &rbm);
+ 		if (rbm != partner_dp->idle_link_rbm &&
+-		    rbm != HAL_RX_BUF_RBM_SW3_BM &&
++		    rbm != ath12k_hal_rx_rel_rbm(partner_dp->hal->hal_params) &&
+ 		    rbm != partner_dp->hal->hal_params->rx_buf_rbm) {
+ 			act = HAL_WBM_REL_BM_ACT_REL_MSDU;
+ 			dp->device_stats.invalid_rbm++;
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal.c
+@@ -39,14 +39,14 @@
+ 	[ATH12K_HW_IPQ5332_HW10] = {
+ 		.hal_ops = &hal_qcn9274_ops,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_qcn9274_compact),
+-		.tcl_to_wbm_rbm_map = ath12k_hal_tcl_to_wbm_rbm_map_qcn9274,
++		.tcl_to_wbm_rbm_map = ath12k_hal_tcl_to_wbm_rbm_map_ipq5332,
+ 		.hal_params = &ath12k_hw_hal_params_ipq5332,
+ 		.hw_regs = &ipq5332_regs,
+ 	},
+ 	[ATH12K_HW_QCN6432_HW10] = {
+ 		.hal_ops = &hal_qcn9274_ops,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_qcn9274_compact),
+-		.tcl_to_wbm_rbm_map = ath12k_hal_tcl_to_wbm_rbm_map_qcn9274,
++		.tcl_to_wbm_rbm_map = ath12k_hal_tcl_to_wbm_rbm_map_ipq5332,
+ 		.hal_params = &ath12k_hw_hal_params_ipq5332,
+ 		.hw_regs = &qcn6432_regs,
+ 	},
+@@ -61,7 +61,7 @@
+ 		.hal_ops = &hal_qcn9274_ops,
+ 		.hal_desc_sz = sizeof(struct hal_rx_desc_qcn9274_compact),
+ 		.tcl_to_wbm_rbm_map = ath12k_hal_tcl_to_wbm_rbm_map_qcn9274,
+-		.hal_params = &ath12k_hw_hal_params_ipq5332,
++		.hal_params = &ath12k_hw_hal_params_qcn9274,
+ 		.hw_regs = &ipq5424_regs,
+ 	},
+ };
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal.h
+@@ -262,6 +262,7 @@
+ #define HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW2_EN		BIT(3)
+ #define HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW3_EN		BIT(4)
+ #define HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW4_EN		BIT(5)
++#define HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW5_EN		BIT(6)
+ #define HAL_WBM_SW_COOKIE_CONV_CFG_GLOBAL_EN		BIT(8)
+ 
+ /* TCL ring field mask and offset */
+@@ -356,7 +357,6 @@
+ #define HAL_RXDMA_RING_MAX_SIZE_BE			0x000fffff
+ #define HAL_WBM2PPE_RELEASE_RING_BASE_MSB_RING_SIZE	0x000fffff
+ 
+-#define HAL_WBM2SW_REL_ERR_RING_NUM 3
+ /* Add any other errors here and return them in
+  * ath12k_hal_rx_desc_get_err().
+  */
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_qcn9274.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_qcn9274.c
+@@ -1025,6 +1025,7 @@
+ 
+ const struct ath12k_hw_hal_params ath12k_hw_hal_params_qcn9274 = {
+ 	.rx_buf_rbm = HAL_RX_BUF_RBM_SW3_BM,
++	.rx_rel_ring_num = 3,
+ 	.wbm2sw_cc_enable = HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW0_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW1_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW2_EN |
+@@ -1033,12 +1034,13 @@
+ };
+ 
+ const struct ath12k_hw_hal_params ath12k_hw_hal_params_ipq5332 = {
+-	.rx_buf_rbm = HAL_RX_BUF_RBM_SW3_BM,
++	.rx_buf_rbm = HAL_RX_BUF_RBM_SW5_BM,
++	.rx_rel_ring_num = 5,
+ 	.wbm2sw_cc_enable = HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW0_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW1_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW2_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW3_EN |
+-			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW4_EN,
++			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW5_EN,
+ };
+ 
+ static int ath12k_hal_srng_create_config_qcn9274(struct ath12k_hal *hal)
+@@ -1169,6 +1171,17 @@
+ 		.wbm_ring_num = 4,
+ 		.rbm_id = HAL_RX_BUF_RBM_SW4_BM,
+ 	},
++};
++
++/* IPQ5332's fixed AHB interrupt lines cover WBM release rings 0..3.
++ * Keep the companion QCN6432 on the same RX RBM layout for MLO.
++ */
++const struct ath12k_hal_tcl_to_wbm_rbm_map
++ath12k_hal_tcl_to_wbm_rbm_map_ipq5332[DP_TCL_NUM_RING_MAX] = {
++	{ .wbm_ring_num = 0, .rbm_id = HAL_RX_BUF_RBM_SW0_BM },
++	{ .wbm_ring_num = 1, .rbm_id = HAL_RX_BUF_RBM_SW1_BM },
++	{ .wbm_ring_num = 2, .rbm_id = HAL_RX_BUF_RBM_SW2_BM },
++	{ .wbm_ring_num = 3, .rbm_id = HAL_RX_BUF_RBM_SW3_BM },
+ };
+ 
+ const struct hal_ops hal_qcn9274_ops = {
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_qcn9274.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_qcn9274.h
+@@ -21,6 +21,8 @@
+ extern const struct ath12k_hw_regs ipq5424_regs;
+ extern const struct ath12k_hal_tcl_to_wbm_rbm_map
+ ath12k_hal_tcl_to_wbm_rbm_map_qcn9274[DP_TCL_NUM_RING_MAX];
++extern const struct ath12k_hal_tcl_to_wbm_rbm_map
++ath12k_hal_tcl_to_wbm_rbm_map_ipq5332[DP_TCL_NUM_RING_MAX];
+ extern const struct ath12k_hw_hal_params ath12k_hw_hal_params_qcn9274;
+ extern const struct ath12k_hw_hal_params ath12k_hw_hal_params_ipq5332;
+ 
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_rx.c
+@@ -378,7 +378,7 @@
+ 	if (!hw_cc_done) {
+ 		val = le32_get_bits(wbm_desc->buf_addr_info.info1,
+ 				    BUFFER_ADDR_INFO1_RET_BUF_MGR);
+-		if (val != HAL_RX_BUF_RBM_SW3_BM) {
++		if (val != ath12k_hal_rx_rel_rbm(dp->hal->hal_params)) {
+ 			dp->device_stats.invalid_rbm++;
+ 			return -EINVAL;
+ 		}
+@@ -390,7 +390,7 @@
+ 	} else {
+ 		val = le32_get_bits(wbm_cc_desc->info0,
+ 				    HAL_WBM_RELEASE_RX_CC_INFO0_RBM);
+-		if (val != HAL_RX_BUF_RBM_SW3_BM) {
++		if (val != ath12k_hal_rx_rel_rbm(dp->hal->hal_params)) {
+ 			dp->device_stats.invalid_rbm++;
+ 			return -EINVAL;
+ 		}
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_wcn7850.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_wcn7850.c
+@@ -774,6 +774,7 @@
+ 
+ const struct ath12k_hw_hal_params ath12k_hw_hal_params_wcn7850 = {
+ 	.rx_buf_rbm = HAL_RX_BUF_RBM_SW1_BM,
++	.rx_rel_ring_num = 3,
+ 	.wbm2sw_cc_enable = HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW0_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW2_EN |
+ 			    HAL_WBM_SW_COOKIE_CONV_CFG_WBM2SW3_EN |
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -54,14 +54,6 @@
+ 	return smp_processor_id();
+ }
+ 
+-static bool ath12k_wifi7_dp_srng_is_comp_ring_qcn9274(int ring_num)
+-{
+-	if (ring_num < 3 || ring_num == 4)
+-		return true;
+-
+-	return false;
+-}
+-
+ static bool
+ ath12k_wifi7_is_frame_link_agnostic_qcn9274(struct ath12k_link_vif *arvif,
+ 					    struct ieee80211_mgmt *mgmt)
+@@ -86,14 +78,6 @@
+ static u8 ath12k_wifi7_hw_get_ring_selector_wcn7850(struct sk_buff *skb)
+ {
+ 	return skb_get_queue_mapping(skb);
+-}
+-
+-static bool ath12k_wifi7_dp_srng_is_comp_ring_wcn7850(int ring_num)
+-{
+-	if (ring_num == 0 || ring_num == 2 || ring_num == 4)
+-		return true;
+-
+-	return false;
+ }
+ 
+ static bool ath12k_is_addba_resp_action_code(struct ieee80211_mgmt *mgmt)
+@@ -156,7 +140,6 @@
+ 	.mac_id_to_srng_id = ath12k_wifi7_hw_mac_id_to_srng_id_qcn9274,
+ 	.rxdma_ring_sel_config = ath12k_dp_rxdma_ring_sel_config_qcn9274,
+ 	.get_ring_selector = ath12k_wifi7_hw_get_ring_selector_qcn9274,
+-	.dp_srng_is_tx_comp_ring = ath12k_wifi7_dp_srng_is_comp_ring_qcn9274,
+ 	.is_frame_link_agnostic = ath12k_wifi7_is_frame_link_agnostic_qcn9274,
+ 	.set_rx_link_id = ath12k_wifi7_dp_rx_set_link_id_qcn9274,
+ };
+@@ -167,7 +150,6 @@
+ 	.mac_id_to_srng_id = ath12k_wifi7_hw_mac_id_to_srng_id_wcn7850,
+ 	.rxdma_ring_sel_config = ath12k_dp_rxdma_ring_sel_config_wcn7850,
+ 	.get_ring_selector = ath12k_wifi7_hw_get_ring_selector_wcn7850,
+-	.dp_srng_is_tx_comp_ring = ath12k_wifi7_dp_srng_is_comp_ring_wcn7850,
+ 	.is_frame_link_agnostic = ath12k_wifi7_is_frame_link_agnostic_wcn7850,
+ 	.set_rx_link_id = ath12k_wifi7_dp_rx_set_link_id_wcn7850,
+ };
+@@ -178,7 +160,6 @@
+ 	.mac_id_to_srng_id = ath12k_wifi7_hw_mac_id_to_srng_id_wcn7850,
+ 	.rxdma_ring_sel_config = ath12k_dp_rxdma_ring_sel_config_qcc2072,
+ 	.get_ring_selector = ath12k_wifi7_hw_get_ring_selector_wcn7850,
+-	.dp_srng_is_tx_comp_ring = ath12k_wifi7_dp_srng_is_comp_ring_wcn7850,
+ 	.is_frame_link_agnostic = ath12k_wifi7_is_frame_link_agnostic_wcn7850,
+ 	.set_rx_link_id = ath12k_wifi7_dp_rx_set_link_id_wcn7850,
+ };
