@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import tarfile
+import runpy
 
 
 def require(ok, message):
@@ -25,6 +25,31 @@ def seal(path):
         seen.add(name)
     require(seen == {f.name for f in path.iterdir() if f.is_file() and f.name != 'SHA256SUMS'}, 'incomplete seal')
     return seen
+
+
+def verify_ping(load, text, target, count):
+    observation = load['ping'](text, count, strict=True)
+    sequences = [int(n) for n in re.findall(rf'^\[[0-9.]+\] \d+ bytes from {re.escape(target)}: icmp_seq=(\d+)\b', text, re.M)]
+    require(sorted(sequences) == list(range(1, count + 1)), f'incomplete or duplicate replies: {target}')
+    return observation
+
+
+def selftest():
+    load = runpy.run_path(str(Path(__file__).with_name('load-result.py')))
+    target = 'fd76:7::2'
+    rows = [f'[100.1] 64 bytes from {target}: icmp_seq={i} ttl=64 time=1.0 ms' for i in range(1, 4)]
+    footer = '3 packets transmitted, 3 received, 0% packet loss\nrtt min/avg/max/mdev = 1.0/1.0/1.0/0.0 ms'
+    require(verify_ping(load, '\n'.join(rows + [footer]), target, 3)['received'] == 3, 'valid fixture rejected')
+    for invalid in ([rows[0], rows[0], rows[2], footer], rows[1:] + [footer],
+                    [r.replace(target, 'fd76:7::3') for r in rows] + [footer],
+                    rows + [footer.replace('3 received', '2 received')]):
+        try:
+            verify_ping(load, '\n'.join(invalid), target, 3)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('invalid hold accepted')
+    print('WBM_QUALIFICATION_SELFTEST_PASS')
 
 
 def verified(path, boot, band, reconnect):
@@ -61,28 +86,95 @@ def verified(path, boot, band, reconnect):
     require(rx['boot'] == boot and set(rx['increments']) == {'ahb-c000000.wifi', 'ahb-soc@0:wifi'} and all(d.get('RX totals/Invalid RBM', 0) == 0 for d in rx['increments'].values()), 'invalid RX RBM increments')
     tag = (path / f'{prefix}.tag').read_text().strip()
     require(re.fullmatch(r'0498-\d{8}-\d{6}', tag), 'invalid client archive tag')
-    with tarfile.open(path / f'{prefix}.client.tar') as tar:
-        def read(name):
-            member = tar.getmember(f'{tag}/{name}')
-            require(member.isfile() and member.size < 100000, f'invalid client result {name}')
-            return tar.extractfile(member).read().decode().strip()
-        if reconnect:
-            require(read('reconnect-count.txt') == 'expected=2' and read('reconnect-cycles.txt') == 'cycle=1 result=pass\ncycle=2 result=pass' and read('reconnect-result.txt') == 'reconnect_pass=1', 'reconnect cycles incomplete')
-        else:
-            require(read('short-hold-result.txt') == 'short_hold_all_replies=1', 'group test hold failed')
-    return { 'path': str(path), 'band': band, 'reconnect': reconnect,
-             'ipq_tx': sum(r['completed'] for r in rings[0]['rings']), 'qcn_tx': sum(r['completed'] for r in rings[1]['rings']) }
+    load = runpy.run_path(str(Path(__file__).with_name('load-result.py')))
+    archive = load['load_archive'](path / f'{prefix}.client.tar', tag)
+    def read(name):
+        return archive[name].strip()
+    require(read('status') == 'exit=0', 'client archive status failed')
+    result = {'path': str(path), 'band': band, 'reconnect': reconnect,
+              'ipq_tx': sum(r['completed'] for r in rings[0]['rings']),
+              'qcn_tx': sum(r['completed'] for r in rings[1]['rings']),
+              'ring3_exercised': [r['rings'][3]['queued'] > 0 for r in rings]}
+    holds = [{'192.168.76.1': 'short-hold-1.txt', '192.168.76.2': 'short-hold-2.txt'}]
+    if reconnect:
+        require(read('reconnect-count.txt') == 'expected=2' and
+                read('reconnect-cycles.txt') == 'cycle=1 result=pass\ncycle=2 result=pass' and
+                read('reconnect-result.txt') == 'reconnect_pass=1', 'reconnect cycles incomplete')
+        require(read('short-dual-hold-result.txt') == 'short_dual_hold_pass=1', 'initial dual hold failed')
+        holds[0]['fd76:7::2'] = 'short-hold-v6.txt'
+        timings = []
+        for cycle in (1, 2):
+            cycle_prefix = 'reconnect' if cycle == 1 else 'reconnect-2'
+            hold_prefix = 'reconnect-hold' if cycle == 1 else 'reconnect-hold-2'
+            holds.append({'192.168.76.1': f'{hold_prefix}-ap.txt',
+                          '192.168.76.2': f'{hold_prefix}-asus.txt',
+                          'fd76:7::2': f'{hold_prefix}-v6.txt'})
+            for phase in ('before', 'after'):
+                load['check_link'](read(f'{cycle_prefix}-links-{phase}.txt'))
+            timing = re.fullmatch(r'down_start=(\d+\.\d+)\nup_start=(\d+\.\d+)\nup_complete=(\d+\.\d+) rc=0',
+                                  read(f'{cycle_prefix}-timing.txt'))
+            require(timing, 'incomplete reconnect timing')
+            down, up, complete = map(float, timing.groups())
+            require(down <= up <= complete and (not timings or down >= timings[-1]['completed_epoch']),
+                    'invalid reconnect clock order')
+            timings.append({'activation_s': round(complete - up, 3), 'completed_epoch': complete})
+        result['reconnect_timing'] = timings
+        for name in ('early-only-snapshot.txt', 'early-only-final.txt'):
+            require(all(re.search(rf'^mac80211_{key}=0x0*{value}$', read(name), re.M)
+                        for key, value in (('active_links', 3), ('valid_links', 3), ('dormant_links', 0))),
+                    'initial hold missing dual-link state')
+        # The two observed station lifetimes must agree; the AP final lifetime
+        # may be right-censored, which is not evidence of peer retirement.
+        helpers = runpy.run_path(str(Path(__file__).with_name('summarize-reconnect-datapath.py')))
+        trace_names = [f'{prefix}.{side}-control-trace.txt' for side in ('client', 'ap')]
+        lifecycle = f'{prefix}.client-trace.txt'
+        require(set(trace_names + [lifecycle]) <= names, 'missing lifetime evidence')
+        client_trace, ap_trace = [(path / name).read_text() for name in trace_names]
+        cw = helpers['parse_trace'](client_trace, 'client', 3)
+        aw = helpers['parse_trace'](ap_trace, 'ap', 3, True)
+        require(len(cw) == len(aw) == 3, 'wrong number of authorized lifetimes')
+        bindings = helpers['wtbl_pair_bindings'](cw)
+        memberships = helpers['mld_lifetimes'](helpers['mld_records'](client_trace), cw, client_trace)
+        require(all(row['complete_pair'] is True for row in bindings), 'incomplete WTBL pair')
+        require(all(row['membership_matches'] is True and row['record_retired'] is True for row in memberships),
+                'scheduler membership/retirement incomplete')
+        refresh = helpers['band_group_refresh_windows']((path / lifecycle).read_text(), client_trace, cw)
+        require(all(all(move['group_refresh_before_sta'] for move in row['migrations']) for row in refresh),
+                'BSS group refresh not acknowledged before station MLD update')
+        if band == '24':
+            require(all(row['migrations'] for row in refresh), '2.4 GHz-first band migration not exercised')
+        result['lifetimes'] = {'client': len(cw), 'ap': len(aw),
+                               'ap_right_censored': [row['right_censored'] for row in aw],
+                               'wtbl_complete': [row['complete_pair'] for row in bindings],
+                               'scheduler_retired': [row['record_retired'] for row in memberships],
+                               'band_migrations': [len(row['migrations']) for row in refresh]}
+    else:
+        require(read('short-hold-result.txt') == 'short_hold_all_replies=1', 'group test hold failed')
+    result['holds'] = []
+    for targets in holds:
+        observations = {}
+        for target, filename in targets.items():
+            observations[target] = verify_ping(load, read(filename), target, 440)
+        result['holds'].append(observations)
+    return result
+
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('boot')
-    p.add_argument('group', type=Path)
+    p.add_argument('boot', nargs='?')
+    p.add_argument('--selftest', action='store_true')
+    p.add_argument('group', type=Path, nargs='?')
     p.add_argument('--reconnect24', type=Path)
     p.add_argument('--reconnect5', type=Path)
     a = p.parse_args()
+    if a.selftest:
+        selftest()
+        return
+    require(a.boot, 'boot ID required')
     require(re.fullmatch(r'[0-9a-f-]{36}', a.boot), 'invalid boot ID')
-    results = [verified(a.group, a.boot, '24', False)]
+    require(a.group or a.reconnect24 or a.reconnect5, 'no test evidence selected')
+    results = [verified(a.group, a.boot, '24', False)] if a.group else []
     for band, path in [('24', a.reconnect24), ('5', a.reconnect5)]:
         if path:
             results.append(verified(path, a.boot, band, True))
