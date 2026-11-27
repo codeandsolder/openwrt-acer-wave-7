@@ -52,12 +52,46 @@ def parse_packets(text):
     return sorted(packets, key=lambda packet: packet['epoch'])
 
 
+def exchange_timing(rows):
+    """Measure same-interface request/reply intervals, never cross-host clocks.
+
+    A retransmission makes exact request/reply attribution ambiguous. Report
+    the elapsed time since both first and latest matching request instead.
+    Only correctly directed BOOTP messages are eligible.
+    """
+    result = []
+    for iface in sorted({p['interface'] for p in rows}):
+        pending = {'discover': [], 'request': [], 'inform': []}
+        for p in sorted((p for p in rows if p['interface'] == iface), key=lambda p: p['epoch']):
+            kind = p['message']
+            if p['op'] == 1 and p['udp_src'] == 68 and p['udp_dst'] == 67 and kind in pending:
+                pending[kind].append(p['epoch'])
+                continue
+            if p['op'] != 2 or (p['udp_src'], p['udp_dst']) != (67, 68):
+                continue
+            if kind == 'offer':
+                candidates = ('discover',)
+            elif kind in ('ack', 'nak'):
+                candidates = ('request', 'inform') if kind == 'ack' else ('request',)
+            else:
+                continue
+            eligible = [k for k in candidates if pending[k]]
+            times = sorted(t for k in eligible for t in pending[k])
+            result.append(dict(interface=iface, response=kind, response_epoch=p['epoch'],
+                               request_types=eligible, requests_seen=len(times),
+                               since_first_ms=round((p['epoch']-times[0])*1000, 3) if times else None,
+                               since_latest_ms=round((p['epoch']-times[-1])*1000, 3) if times else None))
+            for k in eligible:
+                pending[k].clear()
+    return result
+
+
 def group(packets, begin, end, station):
     by_xid = {}
     for row in packets:
         if begin <= row['epoch'] < end and row['client'] == station:
             by_xid.setdefault(row['xid'], []).append(row)
-    return [dict(xid=xid, packets=rows, messages={kind: {iface: sum(r['message'] == kind and r['interface'] == iface for r in rows) for iface in sorted(INTERFACES)} for kind in sorted({r['message'] for r in rows})}) for xid, rows in by_xid.items()]
+    return [dict(xid=xid, packets=rows, wire_exchanges=exchange_timing(rows), messages={kind: {iface: sum(r['message'] == kind and r['interface'] == iface for r in rows) for iface in sorted(INTERFACES)} for kind in sorted({r['message'] for r in rows})}) for xid, rows in by_xid.items()]
 
 
 def parse_boundary_observer(text, iface):
@@ -175,7 +209,7 @@ def join_boundaries(wired, client, ap):
     by_xid = {t['xid']: dict(t, client_packets=[], ap_packets=[]) for t in wired}
     for side, rows in (('client', client), ('ap', ap)):
         for row in rows:
-            tx = by_xid.setdefault(row['xid'], dict(xid=row['xid'], packets=[],
+            tx = by_xid.setdefault(row['xid'], dict(xid=row['xid'], packets=[], wire_exchanges=[],
                                                    messages={}, client_packets=[], ap_packets=[]))
             tx[f'{side}_packets'].append(row)
     for tx in by_xid.values():
@@ -199,6 +233,15 @@ def selftest():
     assert grouped[0]['messages']['discover'] == {a:1,b:1}
     assert grouped[0]['messages']['ack'] == {a:1,b:0}
     assert not group(packets, 2, 3, station)
+    def exchange(t, iface, kind, op):
+        return dict(epoch=t, interface=iface, message=kind, op=op,
+                    udp_src=68 if op == 1 else 67, udp_dst=67 if op == 1 else 68)
+    witness = exchange_timing([exchange(1.0, a, 'discover', 1), exchange(1.1, b, 'discover', 1),
+                               exchange(1.5, a, 'discover', 1), exchange(2.0, a, 'offer', 2),
+                               exchange(2.1, a, 'request', 1), exchange(2.2, a, 'ack', 2),
+                               exchange(2.3, a, 'ack', 2), exchange(2.4, b, 'offer', 2)])
+    assert [(r['requests_seen'], r['since_first_ms'], r['since_latest_ms']) for r in witness] == [
+        (2, 1000.0, 500.0), (1, 100.0, 100.0), (0, None, None), (1, 1300.0, 1300.0)]
     other = '02:01:02:03:04:06'
     repeated = parse_packets(row(1.0, a, '0x12345678', 1, station + ',' + station))[0]
     assert repeated['client'] == station and repeated['client_address_fields'] == [station, station]
