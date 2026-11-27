@@ -241,12 +241,34 @@ def subtract(a, b):
     return result
 
 
+def cpu_cost(cpu_ticks, station, elapsed_s):
+    # /proc/stat exports USER_HZ=100 on the arm64 AP. Guest time is
+    # already included in user/nice; callers retain only the first eight fields.
+    require(elapsed_s > 0, "empty measurement interval")
+    busy = sum(sum(v) - v[3] - v[4] for v in cpu_ticks.values()) / 100
+    softirq = sum(v[6] for v in cpu_ticks.values()) / 100
+    irq = sum(v[5] for v in cpu_ticks.values()) / 100
+    packets = station["rx packets"] + station["tx packets"]
+    octets = station["rx bytes"] + station["tx bytes"]
+    return {
+        "elapsed_s": elapsed_s,
+        "busy_core_seconds": busy,
+        "softirq_core_seconds": softirq,
+        "irq_core_seconds": irq,
+        "station_packets": packets,
+        "station_bytes": octets,
+        "busy_ns_per_station_packet": busy * 1e9 / packets if packets else None,
+        "busy_core_seconds_per_station_gbit": busy * 1e9 / (8 * octets) if octets else None,
+    }
+
+
 def compare(before, after):
     a, b = parse(before), parse(after)
     require(a["sta"] == b["sta"] and a["assoc"] == b["assoc"], "station re-associated")
     radio = rx.compare(a["rx"], b["rx"])
     cpu = {}
-    for k, values in subtract(a["cpu"], b["cpu"]).items():
+    cpu_ticks = subtract(a["cpu"], b["cpu"])
+    for k, values in cpu_ticks.items():
         total = sum(values)
         require(total > 0, "empty CPU interval")
         cpu[str(k)] = {"busy_pct": 100 * (total - values[3] - values[4]) / total,
@@ -287,10 +309,12 @@ def compare(before, after):
     if "frequency_khz" in a["extra"]:
         extra["frequency_khz"] = {"before": a["extra"]["frequency_khz"],
                                   "after": b["extra"]["frequency_khz"]}
+    station = subtract(a["sta_counters"], b["sta_counters"])
     return {"radio": radio, "cpu": cpu, "extra": extra,
+            "cpu_cost": cpu_cost(cpu_ticks, station, radio["end_s"] - radio["start_s"]),
             "softirq_delta": subtract(a["softirq"], b["softirq"]),
             "irq_delta": subtract(a["irq"], b["irq"]),
-            "station_delta": subtract(a["sta_counters"], b["sta_counters"]),
+            "station_delta": station,
             "station_rates": {"before": a["rates"], "after": b["rates"]},
             "aql_pending_us": {"before": a["aql"], "after": b["aql"]},
             "tx_delta": {k: subtract(v, b["tx"][k]) for k, v in a["tx"].items()}}
