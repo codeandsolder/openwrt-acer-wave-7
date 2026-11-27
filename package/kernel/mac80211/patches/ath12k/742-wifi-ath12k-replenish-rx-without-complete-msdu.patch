@@ -1,0 +1,34 @@
+From: Joonhoe Kim <26rote@gmail.com>
+Subject: [PATCH] wifi: ath12k: replenish the RX buffers reaped without a complete MSDU
+
+Return descriptors to their owning refill rings even when the batch contains
+no complete MSDU. Purge incomplete skbs rather than leaking them.
+
+Link: https://lore.kernel.org/ath12k/20261016124620.76-1-26rote@gmail.com/
+Fixes: d889913205cf ("wifi: ath12k: driver for Qualcomm Wi-Fi 7 devices")
+Signed-off-by: Joonhoe Kim <26rote@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -786,9 +786,6 @@
+ 
+ 	spin_unlock_bh(&srng->lock);
+ 
+-	if (!total_msdu_reaped)
+-		goto exit;
+-
+ 	for (device_id = 0; device_id < ATH12K_MAX_DEVICES; device_id++) {
+ 		if (!num_buffs_reaped[device_id])
+ 			continue;
+@@ -799,6 +796,11 @@
+ 		ath12k_dp_rx_bufs_replenish(partner_dp, rx_ring,
+ 					    &rx_desc_used_list[device_id],
+ 					    num_buffs_reaped[device_id]);
++	}
++
++	if (!total_msdu_reaped) {
++		__skb_queue_purge(&msdu_list);
++		goto exit;
+ 	}
+ 
+ 	ath12k_wifi7_dp_rx_process_received_packets(dp, napi, &msdu_list,
