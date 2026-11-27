@@ -41,6 +41,11 @@ validate_manifest(){
       (.radio_release|type=="string" and test("^[a-zA-Z0-9_.-]+$")) and
       (.radio_sha256|hashes and length==46 and all(keys[]; test("^(IPQ5332|QCN6432)/hw1[.]0/[a-zA-Z0-9_.-]+$"))) and
       (.module_sha256|hashes and (keys==["ath12k.ko","ath12k_wifi7.ko","cfg80211.ko","mac80211.ko"])) and
+      (if has("full_module_sha256") or has("kernel_notes_sha256") then
+          (.kernel_notes_sha256|hash) and
+          (.full_module_sha256|hashes and length>=4 and all(keys[]; test("^[a-zA-Z0-9_-]+[.]ko$"))) and
+          (. as $m | all($m.module_sha256|to_entries[]; $m.full_module_sha256[.key] == .value))
+       else true end) and
       (.policy_sha256|hashes and (keys==["etc/config/dhcp","etc/config/dropbear","etc/config/firewall","etc/config/network","etc/config/wireless","etc/dropbear/authorized_keys","etc/init.d/wave7-firstboot-failsafe","etc/openwrt_version","etc/shadow","etc/wave7-role-profile","lib/preinit/05_wave7_firstboot_watchdog","lib/preinit/76_wave7_ap_overlay_reset","lib/wave7/overlay-reset.sh","lib/wave7/role-firstboot.sh"]))
     ' "$manifest" >/dev/null || fail 'manifest schema'
     name=$(jq -er .image "$manifest"); sha=$(jq -er .image_sha256 "$manifest")
@@ -145,12 +150,19 @@ verify_runtime(){
     local manifest=$1 prefix=${2:-} target_kernel path got expect group field root
     local -a paths
     target_kernel=$(jq -er .kernel "$manifest")
-    for group in radio_sha256 module_sha256 policy_sha256; do
+    local -a groups=(radio_sha256 module_sha256 policy_sha256)
+    if jq -e 'has("full_module_sha256")' "$manifest" >/dev/null; then
+        groups=(radio_sha256 full_module_sha256 policy_sha256)
+        got=$(remote 'sha256sum /sys/kernel/notes') || return 1
+        [[ $got == "$(jq -er .kernel_notes_sha256 "$manifest")  /sys/kernel/notes" ]] || return 1
+        printf '%s\n' "$got" > "$out/${prefix}kernel-notes-runtime.txt"
+    fi
+    for group in "${groups[@]}"; do
         mapfile -t paths < <(jq -r --arg group "$group" '.[$group]|keys[]' "$manifest")
         expect=$(jq -r --arg group "$group" '.[$group]|to_entries|sort_by(.key)[]|"\(.value)  \(.key)"' "$manifest")
         case "$group" in
           radio_sha256) field=lib/firmware/ath12k ;;
-          module_sha256) field="lib/modules/$target_kernel" ;;
+          module_sha256|full_module_sha256) field="lib/modules/$target_kernel" ;;
           policy_sha256) field='' ;;
         esac
         for root in /rom /; do

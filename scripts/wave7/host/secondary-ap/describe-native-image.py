@@ -3,6 +3,8 @@
 import argparse
 import hashlib
 import json
+import lzma
+import runpy
 from pathlib import Path
 import re
 import shutil
@@ -41,7 +43,7 @@ def fields(path):
     return result
 
 
-def describe(image, sha256, revision, kernel, builder, host_tree, scratch):
+def describe(image, sha256, revision, kernel, builder, host_tree, scratch, closure=None, notes=None):
     require(re.fullmatch(r'r0\+\d+-[a-f0-9]{10}-ap-dhcp-guard8', revision), 'revision format')
     require(re.fullmatch(r'\d+\.\d+\.\d+', kernel), 'kernel version format')
     require(re.fullmatch(r'[a-f0-9]{40}', builder), 'builder format')
@@ -106,10 +108,39 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch):
                 pinned_radio[path] = sha
         require(actual_radio == pinned_radio and len(actual_radio) == 46, 'radio closure differs from pin')
         require(not any(p.is_symlink() for p in radio.rglob('*')), 'radio symlink')
+        diagnostics = {}
+        require((closure is None) == (notes is None), 'kernel closure and notes must be paired')
+        if 'wave7_trial_kernel' in meta:
+            require(closure is not None, 'diagnostic kernel requires full runtime identity')
+            evidence = json.loads(closure.read_text())
+            require(evidence['kernel'] == kernel, 'closure kernel mismatch')
+            require(digest(closure) == profile['trial_kernel_closure_sha256'] ==
+                    meta['wave7_trial_kernel']['kernel_closure_sha'], 'closure pin mismatch')
+            require(digest(t / 'kernel') == profile['trial_fit_sha256'] ==
+                    meta['wave7_trial_kernel']['replacement_fit_sha'], 'diagnostic FIT pin mismatch')
+            require(re.fullmatch(r'[a-f0-9]{64}', profile['trial_kernel_config_sha256']) and
+                    profile['trial_kernel_config_sha256'] == meta['wave7_trial_kernel']['kernel_config_sha'],
+                    'diagnostic config pin mismatch')
+            files = sorted((mods / kernel).rglob('*.ko'))
+            require(all(f.is_file() and not f.is_symlink() and f.parent == mods / kernel for f in files),
+                    'unexpected diagnostic module path')
+            actual = {f.name: digest(f) for f in files}
+            require(len(actual) == evidence['module_count'] and actual ==
+                    {v['filename']: v['sha256'] for v in evidence['modules'].values()}, 'full module closure mismatch')
+            raw_notes = notes.read_bytes()
+            fit = runpy.run_path(str(repo / 'scripts/wave7/host/wmi-transport-lifetime/build-profile-fit.py'))
+            properties = fit['fit_properties'](t / 'kernel')
+            fit['verify_hashes'](properties)
+            raw = lzma.decompress(properties['/images/kernel-1', 'data'], format=lzma.FORMAT_ALONE)
+            require(len(raw_notes) >= 36 and b'GNU\0' in raw_notes and raw.count(raw_notes) == 1,
+                    'kernel notes not uniquely present in FIT Image')
+            diagnostics = dict(full_module_sha256=actual, kernel_notes_sha256=digest(notes))
+        else:
+            require(closure is None, 'unexpected diagnostic identity arguments')
         return dict(image=image.name, image_sha256=sha256, revision=revision, kernel=kernel,
                     builder_commit=builder, fit_sha256=digest(t / 'kernel'), rootfs_sha256=digest(t / 'root'),
                     radio_release=radio_release, radio_sha256=actual_radio, module_sha256=module_hashes,
-                    policy_sha256={p: digest(root / p) for p in POLICY})
+                    policy_sha256={p: digest(root / p) for p in POLICY}, **diagnostics)
 
 
 def main():
@@ -118,10 +149,12 @@ def main():
         parser.add_argument('--' + arg, required=True, type=Path)
     for arg in ('sha256', 'revision', 'kernel', 'builder'):
         parser.add_argument('--' + arg, required=True)
+    parser.add_argument("--kernel-closure", type=Path)
+    parser.add_argument("--kernel-notes", type=Path)
     args = parser.parse_args()
     require(not args.output.exists(), 'manifest already exists')
     data = describe(args.image, args.sha256, args.revision, args.kernel, args.builder,
-                    args.host_tree, args.scratch)
+                    args.host_tree, args.scratch, args.kernel_closure, args.kernel_notes)
     args.output.write_text(json.dumps(data, sort_keys=True, indent=2) + '\n')
     print('NATIVE_IMAGE_MANIFEST_PASS', args.revision, args.kernel, args.sha256)
 
