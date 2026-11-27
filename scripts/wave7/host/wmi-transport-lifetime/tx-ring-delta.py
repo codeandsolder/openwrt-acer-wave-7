@@ -52,6 +52,36 @@ def compare(before, after):
                 drained=b['pending'] == 0)
 
 
+
+def completion_irqs(text):
+    """Physical AHB interrupt lines 1..4 correspond to logical TCL 0..3."""
+    lines = text.splitlines()
+    if not lines:
+        raise ValueError('empty interrupt snapshot')
+    cpus = lines[0].split()
+    if not cpus or not all(re.fullmatch(r'CPU\d+', cpu) for cpu in cpus):
+        raise ValueError('missing interrupt CPU columns')
+    counts = {}
+    for line in lines[1:]:
+        if m := re.fullmatch(r'\s*\d+:\s+(.*?)\s+wbm2host-tx-completions-ring([1-4])\s*', line):
+            ring = int(m[2]) - 1
+            fields = m[1].split()
+            if ring in counts or len(fields) < len(cpus) + 1:
+                raise ValueError('duplicate or invalid completion IRQ')
+            counts[ring] = sum(map(int, fields[:len(cpus)]))
+    if counts.keys() != set(range(4)):
+        raise ValueError('missing completion IRQ')
+    return cpus, counts
+
+
+def irq_delta(before, after):
+    a_cpu, a = completion_irqs(before)
+    b_cpu, b = completion_irqs(after)
+    if a_cpu != b_cpu or any(b[i] < a[i] for i in a):
+        raise ValueError('interrupt counter discontinuity')
+    return {i: b[i] - a[i] for i in a}
+
+
 def selftest():
     base = '96f67cfc-e011-49e1-aff7-1832e25fcf3e\n1.0 2.0\n' + DEVICE + '\ntx_enqueued: 0:0 1:0 2:0 3:0\ntx_completed: 0:0 1:0 2:0 3:0\nradio0 tx_pending: 0\n'
     good = base.replace('1.0 2.0', '2.0 4.0').replace('3:0', '3:10')
@@ -67,6 +97,16 @@ def selftest():
             pass
         else:
             raise AssertionError('accepted invalid snapshot')
+    irq = ' CPU0 CPU1 CPU2 CPU3\n' + ''.join(f'{60+i}: 0 0 0 0 GIC-0 {479+i} Edge wbm2host-tx-completions-ring{i+1}\n' for i in range(4))
+    more = irq.replace('63: 0 0 0 0', '63: 1 2 3 4')
+    assert irq_delta(irq, more) == {0: 0, 1: 0, 2: 0, 3: 10}
+    for invalid in (irq.replace('ring4', 'ring3'), irq.replace(' CPU3', '')):
+        try:
+            irq_delta(irq, invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('accepted invalid IRQ snapshot')
     print('TX_RING_DELTA_SELFTEST_PASS')
 
 
@@ -76,13 +116,19 @@ if __name__ == '__main__':
     p.add_argument('after', nargs='?', type=Path)
     p.add_argument('--selftest', action='store_true')
     p.add_argument('--require-ring3', action='store_true')
+    p.add_argument('--irq-before', type=Path)
+    p.add_argument('--irq-after', type=Path)
     a = p.parse_args()
     if a.selftest:
         selftest()
     elif a.before and a.after:
         report = compare(a.before.read_text(), a.after.read_text())
+        if bool(a.irq_before) != bool(a.irq_after):
+            p.error('provide both IRQ snapshots')
+        if a.irq_before:
+            report['irq_delta'] = irq_delta(a.irq_before.read_text(), a.irq_after.read_text())
         print(json.dumps(report, indent=2))
-        if not report['drained'] or (a.require_ring3 and not report['ring3_exercised']):
+        if not report['drained'] or (a.require_ring3 and (not report['ring3_exercised'] or report.get('irq_delta', {}).get(3, 0) <= 0)):
             raise SystemExit(1)
     else:
         p.error('provide both snapshots or --selftest')

@@ -566,7 +566,6 @@ for band in "${bands[@]}"; do
             snapshot_rx > "$prefix.ring3-before.txt"
             remote 'taskset -c 3 ping -I br-lan -c 30 -i 0.1 -W 1 192.168.76.145' > "$prefix.ring3-ping.txt" 2>&1 || cases_failed=1
             snapshot_rx > "$prefix.ring3-after.txt"
-            uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.ring3-before.txt" "$prefix.ring3-after.txt" --require-ring3 > "$prefix.ring3-delta.json" || cases_failed=1
         fi
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
@@ -621,7 +620,9 @@ for band in "${bands[@]}"; do
     fi
     snapshot_rx > "$prefix.rx-after.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-after.txt"
-    uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.tx-ring-delta.json" || cases_failed=1
+    ring_args=()
+    if (( ap_ring3_probe )); then ring_args=(--require-ring3); fi
+    uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" --irq-before "$prefix.irq-before.txt" --irq-after "$prefix.irq-after.txt" "${ring_args[@]}" > "$prefix.tx-ring-delta.json" || cases_failed=1
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
     result_file=short-hold-result.txt
