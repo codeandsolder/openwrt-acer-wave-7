@@ -25,7 +25,7 @@ case "$original" in 0|1) ;; *) exit 2 ;; esac
 # AQL pending is an independently sampled set of atomic counters. Do
 # not demand their sum match mid-flight: the snapshot isn't atomic.
 sample(){
-    vo= vi= be= bk= bc= total=
+    vo='' vi='' be='' bk='' bc='' total=''
     while read -r ac value unit rest; do
         [ "$ac" != AC ] || continue
         [ "$unit" = us ] && [ -z "$rest" ] || return 1
@@ -85,7 +85,8 @@ read -r enabled < "$phy/aql_enable"
 [ "$enabled" = "$requested" ]
 printf 'AQL_PROFILE_READY boot=%s enabled=%s original=%s seconds=%s\n' "$boot" "$enabled" "$original" "$seconds"
 read -r now _ </proc/uptime
-end=$(("${now%.*}" + seconds))
+whole=${now%.*}
+end=$((whole + seconds))
 while :; do
     check_boot
     read -r enabled < "$phy/aql_enable"
