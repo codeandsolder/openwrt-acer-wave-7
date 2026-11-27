@@ -3,13 +3,13 @@
 # Run only after the independently verified native primary-UMAC boot soak.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261127-ahb-tx-completion-irq
+base=/home/jan/firmware/wave7/trials/20261127-ipq5332-wbm-route
 lab=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $1 == "$base"/runs/ahb-tx-completion-irq-native-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $1 == "$base"/runs/wbm-route-native-* ]] || fail 'expected verified trial run'
 run=$1
 shift
 bands=(5 24)
@@ -163,7 +163,7 @@ acquire_lab_lock
 [[ $(id -un) == jan && -s $run/known_hosts ]] || fail 'host identity'
 boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
 rev=$(jq -r .revision "$base/report.json")
-[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-8b8a3f32c2-ap-dhcp-guard8 ]] || fail 'trial identity'
+[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-6ce0c4af3e-ap-dhcp-guard8 ]] || fail 'trial identity'
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
 printf "%s\n" "$variant" > "$out/client-variant.txt"
@@ -399,6 +399,7 @@ for band in "${bands[@]}"; do
         done
     fi
     snapshot_rx > "$prefix.rx-before.txt"
+    remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.rx-before.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
@@ -564,6 +565,7 @@ for band in "${bands[@]}"; do
             cases_failed=1
         else
             snapshot_rx > "$prefix.ring3-before.txt"
+            remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.ring3-before.srng.txt"
             # MLO unicast goes through the QCN6432 primary UMAC even
             # when only client link0 is active. Link-local multicast
             # exercises the per-link group TX path on both radios.
@@ -574,6 +576,7 @@ for band in "${bands[@]}"; do
             # Replies to group ICMP are optional; require actual ring3
             # submission, completion, IRQ delta and drain below instead.
             snapshot_rx > "$prefix.ring3-after.txt"
+            remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.ring3-after.srng.txt"
         fi
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
@@ -627,6 +630,7 @@ for band in "${bands[@]}"; do
         exit 1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
+    remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.rx-after.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-after.txt"
     ring_args=()
     if (( ap_ring3_probe )); then ring_args=(--require-ring3); fi
