@@ -34,8 +34,10 @@ def main():
     assert function.index('tx_desc->skb = skb;') < function.index('atomic_inc(&dp_pdev->num_tx_pending);')
     assert 'tx_desc->skb = NULL;' in common
     assert 'if (tx_desc_info->skb_ext_desc)' in (root / 'dp.c').read_text()
-    assert tx.count('if (desc_params->skb_ext_desc)') == 2
-    assert common.count('if (desc_params->skb_ext_desc)') == 1
+    retire = one(tx, r'^static void ath12k_wifi7_tx_retire\(.*?^\}')
+    assert 'if (params->skb_ext_desc)' in retire
+    assert retire.count('dma_unmap_single(') == 2
+    assert 'if (skb_cb->paddr_ext_desc)' not in tx + common
     # Compile actual control-flow fragments, with explicit fake device ownership.
     code = r'''
 #include <assert.h>
