@@ -1,0 +1,319 @@
+{
+  "parent_sha": "984349c903be8c2537528a373becc197d6f60cb57bb93eff6bd970ae9208d3ad",
+  "parent_rev": "r0+39019-82208fefc6-ap-dhcp-guard8",
+  "parent_builder": "82208fefc6c1441c83a6502b34a1c057988500d2",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath.ko": [
+      "02b11ba16e01baa8657db357dc3ed92a14a579fb5e879eedbc40c7164fc9aa1c",
+      "02b11ba16e01baa8657db357dc3ed92a14a579fb5e879eedbc40c7164fc9aa1c"
+    ],
+    "ath12k.ko": [
+      "70c0e1027c8c157add9074e2db0269f12aa372e00c6c97d54cad58f5fddfcd47",
+      "a86749226040d8c7b2a2502f1aa2a5fe4b3b718b4cb826d6535cccdce55006c1"
+    ],
+    "ath12k_wifi7.ko": [
+      "329597a6e3fd736c043d21391e578734032056052df1a78316314ecabe754ee1",
+      "e2496d58378a9dbd8bd7ec4a245f6a80c326282d4c0cbd73b0842a5b14f25bb4"
+    ],
+    "cfg80211.ko": [
+      "53336fcea31091eecb277dba89052713c395ba2a7a6ebfabd3c105ed877956a3",
+      "270d53ab1f8e68844e88e92f92828a68e691bf13781cacc8aa864a5deb08f78d"
+    ],
+    "cmac.ko": [
+      "f41f2ed59a83a00d2d6a34b017d7739d08e151f3e89d6390b500d24da0e64f60",
+      "a95ec80eaab5c2d39193fed3f8ecf284c76828d18671795d14347f1da6acc7b7"
+    ],
+    "compat.ko": [
+      "ea2cece16d2aa51ccf8f420a009e3e590fd81c902e8629886a3437481e55db32",
+      "61fe3f754260060db05e4ce7facadf715ef8a2bf3825fd198dcfe7b8cee0dae4"
+    ],
+    "crc32c-cryptoapi.ko": [
+      "2eb3777125fe5988f08f60877b90f829b27a90a9a24fbe78c44469098b1778b7",
+      "aea39bbbfd21f9b45f76ef5e6efecd3abc6a4f5b2051dfb0435d908cc43b4631"
+    ],
+    "crc-ccitt.ko": [
+      "ac9bb80b5d70a04f33ed5d70bb16cf2fc54b11a6a4c17c1037875aaf62878232",
+      "ac9bb80b5d70a04f33ed5d70bb16cf2fc54b11a6a4c17c1037875aaf62878232"
+    ],
+    "drbg.ko": [
+      "c70e3ae9057e99a9ec528cc35295efd93023ac93061dd44e6cb12d9a8b27aa4f",
+      "e187943a4c5859429bce937d1c9931a3938b887defef153fc1a8f5f0168f444b"
+    ],
+    "dwc3.ko": [
+      "91de144e74fab43c0af28b30c361d167df16c568b1108a323913e8da95787c83",
+      "add058541b932f2a7cacf6e6da2d101533b56ff2c0f391eaf5af3f7e514a9802"
+    ],
+    "dwc3-qcom.ko": [
+      "da8d2ba773c470c950d7c73e77c62d3c2609032419630e56c3b2eac9beea87b6",
+      "36b884a4cd36436359776108c8e2c91bb76dc55c9e9c832d0a5425b7f313c714"
+    ],
+    "dwc3-qcom-legacy.ko": [
+      "70b87837686e35aea2f333b8e22728b174b7a8f55a63edbe28a5b0e95e402254",
+      "85e7cd1fd07a03346d979665be77d3382ecc421722a3762b46cade506b6344c7"
+    ],
+    "ext4.ko": [
+      "9ed780f61e12274a24ff54e32611f173ee3078ec6289dafb7f8ded2c5a2a0fa7",
+      "3dc1f8aed81288292b5744f3a1f3e11dad7a98a0a1a4492e785991276bf3e329"
+    ],
+    "geniv.ko": [
+      "f5e17846f00ef144f572f25831db305e3a3b2ce0c24d1eea64d3c111f6677a6d",
+      "f5e17846f00ef144f572f25831db305e3a3b2ce0c24d1eea64d3c111f6677a6d"
+    ],
+    "gpio-button-hotplug.ko": [
+      "ff553998bee822115e3bd8b3e43753df217f3412ba5e0e2e512c4090db711901",
+      "76f2b6a432b8750d4d33c45fd817db3e5bf2e570ea6f4a206901858892dd21ae"
+    ],
+    "hmac.ko": [
+      "67c6bc8ef1527465c789d7ba67d73010144a0ea3ba37166946cbae428cc9530f",
+      "8c3ca05c07245f3d162d16060eac2b11eb359fca14b0bd7a91756ecbccae27af"
+    ],
+    "jbd2.ko": [
+      "13dd78c8b3be4b720a8441646eb2a5f2484d79133d75c89f9a9b4984be25e63b",
+      "a1bcef867324c8dafdf80838547609e74cd0c92e9aed3ea8258b6d7d64b5ef74"
+    ],
+    "jitterentropy_rng.ko": [
+      "d1be1e0b89684fee2f686f7999adf534e056f4799567ec294072ef5b0feaa042",
+      "e78914f6cc2e68449979ff3b33a69edc9b9d32c5a3a2a22fe2f2e78a72446f7c"
+    ],
+    "leds-gpio.ko": [
+      "f707bac0e1e673604e5c2b5b978bf3a16bf392d29cd2fdea4a6bc961ea77e470",
+      "ca392bed44bb2f23f35524119833e429edcb59ca160626f1a672f612d2be6ca3"
+    ],
+    "libsha512.ko": [
+      "1a615baf99108b7c776dcc1e3f1656c6bcd7394013ab976d965515244e68a92a",
+      "f76eaa7654942087b8f1fbf963977240984395965d8ff40f9d0c0287bf527c79"
+    ],
+    "mac80211.ko": [
+      "0172d6ea87a1721a8330911076109dcd82233f8e9d6528745c4b4f1cce97a7ff",
+      "47bfd0917be50ee45ce481c42e3255a96e3fbb239697198f6cced8e2c1fee5f3"
+    ],
+    "mbcache.ko": [
+      "ed7de3d2d4acbcd752996b42cb118ce817828772ab0d19e9e8a98bbc650769e9",
+      "70416a782dd925366c57a9c65573455ab052b47acf6ea9bd7ed51d4e948e3f62"
+    ],
+    "mhi.ko": [
+      "f1838efc25c2226e3ab425ae2ee1970147a6d5c4117916da70c618915f850cf0",
+      "cc596a110e43b1a02471d5bf42f7cfab33303bdaf371a33ffb800498855cfa22"
+    ],
+    "michael_mic.ko": [
+      "953976e2f7ae801700fcefc02a5235db8621c266e9d12b720c8e21af544c5d6b",
+      "19a12f3962b5bfb558f2360f77c02956c4caaebe5f0e8d96895dfaa445d15ec7"
+    ],
+    "nf_conntrack.ko": [
+      "fa66ef213f6b6a576c9bd2e8b84e2ccdfcf53c775eab03a52b2cf2e4c148d0a7",
+      "98006e761754ff339ea94ec697d0425335184d114c64c066a9ec9725d78a74b2"
+    ],
+    "nf_defrag_ipv4.ko": [
+      "d3df48abd9f3fa677ebb346e4e4a7c8f2b91f47ca5e4f4546ef2944b49ccfb4f",
+      "3c306ab79ebbc9d2d88773ca64d48d4c9cd2caf2cae6b4cbfe89cd48e9cf3db9"
+    ],
+    "nf_defrag_ipv6.ko": [
+      "39caecc0afd39594be230c17aafa76d334e24e289784db4d6adb2610c0733beb",
+      "1a058506802c72f666dedeec69a15cb7bc861d7c66a021f28cf492634442db8d"
+    ],
+    "nf_flow_table.ko": [
+      "f9f0fc667b3df222bb8f754c91109d6cba88e58b814eae2f9bc81fce46c93c3b",
+      "441d9d7ed7edc5384872a18a253296e3fb0bce03956a89acfccf4d59eb45fa8d"
+    ],
+    "nf_flow_table_inet.ko": [
+      "7579e305e5197996f4ed2848736dc4585f657370679fac8eaba99421154416f8",
+      "f867a1c8d2257b1b3d16f9a30c5a632af8563b929682b1dbf0d9395ca152a58a"
+    ],
+    "nf_log_syslog.ko": [
+      "de7c3939f5b7165239c90dcd05b50129878eda7d12d7caed404070a08f2d65f3",
+      "fc1729d361ff409d02259d275adc236504226251baecd365ec6e39a59dd12aa3"
+    ],
+    "nf_nat.ko": [
+      "eaff9f54f4a3128acef7338ef6096e607dac3698e0d9fe6199b3a1e55ce89b5a",
+      "1af4035b16c6b49b6d865414fc0e58c4f2e8fa08ae29eb933528e2786210cd2d"
+    ],
+    "nf_reject_ipv4.ko": [
+      "896ba732be29f3edb5c5d528af83ed19f55200e1276deca28a17d5807d339ce6",
+      "896ba732be29f3edb5c5d528af83ed19f55200e1276deca28a17d5807d339ce6"
+    ],
+    "nf_reject_ipv6.ko": [
+      "37888fd97b698f7b93be12363a649e300bd62c12042b71c4195fad263793142a",
+      "37888fd97b698f7b93be12363a649e300bd62c12042b71c4195fad263793142a"
+    ],
+    "nf_tables.ko": [
+      "42a5f10b76cc4e29ee5a1336c2ca91bc8c0c5941947eb49500b02de3e6f3ae87",
+      "441cc9b2d33a29fe86023227c99075e735c8c2a0140b2df9d54ca69fcc9df1b0"
+    ],
+    "nfnetlink.ko": [
+      "423df13c9612aa988073b74200c5a124f10696ea9d210dffd22999b29cc16030",
+      "bb94052451f28de766c144fea934f0e0b86c84134f059a12563948cfbe975cc2"
+    ],
+    "nft_chain_nat.ko": [
+      "efef4d3d46c5dff276fddab0ca1c9d19f37e674e56fe133ebc5dbca176915d5a",
+      "589a324c3088f8ee2ff810c57e95f1ad1c1d69f4fcfe96ad7e7f6674c97c4b06"
+    ],
+    "nft_ct.ko": [
+      "0cb67d8dbf87bff622270fdf4f313c842cf3709f696df7569df6d2b2dd67d361",
+      "8079ce0524c997fb1db639d6cbf6de78ebe084a41f89ae27e8b3e6757835824e"
+    ],
+    "nft_fib.ko": [
+      "891ca88073ca734157d8c202638ed3e82e2c35512ed5204683b0c85a401d6243",
+      "891ca88073ca734157d8c202638ed3e82e2c35512ed5204683b0c85a401d6243"
+    ],
+    "nft_fib_inet.ko": [
+      "2699fc4ef0863d46237b01d50290c2194745fa4bf24acd4dca1545ac04f4e8a9",
+      "6d92a5bcdef4b24b731e8dbe6e9ce13904f13e5716deb825a0267797fdccc864"
+    ],
+    "nft_fib_ipv4.ko": [
+      "d1a19d199f19707a43ea661cc8ea5cbf8ee5395b7ac6194e13266b0eb54d662f",
+      "3b05a3a781a87284e08f6e0e543efb8518169217f6d0e940cf117d2d6af54583"
+    ],
+    "nft_fib_ipv6.ko": [
+      "50ec9dd114a89fd156dfd863770dc7e78f94619982c29c1d0e463bb46a94bb12",
+      "f47440d05c0cc5e41fc36b893d2913dfa02de02a009f64597be589a41482efd5"
+    ],
+    "nft_flow_offload.ko": [
+      "a4d3bae60ca9a0e3c844e6369eee92ba2b008bb602ffe9455e51792cd5c4cc0c",
+      "316c71f14be2c61fa981c67aee02183d52ccabb85423ccc1b603b1d4fd24d7ed"
+    ],
+    "nft_hash.ko": [
+      "61e036983345911ac89eeed7b5bf9668ee33430ba1838cc03a698e13f4e0a5d2",
+      "777e23aa718250d70cd3b10c663852ccb99f65e9fb992b70b6dec801d6d3c058"
+    ],
+    "nft_limit.ko": [
+      "f5c84696647567ac9a2174e75ec00729d75ed9d7be275274b535bd2e0b6e8ea6",
+      "352891cf55b6975e9c8324df65410595026a806269f025ee841ac9a2fec61fee"
+    ],
+    "nft_log.ko": [
+      "19ec26e0c2812e1371211fe25125ea42117d4d96c54c947c4ef413345df7a4e1",
+      "6c20fe0605f01ddef2703ebd05e5904c31dea3750fbaf21a06e953c57b9bc1e3"
+    ],
+    "nft_masq.ko": [
+      "2416a9cee3a8d6d5b03dfd0ec76f0ae38c006a61f3b3b3c86b098ce9e2d9121c",
+      "a4b5617772e3facaff4bccd8aa7c279c91c189057a7b267657ccd20457e8f18e"
+    ],
+    "nft_nat.ko": [
+      "761d7790325959e7318cf374e3881526e01b5f2a074b7955a1c30346768e3516",
+      "35ead6e8f30516afad5ffafbb339a35dbc5320b4b6c5fdb843667b2777515d94"
+    ],
+    "nft_numgen.ko": [
+      "37661dfd6169035ab672cf4d047a9f37f49973fb56ece69229fcb5e542c18e06",
+      "ca00c0d2bff097b25770a382341678eb4c93f6f922ae6f556dca45d6fd394756"
+    ],
+    "nft_quota.ko": [
+      "ab03518b9081c1017f3b94e38344fb15dc0c6279211fa88a00c25bc3efa39bba",
+      "6fa08d0ad016c2b0fccd28c0a6352874459ea123a948835184a3a7a8713d6e89"
+    ],
+    "nft_redir.ko": [
+      "6f1a576a3191341bfd03c9b31d0b41a5e46eda87b07836999c165933494aeb21",
+      "a290cc6fc4231c25f89917c32ea6f8f53c6a1322a82b088f8f04a3de206d9154"
+    ],
+    "nft_reject.ko": [
+      "b01b687ac457865981bc74aad0b78924c7175ed7ebccf0d633bb86dc75866667",
+      "b01b687ac457865981bc74aad0b78924c7175ed7ebccf0d633bb86dc75866667"
+    ],
+    "nft_reject_inet.ko": [
+      "223fa9c8f617afee6239947c209f2fa1ec918cebbf71e776dade3d721c44c995",
+      "97abfb75d0f8517f4c0cb80c19f03e664fd9832b4148c99b6cc3b66f1cbf716a"
+    ],
+    "nft_reject_ipv4.ko": [
+      "938cc63691cbf4fdd3b4d877206d32d5b41a3649dc46853b5cfd908ed22cc29d",
+      "ac4b4e986c58b908c939b3b8bcf16303eec093592f45120277a91eaffdc958d0"
+    ],
+    "nft_reject_ipv6.ko": [
+      "797035cfab78f8470e5aef22e30fe5d5fc69e4d89a479a24413a25aebf11d5c0",
+      "aeba78f8d6e75c5170bf0907e444a357c683045cabd0603fcae4832e2cc25f71"
+    ],
+    "pcs-qcom-ipq9574.ko": [
+      "a1df84a3340bdf538ce8cd64c910f67da984729ef1baad3f531c738c805c50da",
+      "b4052a1842c4c0669a6fe9dc0e6a1724b5bd0e875d2f3f92f53bffff299418dd"
+    ],
+    "ppp_async.ko": [
+      "95249461100277d896c6f57eb78d0be3dcbcfd6a9557e78ed235eb4bf1d90954",
+      "e896368d42618e78766e78a0b9c9d20eb69383ed4a89c0b4232f053236074cab"
+    ],
+    "ppp_generic.ko": [
+      "09d10fa3e72c42c20af71e049de3cc5711d9e401f708fc1d7066eeae86bef20b",
+      "9b9e22207eaa1574b22315aa9ed5f7d247ad881de08f05523f1205dc9d073e6a"
+    ],
+    "pppoe.ko": [
+      "0aaa88224f7f2d1b9115dc52a9961923aac95897c617563a29afbfee005271fd",
+      "2752b042e46d4a754e01c754c659a75fc534b5122f3f2fee447bb7e59bbbaf3c"
+    ],
+    "pppox.ko": [
+      "f9d1d314b3495fee8d1cc45373cd80ca5bcb307bee74adc0ef6c964b277b7cdf",
+      "eeedf564c2e59baf6a540b548ada9bfda3232d5dbc945d79176f0c302cbcd7e9"
+    ],
+    "qcom-ppe.ko": [
+      "9ff9b4bc69774114733c8489d6aeb958227d058b2eeda19f11402cb49e87d6de",
+      "b5d0e51640e19991917ce19f4a8719673aafad3caefc6a135c3fe47817563097"
+    ],
+    "qmi_helpers.ko": [
+      "4670105958f65fbe4fed38348dcf259cc66b04caa2d26a0608ddd190b8a57be8",
+      "4670105958f65fbe4fed38348dcf259cc66b04caa2d26a0608ddd190b8a57be8"
+    ],
+    "qrtr.ko": [
+      "295b4ee3c4dee604fc6ba060746b35d1c91409b6ec64ded42502032b1454645f",
+      "ab0ead2092fde50288a9a3628d7777d81126a583b88579ccc9cf6c3bf50fbc46"
+    ],
+    "qrtr-mhi.ko": [
+      "f1f969e503d7b2e7bf0e7e1f2ffc25daecf6c52c190b7a211b4d61dd978b9553",
+      "d43471ee1ffc9dd2c3b8c4d3b6a5eaaf1bfda42c4d8bce4cdbe0963c0957a906"
+    ],
+    "qrtr-smd.ko": [
+      "535089fce95b928d26cb4d7ed6b37c34e89db72db59a01be0b30b736e665597e",
+      "f3341348940e75bbd81e83292cc189af9d5e295a07dccc0bc0fe496462124e80"
+    ],
+    "realtek.ko": [
+      "6fd42698f36f1faae1def39cf5ad52e910f58c3b7252a2ca0c6b78f019283b98",
+      "8b72ab4a421aaf614c9d8eb8023a8db3ce30d58245a6cd4e141e4fab67c5cf2c"
+    ],
+    "realtek_dsa.ko": [
+      "dfb0d73d05c2148be85cacc0a967e77ad1f5798a35d08eb5d8ff4e21deb96465",
+      "dfb0d73d05c2148be85cacc0a967e77ad1f5798a35d08eb5d8ff4e21deb96465"
+    ],
+    "roles.ko": [
+      "cad31b92e0ddd30f222d7c8ab91236534a888e3b7efed8335a3a33196aeaec61",
+      "dd4279ae658a6f8644c12fb6a5805abded0d8417e48bae927645436a1acd03eb"
+    ],
+    "rtl8365mb.ko": [
+      "a4f11664f480de1734793dbb2cb35863df2032244f7e6f3e1cabae2428c6493a",
+      "fa9f2c0bc9297dd15c2a29d2dc4de284f3eec734c7af6c39294e10a8cc62572b"
+    ],
+    "seqiv.ko": [
+      "0e873cdeb4893c5ed3e1cb79e9764777fb2b7c92a4470291214894d6ee6eff3b",
+      "445cfca06065d18b141b420cef7d73804bbc26d596c3e9f5419909c2cbb3f9fb"
+    ],
+    "sha3_generic.ko": [
+      "af35a17b074952f92bdc5176e875754e0956cfb8267a29d02647f77ccc1a628c",
+      "73a662f8aa9c8391c5b4221dee6885e2a6ae1a0acb642bab6173e35c95db587b"
+    ],
+    "sha512.ko": [
+      "4671e0b5dececa2d9c459d610fba95659b7ad9aacda2f35f3ded58cbc3fe88f6",
+      "43274cd51fab998a8364aa029e8feff393c24db83e2d7e84c29e0a47f47f1766"
+    ],
+    "slhc.ko": [
+      "3e5924228bb00fcb278bf8edc12cfb584d79f265d4a1317c3d85a8dca57a88e2",
+      "3e5924228bb00fcb278bf8edc12cfb584d79f265d4a1317c3d85a8dca57a88e2"
+    ],
+    "tag_rtl8_4.ko": [
+      "46fb5b859915e2e817c42a06c80da5fa3412ee5132389774396357fc54398d4a",
+      "4c15ceb1d2629c0aa84aec738cd818f4f4350e8ec8876b9eac04667fde243534"
+    ],
+    "xhci-hcd.ko": [
+      "b06ce9fb8b15e1e650a0d07ae9e879622fd550e235155cd510a6ed72e08bd787",
+      "e10dacf1c85c47ee022081e99efdec769b5c7b35f929d8bfdb3473eb200d2c68"
+    ],
+    "xhci-pci.ko": [
+      "dbb12b537743edea4487377a5aa9d8f2ae93d5db31f428195e5a26d87f7f2dd3",
+      "21507a114d249125ab8f3df110e39328e970103c4b8a5eee9b0c78189f1ee808"
+    ],
+    "xhci-plat-hcd.ko": [
+      "603aaec281f773d574cd0d0b354f5826d82400379bf1e2e6f764e4e7198f72f7",
+      "fc58b252c2828d77d9e3ab6346f3e87c6e4be9e254edff9281eb6e12c8e4d4a7"
+    ]
+  },
+  "patch_commit": "88ff2affaf3b75094ae155710fc17b0c2025d6d6",
+  "patch_key": "trial_pmu_profile_commit",
+  "filename": "wave7-rebase-pmu-profile-dhcp-guard8-sysupgrade.bin",
+  "replacement_fit_sha": "452e841dd8da67c2f3a7ca4e6e362d67def8da01cba346b294046b0e9bfe369a",
+  "kernel_closure_sha": "5282689e12f8bbb18cc7fd76312bd30ae945d60c187da4c107f9a7e59467203c",
+  "kernel_config_sha": "eb2065ca1b3ec0b7d2201cee5069e4c2af684663a5689c4ff0881504e1bff4bb"
+}
