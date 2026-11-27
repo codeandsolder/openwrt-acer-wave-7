@@ -3,13 +3,13 @@
 # Run only after the independently verified native primary-UMAC boot soak.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261127-ipq5332-wbm-route
+base=/home/jan/firmware/wave7/trials/20261127-wbm-route-tx-ownership
 lab=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $1 == "$base"/runs/wbm-route-native-* ]] || fail 'expected verified trial run'
+[[ $# -ge 1 && $1 == "$base"/runs/wbm-route-tx-ownership-native-* ]] || fail 'expected verified trial run'
 run=$1
 shift
 bands=(5 24)
@@ -163,7 +163,7 @@ acquire_lab_lock
 [[ $(id -un) == jan && -s $run/known_hosts ]] || fail 'host identity'
 boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
 rev=$(jq -r .revision "$base/report.json")
-[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-6ce0c4af3e-ap-dhcp-guard8 ]] || fail 'trial identity'
+[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-6660d8c88d-ap-dhcp-guard8 ]] || fail 'trial identity'
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
 printf "%s\n" "$variant" > "$out/client-variant.txt"
