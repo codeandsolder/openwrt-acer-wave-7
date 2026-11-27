@@ -415,8 +415,12 @@ host_cc_id = $(if $(filter undefined,$(origin __host_cc_id)),$(eval __host_cc_id
 ifneq ($(CONFIG_EXTERNAL_SCCACHE),)
   TARGET_CC:= sccache $(TARGET_CC)
   TARGET_CXX:= sccache $(TARGET_CXX)
-  HOSTCC:= sccache $(HOSTCC)
-  HOSTCXX:= sccache $(HOSTCXX)
+  # Host staging aliases can themselves be strict cache wrappers. Pass the
+  # explicitly configured real drivers to sccache, never another wrapper.
+  EXTERNAL_SCCACHE_HOST_CC:=$(call qstrip,$(CONFIG_EXTERNAL_SCCACHE_HOST_CC))
+  EXTERNAL_SCCACHE_HOST_CXX:=$(call qstrip,$(CONFIG_EXTERNAL_SCCACHE_HOST_CXX))
+  HOSTCC:= sccache $(EXTERNAL_SCCACHE_HOST_CC)
+  HOSTCXX:= sccache $(EXTERNAL_SCCACHE_HOST_CXX)
 else ifneq ($(CONFIG_CCACHE),)
   TARGET_CC:= ccache $(TARGET_CC)
   TARGET_CXX:= ccache $(TARGET_CXX)
