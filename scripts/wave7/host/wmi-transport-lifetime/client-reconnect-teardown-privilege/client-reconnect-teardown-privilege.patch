@@ -1,0 +1,22 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -2628,8 +2628,18 @@
+ 		mt792x_mutex_acquire(dev);
+ 		mconf = rcu_dereference_protected(mvif->link_conf[mvif->deflink_id],
+ 						 lockdep_is_held(&dev->mt76.mutex));
++		/* A cached absence event is not a channel grant. In particular,
++		 * a reused MLO BSS can report present while firmware defers
++		 * protected teardown TX until the token expires. Obtain the
++		 * existing-band privilege for every dual-link teardown; keep
++		 * the normal absence-driven policy for other management TX.
++		 */
+ 		if (mconf && (vif->active_links & BIT(mvif->deflink_id)) &&
+-		    mconf->mt76.ctx && READ_ONCE(mconf->absent) &&
++		    mconf->mt76.ctx &&
++		    (READ_ONCE(mconf->absent) ||
++		     (hweight16(vif->active_links) > 1 &&
++		      (info->subtype == IEEE80211_STYPE_DEAUTH ||
++		       info->subtype == IEEE80211_STYPE_DISASSOC))) &&
+ 		    mconf->mt76.band_idx < MT792x_BAND_NUM)
+ 			mt7925_set_roc(mvif->phy, mconf, mconf->mt76.ctx->def.chan,
+ 				       duration, MT7925_ROC_REQ_OFFCHNL_TX);
