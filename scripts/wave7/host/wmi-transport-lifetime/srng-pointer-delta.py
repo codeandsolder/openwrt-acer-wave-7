@@ -52,10 +52,10 @@ def parse(text):
     return lines[0], uptime, (rx, rx_rbm, rx_buf), mapping, rings
 
 
-def compare(before, after, counter_before, counter_after):
+def compare(before, after, counter_before, counter_after, device=tx.IPQ):
     boot, start, rx, mapping, a = parse(before)
     boot_end, end, rx_end, mapping_end, b = parse(after)
-    counter = tx.compare(counter_before, counter_after)
+    counter = tx.compare(counter_before, counter_after, device)
     if boot != boot_end or boot != counter['boot'] or not start < end or rx != rx_end or mapping != mapping_end or set(a) != set(b):
         raise ValueError('incomparable SRNG snapshots')
     # The counter and ring snapshots are adjacent SSH calls; permit movement
@@ -121,6 +121,7 @@ def selftest():
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--selftest', action='store_true')
+    p.add_argument('--device', choices=(tx.IPQ,tx.QCN), default=tx.IPQ)
     p.add_argument('before', type=Path, nargs='?')
     p.add_argument('after', type=Path, nargs='?')
     p.add_argument('counter_before', type=Path, nargs='?')
@@ -129,7 +130,7 @@ def main():
     if a.selftest:
         selftest()
     elif all((a.before,a.after,a.counter_before,a.counter_after)):
-        print(json.dumps(compare(*(v.read_text() for v in (a.before,a.after,a.counter_before,a.counter_after))), indent=2))
+        print(json.dumps(compare(*(v.read_text() for v in (a.before,a.after,a.counter_before,a.counter_after)), device=a.device), indent=2))
     else:
         p.error('provide ring and counter snapshot pairs or --selftest')
 
