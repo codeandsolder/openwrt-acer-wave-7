@@ -278,7 +278,7 @@ case "${1:-}" in
         if [[ $restoring == 1 ]]; then
             [[ $gotrev == "$rollback_rev" ]] || { sleep 3; continue; }
             if [[ $(value "$state" keep) == 0 ]]; then
-                "$attestor" --run "$router" "$rollback_rev" "$iface" "$ip" "$known" > "$out/rollback-attest.log" 2>&1 || :
+                "$attestor" --run "$router" "$rollback_rev" 6.18.60 "$iface" "$ip" "$known" > "$out/rollback-attest.log" 2>&1 || :
             elif ready "$state"; then
                 (( healthy_since )) || healthy_since=$now
                 if (( now-healthy_since >= 300 )); then finish ROLLED_BACK; fi
@@ -296,7 +296,7 @@ case "${1:-}" in
             fi
         fi
         if (( verified )) && [[ $(value "$state" keep) == 0 ]]; then
-            "$attestor" --run "$router" "$rev" "$iface" "$ip" "$known" > "$out/attest.log" 2>&1 || :
+            "$attestor" --run "$router" "$rev" 6.18.60 "$iface" "$ip" "$known" > "$out/attest.log" 2>&1 || :
         fi
         if [[ $(value "$state" keep) == 1 && $(value "$state" bootfail) == 0 ]]; then
             if (( ! accepted )); then accepted=1; log KEEP_BOOT; fi

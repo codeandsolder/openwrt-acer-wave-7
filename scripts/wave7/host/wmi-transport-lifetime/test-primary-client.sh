@@ -3,14 +3,17 @@
 # Run only after the independently verified native primary-UMAC boot soak.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261127-wbm-route-tx-ownership
 lab=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
 variant=upstream-prefix22-authorize-primary-mld-trace
 client=/home/jan/scripts/wave7/client-validation
 client_data=/home/jan/firmware/wave7/client-validation
 fail(){ echo "PRIMARY_CLIENT_TEST_FAIL $*" >&2; exit 1; }
-[[ $# -ge 1 && $1 == "$base"/runs/wbm-route-tx-ownership-native-* ]] || fail 'expected verified trial run'
-run=$1
+[[ $# -ge 1 ]] || fail 'expected verified trial run'
+run=$(realpath -e "$1")
+base=$(dirname "$(dirname "$run")")
+[[ $base == /home/jan/firmware/wave7/trials/* && $run == "$base"/runs/native-* ]] || fail 'expected verified native trial run'
+manifest="$base/native-manifest.json"
+[[ -f $manifest && ! -L $manifest ]] || fail 'native manifest missing'
 shift
 bands=(5 24)
 wired_capture=none
@@ -162,8 +165,13 @@ acquire_lab_lock(){
 acquire_lab_lock
 [[ $(id -un) == jan && -s $run/known_hosts ]] || fail 'host identity'
 boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
-rev=$(jq -r .revision "$base/report.json")
-[[ $boot =~ ^[0-9a-f-]{36}$ && $rev == r0+38346-6660d8c88d-ap-dhcp-guard8 ]] || fail 'trial identity'
+rev=$(jq -er .revision "$manifest")
+kernel=$(jq -er .kernel "$manifest")
+builder=$(jq -er .builder_commit "$manifest")
+[[ $boot =~ ^[0-9a-f-]{36}$ && $rev =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-dhcp-guard8$ && $kernel =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $builder =~ ^[a-f0-9]{40}$ ]] || fail 'trial identity'
+for line in "rev=$rev" "merged_rev=$rev" "kernel=$kernel" "builder=$builder"; do
+    rg -Fxq "$line" "$run/last-state.txt" || fail "sealed boot state differs: $line"
+done
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
 printf "%s\n" "$variant" > "$out/client-variant.txt"
@@ -199,8 +207,8 @@ wyse(){
 }
 guard(){
     local s
-    s=$(remote 'cat /proc/sys/kernel/random/boot_id; cat /rom/etc/openwrt_version; fw_printenv -n bootfail; for p in 0 1 2; do cat /sys/class/remoteproc/remoteproc$p/state; done; dmesg | grep -c "NOC ERROR DETECTED" || :')
-    [[ $s == "$(printf '%s\n%s\n0\nrunning\nrunning\nrunning\n0' "$boot" "$rev")" ]] || return 1
+    s=$(remote 'cat /proc/sys/kernel/random/boot_id; cat /rom/etc/openwrt_version; uname -r; sed -n "s/^builder_commit=//p" /rom/etc/wave7-role-profile; fw_printenv -n bootfail; for p in 0 1 2; do cat /sys/class/remoteproc/remoteproc$p/state; done; dmesg | grep -c "NOC ERROR DETECTED" || :')
+    [[ $s == "$(printf '%s\n%s\n%s\n%s\n0\nrunning\nrunning\nrunning\n0' "$boot" "$rev" "$kernel" "$builder")" ]] || return 1
     ping -I 192.168.76.2 -c 1 -W 1 192.168.76.1 >/dev/null &&
     ping -I 192.168.76.250 -c 1 -W 1 192.168.76.1 >/dev/null
 }

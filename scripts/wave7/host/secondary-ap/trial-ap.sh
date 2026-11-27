@@ -918,7 +918,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
         if [[ $mode != --watch-restore ]] &&
            (( !restore_attested && now-last_restore_attest >= 4 )) && [[ $(value "$s" keep) == 0 ]]; then
           last_restore_attest=$now
-          if "$attestor" --run 192.168.76.1 "$accepted_rev" "$management_iface" "$management_ip" "$known" > "$out/restore-attestation.log" 2>&1; then
+          if "$attestor" --run 192.168.76.1 "$accepted_rev" 6.18.60 "$management_iface" "$management_ip" "$known" > "$out/restore-attestation.log" 2>&1; then
             restore_attested=1; log "ROLLBACK_MANAGEMENT_ATTESTED boot=$boot"
           fi
         fi
@@ -988,7 +988,7 @@ if [[ $mode == --watch || $mode == --watch-restore ]]; then
           fi
           last_attest=$now
           if "$attestor" --run \
-            192.168.76.1 "$candidate_rev" "$management_iface" "$management_ip" "$known" \
+            192.168.76.1 "$candidate_rev" 6.18.60 "$management_iface" "$management_ip" "$known" \
             > "$out/attestation-latest.log" 2>&1; then
             attested=1
             log "MANAGEMENT_ATTESTED boot=$boot"

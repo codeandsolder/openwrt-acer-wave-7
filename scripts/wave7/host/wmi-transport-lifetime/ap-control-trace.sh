@@ -34,6 +34,11 @@ net/napi_gro_receive_entry
 net/netif_rx_entry'
 if [ "$4" = reconnect ]; then
     events="$events
+cfg80211/rdev_mgmt_tx
+cfg80211/rdev_return_int_cookie
+cfg80211/rdev_add_station
+cfg80211/rdev_change_station
+cfg80211/rdev_del_station
 $net_events"
 fi
 if [ "$4" = full ]; then
