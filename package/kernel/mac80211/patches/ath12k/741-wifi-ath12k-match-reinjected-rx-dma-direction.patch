@@ -1,6 +1,11 @@
 From: Lorenzo Bianconi <lorenzo.bianconi@oss.qualcomm.com>
 Subject: [PATCH] wifi: ath12k: fix DMA direction for re-injected Rx buffers
 
+Defragmented MPDUs that are re-injected into the REO are mapped with
+DMA_TO_DEVICE, but all the Rx reap and teardown paths unmap them with
+DMA_FROM_DEVICE. The DMA API requires the unmap direction to match the
+map direction, so this violates the contract.
+
 The mapping actually spans both directions, since the host has written
 the buffer before the REO reads it and the buffer is read back by the
 host afterwards, so DMA_BIDIRECTIONAL is the correct choice.
