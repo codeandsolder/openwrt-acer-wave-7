@@ -5,18 +5,21 @@ import json
 from pathlib import Path
 import re
 
-DEVICE = '===/sys/kernel/debug/ath12k/ahb-c000000.wifi/device_dp_stats'
+IPQ = 'ahb-c000000.wifi'
+QCN = 'ahb-soc@0:wifi'
+DEVICE = f'===/sys/kernel/debug/ath12k/{IPQ}/device_dp_stats'
 FIELDS = {'tx_enqueued', 'tx_completed'}
 
 
-def parse(text):
+def parse(text, device=IPQ):
+    marker = f'===/sys/kernel/debug/ath12k/{device}/device_dp_stats'
     lines = text.splitlines()
     if len(lines) < 3 or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', lines[0]):
         raise ValueError('missing boot ID')
-    if lines.count(DEVICE) != 1:
-        raise ValueError('missing or duplicate IPQ5332')
+    if lines.count(marker) != 1:
+        raise ValueError(f'missing or duplicate {device}')
     values = {}
-    start = lines.index(DEVICE) + 1
+    start = lines.index(marker) + 1
     for line in lines[start:]:
         if line.startswith('==='):
             break
@@ -34,9 +37,9 @@ def parse(text):
     return lines[0], float(lines[1].split()[0]), values
 
 
-def compare(before, after):
-    boot, start, a = parse(before)
-    boot_end, end, b = parse(after)
+def compare(before, after, device=IPQ):
+    boot, start, a = parse(before, device)
+    boot_end, end, b = parse(after, device)
     if boot != boot_end or not start < end:
         raise ValueError('snapshots not from a continuous boot')
     rings = []
@@ -116,19 +119,22 @@ if __name__ == '__main__':
     p.add_argument('after', nargs='?', type=Path)
     p.add_argument('--selftest', action='store_true')
     p.add_argument('--require-ring3', action='store_true')
+    p.add_argument('--device', choices=(IPQ, QCN), default=IPQ)
     p.add_argument('--irq-before', type=Path)
     p.add_argument('--irq-after', type=Path)
     a = p.parse_args()
     if a.selftest:
         selftest()
     elif a.before and a.after:
-        report = compare(a.before.read_text(), a.after.read_text())
+        report = compare(a.before.read_text(), a.after.read_text(), a.device)
         if bool(a.irq_before) != bool(a.irq_after):
             p.error('provide both IRQ snapshots')
+        if a.irq_before and a.device != IPQ:
+            p.error('fixed AHB completion IRQ counters belong to IPQ5332')
         if a.irq_before:
             report['irq_delta'] = irq_delta(a.irq_before.read_text(), a.irq_after.read_text())
         print(json.dumps(report, indent=2))
-        if not report['drained'] or (a.require_ring3 and (not report['ring3_exercised'] or report.get('irq_delta', {}).get(3, 0) <= 0)):
+        if not report['drained'] or (a.require_ring3 and (not report['ring3_exercised'] or (a.device == IPQ and report.get('irq_delta', {}).get(3, 0) <= 0))):
             raise SystemExit(1)
     else:
         p.error('provide both snapshots or --selftest')
