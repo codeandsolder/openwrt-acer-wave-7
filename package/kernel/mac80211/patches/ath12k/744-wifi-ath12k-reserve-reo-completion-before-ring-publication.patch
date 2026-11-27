@@ -1,0 +1,403 @@
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -22,6 +22,7 @@
+ struct ath12k_ext_irq_grp;
+ struct ath12k_dp_rx_tid;
+ struct ath12k_dp_rx_tid_rxq;
++struct ath12k_dp_rx_reo_cmd;
+ 
+ #define DP_MON_PURGE_TIMEOUT_MS     100
+ #define DP_MON_SERVICE_BUDGET       128
+@@ -451,6 +452,11 @@
+ 	u32 reo_excep_msdu_buf_type;
+ };
+ 
++struct ath12k_reo_cmd_pending {
++	struct ath12k_dp_rx_reo_cmd *cmd;
++	u16 status_tag; /* zero means no outstanding status */
++};
++
+ struct ath12k_dp {
+ 	struct ath12k_base *ab;
+ 	u32 mon_dest_ring_stuck_cnt;
+@@ -484,10 +490,8 @@
+ 	 * - reo_cmd_cache_flush_count
+ 	 */
+ 	spinlock_t reo_rxq_flush_lock;
+-	struct list_head reo_cmd_list;
+-	/* protects access to below fields,
+-	 * - reo_cmd_list
+-	 */
++	struct ath12k_reo_cmd_pending reo_cmd_pending[DP_REO_CMD_RING_SIZE];
++	/* Protects pending slots; acquired before the REO command SRNG lock. */
+ 	spinlock_t reo_cmd_lock;
+ 	struct ath12k_hp_update_timer reo_cmd_timer;
+ 	struct ath12k_hp_update_timer tx_ring_timer[DP_TCL_NUM_RING_MAX];
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.h
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.h
+@@ -56,9 +56,7 @@
+ };
+ 
+ struct ath12k_dp_rx_reo_cmd {
+-	struct list_head list;
+ 	struct ath12k_dp_rx_tid_rxq data;
+-	int cmd_num;
+ 	void (*handler)(struct ath12k_dp *dp, void *ctx,
+ 			enum hal_reo_cmd_status status);
+ };
+@@ -238,7 +236,7 @@
+ void ath12k_dp_rx_free(struct ath12k_base *ab);
+ int ath12k_dp_rx_pdev_alloc(struct ath12k_base *ab, int pdev_idx);
+ void ath12k_dp_rx_pdev_free(struct ath12k_base *ab, int pdev_idx);
+-void ath12k_dp_rx_reo_cmd_list_cleanup(struct ath12k_base *ab);
++void ath12k_dp_rx_reo_cmd_cleanup(struct ath12k_base *ab);
+ int ath12k_dp_rx_bufs_replenish(struct ath12k_dp *dp,
+ 				struct dp_rxdma_ring *rx_ring,
+ 				struct list_head *used_list,
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1195,7 +1195,7 @@
+ 	ath12k_dp_deinit_bank_profiles(ab);
+ 	ath12k_dp_srng_common_cleanup(ab);
+ 
+-	ath12k_dp_rx_reo_cmd_list_cleanup(ab);
++	ath12k_dp_rx_reo_cmd_cleanup(ab);
+ 
+ 	for (i = 0; i < ab->hw_params->max_tx_ring; i++) {
+ 		kfree(dp->tx_ring[i].tx_status);
+@@ -1562,7 +1562,7 @@
+ 	dp = ath12k_ab_to_dp(ab);
+ 	dp->ab = ab;
+ 
+-	INIT_LIST_HEAD(&dp->reo_cmd_list);
++	memset(dp->reo_cmd_pending, 0, sizeof(dp->reo_cmd_pending));
+ 	INIT_LIST_HEAD(&dp->reo_cmd_cache_flush_list);
+ 	INIT_LIST_HEAD(&dp->reo_cmd_update_rx_queue_list);
+ 	spin_lock_init(&dp->reo_cmd_lock);
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -370,10 +370,11 @@
+ 	}
+ }
+ 
+-void ath12k_dp_rx_reo_cmd_list_cleanup(struct ath12k_base *ab)
++void ath12k_dp_rx_reo_cmd_cleanup(struct ath12k_base *ab)
+ {
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+-	struct ath12k_dp_rx_reo_cmd *cmd, *tmp;
++	struct ath12k_dp_rx_reo_cmd *cmd;
++	int i;
+ 	struct ath12k_dp_rx_reo_cache_flush_elem *cmd_cache, *tmp_cache;
+ 	struct dp_reo_update_rx_queue_elem *cmd_queue, *tmp_queue;
+ 
+@@ -394,10 +395,13 @@
+ 	spin_unlock_bh(&dp->reo_rxq_flush_lock);
+ 
+ 	spin_lock_bh(&dp->reo_cmd_lock);
+-	list_for_each_entry_safe(cmd, tmp, &dp->reo_cmd_list, list) {
+-		list_del(&cmd->list);
+-		ath12k_dp_rx_tid_cleanup(ab, &cmd->data.qbuf);
+-		kfree(cmd);
++	for (i = 0; i < ARRAY_SIZE(dp->reo_cmd_pending); i++) {
++		cmd = dp->reo_cmd_pending[i].cmd;
++		if (cmd) {
++			ath12k_dp_rx_tid_cleanup(ab, &cmd->data.qbuf);
++			kfree(cmd);
++		}
++		dp->reo_cmd_pending[i] = (struct ath12k_reo_cmd_pending){};
+ 	}
+ 	spin_unlock_bh(&dp->reo_cmd_lock);
+ }
+@@ -489,7 +493,7 @@
+ 			 * one is in this function called from napi and the
+ 			 * other in ath12k_dp_free during core destroy.
+ 			 * If cache command sent is success, delete the element in
+-			 * the cache list. ath12k_dp_rx_reo_cmd_list_cleanup
++			 * the cache list. ath12k_dp_rx_reo_cmd_cleanup
+ 			 * will be called during core destroy.
+ 			 */
+ 
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_rx.c
+@@ -216,50 +216,22 @@
+ 	return le32_get_bits(desc->cmd.info0, HAL_REO_CMD_HDR_INFO0_CMD_NUMBER);
+ }
+ 
+-int ath12k_wifi7_hal_reo_cmd_send(struct ath12k_base *ab, struct hal_srng *srng,
+-				  enum hal_reo_cmd_type type,
+-				  struct ath12k_hal_reo_cmd *cmd)
++int ath12k_wifi7_hal_reo_cmd_encode(struct ath12k_base *ab, void *reo_desc,
++				    enum hal_reo_cmd_type type,
++				    struct ath12k_hal_reo_cmd *cmd)
+ {
+ 	struct ath12k_hal *hal = &ab->hal;
+-	void *reo_desc;
+-	int ret;
+-
+-	spin_lock_bh(&srng->lock);
+-
+-	ath12k_hal_srng_access_begin(ab, srng);
+-	reo_desc = ath12k_hal_srng_src_get_next_entry(ab, srng);
+-	if (!reo_desc) {
+-		ret = -ENOBUFS;
+-		goto out;
+-	}
+ 
+ 	switch (type) {
+ 	case HAL_REO_CMD_GET_QUEUE_STATS:
+-		ret = ath12k_wifi7_hal_reo_cmd_queue_stats(hal, reo_desc, cmd);
+-		break;
++		return ath12k_wifi7_hal_reo_cmd_queue_stats(hal, reo_desc, cmd);
+ 	case HAL_REO_CMD_FLUSH_CACHE:
+-		ret = ath12k_wifi7_hal_reo_cmd_flush_cache(hal, reo_desc, cmd);
+-		break;
++		return ath12k_wifi7_hal_reo_cmd_flush_cache(hal, reo_desc, cmd);
+ 	case HAL_REO_CMD_UPDATE_RX_QUEUE:
+-		ret = ath12k_wifi7_hal_reo_cmd_update_rx_queue(hal, reo_desc, cmd);
+-		break;
+-	case HAL_REO_CMD_FLUSH_QUEUE:
+-	case HAL_REO_CMD_UNBLOCK_CACHE:
+-	case HAL_REO_CMD_FLUSH_TIMEOUT_LIST:
+-		ath12k_warn(ab, "Unsupported reo command %d\n", type);
+-		ret = -EOPNOTSUPP;
+-		break;
++		return ath12k_wifi7_hal_reo_cmd_update_rx_queue(hal, reo_desc, cmd);
+ 	default:
+-		ath12k_warn(ab, "Unknown reo command %d\n", type);
+-		ret = -EINVAL;
+-		break;
+-	}
+-
+-out:
+-	ath12k_hal_srng_access_end(ab, srng);
+-	spin_unlock_bh(&srng->lock);
+-
+-	return ret;
++		return -EOPNOTSUPP;
++	}
+ }
+ 
+ void ath12k_wifi7_hal_rx_buf_addr_info_set(struct ath12k_buffer_addr *binfo,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_tx.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_tx.h
+@@ -186,9 +186,9 @@
+ void ath12k_wifi7_hal_tx_cmd_desc_setup(struct ath12k_base *ab,
+ 					struct hal_tcl_data_cmd *tcl_cmd,
+ 					struct hal_tx_info *ti);
+-int ath12k_wifi7_hal_reo_cmd_send(struct ath12k_base *ab, struct hal_srng *srng,
+-				  enum hal_reo_cmd_type type,
+-				  struct ath12k_hal_reo_cmd *cmd);
++int ath12k_wifi7_hal_reo_cmd_encode(struct ath12k_base *ab, void *reo_desc,
++				    enum hal_reo_cmd_type type,
++				    struct ath12k_hal_reo_cmd *cmd);
+ void ath12k_wifi7_hal_tx_configure_bank_register(struct ath12k_base *ab,
+ 						 u32 bank_config,
+ 						 u8 bank_id);
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -141,45 +141,98 @@
+ 				 enum hal_reo_cmd_type type,
+ 				 struct ath12k_hal_reo_cmd *cmd,
+ 				 void (*cb)(struct ath12k_dp *dp, void *ctx,
+-					    enum hal_reo_cmd_status status))
++				            enum hal_reo_cmd_status status))
+ {
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+-	struct ath12k_dp_rx_reo_cmd *dp_cmd;
++	struct ath12k_dp_rx_reo_cmd *dp_cmd = NULL;
++	struct ath12k_reo_cmd_pending *pending;
+ 	struct hal_srng *cmd_ring;
+-	int cmd_num;
++	void *desc;
++	u16 status_tag;
++	u32 slot;
++	int ret;
++
++	switch (type) {
++	case HAL_REO_CMD_GET_QUEUE_STATS:
++		status_tag = HAL_REO_GET_QUEUE_STATS_STATUS;
++		break;
++	case HAL_REO_CMD_FLUSH_CACHE:
++		status_tag = HAL_REO_FLUSH_CACHE_STATUS;
++		break;
++	case HAL_REO_CMD_UPDATE_RX_QUEUE:
++		status_tag = HAL_REO_UPDATE_RX_REO_QUEUE_STATUS;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	if (!(cmd->flag & HAL_REO_CMD_FLG_NEED_STATUS)) {
++		if (cb)
++			return -EINVAL;
++		status_tag = 0;
++	}
++
++	if (cb) {
++		dp_cmd = kzalloc_obj(*dp_cmd, GFP_ATOMIC);
++		if (!dp_cmd)
++			return -ENOMEM;
++		dp_cmd->data = *rx_tid;
++		dp_cmd->handler = cb;
++	}
+ 
+ 	cmd_ring = &ab->hal.srng_list[dp->reo_cmd_ring.ring_id];
+-	cmd_num = ath12k_wifi7_hal_reo_cmd_send(ab, cmd_ring, type, cmd);
+-
+-	/* cmd_num should start from 1, during failure return the error code */
+-	if (cmd_num < 0)
+-		return cmd_num;
+-
+-	/* reo cmd ring descriptors has cmd_num starting from 1 */
+-	if (cmd_num == 0)
+-		return -EINVAL;
+-
+-	if (!cb)
+-		return 0;
+-
+-	/* Can this be optimized so that we keep the pending command list only
+-	 * for tid delete command to free up the resource on the command status
+-	 * indication?
++	spin_lock_bh(&dp->reo_cmd_lock);
++	spin_lock_bh(&cmd_ring->lock);
++	ath12k_hal_srng_access_begin(ab, cmd_ring);
++
++	/* The hardware command number is fixed to the ring slot plus one.
++	 * Consuming a command descriptor does not imply its status arrived.
++	 * Never reuse that number until the corresponding status is consumed.
+ 	 */
+-	dp_cmd = kzalloc_obj(*dp_cmd, GFP_ATOMIC);
+-
+-	if (!dp_cmd)
+-		return -ENOMEM;
+-
+-	memcpy(&dp_cmd->data, rx_tid, sizeof(*rx_tid));
+-	dp_cmd->cmd_num = cmd_num;
+-	dp_cmd->handler = cb;
+-
+-	spin_lock_bh(&dp->reo_cmd_lock);
+-	list_add_tail(&dp_cmd->list, &dp->reo_cmd_list);
++	desc = ath12k_hal_srng_src_peek(ab, cmd_ring);
++	if (!desc) {
++		ret = -ENOBUFS;
++		goto out;
++	}
++
++	slot = cmd_ring->u.src_ring.hp / cmd_ring->entry_size;
++	if (WARN_ON_ONCE(slot >= ARRAY_SIZE(dp->reo_cmd_pending))) {
++		ret = -EINVAL;
++		goto out;
++	}
++	pending = &dp->reo_cmd_pending[slot];
++	if (pending->status_tag) {
++		ret = -ENOBUFS;
++		goto out;
++	}
++
++	/* Encode without changing HP. All failure paths keep the slot private. */
++	ret = ath12k_wifi7_hal_reo_cmd_encode(ab, desc, type, cmd);
++	if (ret < 0)
++		goto out;
++	if (WARN_ON_ONCE(ret != slot + 1)) {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	pending->cmd = dp_cmd;
++	pending->status_tag = status_tag;
++	/* Peek and advance use the same locked HP and cached TP. The
++	 * completion owner must be visible before access_end publishes HP.
++	 */
++	if (WARN_ON_ONCE(!ath12k_hal_srng_src_get_next_entry(ab, cmd_ring))) {
++		*pending = (struct ath12k_reo_cmd_pending){};
++		ret = -EIO;
++		goto out;
++	}
++	dp_cmd = NULL;
++	ret = 0;
++out:
++	ath12k_hal_srng_access_end(ab, cmd_ring);
++	spin_unlock_bh(&cmd_ring->lock);
+ 	spin_unlock_bh(&dp->reo_cmd_lock);
+-
+-	return 0;
++	kfree(dp_cmd);
++	return ret;
+ }
+ 
+ int ath12k_wifi7_peer_rx_tid_reo_update(struct ath12k_dp *dp,
+@@ -2213,13 +2266,38 @@
+ 	return ret;
+ }
+ 
++static void ath12k_wifi7_reo_cmd_complete(struct ath12k_dp *dp, u16 tag,
++					struct hal_reo_status *status)
++{
++	struct ath12k_reo_cmd_pending *pending;
++	struct ath12k_dp_rx_reo_cmd *cmd;
++	u16 num = status->uniform_hdr.cmd_num;
++
++	if (!num || num > ARRAY_SIZE(dp->reo_cmd_pending))
++		return;
++
++	spin_lock_bh(&dp->reo_cmd_lock);
++	pending = &dp->reo_cmd_pending[num - 1];
++	if (pending->status_tag != tag) {
++		spin_unlock_bh(&dp->reo_cmd_lock);
++		return;
++	}
++	cmd = pending->cmd;
++	*pending = (struct ath12k_reo_cmd_pending){};
++	spin_unlock_bh(&dp->reo_cmd_lock);
++
++	/* A callback may submit another command. Do not hold the owner lock. */
++	if (cmd) {
++		cmd->handler(dp, &cmd->data, status->uniform_hdr.cmd_status);
++		kfree(cmd);
++	}
++}
++
+ void ath12k_wifi7_dp_rx_process_reo_status(struct ath12k_dp *dp)
+ {
+ 	struct ath12k_base *ab = dp->ab;
+ 	struct ath12k_hal *hal = dp->hal;
+ 	struct hal_srng *srng;
+-	struct ath12k_dp_rx_reo_cmd *cmd, *tmp;
+-	bool found = false;
+ 	u16 tag;
+ 	struct hal_reo_status reo_status;
+ 	void *hdr, *desc;
+@@ -2259,7 +2337,7 @@
+ 		case HAL_REO_DESCRIPTOR_THRESHOLD_REACHED_STATUS:
+ 			ath12k_wifi7_hal_reo_desc_thresh_reached_status(ab, desc,
+ 									&reo_status);
+-			break;
++			continue;
+ 		case HAL_REO_UPDATE_RX_REO_QUEUE_STATUS:
+ 			ath12k_wifi7_hal_reo_update_rx_reo_queue_status(ab, desc,
+ 									&reo_status);
+@@ -2269,23 +2347,7 @@
+ 			continue;
+ 		}
+ 
+-		spin_lock_bh(&dp->reo_cmd_lock);
+-		list_for_each_entry_safe(cmd, tmp, &dp->reo_cmd_list, list) {
+-			if (reo_status.uniform_hdr.cmd_num == cmd->cmd_num) {
+-				found = true;
+-				list_del(&cmd->list);
+-				break;
+-			}
+-		}
+-		spin_unlock_bh(&dp->reo_cmd_lock);
+-
+-		if (found) {
+-			cmd->handler(dp, (void *)&cmd->data,
+-				     reo_status.uniform_hdr.cmd_status);
+-			kfree(cmd);
+-		}
+-
+-		found = false;
++		ath12k_wifi7_reo_cmd_complete(dp, tag, &reo_status);
+ 	}
+ 
+ 	ath12k_hal_srng_access_end(ab, srng);
