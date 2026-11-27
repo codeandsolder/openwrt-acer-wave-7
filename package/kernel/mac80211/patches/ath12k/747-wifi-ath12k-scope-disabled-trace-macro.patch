@@ -1,0 +1,59 @@
+--- a/drivers/net/wireless/ath/ath12k/trace.h
++++ b/drivers/net/wireless/ath/ath12k/trace.h
+@@ -13,15 +13,16 @@
+ 
+ /* create empty functions when tracing is disabled */
+ #if !defined(CPTCFG_ATH12K_TRACING)
+-#undef TRACE_EVENT
+-#define TRACE_EVENT(name, proto, ...) \
++#define ATH12K_TRACE_EVENT(name, proto, ...) \
+ static inline void trace_ ## name(proto) {}
+-#endif /* !CPTCFG_ATH12K_TRACING || __CHECKER__ */
++#else
++#define ATH12K_TRACE_EVENT TRACE_EVENT
++#endif
+ 
+ #undef TRACE_SYSTEM
+ #define TRACE_SYSTEM ath12k
+ 
+-TRACE_EVENT(ath12k_htt_pktlog,
++ATH12K_TRACE_EVENT(ath12k_htt_pktlog,
+ 	    TP_PROTO(struct ath12k *ar, const void *buf, u16 buf_len,
+ 		     u32 pktlog_checksum),
+ 
+@@ -57,7 +58,7 @@
+ 	 )
+ );
+ 
+-TRACE_EVENT(ath12k_htt_ppdu_stats,
++ATH12K_TRACE_EVENT(ath12k_htt_ppdu_stats,
+ 	    TP_PROTO(struct ath12k *ar, const void *data, size_t len),
+ 
+ 	TP_ARGS(ar, data, len),
+@@ -105,7 +106,7 @@
+ 	 )
+ );
+ 
+-TRACE_EVENT(ath12k_htt_rxdesc,
++ATH12K_TRACE_EVENT(ath12k_htt_rxdesc,
+ 	    TP_PROTO(struct ath12k *ar, const void *data, size_t type, size_t len),
+ 
+ 	TP_ARGS(ar, data, type, len),
+@@ -155,7 +156,7 @@
+ 	 )
+ );
+ 
+-TRACE_EVENT(ath12k_wmi_diag,
++ATH12K_TRACE_EVENT(ath12k_wmi_diag,
+ 	    TP_PROTO(struct ath12k_base *ab, const void *data, size_t len),
+ 
+ 	TP_ARGS(ab, data, len),
+@@ -186,6 +187,8 @@
+ 		__entry->len
+ 	)
+ );
++
++#undef ATH12K_TRACE_EVENT
+ 
+ #endif /* _TRACE_H_ || TRACE_HEADER_MULTI_READ*/
+ 
