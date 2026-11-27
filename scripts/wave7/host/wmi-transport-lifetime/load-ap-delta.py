@@ -109,6 +109,47 @@ def parse_link_datapath(lines, links):
     return result
 
 
+POOL_COUNTERS = {
+    "alloc_fast", "alloc_slow", "alloc_slow_high_order", "alloc_empty",
+    "alloc_refill", "alloc_waive", "recycle_cached", "recycle_cache_full",
+    "recycle_ring", "recycle_ring_full", "recycle_released_refcnt",
+}
+
+
+def parse_page_pool(lines):
+    counters = {}
+    for line in lines:
+        match = re.fullmatch(r"([a-z_]+) ([0-9]+)", line)
+        require(match and match[1] not in counters, "invalid or duplicate page pool counter")
+        counters[match[1]] = int(match[2])
+    require(counters.keys() == POOL_COUNTERS, "incomplete page pool statistics")
+    require(all(v < 2**64 for v in counters.values()), "page pool counter overflow")
+    return counters
+
+
+def page_pool_delta(before, after):
+    require(before.keys() == after.keys(), "page pool device set changed")
+    result = {}
+    for dev in before:
+        delta = subtract(before[dev], after[dev])
+        # fast also counts pages from a preceding fresh bulk allocation.
+        # It measures allocation-path cost, not the fraction of reused pages.
+        cached = delta["alloc_fast"] + delta["alloc_refill"]
+        total = cached + delta["alloc_slow"] + delta["alloc_slow_high_order"]
+        recycled = delta["recycle_cached"] + delta["recycle_ring"]
+        returned = recycled + delta["recycle_ring_full"] + delta["recycle_released_refcnt"]
+        result[dev] = {
+            "counters": delta,
+            "allocation_calls": total,
+            "cache_or_ring_served_calls": cached,
+            "cache_or_ring_served_pct": 100 * cached / total if total else None,
+            "recycled_returns": recycled,
+            "return_events": returned,
+            "recycled_return_pct": 100 * recycled / returned if returned else None,
+        }
+    return result
+
+
 def parse(text):
     header, sections_ = sections(text)
     required = {"CPU", "SOFTIRQ", "IRQ", "STATION", "AQL"}
@@ -158,7 +199,7 @@ def parse(text):
         if m := re.fullmatch(r"(\S+)\s+(\d+) us", line):
             aql[m[1]] = int(m[2])
     require("total" in aql, "missing AQL pending")
-    radio = {k: v for k, v in sections_.items() if k.startswith("/sys/kernel/debug/ath12k/")}
+    radio = {k: v for k, v in sections_.items() if k.startswith("/sys/kernel/debug/ath12k/") and k.endswith("/device_dp_stats")}
     rx_text = "\n".join(header + [line for k, v in radio.items() for line in ["===" + k, *v]])
     tx = {}
     for k, lines in radio.items():
@@ -174,6 +215,11 @@ def parse(text):
         require(TX_MATRIX == {k.split("/")[0] for k in tx[device] if "/" in k},
                 "incomplete TX matrices")
     extra = {}
+    pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
+             if k.startswith("PAGE_POOL ")}
+    if pools:
+        require(pools.keys() == tx.keys(), "incomplete per-radio page pool statistics")
+        extra["page_pool"] = pools
     if "AGGREGATION" in sections_:
         agg = sections_["AGGREGATION"]
         require(agg[0].endswith("/stations/" + sta[0][0]), "wrong aggregation station")
@@ -276,6 +322,8 @@ def compare(before, after):
                        "irq_pct": 100 * values[5] / total}
     require(a["extra"].keys() == b["extra"].keys(), "telemetry schema changed")
     extra = {}
+    if "page_pool" in a["extra"]:
+        extra["page_pool"] = page_pool_delta(a["extra"]["page_pool"], b["extra"]["page_pool"])
     if "aggregation" in a["extra"]:
         aa, bb = a["extra"]["aggregation"], b["extra"]["aggregation"]
         link_delta = {}

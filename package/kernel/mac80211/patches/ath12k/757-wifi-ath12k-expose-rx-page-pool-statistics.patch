@@ -1,0 +1,136 @@
+Subject: [PATCH] wifi: ath12k: expose RX page-pool allocation and recycle statistics
+
+The refill pool spans pdevs and is not associated with a netdev, so
+the generic netdev page-pool statistics dump cannot identify it.
+Expose the existing kernel statistics for each device through debugfs,
+only with PAGE_POOL_STATS. Serialize pointer publication and removal
+with the descriptor lock; recovery may destroy the pool outside the
+core mutex. No extra per-packet instrumentation is required.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1036,6 +1036,7 @@
+ 	struct ath12k_tx_desc_info *tx_desc_info, *tmp1;
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+ 	struct ath12k_skb_cb *skb_cb;
++	struct page_pool *pool;
+ 	struct sk_buff *skb;
+ 	struct ath12k *ar;
+ 	int i, j;
+@@ -1155,8 +1156,11 @@
+ 	/* Descriptors are retired and TX skbs released before pool teardown.
+ 	 * page_pool_destroy() may unmap even outstanding pages.
+ 	 */
+-	page_pool_destroy(dp->rx_refill_buf_ring.page_pool);
++	spin_lock_bh(&dp->rx_desc_lock);
++	pool = dp->rx_refill_buf_ring.page_pool;
+ 	dp->rx_refill_buf_ring.page_pool = NULL;
++	spin_unlock_bh(&dp->rx_desc_lock);
++	page_pool_destroy(pool);
+ }
+ 
+ static void ath12k_dp_reoq_lut_cleanup(struct ath12k_base *ab)
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -261,19 +261,21 @@
+ 		.offset = DP_RX_POOL_HEADROOM,
+ 		.dev = ab->dev,
+ 	};
++	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
++	struct page_pool *pool;
+ 	LIST_HEAD(list);
+-	int ret;
+ 
+ 	rx_ring->bufs_max = rx_ring->refill_buf_ring.size /
+ 			ath12k_hal_srng_get_entrysize(ab, HAL_RXDMA_BUF);
+ 	params.pool_size = rx_ring->bufs_max;
+ 
+-	rx_ring->page_pool = page_pool_create(&params);
+-	if (IS_ERR(rx_ring->page_pool)) {
+-		ret = PTR_ERR(rx_ring->page_pool);
+-		rx_ring->page_pool = NULL;
+-		return ret;
+-	}
++	pool = page_pool_create(&params);
++	if (IS_ERR(pool))
++		return PTR_ERR(pool);
++
++	spin_lock_bh(&dp->rx_desc_lock);
++	rx_ring->page_pool = pool;
++	spin_unlock_bh(&dp->rx_desc_lock);
+ 
+ 	/* The cookie-conversion cleanup owns the pool until all published
+ 	 * RX descriptors have been retired, including on setup failure.
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -5,6 +5,7 @@
+  */
+ 
+ #include <linux/seq_file.h>
++#include <net/page_pool/helpers.h>
+ 
+ #include "core.h"
+ #include "hif.h"
+@@ -1298,8 +1299,61 @@
+ }
+ DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_srng_state);
+ 
++#ifdef CONFIG_PAGE_POOL_STATS
++static int ath12k_debugfs_rx_page_pool_stats_show(struct seq_file *s,
++						  void *unused)
++{
++	struct ath12k_base *ab = s->private;
++	struct page_pool_stats stats = {};
++	struct ath12k_dp *dp;
++	struct page_pool *pool;
++	bool valid = false;
++
++	if (!mutex_trylock(&ab->core_lock))
++		return -EBUSY;
++
++	if (!test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags) || !ab->dp)
++		goto unlock;
++
++	dp = ath12k_ab_to_dp(ab);
++	/* Recovery also destroys the pool outside core_lock. The descriptor
++	 * lock protects the published pointer, including the stats read.
++	 */
++	spin_lock_bh(&dp->rx_desc_lock);
++	pool = dp->rx_refill_buf_ring.page_pool;
++	if (pool)
++		valid = page_pool_get_stats(pool, &stats);
++	spin_unlock_bh(&dp->rx_desc_lock);
++unlock:
++	mutex_unlock(&ab->core_lock);
++	if (!valid)
++		return -ENODEV;
++
++	seq_printf(s, "alloc_fast %llu\n", stats.alloc_stats.fast);
++	seq_printf(s, "alloc_slow %llu\n", stats.alloc_stats.slow);
++	seq_printf(s, "alloc_slow_high_order %llu\n", stats.alloc_stats.slow_high_order);
++	seq_printf(s, "alloc_empty %llu\n", stats.alloc_stats.empty);
++	seq_printf(s, "alloc_refill %llu\n", stats.alloc_stats.refill);
++	seq_printf(s, "alloc_waive %llu\n", stats.alloc_stats.waive);
++	seq_printf(s, "recycle_cached %llu\n", stats.recycle_stats.cached);
++	seq_printf(s, "recycle_cache_full %llu\n", stats.recycle_stats.cache_full);
++	seq_printf(s, "recycle_ring %llu\n", stats.recycle_stats.ring);
++	seq_printf(s, "recycle_ring_full %llu\n", stats.recycle_stats.ring_full);
++	seq_printf(s, "recycle_released_refcnt %llu\n", stats.recycle_stats.released_refcnt);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_rx_page_pool_stats);
++#endif
++
+ void ath12k_debugfs_pdev_create(struct ath12k_base *ab)
+ {
++#ifdef CONFIG_PAGE_POOL_STATS
++	debugfs_create_file("rx_page_pool_stats", 0400, ab->debugfs_soc, ab,
++			    &ath12k_debugfs_rx_page_pool_stats_fops);
++#endif
+ 	debugfs_create_file("simulate_fw_crash", 0600, ab->debugfs_soc, ab,
+ 			    &fops_simulate_fw_crash);
+ 

@@ -361,6 +361,12 @@ snapshot_load(){
             echo ==== \"\$f\"
             cat \"\$f\"
         done
+        for f in /sys/kernel/debug/ath12k/*/rx_page_pool_stats; do
+            [ -e \"\$f\" ] || continue
+            d=\${f%/*}
+            echo ==== PAGE_POOL \"\${d##*/}\"
+            cat \"\$f\"
+        done
         echo ==== END
         cat /proc/sys/kernel/random/boot_id"
 }
