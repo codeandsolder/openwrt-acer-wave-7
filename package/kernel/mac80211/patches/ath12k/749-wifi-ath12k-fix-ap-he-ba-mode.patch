@@ -1,0 +1,71 @@
+From: Rameshkumar Sundaram <rameshkumar.sundaram@oss.qualcomm.com>
+Date: Fri Nov 06 10:27:42 2026 +0530
+Subject: [PATCH] wifi: ath12k: Fix HE BA mode configuration for AP mode
+
+Upstream commit: 9b4da51a7d78365d920a10791ff216608239892d
+
+WMI_VDEV_PARAM_BA_MODE is currently configured inside the he_oper.params
+check. However, mac80211 does not populate he_oper.params for AP mode,
+causing the BA mode configuration to be skipped for HE AP operation.
+
+Move the BA mode configuration outside the he_oper.params check so that
+it is applied whenever HE support is enabled.
+Without this change, firmware defaults to a BA buffer size of 64
+(legacy mode) for HE associations.
+
+Tested-on: QCN9274 hw2.0 PCI WLAN.WBE.1.6-01243-QCAHKSWPL_SILICONZ-1
+
+Fixes: d889913205cf ("wifi: ath12k: driver for Qualcomm Wi-Fi 7 devices")
+Signed-off-by: Rameshkumar Sundaram <rameshkumar.sundaram@oss.qualcomm.com>
+Reviewed-by: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
+Reviewed-by: Vasanthakumar Thiagarajan <vasanthakumar.thiagarajan@oss.qualcomm.com>
+Link: https://patch.msgid.link/20261106-eht-ba-window-v1-1-622f2272e582@oss.qualcomm.com
+Signed-off-by: Jeff Johnson <jeff.johnson@oss.qualcomm.com>
+
+---
+diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
+index da2d36d..9d3b5a6 100644
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -4925,8 +4925,7 @@ static void ath12k_mac_bss_info_changed(struct ath12k *ar,
+ 		}
+ 		ath12k_control_beaconing(arvif, info);
+ 
+-		if (arvif->is_up && info->he_support &&
+-		    info->he_oper.params) {
++		if (arvif->is_up && info->he_support) {
+ 			/* TODO: Extend to support 1024 BA Bitmap size */
+ 			ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+ 							    WMI_VDEV_PARAM_BA_MODE,
+@@ -4936,17 +4935,21 @@ static void ath12k_mac_bss_info_changed(struct ath12k *ar,
+ 					    "failed to set BA BUFFER SIZE 256 for vdev: %d\n",
+ 					    arvif->vdev_id);
+ 
+-			param_id = WMI_VDEV_PARAM_HEOPS_0_31;
+-			param_value = info->he_oper.params;
+-			ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+-							    param_id, param_value);
+-			ath12k_dbg(ar->ab, ATH12K_DBG_MAC,
+-				   "he oper param: %x set for VDEV: %d\n",
+-				   param_value, arvif->vdev_id);
++			if (info->he_oper.params) {
++				param_id = WMI_VDEV_PARAM_HEOPS_0_31;
++				param_value = info->he_oper.params;
+ 
+-			if (ret)
+-				ath12k_warn(ar->ab, "Failed to set he oper params %x for VDEV %d: %i\n",
+-					    param_value, arvif->vdev_id, ret);
++				ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
++								    param_id,
++								    param_value);
++				ath12k_dbg(ar->ab, ATH12K_DBG_MAC,
++					   "he oper param: %x set for VDEV: %d\n",
++					   param_value, arvif->vdev_id);
++
++				if (ret)
++					ath12k_warn(ar->ab, "Failed to set he oper params %x for VDEV %d: %i\n",
++						    param_value, arvif->vdev_id, ret);
++			}
+ 		}
+ 	}
+ 

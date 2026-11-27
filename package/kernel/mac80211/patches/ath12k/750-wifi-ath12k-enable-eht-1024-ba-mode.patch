@@ -1,0 +1,65 @@
+From: Paulson Raja L <lraja@qti.qualcomm.com>
+Date: Fri Nov 06 10:27:43 2026 +0530
+Subject: [PATCH] wifi: ath12k: Extend BA buffer size to 1024 for EHT capable links
+
+Upstream commit: ff4c7359e310744a7abe53cf66d921fa2969eb19
+
+IEEE 802.11be (EHT) extends the maximum BA buffer size from 256 MPDUs
+(HE) to 1024 MPDUs. EHT-capable links are currently limited to the
+HE maximum of 256.
+
+Add WMI_BA_MODE_BUFFER_SIZE_1024 and select the buffer size based on
+the negotiated mode: 1024 for EHT-capable links, 256 for HE-only.
+Also include the return code when reporting BA mode configuration
+failure to aid debugging.
+
+Tested-on: QCN9274 hw2.0 PCI WLAN.WBE.1.6-01243-QCAHKSWPL_SILICONZ-1
+
+Signed-off-by: Paulson Raja L <lraja@qti.qualcomm.com>
+Signed-off-by: Rameshkumar Sundaram <rameshkumar.sundaram@oss.qualcomm.com>
+Reviewed-by: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
+Reviewed-by: Vasanthakumar Thiagarajan <vasanthakumar.thiagarajan@oss.qualcomm.com>
+Link: https://patch.msgid.link/20261106-eht-ba-window-v1-2-622f2272e582@oss.qualcomm.com
+Signed-off-by: Jeff Johnson <jeff.johnson@oss.qualcomm.com>
+
+---
+diff --git a/drivers/net/wireless/ath/ath12k/mac.c b/drivers/net/wireless/ath/ath12k/mac.c
+index 9d3b5a6..4cb41b8 100644
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -4926,14 +4926,18 @@ static void ath12k_mac_bss_info_changed(struct ath12k *ar,
+ 		ath12k_control_beaconing(arvif, info);
+ 
+ 		if (arvif->is_up && info->he_support) {
+-			/* TODO: Extend to support 1024 BA Bitmap size */
++			param_id = WMI_VDEV_PARAM_BA_MODE;
++			param_value = info->eht_support ?
++				      WMI_BA_MODE_BUFFER_SIZE_1024 :
++				      WMI_BA_MODE_BUFFER_SIZE_256;
++
+ 			ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+-							    WMI_VDEV_PARAM_BA_MODE,
+-							    WMI_BA_MODE_BUFFER_SIZE_256);
++							    param_id, param_value);
+ 			if (ret)
+ 				ath12k_warn(ar->ab,
+-					    "failed to set BA BUFFER SIZE 256 for vdev: %d\n",
+-					    arvif->vdev_id);
++					    "failed to set BA BUFFER SIZE %u for vdev %d: %d\n",
++					    info->eht_support ? 1024 : 256,
++					    arvif->vdev_id, ret);
+ 
+ 			if (info->he_oper.params) {
+ 				param_id = WMI_VDEV_PARAM_HEOPS_0_31;
+diff --git a/drivers/net/wireless/ath/ath12k/wmi.h b/drivers/net/wireless/ath/ath12k/wmi.h
+index 94c5def03..843f1d1 100644
+--- a/drivers/net/wireless/ath/ath12k/wmi.h
++++ b/drivers/net/wireless/ath/ath12k/wmi.h
+@@ -171,6 +171,7 @@ struct wmi_tlv {
+ #define WMI_APPEND_TO_EXISTING_CHAN_LIST_FLAG 1
+ 
+ #define WMI_BA_MODE_BUFFER_SIZE_256  3
++#define WMI_BA_MODE_BUFFER_SIZE_1024 6
+ 
+ /* HW mode config type replicated from FW header
+  * @WMI_HOST_HW_MODE_SINGLE: Only one PHY is active.
