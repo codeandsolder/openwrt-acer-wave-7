@@ -1,0 +1,26 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -96,6 +96,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-record-bands-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-eht-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace ||
+@@ -179,6 +180,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-record-bands-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-eht-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace ||
+@@ -201,6 +203,7 @@
+     # Group-ID reuse must not be credited across a driver firmware reset.
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+         printf '%s\n' "f:$probe_group/reset_work mt7925_mac_reset_work" >> "$root/dynamic_events"

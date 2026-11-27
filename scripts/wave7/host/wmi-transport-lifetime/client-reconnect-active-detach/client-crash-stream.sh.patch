@@ -1,0 +1,53 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -104,19 +104,26 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+     events+=(mt7925_lab/mt7925_lab_sta_mld_update)
++    if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
++        events+=(mt7925_lab/mt7925_lab_group_detach_active)
++    fi
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+         events+=(mt7925_lab/mt7925_lab_band_retire)
+     fi
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+         events+=(mt7925_lab/mt7925_lab_chanctx_unassign)
+     fi
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+         events+=(mt7925_lab/mt7925_lab_group_retire)
+     fi
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-mld-teardown-trace ]]; then
+@@ -179,7 +186,8 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+-      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+     # BTF field fetching avoids hard-coded structures/offsets. Register only
+     # these two named probes and remove the exact definitions at cleanup.
+     [[ ! -e $root/events/$probe_group && -e /sys/kernel/btf/mt76 &&
+@@ -190,7 +198,8 @@
+     probes+=(bss_remove)
+     # Group-ID reuse must not be credited across a driver firmware reset.
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+-          $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ]]; then
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
+         printf '%s\n' "f:$probe_group/reset_work mt7925_mac_reset_work" >> "$root/dynamic_events"
+         probes+=(reset_work)
+     fi

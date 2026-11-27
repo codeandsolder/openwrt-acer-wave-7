@@ -1,0 +1,125 @@
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -1750,7 +1750,7 @@
+ 				       struct ieee80211_vif *vif,
+ 				       struct ieee80211_link_sta *link_sta,
+ 				       struct mt792x_link_sta *mlink,
+-				       bool release_wcid)
++				       bool release_wcid, bool keep_band)
+ {
+ 	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+ 	struct mt76_wcid *wcid = &mlink->wcid;
+@@ -1773,11 +1773,16 @@
+ 		struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 		struct mt792x_link_sta *owner;
+ 		struct mt792x_bss_conf *mconf;
++		bool was_active;
++		int ret;
+ 
+ 		mconf = mt792x_link_conf_to_mconf(link_conf);
+ 
+-		/* reset to auto band so the deactivate drops the band binding */
+-		mconf->mt76.band_idx = MT792x_BAND_AUTO;
++		/* Lab: deactivate the assigned hardware band before clearing
++		 * host band ownership, instead of addressing AUTO during teardown.
++		 */
++		if (!keep_band)
++			mconf->mt76.band_idx = MT792x_BAND_AUTO;
+ 		/* back to the legacy WMM index, MLO uses 0 */
+ 		mconf->mt76.wmm_idx = mconf->mt76.idx %
+ 				      MT76_CONNAC_MAX_WMM_SETS;
+@@ -1790,10 +1795,19 @@
+ 			mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx,
+ 						link_conf, link_sta, false);
+ 		owner = mt792x_sta_to_link(&mvif->sta, link_id);
++		was_active = mconf->dev_active;
+ 		if (WARN_ON_ONCE(!owner))
+-			mt792x_reset(mdev);
+-		else if (mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-						   &owner->wcid, false))
++			ret = -EINVAL;
++		else
++			ret = mt792x_mcu_set_dev_active(dev, link_conf, mconf,
++						       &owner->wcid, false);
++		if (keep_band) {
++			trace_mt7925_lab_band_retire(mconf->mt76.idx, link_id,
++						     mconf->mt76.band_idx,
++						     was_active, ret);
++			mconf->mt76.band_idx = MT792x_BAND_AUTO;
++		}
++		if (ret)
+ 			mt792x_reset(mdev);
+ 	}
+ 
+@@ -1813,6 +1827,9 @@
+ {
+ 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 	struct mt76_dev *mdev = &dev->mt76;
++	bool keep_band = removing_sta && is_mt7925(mdev) &&
++			 vif->type == NL80211_IFTYPE_STATION && !sta->tdls &&
++			 ieee80211_vif_is_mld(vif) && hweight_long(old_links) == 2;
+ 	unsigned int link_id;
+ 
+ 	if (removing_sta)
+@@ -1845,8 +1862,9 @@
+ 
+ 		mconf = mt792x_link_conf_to_mconf(link_conf);
+ 
+-		/* reset to auto band before the disconnect command */
+-		mconf->mt76.band_idx = MT792x_BAND_AUTO;
++		/* Keep the same band for both disconnect and DEV retirement. */
++		if (!keep_band)
++			mconf->mt76.band_idx = MT792x_BAND_AUTO;
+ 
+ 		mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx, link_conf,
+ 					link_sta, false);
+@@ -1870,7 +1888,8 @@
+ 		mlink->pri_link = NULL;
+ 
+ 		mt7925_mac_link_sta_remove(&dev->mt76, vif, link_sta, mlink,
+-					   !removing_sta || mlink != &msta->deflink);
++					   !removing_sta || mlink != &msta->deflink,
++					   keep_band);
+ 
+ 		if (mlink != &msta->deflink)
+ 			kfree_rcu(mlink, rcu_head);
+@@ -1926,7 +1945,7 @@
+ 		mt7925_mac_sta_remove_links(dev, vif, sta, msta->valid_links, true);
+ 	} else {
+ 		mt7925_mac_link_sta_remove(mdev, vif, &sta->deflink,
+-					   &msta->deflink, false);
++					   &msta->deflink, false, false);
+ 	}
+ 
+ 	if (vif->type == NL80211_IFTYPE_STATION) {
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -358,6 +358,28 @@
+ 	),
+ 	TP_printk("bss=%u link=%u wcid=%u enabled=%u result=%d",
+ 		  __entry->bss, __entry->link, __entry->wcid, __entry->enabled, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_band_retire,
++	TP_PROTO(u8 bss, u8 link, u8 band, bool was_active, int result),
++	TP_ARGS(bss, link, band, was_active, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u8, band)
++		__field(bool, was_active)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->band = band;
++		__entry->was_active = was_active;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u link=%u band=%u was_active=%u result=%d",
++		  __entry->bss, __entry->link, __entry->band,
++		  __entry->was_active, __entry->result)
+ );
+ 
+ TRACE_EVENT(mt7925_lab_key_result,

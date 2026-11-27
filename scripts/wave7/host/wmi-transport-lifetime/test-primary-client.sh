@@ -19,6 +19,7 @@ dual_hold=0
 dual_soak=0
 dual_load=0
 dual_reconnect=0
+reconnect_count=1
 reconnect_datapath=0
 ap_irq_spread=0
 ap_link_stats=0
@@ -46,6 +47,7 @@ for arg in "$@"; do
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
         --client-reconnect) dual_hold=1; dual_reconnect=1 ;;
+        --client-reconnect-twice) dual_hold=1; dual_reconnect=1; reconnect_count=2 ;;
         --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
@@ -92,12 +94,20 @@ for arg in "$@"; do
         --client-reconnect-record-bands-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-record-bands-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-defer-eht-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-defer-eht-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-defer-mld-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-defer-mld-fw20261016-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-secondary-rebind-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-secondary-rebind-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-bss-rotate-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-bss-rotate-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-bss-slot-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-bss-slot-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-bss-clear-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-bss-clear-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-bss-init-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace --mgmt-tx --reconnect-mld-record ;;
         --client-reconnect-group-id-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-band-retire-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-unassign-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-group-retire-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-group-band-retire-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-active-detach-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-primary-first-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace --mgmt-tx --reconnect-mld-record ;;
+        --client-reconnect-band-group-refresh-trace) select_variant upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace --mgmt-tx --reconnect-mld-record ;;
         *) fail 'invalid argument' ;;
     esac
 done
@@ -135,8 +145,15 @@ helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
 [[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'
 [[ $(cat "$run/status") == SOAK_PASS ]] || fail 'trial not soaked'
-exec 8<>"$lab/.lab-control.lock"
-flock -n 8 || fail 'lab already reserved'
+acquire_lab_lock(){
+    # A staging wrapper may hold the same open file description on fd 8.
+    # Reopening it would lose atomicity or conflict with our own lock.
+    if [[ ! /proc/self/fd/8 -ef "$lab/.lab-control.lock" ]]; then
+        exec 8<>"$lab/.lab-control.lock"
+    fi
+    flock -n 8 || fail 'lab already reserved'
+}
+acquire_lab_lock
 [[ $(id -un) == jan && -s $run/known_hosts ]] || fail 'host identity'
 boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
 rev=$(jq -r .revision "$base/report.json")
@@ -524,7 +541,11 @@ for band in "${bands[@]}"; do
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
     else
-        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+        if (( reconnect_count == 2 )); then
+            wyse "timeout $client_seconds bash $client/client-sustained-cycle.sh $tag --$mode-$variant --bssid-$band --reconnect-count=2" > "$prefix.client-run.txt" 2>&1 || rc=$?
+        else
+            wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+        fi
     fi
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"
     # Let the bounded independent observers complete even if a client fault
@@ -589,6 +610,13 @@ for band in "${bands[@]}"; do
             cases_failed=1
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
+    if (( reconnect_count == 2 )); then
+        cycle_count=$(tar -xOf "$prefix.client.tar" "$tag/reconnect-count.txt" 2>/dev/null || :)
+        cycle_passes=$(tar -xOf "$prefix.client.tar" "$tag/reconnect-cycles.txt" 2>/dev/null || :)
+        if [[ $cycle_count != expected=2 || $cycle_passes != $'cycle=1 result=pass\ncycle=2 result=pass' ]]; then
+            cases_failed=1
+        fi
+    fi
     if [[ $rc != 0 || $result != "$expected" ]]; then
         cases_failed=1
     fi
