@@ -1,0 +1,28 @@
+{
+  "parent_sha": "a25ea738a2538ca8950eaced35f9ca0e5f1e07ca10389ec3ff16ff420a08e529",
+  "parent_rev": "r0+39019-2afd0900cb-ap-dhcp-guard8",
+  "parent_builder": "2afd0900cbe1e00c11bd59c54f498bb4aede94ed",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "aca866458c8382a9fe5e526db782a548301f53a936399e84df85ea9142eb88b3",
+      "70c0e1027c8c157add9074e2db0269f12aa372e00c6c97d54cad58f5fddfcd47"
+    ],
+    "ath12k_wifi7.ko": [
+      "506a7a32c49eff4ea5038e6ff0b89677823ec22174735e3b833e8e37a8f6c521",
+      "329597a6e3fd736c043d21391e578734032056052df1a78316314ecabe754ee1"
+    ],
+    "cfg80211.ko": [
+      "eba941851459572c50f3ff72d680d7aa46ce51ab8c8878e73846c20ae082e0eb",
+      "53336fcea31091eecb277dba89052713c395ba2a7a6ebfabd3c105ed877956a3"
+    ],
+    "mac80211.ko": [
+      "4a04955f7e029c27a38e0fc8d7c5db4fd0b5163f86e2889a81b579abd3a292e1",
+      "0172d6ea87a1721a8330911076109dcd82233f8e9d6528745c4b4f1cce97a7ff"
+    ]
+  },
+  "patch_commit": "fc9610a8317618bb4b1c27be4150324ffbcf839a",
+  "patch_key": "trial_aql_owner_commit",
+  "filename": "wave7-rebase-aql-owner-dhcp-guard8-sysupgrade.bin"
+}
