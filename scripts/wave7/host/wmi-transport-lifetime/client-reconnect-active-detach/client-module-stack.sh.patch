@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -74,6 +74,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-fw20261016]=association-rxtx
+     [upstream-prefix22-authorize-single-link-trace]=association-rxtx
+     [upstream-prefix22-authorize-primary-mld-trace]=association-rxtx
+@@ -1475,6 +1476,29 @@
+     [mt792x_lib]=d70fa64a4a2bd65eff59bf4e8c5197b8cb8c4de2
+     [mt7925_common]=b093fcc4c28c07d7cfcf7f3f1391366309d33773
+     [mt7925e]=3b92c11ae85c4198c93dee3dfd82e8d53e327096
++)
++;;
++upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace)
++declare -A candidate_hash=(
++    [mt76]=96cea13e2cbb4f12f7fb3f8ceef0f033467ffb16117971466a761e5f79104613
++    [mt76_connac_lib]=745cd92408a15d541324630f5a0863f6aca371602b18be2e37b98b548990d1f0
++    [mt792x_lib]=70be460c96e67066ea836d55c1bba4e04bea35cb69925c86f100caf3954630d7
++    [mt7925_common]=a9951e630f3a628e78086bdd19239dee2c7e40e2621a6168a50fcd1678f08f66
++    [mt7925e]=9411407536a965fc0016312670b55f86bd0dded36e35b2d68f1168c1e8c33aff
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=0D021BBC6F8F138D1814665
++    [mt792x_lib]=4F03FB265B3E87D87C59552
++    [mt7925_common]=7FAFDE1AF429CF119384330
++    [mt7925e]=D0A5EA4DC7BAE24110D0F4C
++)
++declare -A candidate_id=(
++    [mt76]=0df83ccc40a638633769eddc43a47ec54f88b83b
++    [mt76_connac_lib]=306905903a060ef3333787b7fc54aa6e9a92a0e7
++    [mt792x_lib]=d70fa64a4a2bd65eff59bf4e8c5197b8cb8c4de2
++    [mt7925_common]=9dd71c48e825cb2e16d27ab6083c5b273af46d4d
++    [mt7925e]=ea179c26a0d6369b1753cef51f13c89dcbad2072
+ )
+ ;;
+ upstream-prefix22-authorize-single-link-trace)

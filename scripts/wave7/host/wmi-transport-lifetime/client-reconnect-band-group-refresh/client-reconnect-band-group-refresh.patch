@@ -1,0 +1,18 @@
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -3813,6 +3813,15 @@
+ 	band_idx = mt7925_mcu_bss_basic_tlv(skb, link_conf, link_sta,
+ 					    mconf->mt76.ctx, phy->mt76, bmc,
+ 					    peer->wcid.idx, true);
++	/* The initial group tag was programmed before the MLO grant.
++	 * Refresh its membership after the primary BASIC band moves.
++	 * Keep keys, peer contents and unrelated BSS tags unchanged.
++	 */
++	if (is_mt7925(&dev->mt76) &&
++	    link_conf->vif->type == NL80211_IFTYPE_STATION &&
++	    ieee80211_vif_is_mld(link_conf->vif) &&
++	    hweight16(mvif->valid_links) == 2)
++		mt7925_mcu_bss_mld_tlv(skb, link_conf);
+ 	err = mt76_mcu_skb_send_msg(&dev->mt76, skb,
+ 				    MCU_UNI_CMD(BSS_INFO_UPDATE), true);
+ 	trace_mt7925_lab_bss_result(mconf->mt76.idx, link_conf->link_id,

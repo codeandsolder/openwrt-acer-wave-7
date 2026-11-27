@@ -1,0 +1,40 @@
+--- a/client-module-stack.sh
++++ b/client-module-stack.sh
+@@ -72,6 +72,7 @@
+     [upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace]=association-rxtx
++    [upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace]=association-rxtx
+     [upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace]=association-rxtx
+@@ -1417,6 +1418,29 @@
+     [mt7925e]=98223cebb31fca0aa1c89ec3c07a91022089b190
+ )
+ ;;
++upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace)
++declare -A candidate_hash=(
++    [mt76]=96cea13e2cbb4f12f7fb3f8ceef0f033467ffb16117971466a761e5f79104613
++    [mt76_connac_lib]=0a78b55f0ac9b728acd6d4f0e043957d1749ff8518334b77ed45e84e2bf3ea27
++    [mt792x_lib]=26be95adffa112dd824722161cba698e9e9807e6837a94f5281f4a80e26e6c64
++    [mt7925_common]=e9b42e2cf5938e744945367d0a67287304c6261deb706ac9c2b78deaf9620af5
++    [mt7925e]=bc435a4e8b703c2d7b96ac8324ea990de6137738adc0c81771a587fc320d00de
++)
++declare -A candidate_version=(
++    [mt76]=46DC0E494F43745AF33041C
++    [mt76_connac_lib]=ADD818A926C4EEF003B07F6
++    [mt792x_lib]=63926C309F12E2CD4C5FA1F
++    [mt7925_common]=A8BAD52E7BC0B753BCC5D8B
++    [mt7925e]=C11A286A1F313591EFE447F
++)
++declare -A candidate_id=(
++    [mt76]=0df83ccc40a638633769eddc43a47ec54f88b83b
++    [mt76_connac_lib]=cc17a747285d9309ea157993b0dc545a094db420
++    [mt792x_lib]=934cba68ad29f4906a4623c03594440f4e5bd10c
++    [mt7925_common]=833e97e3241eff8a04c877313c9a31c6a517a321
++    [mt7925e]=98223cebb31fca0aa1c89ec3c07a91022089b190
++)
++;;
+ upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace)
+ declare -A candidate_hash=(
+     [mt76]=96cea13e2cbb4f12f7fb3f8ceef0f033467ffb16117971466a761e5f79104613

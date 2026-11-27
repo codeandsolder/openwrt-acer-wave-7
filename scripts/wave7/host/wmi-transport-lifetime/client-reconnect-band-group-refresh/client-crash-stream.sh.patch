@@ -1,0 +1,26 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -103,6 +103,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+@@ -187,6 +188,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-bss-init-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+@@ -203,6 +205,7 @@
+     # Group-ID reuse must not be credited across a driver firmware reset.
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
