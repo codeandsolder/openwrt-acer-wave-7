@@ -302,7 +302,7 @@ def startup_tx_windows(text, token_report):
 
     A period is based on actual outstanding descriptors, not a latency
     threshold or assumed correspondence between an absence event and RF TX.
-    Include both sampled and ordinary data, exclude preauthorization EAPOL.
+    Include both host-TXS-requested and other data, exclude EAPOL.
     Follow periods starting within the existing first-8s analysis window
     until they drain or authorization ends.
     """
@@ -334,7 +334,7 @@ def startup_tx_windows(text, token_report):
                         break
                     current = {"start": time, "first_return": None,
                                "submitted": 0, "returned": 0, "peak_pending": 0,
-                               "sampled": 0, "ordinary": 0,
+                               "host_status_requested": 0, "host_status_not_requested": 0,
                                "unknown_status_request": 0, "protocols": Counter(),
                                "bands": Counter(), "zero_attempts": 0}
                 require(current is not None, "missing startup episode")
@@ -346,9 +346,9 @@ def startup_tx_windows(text, token_report):
                 if "d5" not in d:
                     current["unknown_status_request"] += 1
                 elif int(d["d5"], 16) & (1 << 10):  # MT_TXD5_TX_STATUS_HOST
-                    current["sampled"] += 1
+                    current["host_status_requested"] += 1
                 else:
-                    current["ordinary"] += 1
+                    current["host_status_not_requested"] += 1
             else:
                 require(i in pending and current is not None, "startup token return without submit")
                 pending.remove(i)
@@ -1103,7 +1103,7 @@ def selftest():
                                    "bss=1 absent=0 quota=0"), report)[0]["episodes"]
     assert len(early) == 3 and early[0]["first_return_ms"] == 4000
     assert early[0]["peak_pending"] == early[0]["pending_at_first_return"] == 2
-    assert early[0]["sampled"] == early[0]["ordinary"] == 1
+    assert early[0]["host_status_requested"] == early[0]["host_status_not_requested"] == 1
     assert early[0]["drain_ms"] == 100 and early[0]["absence_during"][0]["bss"] == "1"
     assert early[1]["duration_ms"] == 10 and early[2]["right_censored"]
     assert early[2]["drain_ms"] is None and early[2]["returned"] == 0
