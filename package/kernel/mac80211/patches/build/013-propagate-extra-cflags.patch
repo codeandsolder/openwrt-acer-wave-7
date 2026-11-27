@@ -1,0 +1,19 @@
+From: Wave7 development
+Subject: [PATCH] backports: propagate package compiler flags to all subdirectories
+
+Linux 6.18 no longer consumes EXTRA_CFLAGS in scripts/Makefile.lib.
+OpenWrt still supplies its package-specific prefix maps and driver variant
+preprocessor defines through this variable. Add them explicitly to the
+backports subdirectory flags so the existing package contract is honored.
+
+--- a/Makefile.kernel
++++ b/Makefile.kernel
+@@ -37,6 +37,8 @@ endif
+ 
+ subdir-ccflags-y := $(call cc-option, -fno-pie) $(call cc-option, -no-pie)
+ 
++subdir-ccflags-y += $(EXTRA_CFLAGS)
++
+ subdir-ccflags-y += -std=gnu11
+ 
+ obj-y += compat/
