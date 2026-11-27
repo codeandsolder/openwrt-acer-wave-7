@@ -43,7 +43,7 @@ def parse(text):
     require(len(marker)<=1,'duplicate lifetime marker')
     if not marker or marker==['0']:
         require(not any(': ath12k_mgmt_lifetime:' in l or ': ack_status_lifetime:' in l for l in text.splitlines()),'unadvertised driver trace')
-        return {'boot':userspace['boot'],'driver_trace_available':False,'userspace':userspace}
+        return {'boot':userspace['boot'],'driver_trace_available':False,'driver_trace_captured':False,'userspace':userspace}
     active_acks={}; acks={}; queued={}; descriptors={}; awaiting_return={}; attempts=[]
     flushes=[]; active_flush={}; anomalies=[]; drops=[]; counts={}
     for line in text.splitlines():
@@ -121,7 +121,7 @@ def parse(text):
     by_cookie={}
     for row in attempts:
         if row['cookie'] is not None: by_cookie.setdefault((row['wiphy'],row['cookie']),[]).append(row)
-    return dict(boot=userspace['boot'],driver_trace_available=True,phase_counts=counts,
+    return dict(boot=userspace['boot'],driver_trace_available=True,driver_trace_captured=bool(counts),phase_counts=counts,
                 userspace=userspace,ack_lifetimes=list(acks.values()),attempts=attempts,
                 flushes=flushes,anomalies=anomalies,drops=drops,
                 unmatched_queue_events=[e for q in queued.values() for e in q],
@@ -141,6 +141,9 @@ def selftest():
     data=parse(trace(drv(1,'orphan',0,-1,result=4),drv(2,'prepare',0,-1),drv(2.1,'submit',0,-1),drv(2.2,'submitted',0,-1),drv(3,'flush_begin',-1,-1),drv(8,'flush_end',-1,-1,result=-110)))
     require(data['attempts'][0]['right_censored'] and data['flushes'][0]['latency_ms']==5000 and data['anomalies'][0]['kind']=='firmware_orphan','censored/orphan/flush')
     require(not parse(trace(marker=0))['driver_trace_available'],'old trace handling')
+    empty=parse(trace(ack(1,3,7),ack(2,3,7,0)))
+    require(empty['driver_trace_available'] and not empty['driver_trace_captured'],'enabled event without records')
+    require(data['driver_trace_captured'],'recorded driver trace')
     for bad in (trace(drv(1,'prepare',0),drv(2,'prepare',0)), trace(ack(1,3,7),ack(2,3,8)),trace(drv(1,'queue'),marker=0)):
         try: parse(bad)
         except ValueError: pass
