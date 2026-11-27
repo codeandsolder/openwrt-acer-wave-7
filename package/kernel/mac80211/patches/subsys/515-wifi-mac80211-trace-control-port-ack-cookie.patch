@@ -1,0 +1,10 @@
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -2724,6 +2724,7 @@
+ 			if (cookie) {
+ 				*cookie = ieee80211_mgmt_tx_cookie(local);
+ 				IEEE80211_SKB_CB(ack_skb)->ack.cookie = *cookie;
++				trace_ack_status_lifetime(local, id, *cookie, true, false, false);
+ 			}
+ 		} else {
+ 			kfree_skb(ack_skb);
