@@ -103,7 +103,9 @@ static struct page_pool pool;
 static struct page pages[64];
 static struct sk_buff skbs[64];
 static unsigned allocs,builds,returned_pages,syncs,unmaps,fail_alloc,fail_build,fail_create,maps;
-static bool expand_fail;
+static bool expand_fail, serving_softirq;
+static unsigned napi_builds, normal_builds;
+static bool in_serving_softirq(void){return serving_softirq;}
 static unsigned expand_count;
 static struct page_pool *page_pool_create(const struct page_pool_params *p) {
     if(fail_create)return (void*)(intptr_t)-ENOMEM;
@@ -126,12 +128,14 @@ static void page_pool_put_full_page(struct page_pool *p,struct page *page,bool d
 static void *page_address(struct page *p){return p->buf;}
 static struct page *virt_to_head_page(void *data){return container_of(data,struct page,buf);}
 static uintptr_t page_pool_get_dma_addr(struct page *p){return (uintptr_t)p->id*PAGE_SIZE;}
-static struct sk_buff *build_skb(void *addr,unsigned size){
+static struct sk_buff *mock_build_skb(void *addr,unsigned size){
     if(++builds==fail_build)return NULL;
     struct page *p=virt_to_head_page(addr);assert(p->allocated&&size==SKB_HEAD_ALIGN(2176));
     struct sk_buff *s=&skbs[p->id];*s=(struct sk_buff){.page=p,.head=addr,.data=addr,.tailroom=SKB_WITH_OVERHEAD(size)};
     return s;
 }
+static struct sk_buff *build_skb(void *addr,unsigned size){assert(!serving_softirq);normal_builds++;return mock_build_skb(addr,size);}
+static struct sk_buff *napi_build_skb(void *addr,unsigned size){assert(serving_softirq);napi_builds++;return mock_build_skb(addr,size);}
 static void skb_reserve(struct sk_buff *s,unsigned n){assert(s->tailroom>=n);s->data+=n;s->tailroom-=n;}
 static void skb_mark_for_recycle(struct sk_buff *s){s->pp_recycle=true;}
 static void dev_kfree_skb_any(struct sk_buff *s){assert(s->pp_recycle);page_pool_put_full_page(s->page->pool,s->page,false);}
@@ -184,6 +188,7 @@ int main(void){
     for(unsigned available=0;available<=64;available+=4)
     for(unsigned descriptors=0;descriptors<=24;descriptors+=4)
     for(unsigned preowned=0;preowned<2;preowned++)
+    for(unsigned context=0;context<2;context++)
     for(unsigned fail_kind=0;fail_kind<4;fail_kind++)
     for(unsigned fail=1;fail<=17;fail+=4){
         struct ath12k_rx_desc_info descs[64]={0};
@@ -195,7 +200,8 @@ int main(void){
             descs[i].cookie=i+100;descs[i].in_use=preowned;
             list_add_tail(&descs[i].list,preowned?&used:&dp.rx_desc_free_list);
         }
-        allocs=builds=returned_pages=syncs=maps=0;
+        allocs=builds=returned_pages=syncs=maps=napi_builds=normal_builds=0;
+        serving_softirq=context;
         memset(pages,0,sizeof(pages));
         fail_alloc=fail_kind==1?fail:0;fail_build=fail_kind==2?fail:0;
         unsigned limit=requested?requested:(available>48?available:0);
@@ -216,12 +222,12 @@ int main(void){
             }else assert(!d->skb);
         }
         for(unsigned i=0;i<64;i++)assert(!pages[i].allocated);
-        assert(syncs==expected);
+        assert(syncs==expected && (context?napi_builds:normal_builds)==builds && !(context?normal_builds:napi_builds));
         /* Recycle a returned page without allocating a new DMA mapping. */
         if(expected){
             unsigned old_maps=maps;
             fail_alloc=fail_build=0;
-            struct sk_buff *s=ath12k_dp_rx_build_skb(&pool);
+            struct sk_buff *s=ath12k_dp_rx_build_skb(&pool,serving_softirq);
             assert(s&&maps==old_maps);
             ath12k_dp_unmap_rx_buf(&dp,s);dev_kfree_skb_any(s);
         }

@@ -1,0 +1,55 @@
+From: Wave7 development <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: use per-CPU skb cache during RX refill
+
+Page pool removes repeated buffer allocation and DMA mapping, but
+build_skb still allocates a separate skb head. Use the NAPI per-CPU
+bulk-refilled cache when servicing receive softirqs; keep the normal
+allocator for initialization and non-softirq callers.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_rx.c
+@@ -65,7 +65,8 @@
+ 	spin_unlock_bh(&dp->rx_desc_lock);
+ }
+ 
+-static struct sk_buff *ath12k_dp_rx_build_skb(struct page_pool *pool)
++static struct sk_buff *ath12k_dp_rx_build_skb(struct page_pool *pool,
++					      bool napi)
+ {
+ 	struct ath12k_skb_rxcb *rxcb;
+ 	struct sk_buff *skb;
+@@ -78,8 +79,14 @@
+ 	if (!page)
+ 		return NULL;
+ 
+-	skb = build_skb(page_address(page),
+-			SKB_HEAD_ALIGN(DP_RX_POOL_HEADROOM + DP_RX_BUFFER_SIZE));
++	if (napi)
++		skb = napi_build_skb(page_address(page),
++				     SKB_HEAD_ALIGN(DP_RX_POOL_HEADROOM +
++						    DP_RX_BUFFER_SIZE));
++	else
++		skb = build_skb(page_address(page),
++				SKB_HEAD_ALIGN(DP_RX_POOL_HEADROOM +
++					       DP_RX_BUFFER_SIZE));
+ 	if (!skb) {
+ 		page_pool_put_full_page(pool, page, false);
+ 		return NULL;
+@@ -111,6 +118,7 @@
+ 	struct sk_buff *skb;
+ 	int num_free;
+ 	int num_remain;
++	bool napi = in_serving_softirq();
+ 	u32 cookie;
+ 	struct ath12k_rx_desc_info *rx_desc;
+ 	enum hal_rx_buf_return_buf_manager mgr = dp->hal->hal_params->rx_buf_rbm;
+@@ -150,7 +158,7 @@
+ 		if (!rx_desc)
+ 			break;
+ 
+-		skb = ath12k_dp_rx_build_skb(rx_ring->page_pool);
++		skb = ath12k_dp_rx_build_skb(rx_ring->page_pool, napi);
+ 		if (!skb)
+ 			break;
+ 
