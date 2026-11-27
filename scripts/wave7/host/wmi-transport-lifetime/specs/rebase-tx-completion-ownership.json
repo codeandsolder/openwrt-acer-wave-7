@@ -1,0 +1,20 @@
+{
+  "parent_sha": "4d3518c4cf131a481323eadc5557ac44140af49f6e8c2da771e4134dad904aea",
+  "parent_rev": "r0+39019-bc3ffc8f7b-ap-dhcp-guard8",
+  "parent_builder": "bc3ffc8f7badb926c4d562104c39cc25bd270af5",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "cbd1efc65cca579a2766ddacfb3addd051f0802d2fe643687511c1ca60d3f3af",
+      "4907165621a2d5ab7f9ecc0bd9220dc3efb3f04026c4320b33098795b778f9d5"
+    ],
+    "ath12k_wifi7.ko": [
+      "7466c52010a70b546e1422e8f5a67d31a84285ef00833dde77d3c093ad969920",
+      "2a8cb8a08521296987220f978067a05fbcac59df53e96f89257b04e7f940477a"
+    ]
+  },
+  "patch_commit": "cd3e3ca84aade4b958a5d882e9be64f42dd41f9e",
+  "patch_key": "trial_tx_completion_ownership_commit",
+  "filename": "wave7-rebase-tx-completion-ownership-dhcp-guard8-sysupgrade.bin"
+}
