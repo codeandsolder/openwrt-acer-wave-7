@@ -33,7 +33,7 @@ upstream DHCP server and upstream IPv6 RA.
 
 A new image still requires the current-boot external SSH token. After
 independent soak and client/wire acceptance, the operator explicitly runs
-attest-management.sh --approve with router, revision, interface, source
+attest-management.sh --approve with router, revision, expected kernel, interface, source
 IPv4, pinned known_hosts and verified boot UUID. The router requires
 bootfail=0, keep marker, the original current-boot token and fresh local
 health before atomically creating /overlay/wave7-ap-approved, root:root
