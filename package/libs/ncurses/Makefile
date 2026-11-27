@@ -24,6 +24,7 @@ PKG_LICENSE_FILES:=README
 
 PKG_INSTALL:=1
 PKG_BUILD_PARALLEL:=1
+HOST_BUILD_PARALLEL:=1
 
 PKG_BUILD_DEPENDS:=ncurses/host
 
@@ -198,8 +199,8 @@ define Build/InstallDev
 endef
 
 define Host/Compile
-	$(MAKE) -C $(HOST_BUILD_DIR) libs
-	$(MAKE) -C $(HOST_BUILD_DIR)/progs tic
+	+$(MAKE) $(HOST_JOBS) -C $(HOST_BUILD_DIR) libs
+	+$(MAKE) $(HOST_JOBS) -C $(HOST_BUILD_DIR)/progs tic
 endef
 
 $(eval $(call HostBuild))
