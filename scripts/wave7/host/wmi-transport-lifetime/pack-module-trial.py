@@ -22,6 +22,7 @@ IDENTITIES = helpers['IDENTITIES']
 MODDIR = helpers['MODDIR']
 RADIO = helpers['RADIO']
 PROFILES = {
+    'reo-retirement': {'parent_sha': '4ea966c91746e18db7b1da0bb109b5f69feed00914e908860ebd4d280b592372', 'parent_rev': 'r0+38346-47681764c0-ap-dhcp-guard8', 'modules': {'ath12k.ko': ('40e5457a6d8ee9fc9b6aeff919417a3e2549c3f89b929b83f9d6ef0745f49410', '5dcf16f9ada1ef57a907b19743a5e21182aded19d0324546bd8fea70ba681529'), 'ath12k_wifi7.ko': ('5a482713899f12a7513d4200e065a164a373aa3eed6794baedfac8e5d513a689', '95d8fed1e004f79df6b0406a86cbceb2573eeaed3636e3115fbcb26bbfc0aafe')}, 'patch_commit': 'd8fdc4f80a', 'patch_key': 'trial_reo_retirement_patch_commit', 'filename': 'wave7-reo-retirement-dhcp-guard8-sysupgrade.bin'},
     'mgmt-latency-v2': {'parent_sha': '7917cdefed1b05a76a8b9b59b0f224fc7ffac752469e16b9a5239e8bf02a5378', 'parent_rev': 'r0+38346-a0dabf5ba3-ap-dhcp-guard8', 'modules': {'ath12k.ko': ('c72b4c0c6878e0eff70f5100ffb30857ea09eaa19dd631bfbbdb99a4ca628bdd', '40e5457a6d8ee9fc9b6aeff919417a3e2549c3f89b929b83f9d6ef0745f49410'), 'mac80211.ko': ('3be5c85345b025bdcae2c24b4fd57f5a45e6974ef62086f2bea0c92ad8d722c0', 'e98aec90e52e6f065eefd283da779505a009ab935bc51e5a8cdd8f98fb916b0b')}, 'patch_commit': '058c4e90bc', 'patch_key': 'trial_mgmt_lifetime_trace_fix_commit', 'filename': 'wave7-mgmt-latency-v2-dhcp-guard8-sysupgrade.bin'},
     'mgmt-latency': dict(
         parent_sha='5129cef427c4afbfbfdc1dcf978f46dbaef632c4bdb0b70c99e0568df56dd53b',
