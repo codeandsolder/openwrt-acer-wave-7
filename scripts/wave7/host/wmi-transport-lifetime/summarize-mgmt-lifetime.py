@@ -43,6 +43,7 @@ def parse_trace(text):
     pending = {}
     submissions = {}
     failures = []
+    no_ack = []
     completions = {}
     states = []
     requests = []
@@ -68,6 +69,11 @@ def parse_trace(text):
             if row['ret']:
                 failures.append(row)
                 continue
+            # mac80211 deliberately reuses 0xffffffff for no-ACK requests;
+            # such calls do not represent unique status-bearing transactions.
+            if not row['expect_ack']:
+                no_ack.append(row)
+                continue
             key = row['wdev'], row['cookie']
             require(key not in submissions, f'duplicate management cookie {key}')
             submissions[key] = row
@@ -85,7 +91,7 @@ def parse_trace(text):
             requests.append(dict(time=t, event=event, metadata=body))
     rows = []
     for key in sorted(submissions.keys() | completions.keys()):
-        row = dict(wdev=key[0], cookie=key[1], **{})
+        row = dict(wdev=key[0], cookie=key[1])
         row.update(submissions.get(key, {}))
         row.update(completions.get(key, {}))
         if key in submissions and key in completions:
@@ -93,8 +99,8 @@ def parse_trace(text):
             row['latency_s'] = round(row['completed_at'] - row['submitted_at'], 6)
         rows.append(row)
     paired = [r for r in rows if 'latency_s' in r]
-    return dict(boot=boot[0], submission_trace_available=bool(submissions or failures or pending),
-                observed_until=latest, submissions=len(submissions), failed_submissions=failures,
+    return dict(boot=boot[0], submission_trace_available=bool(submissions or failures or pending or no_ack),
+                observed_until=latest, submissions=len(submissions), failed_submissions=failures, no_ack_submissions=no_ack,
                 unresolved_calls=list(pending.values()), statuses=len(completions),
                 acked=sum(r['ack'] for r in completions.values()),
                 unacked=sum(not r['ack'] for r in completions.values()),
@@ -115,6 +121,9 @@ def selftest():
     status = lambda t,c,a: event(0,t,'cfg80211_mgmt_tx_status',f'wdev(1), cookie: {c}, ack: {a}')
     data = parse_trace(trace(tx(12,1), status(1.1,7,'true'), ret(12,1.2,7), tx(13,2), ret(13,2.1,8), tx(12,3), ret(12,3.1,9), status(3.2,9,'false'), status(8,8,'false'), tx(12,9), ret(12,9.1,10)))
     require(data['paired'] == 3 and data['maximum_latency_s'] == 6 and len(data['missing_status']) == 1 and data['acked'] == 1 and data['unacked'] == 2, 'wrong transaction result')
+    no_ack_tx = lambda t: event(12,t,'rdev_mgmt_tx','phy0, wdev(1), dont wait for ack: true')
+    no_ack = parse_trace(trace(no_ack_tx(1), ret(12,1.1,4294967295), no_ack_tx(2), ret(12,2.1,4294967295)))
+    require(len(no_ack['no_ack_submissions']) == 2 and not no_ack['missing_status'], 'no-ACK cookie reuse')
     old = parse_trace(trace(status(1,5,'true'),status(2,6,'false')))
     require(not old['submission_trace_available'] and old['paired'] == 0 and old['maximum_latency_s'] is None, 'inferred unavailable latency')
     for bad in (trace(tx(1,1),tx(1,2)), trace(status(1,5,'true'),status(2,5,'false')), trace(status(2,5,'true'),status(1,6,'true')), trace(status(1,5,'true')).replace('overrun: 0','overrun: 1',1)):
