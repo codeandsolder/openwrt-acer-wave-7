@@ -1,0 +1,25 @@
+From: Lorenzo Bianconi <lorenzo.bianconi@oss.qualcomm.com>
+Subject: [PATCH] wifi: ath12k: fix DP used for WBM error buffer refill
+
+Tested-on: WCN7850 hw2.0 PCI WLAN.HMT.1.1.c7-00108-QCAHMTSWPL_V1.0_V2.0_SILICONZ_UPSTREAM-3
+
+Fixes: 1d18b197bc4b ("wifi: ath12k: add partner device buffer support in receive data path")
+Signed-off-by: Lorenzo Bianconi <lorenzo.bianconi@oss.qualcomm.com>
+
+Link: https://lore.kernel.org/r/20261017-ath12k_wifi7_dp_rx_process_wbm_err-fix-dp-replenish-v1-1-21eff2270080@oss.qualcomm.com
+Reviewed-by: Vasanthakumar Thiagarajan <vasanthakumar.thiagarajan@oss.qualcomm.com>
+
+---
+diff --git a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+index f4188f7..7e9f43c 100644
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -2052,7 +2052,7 @@ int ath12k_wifi7_dp_rx_process_wbm_err(struct ath12k_dp *dp,
+ 		partner_dp = ath12k_dp_hw_grp_to_dp(dp_hw_grp, device_id);
+ 		rx_ring = &partner_dp->rx_refill_buf_ring;
+ 
+-		ath12k_dp_rx_bufs_replenish(dp, rx_ring,
++		ath12k_dp_rx_bufs_replenish(partner_dp, rx_ring,
+ 					    &rx_desc_used_list[device_id],
+ 					    num_buffs_reaped[device_id]);
+ 	}
