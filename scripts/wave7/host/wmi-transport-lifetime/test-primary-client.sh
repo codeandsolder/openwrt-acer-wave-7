@@ -393,6 +393,7 @@ for band in "${bands[@]}"; do
         done
     fi
     snapshot_rx > "$prefix.rx-before.txt"
+    remote 'cat /proc/interrupts' > "$prefix.irq-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
@@ -590,6 +591,8 @@ for band in "${bands[@]}"; do
         exit 1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
+    remote 'cat /proc/interrupts' > "$prefix.irq-after.txt"
+    uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.tx-ring-delta.json" || cases_failed=1
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
     result_file=short-hold-result.txt
