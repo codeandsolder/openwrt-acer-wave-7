@@ -320,6 +320,46 @@ def compare(before, after):
             "tx_delta": {k: subtract(v, b["tx"][k]) for k, v in a["tx"].items()}}
 
 
+def parse_aql_profile(text, boot, intervals):
+    """Validate bounded on/off profile, attribute samples to load phases."""
+    lines = text.splitlines()
+    require(len(lines) > 4, "incomplete AQL profile")
+    ready = re.fullmatch(r"AQL_PROFILE_READY boot=([0-9a-f-]{36}) enabled=([01]) original=([01]) seconds=(335)", lines[0])
+    require(ready and ready[1] == boot, "AQL profile boot/identity")
+    require(lines[-3:] == ["AQL_PROFILE_DRAINED",
+                          f"AQL_PROFILE_RESTORE enabled={ready[3]}",
+                          "AQL_PROFILE_END rc=0"], "AQL profile did not drain/restore")
+    fields = ("VO", "VI", "BE", "BK", "BC/MC", "total")
+    rows = []
+    for line in lines[1:-3]:
+        m = re.fullmatch(r"AQL_PROFILE_SAMPLE (\d+\.\d+) ((?:\d+ ){5}\d+)", line)
+        require(m, "invalid AQL sample")
+        uptime = float(m[1])
+        values = tuple(map(int, m[2].split()))
+        require(all(0 <= v <= 2147483647 for v in values), "AQL counter underflow")
+        require(not rows or 0 < uptime - rows[-1][0] <= 2, "AQL sample discontinuity")
+        rows.append((uptime, values))
+    require(rows and 334 <= rows[-1][0] - rows[0][0] <= 340,
+            "AQL profile duration")
+    phases = {}
+    for mode, (start, end) in intervals.items():
+        require(rows[0][0] <= start < end <= rows[-1][0], "AQL profile misses load phase")
+        active = [(t, v) for t, v in rows if start <= t <= end]
+        require(len(active) >= 2 * (end - start), "insufficient AQL phase samples")
+        times = [start, *(t for t, _ in active), end]
+        gap = max(b - a for a, b in zip(times, times[1:]))
+        require(gap <= 2, "AQL phase sample discontinuity")
+        pending = {}
+        for i, key in enumerate(fields):
+            values = sorted(v[i] for _, v in active)
+            def percentile(p):
+                return values[(len(values) * p + 99) // 100 - 1]
+            pending[key] = {"p50": percentile(50), "p95": percentile(95), "max": values[-1]}
+        phases[mode] = {"samples": len(active), "max_gap_s": gap, "pending_us": pending}
+    return {"enabled": int(ready[2]), "original": int(ready[3]),
+            "drained": True, "samples": len(rows), "phases": phases}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("run", type=Path)
@@ -331,6 +371,13 @@ def main():
     for mode in MODES:
         result[mode] = compare(Path(f"{prefix}.load-{mode}-ap-before.txt").read_text(),
                                Path(f"{prefix}.load-{mode}-ap-after.txt").read_text())
+    profile = Path(f"{prefix}.ap-aql-profile.txt")
+    if profile.exists():
+        intervals = {mode: (result[mode]["radio"]["start_s"], result[mode]["radio"]["end_s"])
+                     for mode in MODES}
+        boots = {result[mode]["radio"]["boot"] for mode in MODES}
+        require(len(boots) == 1, "load phases crossed boots")
+        result["aql_profile"] = parse_aql_profile(profile.read_text(), boots.pop(), intervals)
     event = re.compile(r"(\d+\.\d+): drv_ampdu_action: .* tid (\d+), ssn (\d+), buf_size (\d+), amsdu (\d+), timeout (\d+) action (\d+)")
     actions = ("rx_start", "rx_stop", "tx_start", "tx_stop_cont",
                "tx_stop_flush", "tx_stop_flush_cont", "tx_operational")

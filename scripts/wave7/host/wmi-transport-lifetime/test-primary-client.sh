@@ -27,6 +27,7 @@ dual_reconnect=0
 reconnect_count=1
 reconnect_datapath=0
 ap_irq_spread=0
+ap_aql=none
 ap_ring3_probe=0
 ap_link_stats=0
 ap_link_tool=""
@@ -58,6 +59,9 @@ for arg in "$@"; do
         --client-reconnect-twice) dual_hold=1; dual_reconnect=1; reconnect_count=2 ;;
         --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
+        --ap-aql-on|--ap-aql-off)
+            [[ $ap_aql == none ]] || fail 'one AQL profile'
+            if [[ $arg == --ap-aql-on ]]; then ap_aql=1; else ap_aql=0; fi ;;
         --ap-ring3-probe) ap_ring3_probe=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
@@ -139,6 +143,7 @@ boundary_profiles=()
 if (( dhcp_boundaries )); then boundary_profiles+=(dhcp4); fi
 if (( icmp_boundaries )); then boundary_profiles+=(echo4); fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
+if [[ $ap_aql != none ]] && (( !dual_load )); then fail "AQL profile requires isolated TCP load trial"; fi
 if (( ap_ring3_probe )); then
     [[ ${#bands[@]} == 1 && ${bands[0]} == 24 && $variant == upstream-prefix22-authorize-single-link-trace ]] || fail "ring3 probe requires single-link 2.4 GHz case"
     (( !dual_hold && !dual_load && !dual_reconnect )) || fail "ring3 probe requires short isolated hold"
@@ -374,6 +379,7 @@ boundary_markers=()
 boundary_errors=()
 load_client_pid=''
 ap_irq_pid=''
+ap_aql_pid=''
 restore_client(){
     local deadline=$((SECONDS + $1)) request_rc=0
     local check="sudo -n bash $client/client-module-stack.sh $variant --check-original"
@@ -417,6 +423,7 @@ cleanup(){
     if [[ -n $ip6_pid ]]; then wait "$ip6_pid" || :; fi
     for pid in "${boundary_pids[@]}"; do wait "$pid" || :; done
     if [[ -n $ap_irq_pid ]]; then wait "$ap_irq_pid" || rc=1; fi
+    if [[ -n $ap_aql_pid ]]; then wait "$ap_aql_pid" || rc=1; fi
     if [[ -n $ap_link_tool ]]; then
         remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_link_tool/iw'; rmdir '$ap_link_tool'" || rc=1
     fi
@@ -498,6 +505,17 @@ for band in "${bands[@]}"; do
         until [[ -s $prefix.ap-irq-profile.txt ]] && rg -q '^IRQ_PROFILE_READY ' "$prefix.ap-irq-profile.txt"; do
             kill -0 "$ap_irq_pid" 2>/dev/null || fail 'IRQ profile failed'
             (( SECONDS < deadline )) || fail 'IRQ profile readiness timeout'
+            sleep .25
+        done
+    fi
+    if [[ $ap_aql != none ]]; then
+        remote_stream "sh -s -- $boot 335 $ap_aql" < "$(dirname "$helper")/ap-aql-profile.sh" \
+            > "$prefix.ap-aql-profile.txt" 2>&1 &
+        ap_aql_pid=$!
+        deadline=$((SECONDS + 15))
+        until [[ -s $prefix.ap-aql-profile.txt ]] && rg -q '^AQL_PROFILE_READY ' "$prefix.ap-aql-profile.txt"; do
+            kill -0 "$ap_aql_pid" 2>/dev/null || fail 'AQL profile failed'
+            (( SECONDS < deadline )) || fail 'AQL profile readiness timeout'
             sleep .25
         done
     fi
@@ -776,6 +794,11 @@ for band in "${bands[@]}"; do
         wait "$ap_irq_pid" || cases_failed=1
         ap_irq_pid=''
         rg -qx 'IRQ_PROFILE_END rc=0' "$prefix.ap-irq-profile.txt" || cases_failed=1
+    fi
+    if [[ $ap_aql != none ]]; then
+        wait "$ap_aql_pid" || cases_failed=1
+        ap_aql_pid=''
+        rg -qx 'AQL_PROFILE_END rc=0' "$prefix.ap-aql-profile.txt" || cases_failed=1
     fi
     if ! guard; then
         echo "AP_FAULT_AFTER_BAND_$band"
