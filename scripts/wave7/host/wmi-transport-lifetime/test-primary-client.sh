@@ -213,6 +213,9 @@ snapshot_rx(){
             cat "$f"
         done'
 }
+snapshot_srng(){
+    remote 'set -eu; cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state'
+}
 snapshot_icmp(){
     remote 'cat /proc/sys/kernel/random/boot_id
         cat /proc/uptime
@@ -399,7 +402,7 @@ for band in "${bands[@]}"; do
         done
     fi
     snapshot_rx > "$prefix.rx-before.txt"
-    remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.rx-before.srng.txt"
+    snapshot_srng > "$prefix.rx-before.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
@@ -565,7 +568,7 @@ for band in "${bands[@]}"; do
             cases_failed=1
         else
             snapshot_rx > "$prefix.ring3-before.txt"
-            remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.ring3-before.srng.txt"
+            snapshot_srng > "$prefix.ring3-before.srng.txt"
             # MLO unicast goes through the QCN6432 primary UMAC even
             # when only client link0 is active. Link-local multicast
             # exercises the per-link group TX path on both radios.
@@ -576,7 +579,7 @@ for band in "${bands[@]}"; do
             # Replies to group ICMP are optional; require actual ring3
             # submission, completion, IRQ delta and drain below instead.
             snapshot_rx > "$prefix.ring3-after.txt"
-            remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.ring3-after.srng.txt"
+            snapshot_srng > "$prefix.ring3-after.srng.txt"
         fi
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
@@ -630,11 +633,16 @@ for band in "${bands[@]}"; do
         exit 1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
-    remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$prefix.rx-after.srng.txt"
+    snapshot_srng > "$prefix.rx-after.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-after.txt"
     ring_args=()
     if (( ap_ring3_probe )); then ring_args=(--require-ring3); fi
     uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" --irq-before "$prefix.irq-before.txt" --irq-after "$prefix.irq-after.txt" "${ring_args[@]}" > "$prefix.tx-ring-delta.json" || cases_failed=1
+    uv run --no-project python -B "$(dirname "$helper")/srng-pointer-delta.py" "$prefix.rx-before.srng.txt" "$prefix.rx-after.srng.txt" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.srng-delta.json" || cases_failed=1
+    if (( ap_ring3_probe )); then
+        uv run --no-project python -B "$(dirname "$helper")/srng-pointer-delta.py" "$prefix.ring3-before.srng.txt" "$prefix.ring3-after.srng.txt" "$prefix.ring3-before.txt" "$prefix.ring3-after.txt" > "$prefix.ring3-srng-delta.json" || cases_failed=1
+        jq -e '.correlation["3"] | .queued > 0 and .queued == .completed and .tcl_produced_matches and .wbm_consumed_matches and .drained' "$prefix.srng-delta.json" >/dev/null || cases_failed=1
+    fi
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
     result_file=short-hold-result.txt
