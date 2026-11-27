@@ -60,7 +60,7 @@ def start(binary, iface):
     return p
 
 
-def finish(process, iface, malformed, expected):
+def finish(process, iface, malformed, expected, link_downs=0):
     out, err = process.communicate(timeout=6)
     assert process.returncode == bool(malformed), (process.returncode, out, err)
     assert not err, err
@@ -71,7 +71,9 @@ def finish(process, iface, malformed, expected):
     assert all(before <= after and after - before < 0.05 and realtime > before
                for before, realtime, after in anchors)
     assert all(a[0] < b[0] for a, b in zip(anchors, anchors[1:]))
-    rows = [row for row in all_rows if not row.startswith('DHCP_CLOCK ')]
+    down = [row for row in all_rows if row.startswith('DHCP_LINK_DOWN ')]
+    assert len(down) == link_downs, down
+    rows = [row for row in all_rows if not row.startswith(('DHCP_CLOCK ', 'DHCP_LINK_DOWN '))]
     end = dict(item.split('=') for item in rows[-1].split()[1:])
     assert rows[-1].startswith('DHCP_OBSERVER_END ')
     assert end == {'iface': iface, 'seen': str(len(expected) + malformed),
@@ -139,6 +141,35 @@ def main():
                     if p.poll() is None:
                         p.kill()
                         p.wait()
+        # Exercise the actual packet-notifier down/up path without replacing
+        # the bound netdev. Both directions must still be observed afterwards.
+        a, b = start(binary, LEFT), start(binary, RIGHT)
+        try:
+            subprocess.run(['ip', 'link', 'set', LEFT, 'down'], check=True)
+            subprocess.run(['ip', 'link', 'set', LEFT, 'up'], check=True)
+            # Sender sockets also retain their asynchronous ENETDOWN.
+            left.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            right.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            for sock, data in packets[:2]:
+                assert sock.send(data) == len(data)
+            l = [('tx', 68, 67, 1, 1, 1), ('rx', 67, 68, 2, 2, 5)]
+            r = [('rx' if row[0] == 'tx' else 'tx', *row[1:]) for row in l]
+            finish(a, LEFT, 0, l, 1)
+            finish(b, RIGHT, 0, r)
+        finally:
+            for p in (a, b):
+                if p.poll() is None:
+                    p.kill()
+                    p.wait()
+        a = start(binary, LEFT)
+        try:
+            subprocess.run(['ip', 'link', 'del', LEFT], check=True)
+            out, err = a.communicate(timeout=6)
+            assert a.returncode != 0 and 'DHCP_OBSERVER_END' not in out, (out, err)
+        finally:
+            if a.poll() is None:
+                a.kill()
+                a.wait()
     print('DHCP_BOUNDARY_ACTUAL_VETH_PASS')
 
 

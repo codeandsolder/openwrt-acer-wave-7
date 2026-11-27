@@ -14,6 +14,7 @@
 #include <net/if.h>
 #include <poll.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -183,7 +184,8 @@ static int receive_one(int fd, const char *iface, unsigned index,
     uint8_t packet[65536];
     union {
         struct cmsghdr align;
-        char data[CMSG_SPACE(sizeof(struct timespec))];
+        /* Do not assume the timestamp is the only ancillary record. */
+        char data[256];
     } control;
     struct sockaddr_ll address = {0};
     struct iovec iov = {.iov_base = packet, .iov_len = sizeof(packet)};
@@ -196,10 +198,17 @@ static int receive_one(int fd, const char *iface, unsigned index,
     if (n < 0)
         return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
     ++*seen;
+    /* sockaddr_ll is variable length (sll_halen bytes after sll_addr).
+     * Only the fixed fields are required for direction and device identity. */
     if ((msg.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) ||
-        msg.msg_namelen < sizeof(address) ||
-        address.sll_ifindex != (int)index)
+        msg.msg_namelen < offsetof(struct sockaddr_ll, sll_addr) ||
+        address.sll_family != AF_PACKET || address.sll_ifindex != (int)index) {
+        fprintf(stderr, "invalid packet metadata: flags=%#x name=%u family=%u ifindex=%d expected=%u\n",
+                msg.msg_flags, (unsigned)msg.msg_namelen, address.sll_family,
+                address.sll_ifindex, index);
+        errno = EPROTO;
         return -1;
+    }
     struct timespec timestamp = {0};
     bool have_timestamp = false;
     for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c;
@@ -211,14 +220,47 @@ static int receive_one(int fd, const char *iface, unsigned index,
         }
     }
     if (!have_timestamp || timestamp.tv_sec < 0 ||
-        timestamp.tv_nsec < 0 || timestamp.tv_nsec >= 1000000000)
+        timestamp.tv_nsec < 0 || timestamp.tv_nsec >= 1000000000) {
+        fprintf(stderr, "invalid packet timestamp: present=%d control=%zu\n",
+                have_timestamp, (size_t)msg.msg_controllen);
+        for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c;
+             c = CMSG_NXTHDR(&msg, c))
+            fprintf(stderr, "ancillary level=%d type=%d len=%zu\n",
+                    c->cmsg_level, c->cmsg_type, (size_t)c->cmsg_len);
+        errno = EPROTO;
         return -1;
+    }
     struct dhcp_meta meta;
     if (!decode(packet, (size_t)n, &meta)) {
         ++*bad;
         return 1;
     }
     return emit(&timestamp, iface, address.sll_pkttype, &meta) ? -1 : 1;
+}
+
+/* NetworkManager may administratively lower a Wi-Fi netdev to change its
+ * MAC address. The packet notifier temporarily unregisters its protocol hook,
+ * reports ENETDOWN and registers the same hook again on NETDEV_UP. A device
+ * unregister, in contrast, clears the socket's binding. Never silently
+ * continue after removal/replacement or an unrelated socket error. */
+static int link_down(int fd, const char *iface, unsigned index, int error)
+{
+    struct sockaddr_ll bound = {0};
+    socklen_t len = sizeof(bound);
+    if (error != ENETDOWN || if_nametoindex(iface) != index ||
+        getsockname(fd, (struct sockaddr *)&bound, &len) ||
+        len < offsetof(struct sockaddr_ll, sll_addr) ||
+        bound.sll_ifindex != (int)index || bound.sll_protocol != htons(ETH_P_ALL)) {
+        fprintf(stderr, "packet socket error=%d bound_ifindex=%d expected=%u\n",
+                error, bound.sll_ifindex, index);
+        errno = error ? error : EPROTO;
+        return -1;
+    }
+    struct timespec mono;
+    if (clock_gettime(CLOCK_MONOTONIC, &mono))
+        return -1;
+    return printf("DHCP_LINK_DOWN %jd.%09ld ifindex=%u\n",
+                  (intmax_t)mono.tv_sec, mono.tv_nsec, index) < 0 ? -1 : 0;
 }
 
 static int observe(const char *iface, unsigned seconds)
@@ -259,7 +301,12 @@ static int observe(const char *iface, unsigned seconds)
         if (now >= deadline)
             break;
         if (now >= next_anchor) {
-            if (if_nametoindex(iface) != index || clock_anchor())
+            if (if_nametoindex(iface) != index) {
+                fprintf(stderr, "interface identity changed: %s index=%u\n", iface, index);
+                errno = ENODEV;
+                goto done;
+            }
+            if (clock_anchor())
                 goto done;
             next_anchor = now + 1000;
         }
@@ -271,9 +318,20 @@ static int observe(const char *iface, unsigned seconds)
                 continue;
             goto done;
         }
-        if (ready && (pollfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
+        if (ready && (pollfd.revents & (POLLHUP | POLLNVAL))) {
+            errno = EIO;
             goto done;
-        if (ready && receive_one(fd, iface, index, &seen, &bad) < 0)
+        }
+        if (ready && (pollfd.revents & POLLERR)) {
+            int error = 0;
+            socklen_t len = sizeof(error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) ||
+                len != sizeof(error) || link_down(fd, iface, index, error))
+                goto done;
+        }
+        if (ready && (pollfd.revents & POLLIN) &&
+            receive_one(fd, iface, index, &seen, &bad) < 0 &&
+            link_down(fd, iface, index, errno))
             goto done;
     }
     /* Stop admission before draining to avoid treating queued tail packets

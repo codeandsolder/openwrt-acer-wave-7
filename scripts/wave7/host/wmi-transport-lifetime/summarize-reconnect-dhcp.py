@@ -68,10 +68,15 @@ def parse_boundary_observer(text, iface):
     end = re.fullmatch(r'DHCP_OBSERVER_END iface=(\S+) seen=(\d+) decoded=(\d+) malformed=(\d+) packets=(\d+) drops=(\d+)', lines[-1])
     require(ready and end and ready[1] == end[1] == iface and int(ready[2]) > 0,
             'boundary observer identity or markers')
-    rows, clocks = [], []
+    rows, clocks, link_downs = [], [], []
     for line in lines[1:-1]:
         fields = line.split()
         require(fields, 'empty boundary observer record')
+        if fields[0] == 'DHCP_LINK_DOWN':
+            require(len(fields) == 3 and re.fullmatch(r'\d+\.\d+', fields[1]) and
+                    fields[2] == f'ifindex={ready[2]}', 'invalid link-down witness')
+            link_downs.append(float(fields[1]))
+            continue
         if fields[0] == 'DHCP_CLOCK':
             require(len(fields) == 4 and all(re.fullmatch(r'\d+\.\d+', f) for f in fields[1:]),
                     'invalid boundary clock')
@@ -103,7 +108,9 @@ def parse_boundary_observer(text, iface):
     for (m0, e0), (m1, e1) in zip(clocks, clocks[1:]):
         require(0 < m1 - m0 < 2.5 and abs((e1 - e0) - (m1 - m0)) < 0.1,
                 'boundary clock gap or realtime step')
-    return sorted(rows, key=lambda row: row['epoch']), clocks
+    require(link_downs == sorted(link_downs) and all(clocks[0][0] <= t <= clocks[-1][0] for t in link_downs),
+            'link-down witness outside capture')
+    return sorted(rows, key=lambda row: row['epoch']), clocks, link_downs
 
 
 def clock_epoch(clocks, timestamp):
@@ -209,11 +216,13 @@ def selftest():
         'DHCP_OBSERVER_READY iface=wlp2s0 ifindex=4 duration=2',
         'DHCP_CLOCK 10.000 100.000 10.000',
         f'DHCP_PACKET 100.500 wlp2s0 tx 0.0.0.0 255.255.255.255 68 67 1 0x12345678 {station} 0.0.0.0 1',
+        'DHCP_LINK_DOWN 10.950 ifindex=4',
         'DHCP_CLOCK 11.000 101.000 11.000',
         f'DHCP_PACKET 101.500 wlp2s0 rx 192.168.76.2 192.168.76.145 67 68 2 0x12345678 {station} 192.168.76.145 2',
         'DHCP_CLOCK 12.000 102.000 12.000',
         'DHCP_OBSERVER_END iface=wlp2s0 seen=2 decoded=2 malformed=0 packets=2 drops=0'])
-    local, clocks = parse_boundary_observer(boundary, 'wlp2s0')
+    local, clocks, link_downs = parse_boundary_observer(boundary, 'wlp2s0')
+    assert link_downs == [10.95]
     first, one = boundary_window(local, clocks, {'authorized_at': 10.1, 'observed_until': 11.0}, station)
     second, two = boundary_window(local, clocks, {'authorized_at': 11.0, 'observed_until': 11.9}, station)
     assert first == [100.1, 101.0] and second == [101.0, 101.9]
@@ -223,6 +232,7 @@ def selftest():
     assert join_boundaries([], two, [dict(two[0], direction='tx')])[0]['boundary_counts']['offer']['ap_tx'] == 1
     for invalid in (boundary.replace('drops=0', 'drops=1'),
                     boundary.replace('seen=2', 'seen=3'),
+                    boundary.replace('DHCP_LINK_DOWN 10.950 ifindex=4', 'DHCP_LINK_DOWN 10.950 ifindex=5'),
                     boundary.replace('101.000 11.000', '103.000 11.000'),
                     boundary.rsplit('\n', 1)[0]):
         try:
@@ -291,15 +301,18 @@ def main():
         transactions = group(packets, begin, finish, station)
         window = dict(association=i, station=station, wire_epoch=[begin, finish])
         if boundaries:
-            client_epoch, client_rows = boundary_window(*local['client'], c, station)
-            ap_epoch, ap_rows = boundary_window(*local['ap'], w, station)
+            client_epoch, client_rows = boundary_window(*local['client'][:2], c, station)
+            ap_epoch, ap_rows = boundary_window(*local['ap'][:2], w, station)
             start = wire_clock(probe_before, probe_after, client_epoch[0])
             stop = wire_clock(probe_before, probe_after, client_epoch[1])
             transactions, ambiguous = wire_group_with_uncertainty(packets, start, stop, station)
             window.update(client_epoch=client_epoch, ap_epoch=ap_epoch,
                           wire_epoch=[start[0], stop[0]],
                           wire_epoch_uncertainty_s=[start[1], stop[1]],
-                          wire_boundary_ambiguous=ambiguous)
+                          wire_boundary_ambiguous=ambiguous,
+                          link_down_notifications={side: [t for t in local[side][2]
+                              if w['authorized_at'] <= t < w['observed_until']]
+                              for side, w in (('client', c), ('ap', w))})
             assigned['client'] += len(client_rows)
             assigned['ap'] += len(ap_rows)
             transactions = join_boundaries(transactions, client_rows, ap_rows)
@@ -315,8 +328,8 @@ def main():
             side: dict(packets=len(rows),
                        station_packets=sum(p['client'] == station for p in rows),
                        assigned_packets=assigned[side],
-                       clock_anchors=len(anchors))
-            for side, (rows, anchors) in local.items()}
+                       clock_anchors=len(anchors), link_down_notifications=downs)
+            for side, (rows, anchors, downs) in local.items()}
     print(json.dumps(result, indent=2))
 
 
