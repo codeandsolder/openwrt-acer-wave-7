@@ -458,6 +458,18 @@ active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
 client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
 [[ $client_boot =~ ^[0-9a-f-]{36}$ ]] || fail 'client boot'
+# Packet timestamp correlation must not straddle the client's first NTP
+# correction after boot. Wait for synchronization without changing its clock
+# or time-service policy; retain the strict observer clock-step checks.
+if (( ${#boundary_profiles[@]} )); then
+    wyse 'set -eu; for n in $(seq 1 90); do
+        sync=$(timedatectl show -p NTPSynchronized --value)
+        printf "CLOCK_SYNC_CHECK %s %s\n" "$(cut -d" " -f1 /proc/uptime)" "$sync"
+        [ "$sync" != yes ] || exit 0
+        sleep 1
+    done; exit 1' > "$out/client-clock-sync.txt" 2>&1 || fail 'client time synchronization'
+    [[ $(wyse 'cat /proc/sys/kernel/random/boot_id') == "$client_boot" ]] || fail 'client clock sync reboot'
+fi
 if [[ $client_rx_arg == --rx-cnm || $client_rx_arg == --rx-txd ]]; then
     # Query once while disconnected. Do not associate on a failed query.
     wyse "sudo -n bash -c 'set -eu; mapfile -t paths < <(find /sys/kernel/debug/ieee80211 -name lab_cnm -type f); [[ \${#paths[@]} == 1 ]]; cat \"\${paths[0]}\"'" > "$out/client-cnm-preflight.txt" 2>&1 || fail 'CNM preflight query'
