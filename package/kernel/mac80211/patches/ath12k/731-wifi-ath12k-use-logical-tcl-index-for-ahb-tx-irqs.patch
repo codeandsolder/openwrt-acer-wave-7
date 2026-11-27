@@ -1,0 +1,32 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: use logical TCL indices for AHB TX IRQs
+
+The TX group masks index logical TCL rings, as used by the NAPI
+completion handler and MSI group calculation. The AHB IRQ setup
+instead checks the mapped physical WBM release ring number. On
+IPQ5332, logical TCL ring 3 maps to WBM release ring 4, so its
+completion IRQ is never registered.
+
+Use the logical index consistently, and iterate only the configured
+TX rings rather than the maximum-sized mapping array. Keep the
+physical WBM mapping for SRNG configuration.
+
+On Wave 7, ring 3 had 25 enqueues and zero completions while rings
+0-2 were balanced, causing repeated TX flush timeouts.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/ahb.c
++++ b/drivers/net/wireless/ath/ath12k/ahb.c
+@@ -510,9 +510,8 @@ static int ath12k_ahb_config_ext_irq(struct ath12k_base *ab)
+ 		netif_napi_add(irq_grp->napi_ndev, &irq_grp->napi,
+ 			       ath12k_ahb_ext_grp_napi_poll);
+ 
+-		for (j = 0; j < DP_TCL_NUM_RING_MAX; j++) {
+-			if (ring_mask->tx[i] &
+-			    BIT(ab->hal.tcl_to_wbm_rbm_map[j].wbm_ring_num) &&
++		for (j = 0; j < ab->hw_params->max_tx_ring; j++) {
++			if (ring_mask->tx[i] & BIT(j) &&
+ 			    num_irq < ATH12K_EXT_IRQ_NUM_MAX) {
+ 				irq_grp->irqs[num_irq++] =
+ 					wbm2host_tx_completions_ring1 - j;
