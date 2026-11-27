@@ -1,0 +1,244 @@
+Subject: [PATCH] wifi: ath12k: retire AQL credits by original TX owner
+
+Capture the original mac80211 queue owner rather than deriving it
+from the completed firmware peer. Retire charges exactly once on TX
+completion, failure, management cancellation and descriptor cleanup.
+Charge each MLO multicast replica independently; keep the extension
+descriptor DMA address in its own skb control block.
+
+Enable AQL after the data and management paths use explicit ownership.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -128,7 +128,7 @@
+ 	dma_addr_t paddr;
+ 	struct ath12k *ar;
+ 	struct ieee80211_vif *vif;
+-	dma_addr_t paddr_ext_desc;
++	struct ieee80211_aql_owner *aql_owner;
+ 	u32 cipher;
+ 	u8 flags;
+ 	u8 link_id;
+@@ -1360,6 +1360,25 @@
+ 	return (struct ath12k_skb_cb *)&IEEE80211_SKB_CB(skb)->driver_data;
+ }
+ 
++static inline void ath12k_tx_aql_complete(struct ieee80211_hw *hw,
++					  struct sk_buff *skb, bool wake)
++{
++	struct ath12k_skb_cb *cb = ATH12K_SKB_CB(skb);
++
++	if (!ieee80211_info_get_tx_time_est(IEEE80211_SKB_CB(skb)))
++		return;
++
++	ieee80211_tx_aql_complete(hw, cb->aql_owner, skb, wake);
++	cb->aql_owner = NULL;
++}
++
++static inline void ath12k_free_txskb(struct ieee80211_hw *hw,
++				     struct sk_buff *skb)
++{
++	ath12k_tx_aql_complete(hw, skb, true);
++	ieee80211_free_txskb(hw, skb);
++}
++
+ static inline struct ath12k_skb_rxcb *ATH12K_SKB_RXCB(struct sk_buff *skb)
+ {
+ 	BUILD_BUG_ON(sizeof(struct ath12k_skb_rxcb) > sizeof(skb->cb));
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -1026,13 +1026,14 @@
+ 	int ret;
+ 	struct ath12k_dp *tmp_dp;
+ 
++	link_id = u32_get_bits(info->control.flags, IEEE80211_TX_CTRL_MLO_LINK);
++	memset(skb_cb, 0, sizeof(*skb_cb));
++	skb_cb->aql_owner = ieee80211_tx_aql_get(sta, skb);
++
+ 	if (ahvif->vdev_type == WMI_VDEV_TYPE_MONITOR) {
+-		ieee80211_free_txskb(hw, skb);
++		ath12k_free_txskb(hw, skb);
+ 		return;
+ 	}
+-
+-	link_id = u32_get_bits(info->control.flags, IEEE80211_TX_CTRL_MLO_LINK);
+-	memset(skb_cb, 0, sizeof(*skb_cb));
+ 	skb_cb->vif = vif;
+ 
+ 	if (key) {
+@@ -1044,7 +1045,7 @@
+ 	if (ieee80211_vif_is_mld(vif)) {
+ 		link_id = ath12k_mac_get_tx_link(sta, vif, link_id, skb, info_flags);
+ 		if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS) {
+-			ieee80211_free_txskb(hw, skb);
++			ath12k_free_txskb(hw, skb);
+ 			return;
+ 		}
+ 	} else {
+@@ -1058,7 +1059,7 @@
+ 	if (!arvif || !arvif->ar) {
+ 		ath12k_warn(ahvif->ah, "failed to find arvif link id %u for frame transmission",
+ 			    link_id);
+-		ieee80211_free_txskb(hw, skb);
++		ath12k_free_txskb(hw, skb);
+ 		return;
+ 	}
+ 
+@@ -1084,7 +1085,7 @@
+ 		if (ret) {
+ 			ath12k_warn(ar->ab, "failed to queue management frame %d\n",
+ 				    ret);
+-			ieee80211_free_txskb(hw, skb);
++			ath12k_free_txskb(hw, skb);
+ 		}
+ 		return;
+ 	}
+@@ -1104,7 +1105,7 @@
+ 
+ 	dp_pdev = ath12k_dp_to_pdev_dp(ar->ab->dp, ar->pdev_idx);
+ 	if (!dp_pdev) {
+-		ieee80211_free_txskb(hw, skb);
++		ath12k_free_txskb(hw, skb);
+ 		return;
+ 	}
+ 
+@@ -1121,7 +1122,7 @@
+ 		ret = ath12k_wifi7_dp_tx(dp_pdev, arvif, arsta, skb, false, 0, is_mcast);
+ 		if (unlikely(ret)) {
+ 			ath12k_warn(ar->ab, "failed to transmit frame %d\n", ret);
+-			ieee80211_free_txskb(ar->ah->hw, skb);
++			ath12k_free_txskb(ar->ah->hw, skb);
+ 			return;
+ 		}
+ 	} else {
+@@ -1192,6 +1193,7 @@
+ 			spin_unlock_bh(&tmp_dp->dp_lock);
+ 
+ skip_peer_find:
++			ieee80211_tx_aql_clone(hw, skb_cb->aql_owner, msdu_copied);
+ 			ret = ath12k_wifi7_dp_tx(tmp_dp_pdev, tmp_arvif, arsta,
+ 						 msdu_copied, true, mcbc_gsn, is_mcast);
+ 			if (unlikely(ret)) {
+@@ -1209,10 +1211,11 @@
+ 						    ret);
+ 				}
+ 
++				ath12k_tx_aql_complete(hw, msdu_copied, true);
+ 				dev_kfree_skb_any(msdu_copied);
+ 			}
+ 		}
+-		ieee80211_free_txskb(ar->ah->hw, skb);
++		ath12k_free_txskb(ar->ah->hw, skb);
+ 	}
+ }
+ 
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -317,7 +317,7 @@
+ 		ti.data_len = skb_ext_desc->len;
+ 		ti.type = HAL_TCL_DESC_TYPE_EXT_DESC;
+ 
+-		skb_cb->paddr_ext_desc = ti.paddr;
++		ATH12K_SKB_CB(skb_ext_desc)->paddr = ti.paddr;
+ 	}
+ 
+ 	/* Keep the prepared packet and its DMA mappings across ring retries. */
+@@ -393,7 +393,7 @@
+ 
+ fail_unmap_dma_ext:
+ 	if (skb_ext_desc)
+-		dma_unmap_single(dp->dev, skb_cb->paddr_ext_desc,
++		dma_unmap_single(dp->dev, ATH12K_SKB_CB(skb_ext_desc)->paddr,
+ 				 skb_ext_desc->len,
+ 				 DMA_TO_DEVICE);
+ fail_free_ext_skb:
+@@ -792,7 +792,7 @@
+ 
+ 	dma_unmap_single(dp->dev, skb_cb->paddr, skb->len, DMA_TO_DEVICE);
+ 	if (params->skb_ext_desc) {
+-		dma_unmap_single(dp->dev, skb_cb->paddr_ext_desc,
++		dma_unmap_single(dp->dev, ATH12K_SKB_CB(params->skb_ext_desc)->paddr,
+ 				 params->skb_ext_desc->len, DMA_TO_DEVICE);
+ 		dev_kfree_skb_any(params->skb_ext_desc);
+ 	}
+@@ -862,6 +862,7 @@
+ 
+ 	ath12k_wifi7_tx_retire(dp_pdev, &desc_params,
+ 			       tx_ring->tcl_data_ring_id);
++	ath12k_tx_aql_complete(ath12k_pdev_dp_to_hw(dp_pdev), desc_params.skb, true);
+ 
+ 	if (!rcu_dereference(ab->pdevs_active[dp_pdev->mac_id]) ||
+ 	    !ATH12K_SKB_CB(desc_params.skb)->vif) {
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1094,24 +1094,24 @@
+ 			skb_cb = ATH12K_SKB_CB(skb);
+ 			if (tx_desc_info->skb_ext_desc) {
+ 				dma_unmap_single(ab->dev,
+-						 skb_cb->paddr_ext_desc,
++						 ATH12K_SKB_CB(tx_desc_info->skb_ext_desc)->paddr,
+ 						 tx_desc_info->skb_ext_desc->len,
+ 						 DMA_TO_DEVICE);
+ 				dev_kfree_skb_any(tx_desc_info->skb_ext_desc);
+ 			}
+ 
+-			/* if we are unregistering, hw would've been destroyed and
+-			 * ar is no longer valid.
+-			 */
+-			if (!(test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags))) {
++			dma_unmap_single(ab->dev, skb_cb->paddr,
++					 skb->len, DMA_TO_DEVICE);
++			/* During unregister the hw and ar may already be gone. */
++			if (!test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags)) {
+ 				ar = skb_cb->ar;
++				ath12k_tx_aql_complete(ath12k_ar_to_hw(ar), skb, false);
+ 
+ 				if (atomic_dec_and_test(&ar->dp.num_tx_pending))
+ 					wake_up(&ar->dp.tx_empty_waitq);
++			} else {
++				ieee80211_tx_aql_put(skb_cb->aql_owner);
+ 			}
+-
+-			dma_unmap_single(ab->dev, ATH12K_SKB_CB(skb)->paddr,
+-					 skb->len, DMA_TO_DEVICE);
+ 			dev_kfree_skb_any(skb);
+ 		}
+ 
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -9261,7 +9261,7 @@
+ 	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+ 
+ 	trace_ath12k_mgmt_lifetime(ar, "drop", skb, -1, -1, -ECANCELED, 0, false);
+-	ieee80211_free_txskb(ath12k_ar_to_hw(ar), skb);
++	ath12k_free_txskb(ath12k_ar_to_hw(ar), skb);
+ 
+ 	num_mgmt = atomic_dec_if_positive(&ar->num_pending_mgmt_tx);
+ 
+@@ -9288,6 +9288,7 @@
+ 			 DMA_TO_DEVICE);
+ 
+ 	trace_ath12k_mgmt_lifetime(ar, "cancel", msdu, buf_id, -1, -ECANCELED, 0, false);
++	ath12k_tx_aql_complete(ath12k_ar_to_hw(ar), msdu, true);
+ 	info = IEEE80211_SKB_CB(msdu);
+ 	memset(&info->status, 0, sizeof(info->status));
+ 
+@@ -15088,6 +15089,7 @@
+ 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
+ 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_STA_TX_PWR);
+ 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_ACK_SIGNAL_SUPPORT);
++	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_AQL);
+ 	if (test_bit(WMI_TLV_SERVICE_BSS_COLOR_OFFLOAD,
+ 		     ab->wmi_ab.svc_map)) {
+ 		wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_BSS_COLOR);
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -6516,6 +6516,7 @@
+ 	dma_unmap_single(ar->ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
+ 	trace_ath12k_mgmt_lifetime(ar, "complete", msdu, desc_id, -1, status, 0, false);
+ 
++	ath12k_tx_aql_complete(ath12k_ar_to_hw(ar), msdu, true);
+ 	info = IEEE80211_SKB_CB(msdu);
+ 	memset(&info->status, 0, sizeof(info->status));
+ 

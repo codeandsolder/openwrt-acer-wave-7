@@ -29,7 +29,7 @@ def main():
     assert function.count('ath12k_dp_tx_assign_buffer(') == 1
     assert function.count('dma_map_single(') == 2
     assert function.index('skb_cb->paddr = ti.paddr;') < function.index('ti.paddr = dma_map_single(dp->dev, skb_ext_desc->data,')
-    assert function.index('skb_cb->paddr_ext_desc = ti.paddr;') < function.index('tcl_ring_sel:')
+    assert function.index('ATH12K_SKB_CB(skb_ext_desc)->paddr = ti.paddr;') < function.index('tcl_ring_sel:')
     assert function.index('tcl_ring_sel:') < function.index('tx_desc->skb = skb;')
     assert function.index('tx_desc->skb = skb;') < function.index('atomic_inc(&dp_pdev->num_tx_pending);')
     assert 'tx_desc->skb = NULL;' in common
@@ -50,14 +50,16 @@ typedef uint8_t u8;
 typedef uint32_t u32;
 #define BIT(n) (1u << (n))
 #define DMA_TO_DEVICE 1
+struct ath12k_skb_cb { uintptr_t paddr; };
 struct sk_buff {
+    struct ath12k_skb_cb cb;
     unsigned char *data, *base;
     unsigned len, capacity;
     int header;
     bool cloned;
     uintptr_t addr;
 };
-struct ath12k_skb_cb { uintptr_t paddr, paddr_ext_desc; };
+#define ATH12K_SKB_CB(s) (&(s)->cb)
 struct ath12k_hw_params { unsigned max_tx_ring; bool tcl_ring_retry; u32 iova_mask; };
 struct hal_srng { int lock; unsigned ring; };
 struct dp_tx_ring { struct { unsigned ring_id; } tcl_data_ring; };
@@ -135,9 +137,9 @@ static int submit(struct ath12k_dp *dp, struct ath12k_hal *hal, unsigned selecto
     struct ath12k_tx_desc_info desc = {0}, *tx_desc = &desc;
     static struct sk_buff data, extra;
     data = (struct sk_buff){.len=1514, .addr=data_addr};
-    extra = (struct sk_buff){.len=56, .addr=ext_addr};
+    extra = (struct sk_buff){.len=56, .addr=ext_addr, .cb={ext_addr}};
     struct sk_buff *skb = &data, *skb_ext_desc = ext ? &extra : NULL;
-    struct ath12k_skb_cb cb = {data_addr, ext_addr}, *skb_cb = &cb;
+    struct ath12k_skb_cb cb = {data_addr}, *skb_cb = &cb;
     struct hal_tx_info ti = {0};
     struct dp_tx_ring *tx_ring;
     struct hal_srng *tcl_ring;

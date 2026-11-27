@@ -68,7 +68,7 @@ struct ath12k_base { unsigned warnings; };
 struct ath12k_link_vif { int link_stats_lock; struct { unsigned tx_completed; } link_stats; };
 struct ath12k_vif { struct ath12k_link_vif *link[4]; };
 struct ieee80211_vif { struct ath12k_vif priv; };
-struct ath12k_skb_cb { uintptr_t paddr, paddr_ext_desc; struct ieee80211_vif *vif; u8 link_id; };
+struct ath12k_skb_cb { uintptr_t paddr; struct ieee80211_vif *vif; u8 link_id; };
 struct sk_buff { unsigned len; struct ath12k_skb_cb cb; };
 struct list_head { unsigned id; };
 struct ath12k_tx_desc_info { struct list_head list; struct sk_buff *skb,*skb_ext_desc; u8 mac_id,pool_id; };
@@ -104,7 +104,7 @@ static struct ath12k_pdev_dp *ath12k_dp_to_pdev_dp(struct ath12k_dp *dp,int id)
 {assert(in_rcu);return dp->dp_pdevs[id];}
 static void list_move_tail(struct list_head *node,struct list_head *head) {node->id=head->id;++moves;}
 static void dma_unmap_single(void *dev,uintptr_t addr,unsigned len,int dir)
-{assert(dev && dir==DMA_TO_DEVICE && in_rcu); if(len==payload->len){assert(addr==payload->cb.paddr);++unmaps;}else{assert(extension && len==extension->len && addr==payload->cb.paddr_ext_desc);++ext_unmaps;}}
+{assert(dev && dir==DMA_TO_DEVICE && in_rcu); if(len==payload->len){assert(addr==payload->cb.paddr);++unmaps;}else{assert(extension && len==extension->len && addr==extension->cb.paddr);++ext_unmaps;}}
 static void dev_kfree_skb_any(struct sk_buff *s) {assert(s==extension);++ext_frees;}
 #define ATH12K_SKB_CB(s) (&(s)->cb)
 #define rcu_dereference(p) (assert(in_rcu),(p))
@@ -171,7 +171,7 @@ int main(void)
         struct ath12k_link_vif link={0};
         struct ieee80211_vif vif={0};
         vif.priv.link[2]=link_present?&link:NULL;
-        struct sk_buff data={.len=1514,.cb={.paddr=zero?0:0x1000,.paddr_ext_desc=zero?0x2000:0,.vif=vif_present?&vif:NULL,.link_id=2}},extra={.len=32};
+        struct sk_buff data={.len=1514,.cb={.paddr=zero?0:0x1000,.vif=vif_present?&vif:NULL,.link_id=2}},extra={.len=32,.cb={.paddr=zero?0x2000:0}};
         struct ath12k_tx_desc_params out={&data,ext?&extra:NULL};
         memset(&dp.device_stats,0,sizeof(dp.device_stats));
         payload=&data;extension=&extra;unmaps=ext_unmaps=ext_frees=0;in_rcu=true;

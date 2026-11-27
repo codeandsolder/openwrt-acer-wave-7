@@ -1,0 +1,491 @@
+Subject: [PATCH] wifi: mac80211: retain explicit AQL charge owners across station removal
+
+Keep per-station AQL credit counters in a refcounted object so drivers
+can retire the exact dequeued charge after a peer is removed or reused.
+Expose explicit charge acquisition, clone and retirement operations.
+Resume generic TX queue scheduling from a coalesced softirq tasklet;
+never recurse into the TX queue scheduler from a synchronous TX drop.
+
+Honor the existing AQL disable control for aggregate AC limits too,
+and preserve the charged AC in the dequeued skb.
+
+---
+--- a/include/net/mac80211.h
++++ b/include/net/mac80211.h
+@@ -3463,6 +3463,52 @@
+ void ieee80211_free_txskb(struct ieee80211_hw *hw, struct sk_buff *skb);
+ 
+ /**
++ * ieee80211_tx_aql_get - retain the station owning a dequeued frame's AQL charge
++ * @pubsta: original TX queue station, valid under RCU
++ * @skb: dequeued frame
++ *
++ * Returns an opaque reference independent of station lifetime, or NULL for
++ * uncharged/broadcast frames. Drivers must complete every charge explicitly
++ * before handing the skb back to mac80211, including failed submissions.
++ */
++struct ieee80211_aql_owner *
++ieee80211_tx_aql_get(struct ieee80211_sta *pubsta, struct sk_buff *skb);
++
++/**
++ * ieee80211_tx_aql_clone - charge a further copy of a dequeued frame
++ * @hw: hardware
++ * @owner: original charge owner (may be NULL)
++ * @skb: copied skb, preserving the original airtime estimate
++ *
++ * The copy obtains its own charge and owner reference.
++ */
++void ieee80211_tx_aql_clone(struct ieee80211_hw *hw,
++			    struct ieee80211_aql_owner *owner,
++			    struct sk_buff *skb);
++
++/**
++ * ieee80211_tx_aql_complete - retire an explicitly owned TX charge
++ * @hw: hardware
++ * @owner: retained charge owner, or NULL for broadcast
++ * @skb: completed frame, before TX status processing
++ * @wake: resume generic TX queue scheduling (false during teardown)
++ *
++ * Consumes the owner reference and clears the skb estimate so subsequent
++ * status processing cannot retire the same charge again.
++ */
++void ieee80211_tx_aql_complete(struct ieee80211_hw *hw,
++			       struct ieee80211_aql_owner *owner,
++			       struct sk_buff *skb, bool wake);
++
++/**
++ * ieee80211_tx_aql_put - release a charge owner reference
++ * @owner: retained owner, or NULL
++ *
++ * Use without completion only after hardware accounting has been destroyed.
++ */
++void ieee80211_tx_aql_put(struct ieee80211_aql_owner *owner);
++
++/**
+  * ieee80211_purge_tx_queue - purge TX skb queue
+  * @hw: the hardware
+  * @skbs: the skbs
+--- a/net/mac80211/sta_info.h
++++ b/net/mac80211/sta_info.h
+@@ -9,6 +9,7 @@
+ #ifndef STA_INFO_H
+ #define STA_INFO_H
+ 
++#include <linux/refcount.h>
+ #include <linux/list.h>
+ #include <linux/types.h>
+ #include <linux/if_ether.h>
+@@ -135,13 +136,18 @@
+ #define AIRTIME_USE_TX		BIT(0)
+ #define AIRTIME_USE_RX		BIT(1)
+ 
++/* Kept alive by each outstanding explicitly owned TX charge. */
++struct ieee80211_aql_owner {
++	refcount_t refs;
++	atomic_t pending[IEEE80211_NUM_ACS];
++	atomic_t completed[IEEE80211_NUM_ACS];
++};
++
+ struct airtime_info {
+ 	u64 rx_airtime;
+ 	u64 tx_airtime;
+ 	unsigned long last_active;
+ 	s32 deficit;
+-	atomic_t aql_tx_pending; /* Estimated airtime for frames pending */
+-	atomic_t aql_tx_completed; /* Estimated airtime of completed frames */
+ 	u32 aql_limit_low;
+ 	u32 aql_limit_high;
+ };
+@@ -859,6 +865,7 @@
+ 
+ 	u16 tid_seq[IEEE80211_QOS_CTL_TID_MASK + 1];
+ 
++	struct ieee80211_aql_owner *aql;
+ 	struct airtime_info airtime[IEEE80211_NUM_ACS];
+ 	u16 airtime_weight;
+ 
+--- a/net/mac80211/sta_info.c
++++ b/net/mac80211/sta_info.c
+@@ -536,6 +536,7 @@
+ 
+ 	ieee80211_sta_scs_free(sta);
+ 	sta_info_free_link(&sta->deflink);
++	ieee80211_tx_aql_put(sta->aql);
+ 	kfree(sta);
+ }
+ 
+@@ -677,6 +678,11 @@
+ 
+ 	if (sta_info_alloc_link(local, &sta->deflink, gfp))
+ 		goto free;
++
++	sta->aql = kzalloc_obj(*sta->aql, gfp);
++	if (!sta->aql)
++		goto free;
++	refcount_set(&sta->aql->refs, 1);
+ 
+ 	if (link_id >= 0) {
+ 		sta_info_add_link(sta, link_id, &sta->deflink,
+@@ -762,8 +768,8 @@
+ 		skb_queue_head_init(&sta->ps_tx_buf[i]);
+ 		skb_queue_head_init(&sta->tx_filtered[i]);
+ 		sta->airtime[i].deficit = sta->airtime_weight;
+-		atomic_set(&sta->airtime[i].aql_tx_pending, 0);
+-		atomic_set(&sta->airtime[i].aql_tx_completed, 0);
++		atomic_set(&sta->aql->pending[i], 0);
++		atomic_set(&sta->aql->completed[i], 0);
+ 		sta->airtime[i].aql_limit_low = local->aql_txq_limit_low[i];
+ 		sta->airtime[i].aql_limit_high = local->aql_txq_limit_high[i];
+ 	}
+@@ -826,6 +832,7 @@
+ #ifdef CPTCFG_MAC80211_MESH
+ 	kfree(sta->mesh);
+ #endif
++	ieee80211_tx_aql_put(sta->aql);
+ 	kfree(sta);
+ 	return NULL;
+ }
+@@ -2488,7 +2495,7 @@
+ 		sta->airtime[ac].deficit -= airtime;
+ 
+ 	if (ieee80211_hw_check(&local->hw, DEFERRED_AIRTIME_REPORT))
+-		atomic_set(&sta->airtime[ac].aql_tx_completed, 0);
++		atomic_set(&sta->aql->completed[ac], 0);
+ 
+ 	spin_unlock_bh(&local->active_txq_lock[ac]);
+ }
+@@ -2547,10 +2554,10 @@
+ }
+ EXPORT_SYMBOL(ieee80211_sta_recalc_aggregates);
+ 
+-void ieee80211_sta_update_pending_airtime(struct ieee80211_local *local,
+-					  struct sta_info *sta, u8 ac,
+-					  u16 tx_airtime, bool tx_completed,
+-					  bool mcast)
++static void ieee80211_aql_update_pending_airtime(struct ieee80211_local *local,
++						 struct ieee80211_aql_owner *owner, u8 ac,
++						 u16 tx_airtime, bool tx_completed,
++						 bool mcast)
+ {
+ 	int tx_pending;
+ 
+@@ -2572,25 +2579,25 @@
+ 	}
+ 
+ 	if (!tx_completed) {
+-		if (sta)
++		if (owner)
+ 			atomic_add(tx_airtime,
+-				   &sta->airtime[ac].aql_tx_pending);
++				   &owner->pending[ac]);
+ 
+ 		atomic_add(tx_airtime, &local->aql_total_pending_airtime);
+ 		atomic_add(tx_airtime, &local->aql_ac_pending_airtime[ac]);
+ 		return;
+ 	}
+ 
+-	if (sta) {
++	if (owner) {
+ 		tx_pending = atomic_sub_return(tx_airtime,
+-					       &sta->airtime[ac].aql_tx_pending);
++					       &owner->pending[ac]);
+ 		if (tx_pending < 0)
+-			atomic_cmpxchg(&sta->airtime[ac].aql_tx_pending,
++			atomic_cmpxchg(&owner->pending[ac],
+ 				       tx_pending, 0);
+ 
+ 		if (ieee80211_hw_check(&local->hw, DEFERRED_AIRTIME_REPORT))
+ 			atomic_add(tx_airtime,
+-				   &sta->airtime[ac].aql_tx_completed);
++				   &owner->completed[ac]);
+ 	}
+ 
+ 	atomic_sub(tx_airtime, &local->aql_total_pending_airtime);
+@@ -2605,6 +2612,76 @@
+ 		atomic_sub(tx_pending, &local->aql_total_pending_airtime);
+ 	}
+ }
++
++void ieee80211_sta_update_pending_airtime(struct ieee80211_local *local,
++					  struct sta_info *sta, u8 ac,
++					  u16 tx_airtime, bool tx_completed,
++					  bool mcast)
++{
++	ieee80211_aql_update_pending_airtime(local, sta ? sta->aql : NULL,
++					     ac, tx_airtime, tx_completed, mcast);
++}
++
++struct ieee80211_aql_owner *
++ieee80211_tx_aql_get(struct ieee80211_sta *pubsta, struct sk_buff *skb)
++{
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	struct sta_info *sta;
++
++	if (!pubsta || info->tx_time_mc || !ieee80211_info_get_tx_time_est(info))
++		return NULL;
++
++	sta = container_of(pubsta, struct sta_info, sta);
++	refcount_inc(&sta->aql->refs);
++	return sta->aql;
++}
++EXPORT_SYMBOL(ieee80211_tx_aql_get);
++
++void ieee80211_tx_aql_put(struct ieee80211_aql_owner *owner)
++{
++	if (owner && refcount_dec_and_test(&owner->refs))
++		kfree(owner);
++}
++EXPORT_SYMBOL(ieee80211_tx_aql_put);
++
++void ieee80211_tx_aql_clone(struct ieee80211_hw *hw,
++			    struct ieee80211_aql_owner *owner,
++			    struct sk_buff *skb)
++{
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	u16 airtime = ieee80211_info_get_tx_time_est(info);
++
++	if (!airtime)
++		return;
++
++	if (owner)
++		refcount_inc(&owner->refs);
++	ieee80211_aql_update_pending_airtime(hw_to_local(hw), owner,
++					     skb_get_queue_mapping(skb), airtime,
++					     false, info->tx_time_mc);
++}
++EXPORT_SYMBOL(ieee80211_tx_aql_clone);
++
++void ieee80211_tx_aql_complete(struct ieee80211_hw *hw,
++			       struct ieee80211_aql_owner *owner,
++			       struct sk_buff *skb, bool wake)
++{
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	u16 airtime = ieee80211_info_get_tx_time_est(info);
++	struct ieee80211_local *local = hw_to_local(hw);
++
++	if (airtime) {
++		ieee80211_aql_update_pending_airtime(local, owner,
++						     skb_get_queue_mapping(skb),
++						     airtime, true, info->tx_time_mc);
++		ieee80211_info_set_tx_time_est(info, 0);
++		if (wake && local->ops->wake_tx_queue == ieee80211_handle_wake_tx_queue &&
++		    !READ_ONCE(local->aql_wake_disabled))
++			tasklet_schedule(&local->aql_txq_tasklet);
++	}
++	ieee80211_tx_aql_put(owner);
++}
++EXPORT_SYMBOL(ieee80211_tx_aql_complete);
+ 
+ static struct ieee80211_sta_rx_stats *
+ sta_get_last_rx_stats(struct sta_info *sta, int link_id)
+--- a/net/mac80211/debugfs_sta.c
++++ b/net/mac80211/debugfs_sta.c
+@@ -448,8 +448,8 @@
+ 		q_limit_l[ac] = sta->airtime[ac].aql_limit_low;
+ 		q_limit_h[ac] = sta->airtime[ac].aql_limit_high;
+ 		spin_unlock_bh(&local->active_txq_lock[ac]);
+-		q_depth[ac] = atomic_read(&sta->airtime[ac].aql_tx_pending);
+-		q_completed[ac] = atomic_read(&sta->airtime[ac].aql_tx_completed);
++		q_depth[ac] = atomic_read(&sta->aql->pending[ac]);
++		q_completed[ac] = atomic_read(&sta->aql->completed[ac]);
+ 	}
+ 
+ 	p += scnprintf(p, bufsz + buf - p,
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -4260,6 +4260,9 @@
+ 		if (!airtime)
+ 			return skb;
+ 
++		/* Preserve the charged AC for all subsequent TX status paths. */
++		if (tx.sta)
++			skb_set_queue_mapping(skb, txq->ac);
+ 		airtime = ieee80211_info_set_tx_time_est(info, airtime);
+ 		info->tx_time_mc = !tx.sta;
+ 		ieee80211_sta_update_pending_airtime(local, tx.sta, txq->ac,
+@@ -4280,8 +4283,8 @@
+ {
+ 	struct airtime_info *air_info = &sta->airtime[ac];
+ 
+-	return air_info->deficit - atomic_read(&air_info->aql_tx_pending) -
+-	       atomic_read(&air_info->aql_tx_completed);
++	return air_info->deficit - atomic_read(&sta->aql->pending[ac]) -
++	       atomic_read(&sta->aql->completed[ac]);
+ }
+ 
+ static void
+@@ -4434,13 +4437,13 @@
+ 		return true;
+ 
+ 	sta = container_of(txq->sta, struct sta_info, sta);
+-	if (atomic_read(&sta->airtime[txq->ac].aql_tx_pending) <
++	if (atomic_read(&sta->aql->pending[txq->ac]) <
+ 	    sta->airtime[txq->ac].aql_limit_low)
+ 		return true;
+ 
+ 	if (atomic_read(&local->aql_total_pending_airtime) <
+ 	    local->aql_threshold &&
+-	    atomic_read(&sta->airtime[txq->ac].aql_tx_pending) <
++	    atomic_read(&sta->aql->pending[txq->ac]) <
+ 	    sta->airtime[txq->ac].aql_limit_high)
+ 		return true;
+ 
+@@ -4462,7 +4465,7 @@
+ 	if (unlikely(txq->tid == IEEE80211_NUM_TIDS))
+ 		return 0;
+ 
+-	return atomic_read(&sta->airtime[txq->ac].aql_tx_pending);
++	return atomic_read(&sta->aql->pending[txq->ac]);
+ }
+ EXPORT_SYMBOL(ieee80211_txq_aql_pending);
+ 
+@@ -4476,8 +4479,14 @@
+ 	if (!wiphy_ext_feature_isset(local->hw.wiphy, NL80211_EXT_FEATURE_AQL))
+ 		return true;
+ 
++	if (static_branch_unlikely(&aql_disable))
++		return true;
++
+ 	list_for_each_entry(txq, &local->active_txqs[ac], schedule_order)
+ 		num_txq++;
++
++	if (!num_txq)
++		return true;
+ 
+ 	aql_limit = (num_txq - 1) * local->aql_txq_limit_low[ac] / 2 +
+ 		    local->aql_txq_limit_high[ac];
+--- a/net/mac80211/util.c
++++ b/net/mac80211/util.c
+@@ -284,7 +284,6 @@
+ EXPORT_SYMBOL(ieee80211_ctstoself_duration);
+ 
+ static void wake_tx_push_queue(struct ieee80211_local *local,
+-			       struct ieee80211_sub_if_data *sdata,
+ 			       struct ieee80211_txq *queue)
+ {
+ 	struct ieee80211_tx_control control = {
+@@ -301,26 +300,62 @@
+ 	}
+ }
+ 
+-/* wake_tx_queue handler for driver not implementing a custom one*/
++static void ieee80211_handle_wake_tx_queue_ac(struct ieee80211_local *local,
++					      u8 ac, bool completion)
++{
++	struct ieee80211_hw *hw = &local->hw;
++	struct ieee80211_txq *queue;
++
++	spin_lock(&local->handle_wake_tx_queue_lock);
++
++	ieee80211_txq_schedule_start(hw, ac);
++	while ((queue = ieee80211_next_txq(hw, ac))) {
++		if (completion) {
++			struct ieee80211_sub_if_data *sdata = vif_to_sdata(queue->vif);
++
++			if (READ_ONCE(local->in_reconfig) ||
++			    READ_ONCE(local->quiescing) ||
++			    READ_ONCE(local->suspended) ||
++			    !READ_ONCE(local->started) ||
++			    !ieee80211_sdata_running(sdata) ||
++			    !(get_bss_sdata(sdata)->flags & IEEE80211_SDATA_IN_DRIVER)) {
++				set_bit(IEEE80211_TXQ_DIRTY, &to_txq_info(queue)->flags);
++				goto return_queue;
++			}
++			if (queue->sta &&
++			    READ_ONCE(container_of(queue->sta, struct sta_info, sta)->removed))
++				goto return_queue;
++		}
++		wake_tx_push_queue(local, queue);
++return_queue:
++		ieee80211_return_txq(hw, queue, false);
++	}
++	ieee80211_txq_schedule_end(hw, ac);
++	spin_unlock(&local->handle_wake_tx_queue_lock);
++}
++
++/* wake_tx_queue handler for drivers not implementing a custom one */
+ void ieee80211_handle_wake_tx_queue(struct ieee80211_hw *hw,
+ 				    struct ieee80211_txq *txq)
+ {
+-	struct ieee80211_local *local = hw_to_local(hw);
+-	struct ieee80211_sub_if_data *sdata = vif_to_sdata(txq->vif);
+-	struct ieee80211_txq *queue;
+-
+-	spin_lock(&local->handle_wake_tx_queue_lock);
+-
+-	/* Use ieee80211_next_txq() for airtime fairness accounting */
+-	ieee80211_txq_schedule_start(hw, txq->ac);
+-	while ((queue = ieee80211_next_txq(hw, txq->ac))) {
+-		wake_tx_push_queue(local, sdata, queue);
+-		ieee80211_return_txq(hw, queue, false);
+-	}
+-	ieee80211_txq_schedule_end(hw, txq->ac);
+-	spin_unlock(&local->handle_wake_tx_queue_lock);
++	ieee80211_handle_wake_tx_queue_ac(hw_to_local(hw), txq->ac, false);
+ }
+ EXPORT_SYMBOL(ieee80211_handle_wake_tx_queue);
++
++void ieee80211_aql_wake_txqs(struct tasklet_struct *t)
++{
++	struct ieee80211_local *local = from_tasklet(local, t, aql_txq_tasklet);
++	u8 ac;
++
++	if (READ_ONCE(local->aql_wake_disabled))
++		return;
++
++	/* A release can make another AC eligible through the global limit. */
++	rcu_read_lock();
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++)
++		ieee80211_handle_wake_tx_queue_ac(local, ac, true);
++	rcu_read_unlock();
++}
+ 
+ static void __ieee80211_wake_txqs(struct ieee80211_sub_if_data *sdata, int ac)
+ {
+--- a/net/mac80211/ieee80211_i.h
++++ b/net/mac80211/ieee80211_i.h
+@@ -1655,6 +1655,8 @@
+ 	int sta_generation;
+ 
+ 	struct sk_buff_head pending[IEEE80211_MAX_QUEUES];
++	struct tasklet_struct aql_txq_tasklet;
++	bool aql_wake_disabled;
+ 	struct tasklet_struct tx_pending_tasklet;
+ 	struct tasklet_struct wake_txqs_tasklet;
+ 
+@@ -2326,6 +2328,7 @@
+ /* tx handling */
+ void ieee80211_clear_tx_pending(struct ieee80211_local *local);
+ void ieee80211_tx_pending(struct tasklet_struct *t);
++void ieee80211_aql_wake_txqs(struct tasklet_struct *t);
+ netdev_tx_t ieee80211_monitor_start_xmit(struct sk_buff *skb,
+ 					 struct net_device *dev);
+ netdev_tx_t ieee80211_subif_start_xmit(struct sk_buff *skb,
+--- a/net/mac80211/main.c
++++ b/net/mac80211/main.c
+@@ -1031,6 +1031,7 @@
+ 		skb_queue_head_init(&local->pending[i]);
+ 		atomic_set(&local->agg_queue_stop[i], 0);
+ 	}
++	tasklet_setup(&local->aql_txq_tasklet, ieee80211_aql_wake_txqs);
+ 	tasklet_setup(&local->tx_pending_tasklet, ieee80211_tx_pending);
+ 	tasklet_setup(&local->wake_txqs_tasklet, ieee80211_wake_txqs);
+ 	tasklet_setup(&local->tasklet, ieee80211_tasklet_handler);
+@@ -1681,6 +1682,8 @@
+ {
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 
++	WRITE_ONCE(local->aql_wake_disabled, true);
++	tasklet_kill(&local->aql_txq_tasklet);
+ 	tasklet_kill(&local->tx_pending_tasklet);
+ 	tasklet_kill(&local->tasklet);
+ 
+@@ -1740,6 +1743,8 @@
+ 	struct ieee80211_local *local = hw_to_local(hw);
+ 	enum nl80211_band band;
+ 
++	WRITE_ONCE(local->aql_wake_disabled, true);
++	tasklet_kill(&local->aql_txq_tasklet);
+ 	mutex_destroy(&local->iflist_mtx);
+ 
+ 	idr_for_each(&local->ack_status_frames,
