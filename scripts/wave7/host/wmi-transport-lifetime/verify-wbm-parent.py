@@ -55,6 +55,7 @@ def selftest():
 RECONNECT_VARIANTS = {
     'band-group-refresh': 'upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace',
     'teardown-privilege': 'upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace',
+    'roc-window': 'upstream-prefix22-authorize-delayed-links-reconnect-roc-window-trace',
 }
 
 
@@ -155,7 +156,7 @@ def verified(path, boot, band, reconnect, reconnect_variant='band-group-refresh'
                                'wtbl_complete': [row['complete_pair'] for row in bindings],
                                'scheduler_retired': [row['record_retired'] for row in memberships],
                                'band_migrations': [len(row['migrations']) for row in refresh]}
-        if reconnect_variant == 'teardown-privilege':
+        if reconnect_variant in {'teardown-privilege', 'roc-window'}:
             require(not any(row['right_censored'] for row in aw), 'AP peer not retired')
             evidence = helpers['teardown_tx_windows'](client_trace, lifecycle_trace, cw)
             require(not evidence['unassigned'] and not evidence['unmatched'],

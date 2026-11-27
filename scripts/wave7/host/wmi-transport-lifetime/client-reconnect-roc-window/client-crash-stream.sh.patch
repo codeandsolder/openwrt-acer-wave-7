@@ -1,0 +1,26 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -105,6 +105,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-window-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+@@ -191,6 +192,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-window-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+@@ -209,6 +211,7 @@
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-roc-window-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
