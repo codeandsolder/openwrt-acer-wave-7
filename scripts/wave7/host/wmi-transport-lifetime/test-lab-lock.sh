@@ -30,4 +30,24 @@ touch "$lab/.lab-control.lock" "$lab/other"
     acquire_lab_lock
     [[ /proc/self/fd/8 -ef "$lab/.lab-control.lock" ]]
 )
+# Check the native supervisor using the same real lock and inherited fd.
+guard8="$lab"
+# shellcheck disable=SC1090
+source <(sed -n '/^acquire_native_lab_lock(){/,/^}/p' ../secondary-ap/trial-native-image.sh)
+(
+    exec 8<>"$lab/.lab-control.lock"
+    flock -n 8
+    (acquire_native_lab_lock; [[ /proc/self/fd/8 -ef "$lab/.lab-control.lock" ]])
+    if (exec 8<>"$lab/other"; acquire_native_lab_lock); then
+        echo 'independent native opener unexpectedly acquired lock' >&2
+        exit 1
+    else
+        [[ $? == 17 ]]
+    fi
+)
+(
+    exec 8>&-
+    acquire_native_lab_lock
+    [[ /proc/self/fd/8 -ef "$lab/.lab-control.lock" ]]
+)
 echo LAB_LOCK_SELFTEST_PASS

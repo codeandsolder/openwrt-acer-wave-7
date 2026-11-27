@@ -213,12 +213,19 @@ common_preflight(){
     [[ -z $observers ]] || fail 'another active observer'
     (cd /home/jan/firmware/wave7/captures/20261125-vendor-fallback && sha256sum -c SHA256SUMS)
 }
+acquire_native_lab_lock(){
+    local lock="$guard8/.lab-control.lock"
+    [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'invalid lab lock'
+    # Allow a serialized qualification wrapper to retain its open file
+    # description through both flash and post-flash evidence collection.
+    if [[ ! /proc/self/fd/8 -ef "$lock" ]]; then
+        exec 8<>"$lock"
+    fi
+    flock -n 8 || fail 'lab already reserved'
+}
 case "${1:-}" in
 --run-native)
-    lock="$guard8/.lab-control.lock"
-    [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'invalid lab lock'
-    exec 8<>"$lock"
-    flock -n 8 || fail 'lab already reserved'
+    acquire_native_lab_lock
     common_preflight
     predecessor=$(realpath -e "$4")
     [[ $predecessor == "$parent"/runs/* && $(cat "$predecessor/status") == SOAK_PASS ]] || fail 'parent soak incomplete'
