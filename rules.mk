@@ -412,7 +412,12 @@ export HOSTCXX_NOCACHE
 # time a configure recipe asks for this.
 host_cc_id = $(if $(filter undefined,$(origin __host_cc_id)),$(eval __host_cc_id:=$(shell $(HOSTCC_NOCACHE) --version 2>/dev/null | head -1 | $(MKHASH) md5)))$(__host_cc_id)
 
-ifneq ($(CONFIG_CCACHE),)
+ifneq ($(CONFIG_EXTERNAL_SCCACHE),)
+  TARGET_CC:= sccache $(TARGET_CC)
+  TARGET_CXX:= sccache $(TARGET_CXX)
+  HOSTCC:= sccache $(HOSTCC)
+  HOSTCXX:= sccache $(HOSTCXX)
+else ifneq ($(CONFIG_CCACHE),)
   TARGET_CC:= ccache $(TARGET_CC)
   TARGET_CXX:= ccache $(TARGET_CXX)
   HOSTCC:= ccache $(HOSTCC)
