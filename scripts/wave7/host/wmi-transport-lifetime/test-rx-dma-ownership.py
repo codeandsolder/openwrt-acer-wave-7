@@ -25,6 +25,8 @@ def main():
     maximum = one((root / 'cmn_defs.h').read_text(), r'^#define ATH12K_MAX_DEVICES [0-9]+$')
     wbm = one(rx, r'^int ath12k_wifi7_dp_rx_process_wbm_err\(.*?^\}')
     loop = one(wbm, r'^\tfor \(device_id = 0; device_id < ATH12K_MAX_DEVICES; device_id\+\+\) \{\n\t\tif \(!num_buffs_reaped\[device_id\]\).*?^\t\}')
+    normal = one(rx, r'^int ath12k_wifi7_dp_rx_process\(.*?^\}')
+    epilogue = normal.split('\n\tspin_unlock_bh(&srng->lock);\n', 1)[1]
     helper = one(header, r'^static inline void ath12k_dp_unmap_rx_buf\(.*?^\}')
     # The exact reinjection mapping must publish the DMA address before either
     # descriptor-allocation failure or release-ring admission failure can unwind.
@@ -49,6 +51,21 @@ struct sk_buff { unsigned len, tailroom; struct ath12k_skb_rxcb cb; };
 enum dma_data_direction { DMA_BIDIRECTIONAL, DMA_TO_DEVICE, DMA_FROM_DEVICE };
 static unsigned count[ATH12K_MAX_DEVICES];
 static unsigned unmaps;
+struct sk_buff_head { unsigned pending; };
+struct napi_struct { int dummy; };
+static unsigned purged, delivered;
+static void __attribute__((unused)) __skb_queue_purge(struct sk_buff_head *list)
+{
+    purged += list->pending;
+    list->pending = 0;
+}
+static void ath12k_wifi7_dp_rx_process_received_packets(struct ath12k_dp *dp,
+    struct napi_struct *napi, struct sk_buff_head *list, int ring_id)
+{
+    (void)dp; (void)napi; (void)ring_id;
+    delivered += list->pending;
+    list->pending = 0;
+}
 static void *expected_dev;
 static uintptr_t expected_addr;
 static unsigned expected_len;
@@ -81,6 +98,17 @@ static void refill(struct ath12k_dp *dp, struct ath12k_dp_hw_group *dp_hw_grp,
     (void)dp;
 ''' + loop + r'''
 }
+static int finish_rx(struct ath12k_dp *dp, struct ath12k_dp_hw_group *dp_hw_grp,
+    struct list_head *rx_desc_used_list, int *num_buffs_reaped,
+    unsigned pending, int total_msdu_reaped)
+{
+    struct sk_buff_head msdu_list = {pending};
+    struct napi_struct *napi = NULL;
+    int ring_id = 0;
+    unsigned device_id;
+    struct ath12k_dp *partner_dp;
+    struct dp_rxdma_ring *rx_ring;
+''' + epilogue + r'''
 int main(void)
 {
     struct ath12k_dp_hw_group group = {0};
@@ -104,7 +132,21 @@ int main(void)
                 refill(&group.devices[collector], &group, lists, reaped);
                 for (unsigned i = 0; i < ATH12K_MAX_DEVICES; ++i)
                     assert(count[i] == (unsigned)reaped[i]);
-                ++cases;
+                for (unsigned kind = 0; kind < 3; ++kind) {
+                    unsigned complete = kind == 2;
+                    unsigned pending = kind && mask ? batch : 0;
+                    if (kind && !pending)
+                        continue;
+                    memset(count, 0, sizeof(count));
+                    purged = delivered = 0;
+                    assert(finish_rx(&group.devices[collector], &group, lists,
+                        reaped, pending, complete) == (int)complete);
+                    for (unsigned i = 0; i < ATH12K_MAX_DEVICES; ++i)
+                        assert(count[i] == (unsigned)reaped[i]);
+                    assert(purged == (complete ? 0 : pending));
+                    assert(delivered == (complete ? pending : 0));
+                    ++cases;
+                }
             }
         }
         for (unsigned frag = 0; frag < 2; ++frag) {
