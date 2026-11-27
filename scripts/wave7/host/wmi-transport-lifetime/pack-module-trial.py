@@ -22,6 +22,20 @@ IDENTITIES = helpers['IDENTITIES']
 MODDIR = helpers['MODDIR']
 RADIO = helpers['RADIO']
 PROFILES = {
+    'mgmt-latency': dict(
+        parent_sha='5129cef427c4afbfbfdc1dcf978f46dbaef632c4bdb0b70c99e0568df56dd53b',
+        parent_rev='r0+38346-d353bf48ef-ap-dhcp-guard8',
+        modules={
+            'ath12k.ko': (
+                '233688e202e491e20732c64e3a18a3126a932c73e339ef12e183e1fbf0836834',
+                'c72b4c0c6878e0eff70f5100ffb30857ea09eaa19dd631bfbbdb99a4ca628bdd'),
+            'mac80211.ko': (
+                '544e56a17b339c503ba67009189b7d3a761c77b211735f4ca45406292c6d9287',
+                '3be5c85345b025bdcae2c24b4fd57f5a45e6974ef62086f2bea0c92ad8d722c0'),
+        },
+        patch_commit='fc1a0803e3', patch_key='trial_mgmt_lifetime_patch_commit',
+        filename='wave7-mgmt-latency-dhcp-guard8-sysupgrade.bin',
+    ),
     'ahb-irq': dict(
         parent_sha='ae9aa226c79d6263f9afaff4ec813ad34d1345966bba8fd81617073521498fb4',
         parent_rev='r0+38346-65f3c6bcfc-ap-dhcp-guard8',
@@ -135,7 +149,10 @@ def main():
         fields = dict(line.split('=', 1) for line in profile.read_text().splitlines())
         check(fields['revision'] == profile_spec['parent_rev'], 'parent profile')
         for name, (before, _) in modules.items():
-            check(fields[module_key(name)] == before, f'parent profile module: {name}')
+            # Existing pinned fields must agree; the exact parent image and
+            # extracted module hashes also cover modules not previously pinned.
+            if module_key(name) in fields:
+                check(fields[module_key(name)] == before, f'parent profile module: {name}')
         fields.update(source_revision=profile_spec['parent_rev'], revision=rev, builder_commit=builder,
                       base_image_sha256=profile_spec['parent_sha'])
         for name, (_, after) in modules.items():
@@ -180,7 +197,7 @@ def main():
         report = dict(status='OFFLINE_VERIFIED', revision=rev, builder_commit=builder,
                       parent_sha256=profile_spec['parent_sha'], image_sha256=sha(output), fit_sha256=FIT_SHA,
                       radio_release=fields['trial_radio_release'], firmware=radio_manifest,
-                      module_sha256={k: sha(root / MODDIR / k) for k in ('ath12k.ko', 'ath12k_wifi7.ko')},
+                      module_sha256={k: sha(root / MODDIR / k) for k in ('ath12k.ko', 'ath12k_wifi7.ko', 'mac80211.ko', 'cfg80211.ko')},
                       delta=delta, roundtrip_identical=True)
         a.out.mkdir(mode=0o700)
         shutil.move(output, a.out / profile_spec['filename'])
