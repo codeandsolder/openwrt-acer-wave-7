@@ -2,15 +2,15 @@
 # Independent guarded stock->Guard8 radio experiment. Run on the isolated Asus lab.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut
+base=/home/jan/firmware/wave7/trials/20261127-ahb-tx-completion-irq
 guard8=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
-native="$base/wave7-netgear-primary-reo-lut-dhcp-guard8-sysupgrade.bin"
-native_sha=ae9aa226c79d6263f9afaff4ec813ad34d1345966bba8fd81617073521498fb4
-rev=r0+38346-65f3c6bcfc-ap-dhcp-guard8
-builder=65f3c6bcfc8b236d1b152632e3081632174af6e7
-rollback="$guard8/stock-poll-fifo-dhcp-guard8/wave7-stock-poll-fifo-dhcp-guard8-sysupgrade.bin"
-rollback_sha=3ad42acf6fd9765dc9f92f937e5472bb2e19987d92896ce3e8994810e22badd9
-rollback_rev=r0+38346-0418bb7af2-ap-dhcp-guard8
+native="$base/wave7-ahb-tx-completion-irq-dhcp-guard8-sysupgrade.bin"
+native_sha=d519a6acb4ec1d88a7a2284528748b69187e4122d668d59c77488948f3165fde
+rev=r0+38346-8b8a3f32c2-ap-dhcp-guard8
+builder=8b8a3f32c2943bf2de3a523f97006793f2f79fcc
+rollback=/home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut/wave7-netgear-primary-reo-lut-dhcp-guard8-sysupgrade.bin
+rollback_sha=ae9aa226c79d6263f9afaff4ec813ad34d1345966bba8fd81617073521498fb4
+rollback_rev=r0+38346-65f3c6bcfc-ap-dhcp-guard8
 key=/home/jan/.ssh/wave7-root-rsa
 iface=enp4s0f4u2u2u4
 ip=192.168.76.250
@@ -124,6 +124,8 @@ verify_radio(){
         expect=$(jq -r '.module_sha256|to_entries[]|"\(.value)  \(.key)"' "$base/report.json")
         [[ $got == "$expect" ]] || return 1
     done
+    remote 'cat /proc/interrupts' > "$out/irq-runtime.txt" || return 1
+    rg -q "wbm2host-tx-completions-ring4$" "$out/irq-runtime.txt" || return 1
     remote 'lsmod | grep -E "^ath12k[[:space:]]"; lsmod | grep -E "^ath12k_wifi7[[:space:]]"; dmesg | grep -F "WBE.1.4-01734"' > "$out/radio-runtime.txt" || return 1
 }
 ready(){
@@ -159,10 +161,9 @@ case "${1:-}" in
     flock -n 8 || fail 'lab already reserved'
     common_preflight
     predecessor="$2"
-    [[ $predecessor == /home/jan/firmware/wave7/trials/20261125-netgear-primary-dhcp-fixed/runs/netgear-primary-native-* ]] || fail 'unexpected predecessor run'
+    [[ $predecessor == /home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut/runs/netgear-primary-reo-lut-native-* ]] || fail 'unexpected predecessor run'
     case "$(cat "$predecessor/status")" in
-        SOAK_PASS) source_rev=r0+38346-77d7fa1171-ap-dhcp-guard8 ;;
-        ROLLED_BACK) source_rev=$rollback_rev ;;
+        SOAK_PASS) source_rev=$rollback_rev ;;
         *) fail 'predecessor has not completed guarded soak' ;;
     esac
     known="$predecessor/known_hosts"
@@ -170,13 +171,14 @@ case "${1:-}" in
     state=$(read_state)
     [[ $(value "$state" boot) == "$source_boot" && $(value "$state" rev) == "$source_rev" && $(value "$state" merged_rev) == "$source_rev" ]] || fail 'predecessor identity changed'
     ready "$state" || fail 'predecessor unhealthy'
-    tag=netgear-primary-reo-lut-native-$(date +%Y%m%d-%H%M%S)
+    [[ $(remote 'sha256sum /rom/lib/modules/6.18.60/ath12k.ko') == "477ea1d123a13791fd204958a9be4fd62f7d471f8f849810bb2faed473e5d015  /rom/lib/modules/6.18.60/ath12k.ko" ]] || fail 'predecessor module identity'
+    tag=ahb-tx-completion-irq-native-$(date +%Y%m%d-%H%M%S)
     out="$base/runs/$tag"
     mkdir -p "$out"
     printf '%s\n' "$source_boot" > "$out/stock-boot"
     printf '%s\n' "$state" > "$out/predecessor-state.txt"
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg; logread' > "$out/predecessor-capture.txt"
-    dest=/tmp/wave7-radio-primary-native.bin
+    dest=/tmp/wave7-ahb-irq-native.bin
     upload "$native" "$dest"
     result=$(remote "sha256sum '$dest'; /sbin/sysupgrade -T -n '$dest'") || fail 'native image validation'
     [[ $result == "$native_sha  $dest"* ]] || fail 'native image hash'
@@ -211,11 +213,14 @@ case "${1:-}" in
     grep -Fq 'Commencing upgrade. Closing all shell sessions.' "$out/flash.log" || { flash_started=0; fail 'native upgrade did not start'; }
     echo "RUN_DIR=$out"
     while systemctl --user is-active --quiet "$unit.service"; do sleep 5; done
+    if [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]; then
+        systemctl --user stop "$fallback.service"
+    fi
     cat "$out/status" "$out/observer.log"
     [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
     ;;
 --watch)
-    [[ $# == 2 && $2 == "$base"/runs/netgear-primary-reo-lut-native-* ]] || fail 'invalid run'
+    [[ $# == 2 && $2 == "$base"/runs/ahb-tx-completion-irq-native-* ]] || fail 'invalid run'
     out=$2
     known="$out/known_hosts"
     exec 9>"$out/.watch.lock"
