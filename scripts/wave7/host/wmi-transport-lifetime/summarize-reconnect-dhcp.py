@@ -204,7 +204,64 @@ def boundary_window(packets, clocks, window, station):
                          if begin <= p['epoch'] < end and p['client'] == station]
 
 
-def join_boundaries(wired, client, ap):
+# The direct NIC hosts the lab DHCP server. The switched NIC is an
+# independent observation of a flooded copy, not a hop to that server.
+SERVER_INTERFACE = 'enp4s0f4u2u4'
+REQUEST_TYPES = {'discover', 'request', 'decline', 'release', 'inform'}
+RESPONSE_TYPES = {'offer', 'ack', 'nak'}
+
+
+def message_path(tx, kind, station, all_rows):
+    """Report transaction-level witnesses; no attempt to pair retransmissions.
+
+    AP TX copies of flooded client requests are not the server-directed
+    boundary. Direction and BOOTP ports/op must agree with the message type.
+    Any matching evidence outside the selected authorization window makes
+    an otherwise absent witness ambiguous rather than proving a loss.
+    """
+    if kind in REQUEST_TYPES:
+        op, ports = 1, (68, 67)
+        path = [('client', 'tx'), ('ap', 'rx'), ('wire', SERVER_INTERFACE)]
+    elif kind in RESPONSE_TYPES:
+        op, ports = 2, (67, 68)
+        path = [('wire', SERVER_INTERFACE), ('ap', 'tx'), ('client', 'rx')]
+    else:
+        return None
+    local_rows = {'client': tx['client_packets'], 'ap': tx['ap_packets'],
+                  'wire': tx['packets']}
+    stages = []
+    for side, boundary in path:
+        def matches(row):
+            return (row['xid'] == tx['xid'] and row['client'] == station and
+                    row['message'] == kind and row['op'] == op and
+                    (row['udp_src'], row['udp_dst']) == ports and
+                    row.get('direction' if side != 'wire' else 'interface') == boundary)
+        selected = sum(matches(row) for row in local_rows[side])
+        total = sum(matches(row) for row in all_rows[side])
+        require(total >= selected, 'inconsistent transaction witness accounting')
+        stages.append(dict(side=side, boundary=boundary, observed=selected,
+                           outside_window=total-selected))
+    status = 'all_boundaries_observed'
+    if any(not row['observed'] for row in stages):
+        if any(not row['observed'] and row['outside_window'] for row in stages):
+            status = 'ambiguous_window'
+        elif not stages[0]['observed'] or any(
+                not before['observed'] and after['observed']
+                for before, after in zip(stages, stages[1:])):
+            status = 'inconsistent_or_unobserved_origin'
+        else:
+            status = 'missing_downstream_witness'
+    return dict(stages=stages, status=status)
+
+
+def host_exchanges(rows, request_direction, response_direction):
+    eligible = [row for row in rows
+                if (row['op'] == 1 and row['direction'] == request_direction) or
+                   (row['op'] == 2 and row['direction'] == response_direction)]
+    return exchange_timing(eligible)
+
+
+def join_boundaries(wired, client, ap, *, station=None, all_rows=None):
     """Keep local witnesses separate; cross-host epoch is not a causal clock."""
     by_xid = {t['xid']: dict(t, client_packets=[], ap_packets=[]) for t in wired}
     for side, rows in (('client', client), ('ap', ap)):
@@ -220,6 +277,11 @@ def join_boundaries(wired, client, ap):
                                            for p in tx[f'{side}_packets'])
                    for side in ('client', 'ap') for direction in ('tx', 'rx')}
             for kind in sorted(kinds)}
+        tx['client_exchanges'] = host_exchanges(tx['client_packets'], 'tx', 'rx')
+        tx['ap_exchanges'] = host_exchanges(tx['ap_packets'], 'rx', 'tx')
+        if all_rows is not None:
+            tx['message_paths'] = {kind: result for kind in sorted(kinds)
+                                   if (result := message_path(tx, kind, station, all_rows)) is not None}
     return list(by_xid.values())
 
 
@@ -273,6 +335,27 @@ def selftest():
     joined = join_boundaries([], one, [])
     assert joined[0]['boundary_counts']['discover'] == {'client_tx': 1, 'client_rx': 0, 'ap_tx': 0, 'ap_rx': 0}
     assert join_boundaries([], two, [dict(two[0], direction='tx')])[0]['boundary_counts']['offer']['ap_tx'] == 1
+    request = one[0]
+    reflection = dict(request, interface='ap-mld0', direction='tx')
+    ingress = dict(reflection, direction='rx')
+    direct = dict(request, interface=SERVER_INTERFACE)
+    mirror = dict(request, interface='enp4s0f4u2u2u4')
+    wire = group([direct, mirror], 100, 101, station)
+    def paths(wire, client, ap, all_rows):
+        return join_boundaries(wire, client, ap, station=station, all_rows=all_rows)[0]['message_paths']['discover']
+    complete = paths(wire, one, [ingress, reflection],
+                     {'client': one, 'ap': [ingress, reflection], 'wire': [direct, mirror]})
+    assert complete['status'] == 'all_boundaries_observed'
+    assert [row['observed'] for row in complete['stages']] == [1, 1, 1]
+    missing = paths([], one, [reflection], {'client': one, 'ap': [reflection], 'wire': []})
+    assert missing['status'] == 'missing_downstream_witness'
+    assert [row['observed'] for row in missing['stages']] == [1, 0, 0]
+    assert paths([], one, [], {'client': one, 'ap': [ingress], 'wire': [direct]})['status'] == 'ambiguous_window'
+    assert paths(wire, one, [reflection], {'client': one, 'ap': [reflection], 'wire': [direct, mirror]})['status'] == 'inconsistent_or_unobserved_origin'
+    response = two[0]
+    reply = dict(response, interface='ap-mld0', direction='tx', epoch=101.2)
+    assert host_exchanges([ingress, reflection, reply], 'rx', 'tx')[0]['requests_seen'] == 1
+
     for invalid in (boundary.replace('drops=0', 'drops=1'),
                     boundary.replace('seen=2', 'seen=3'),
                     boundary.replace('DHCP_LINK_DOWN 10.950 ifindex=4', 'DHCP_LINK_DOWN 10.950 ifindex=5'),
@@ -358,7 +441,9 @@ def main():
                               for side, w in (('client', c), ('ap', w))})
             assigned['client'] += len(client_rows)
             assigned['ap'] += len(ap_rows)
-            transactions = join_boundaries(transactions, client_rows, ap_rows)
+            transactions = join_boundaries(transactions, client_rows, ap_rows, station=station,
+                                           all_rows={'client': local['client'][0],
+                                                     'ap': local['ap'][0], 'wire': packets})
         window['transactions'] = transactions
         windows.append(window)
     result = dict(band=a.band, wire_packets=len(packets),
