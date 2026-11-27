@@ -564,7 +564,15 @@ for band in "${bands[@]}"; do
             cases_failed=1
         else
             snapshot_rx > "$prefix.ring3-before.txt"
-            remote 'taskset -c 3 ping -I br-lan -c 30 -i 0.1 -W 1 192.168.76.145' > "$prefix.ring3-ping.txt" 2>&1 || cases_failed=1
+            # MLO unicast goes through the QCN6432 primary UMAC even
+            # when only client link0 is active. Link-local multicast
+            # exercises the per-link group TX path on both radios.
+            echo link-local-ipv6-multicast > "$prefix.ring3-probe-mode.txt"
+            probe_rc=0
+            remote 'taskset -c 3 ping -6 -I br-lan -c 6 -i 1 -W 1 ff02::1' > "$prefix.ring3-ping.txt" 2>&1 || probe_rc=$?
+            printf '%s\n' "$probe_rc" > "$prefix.ring3-ping-exit.txt"
+            # Replies to group ICMP are optional; require actual ring3
+            # submission, completion, IRQ delta and drain below instead.
             snapshot_rx > "$prefix.ring3-after.txt"
         fi
         wait "$load_client_pid" || rc=$?
