@@ -450,10 +450,10 @@ for band in "${bands[@]}"; do
         # access; decode only explicitly selected discovery metadata.
         if [[ $wired_capture == ndp ]]; then
             (
-                dumpcap -i enp4s0f4u2u4 -p -s 128 \
-                    -f 'icmp6 and ip6[40] >= 133 and ip6[40] <= 136' \
-                    -i enp4s0f4u2u2u4 -p -s 128 \
-                    -f 'icmp6 and ip6[40] >= 133 and ip6[40] <= 136' \
+                dumpcap -i enp4s0f4u2u4 -p -s 576 \
+                    -f '(icmp6 and ip6[40] >= 133 and ip6[40] <= 136) or (udp and (port 67 or port 68))' \
+                    -i enp4s0f4u2u2u4 -p -s 576 \
+                    -f '(icmp6 and ip6[40] >= 133 and ip6[40] <= 136) or (udp and (port 67 or port 68))' \
                     -a "duration:$observe_seconds" -w - 2>"$prefix.wired-ndp-status.txt" |
                     tshark -n -l -r - -T fields \
                         -e frame.time_epoch -e eth.src -e eth.dst \
@@ -461,7 +461,13 @@ for band in "${bands[@]}"; do
                         -e frame.interface_name -e ipv6.hlim \
                         -e icmpv6.nd.ns.target_address -e icmpv6.nd.na.target_address \
                         -e icmpv6.opt.linkaddr \
-                        >"$prefix.wired-ndp.txt" 2>"$prefix.wired-ndp-decode.txt"
+                        -e ip.src -e ip.dst -e udp.srcport -e udp.dstport \
+                        -e dhcp.type -e dhcp.id -e dhcp.hw.mac_addr \
+                        -e dhcp.ip.your -e dhcp.option.dhcp \
+                        2>"$prefix.wired-ndp-decode.txt" | \
+                    uv run --no-project python -B "$(dirname "$helper")/split-wired-provisioning.py" \
+                        --ndp "$prefix.wired-ndp.txt" --dhcp "$prefix.wired-dhcp.txt" \
+                        2>"$prefix.wired-provisioning-split.txt"
             ) &
             capture_ready='^File: -$'
         else
@@ -619,7 +625,7 @@ for band in "${bands[@]}"; do
         wait "$wired_capture_pid" || capture_rc=$?
         wired_capture_pid=''
         if [[ $wired_capture == ndp ]]; then
-            if [[ $capture_rc != 0 ]] ||
+            if [[ $capture_rc != 0 ]] || [[ -s $prefix.wired-provisioning-split.txt ]] ||
                ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt" ||
                ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt"; then
                 cases_failed=1
