@@ -1,0 +1,20 @@
+{
+  "parent_sha": "466156e478a09c185586d4a494932a3bc2693a3b06b498cefd894aae8d301b4d",
+  "parent_rev": "r0+39019-f852573424-ap-dhcp-guard8",
+  "parent_builder": "f8525734243ca2b9e6e88079bbc91287d7139317",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "383a4dd19e3abd91233433c506878d41a7602e83b5bef24bc2d2b845575fed7d",
+      "bcdee839d805191bca4485ebfcbe46ff2515252816aa7aeb7d246a66850ba276"
+    ],
+    "ath12k_wifi7.ko": [
+      "c5c15280556ab38282ab80fb044e0a831554df2517a535ea9b69d9340a2dfea1",
+      "506a7a32c49eff4ea5038e6ff0b89677823ec22174735e3b833e8e37a8f6c521"
+    ]
+  },
+  "patch_commit": "ac5c91214afaf764f68f06ae0ea0882d605ad69f",
+  "patch_key": "trial_rx_page_pool_commit",
+  "filename": "wave7-rebase-rx-page-pool-dhcp-guard8-sysupgrade.bin"
+}
