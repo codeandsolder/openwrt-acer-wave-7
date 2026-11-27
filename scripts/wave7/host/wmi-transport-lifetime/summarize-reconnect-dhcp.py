@@ -149,6 +149,8 @@ def parse_boundary_observer(text, iface):
 
 def clock_epoch(clocks, timestamp):
     mono = [m for m, _ in clocks]
+    if timestamp == mono[-1]:
+        return clocks[-1][1]
     i = bisect.bisect_right(mono, timestamp) - 1
     require(i >= 0 and i + 1 < len(clocks), 'authorization outside clock capture')
     lo, hi = clocks[i:i + 2]
@@ -198,10 +200,13 @@ def wire_group_with_uncertainty(packets, start, stop, station):
 
 def boundary_window(packets, clocks, window, station):
     begin = clock_epoch(clocks, window['authorized_at'])
-    end = clock_epoch(clocks, window['observed_until'])
+    stop = window['observed_until']
+    clipped = stop > clocks[-1][0]
+    require(not clipped or window.get('right_censored'), 'closed lifetime outside clock capture')
+    end = clock_epoch(clocks, min(stop, clocks[-1][0]))
     require(begin < end, 'inverted local authorization clock')
     return [begin, end], [p for p in packets
-                         if begin <= p['epoch'] < end and p['client'] == station]
+                         if begin <= p['epoch'] < end and p['client'] == station], clipped
 
 
 # The direct NIC hosts the lab DHCP server. The switched NIC is an
@@ -328,10 +333,20 @@ def selftest():
         'DHCP_OBSERVER_END iface=wlp2s0 seen=2 decoded=2 malformed=0 packets=2 drops=0'])
     local, clocks, link_downs = parse_boundary_observer(boundary, 'wlp2s0')
     assert link_downs == [10.95]
-    first, one = boundary_window(local, clocks, {'authorized_at': 10.1, 'observed_until': 11.0}, station)
-    second, two = boundary_window(local, clocks, {'authorized_at': 11.0, 'observed_until': 11.9}, station)
+    first, one, clipped = boundary_window(local, clocks, {'authorized_at': 10.1, 'observed_until': 11.0}, station)
+    second, two, clipped2 = boundary_window(local, clocks, {'authorized_at': 11.0, 'observed_until': 11.9}, station)
     assert first == [100.1, 101.0] and second == [101.0, 101.9]
-    assert len(one) == len(two) == 1
+    assert len(one) == len(two) == 1 and not clipped and not clipped2
+    tail, tail_rows, clipped = boundary_window(local, clocks, {'authorized_at': 11.0,
+                                                               'observed_until': 13.0,
+                                                               'right_censored': True}, station)
+    assert tail == [101.0, 102.0] and tail_rows == two and clipped
+    try:
+        boundary_window(local, clocks, {'authorized_at': 11.0, 'observed_until': 13.0}, station)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('closed lifetime outside capture accepted')
     joined = join_boundaries([], one, [])
     assert joined[0]['boundary_counts']['discover'] == {'client_tx': 1, 'client_rx': 0, 'ap_tx': 0, 'ap_rx': 0}
     assert join_boundaries([], two, [dict(two[0], direction='tx')])[0]['boundary_counts']['offer']['ap_tx'] == 1
@@ -427,12 +442,13 @@ def main():
         transactions = group(packets, begin, finish, station)
         window = dict(association=i, station=station, wire_epoch=[begin, finish])
         if boundaries:
-            client_epoch, client_rows = boundary_window(*local['client'][:2], c, station)
-            ap_epoch, ap_rows = boundary_window(*local['ap'][:2], w, station)
+            client_epoch, client_rows, client_clipped = boundary_window(*local['client'][:2], c, station)
+            ap_epoch, ap_rows, ap_clipped = boundary_window(*local['ap'][:2], w, station)
             start = wire_clock(probe_before, probe_after, client_epoch[0])
             stop = wire_clock(probe_before, probe_after, client_epoch[1])
             transactions, ambiguous = wire_group_with_uncertainty(packets, start, stop, station)
             window.update(client_epoch=client_epoch, ap_epoch=ap_epoch,
+                          endpoint_window_clipped={'client': client_clipped, 'ap': ap_clipped},
                           wire_epoch=[start[0], stop[0]],
                           wire_epoch_uncertainty_s=[start[1], stop[1]],
                           wire_boundary_ambiguous=ambiguous,
@@ -444,6 +460,12 @@ def main():
             transactions = join_boundaries(transactions, client_rows, ap_rows, station=station,
                                            all_rows={'client': local['client'][0],
                                                      'ap': local['ap'][0], 'wire': packets})
+            if client_clipped or (ap_clipped and ap_epoch[1] - ap_epoch[0] <
+                                  client_epoch[1] - client_epoch[0]):
+                for transaction in transactions:
+                    for path in transaction['message_paths'].values():
+                        if path['status'] == 'missing_downstream_witness':
+                            path['status'] = 'ambiguous_capture_end'
         window['transactions'] = transactions
         windows.append(window)
     result = dict(band=a.band, wire_packets=len(packets),
