@@ -1,0 +1,102 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -2740,6 +2740,14 @@
+ 					    MT76_STA_INFO_STATE_ASSOC);
+ 		if (err)
+ 			return err;
++
++		/* Apply current VIF power policy to a newly associated BSS,
++		 * even when no BSS_CHANGED_PS notification is pending.
++		 */
++		err = mt7925_mcu_uni_bss_ps(dev,
++					    mt792x_vif_to_bss_conf(vif, link_id));
++		if (err)
++			return err;
+ 	}
+ 
+ 	if (msta->deflink_id != IEEE80211_LINK_UNSPECIFIED &&
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -2006,11 +2006,15 @@
+ 		},
+ 	};
+ 
++	int ret;
++
+ 	if (link_conf->vif->type != NL80211_IFTYPE_STATION)
+ 		return -EOPNOTSUPP;
+ 
+-	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
++	ret = mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
+ 				 &ps_req, sizeof(ps_req), true);
++	trace_mt7925_lab_bss_ps(mconf->mt76.idx, link_conf->link_id, ps_req.ps.ps_state, ret);
++	return ret;
+ }
+ 
+ int
+@@ -2044,11 +2048,15 @@
+ 		},
+ 	};
+ 
++	int ret;
++
+ 	if (link_conf->vif->type != NL80211_IFTYPE_STATION)
+ 		return 0;
+ 
+-	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
++	ret = mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
+ 				 &bcnft_req, sizeof(bcnft_req), true);
++	trace_mt7925_lab_bss_bcnft(mconf->mt76.idx, link_conf->link_id, link_conf->beacon_int, link_conf->dtim_period, ret);
++	return ret;
+ }
+ 
+ int
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -322,6 +322,46 @@
+ 		  __entry->wcid, __entry->bss, __entry->link, __entry->enabled, __entry->state, __entry->result)
+ );
+ 
++TRACE_EVENT(mt7925_lab_bss_ps,
++	TP_PROTO(u8 bss, u8 link, u8 state, int result),
++	TP_ARGS(bss, link, state, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u8, state)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->state = state;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u link=%u state=%u result=%d",
++		  __entry->bss, __entry->link, __entry->state, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_bss_bcnft,
++	TP_PROTO(u8 bss, u8 link, u16 interval, u8 dtim, int result),
++	TP_ARGS(bss, link, interval, dtim, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, link)
++		__field(u16, interval)
++		__field(u8, dtim)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->link = link;
++		__entry->interval = interval;
++		__entry->dtim = dtim;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u link=%u interval=%u dtim=%u result=%d",
++		  __entry->bss, __entry->link, __entry->interval, __entry->dtim, __entry->result)
++);
++
+ TRACE_EVENT(mt7925_lab_sta_mld_update,
+ 	TP_PROTO(u16 wcid, u8 bss, int result),
+ 	TP_ARGS(wcid, bss, result),

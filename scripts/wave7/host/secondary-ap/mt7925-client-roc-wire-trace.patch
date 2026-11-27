@@ -1,0 +1,194 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -516,6 +516,108 @@
+ 		  __entry->token, __entry->result)
+ );
+ 
++TRACE_EVENT(mt7925_lab_roc_wire,
++	TP_PROTO(u16 tag, u16 len, u8 bss, u8 token, u8 expected, u8 status, u8 type, u8 band, u8 channel, u8 dbdc, u32 duration, u8 pending),
++	TP_ARGS(tag, len, bss, token, expected, status, type, band, channel, dbdc, duration, pending),
++	TP_STRUCT__entry(
++		__field(u16, tag)
++		__field(u16, len)
++		__field(u8, bss)
++		__field(u8, token)
++		__field(u8, expected)
++		__field(u8, status)
++		__field(u8, type)
++		__field(u8, band)
++		__field(u8, channel)
++		__field(u8, dbdc)
++		__field(u32, duration)
++		__field(u8, pending)
++	),
++	TP_fast_assign(
++		__entry->tag = tag;
++		__entry->len = len;
++		__entry->bss = bss;
++		__entry->token = token;
++		__entry->expected = expected;
++		__entry->status = status;
++		__entry->type = type;
++		__entry->band = band;
++		__entry->channel = channel;
++		__entry->dbdc = dbdc;
++		__entry->duration = duration;
++		__entry->pending = pending;
++	),
++	TP_printk("tag=%u len=%u bss=%u token=%u expected=%u status=%u type=%u band=%u channel=%u dbdc=%u duration=%u pending=%u",
++		  __entry->tag, __entry->len, __entry->bss, __entry->token, __entry->expected, __entry->status, __entry->type, __entry->band, __entry->channel, __entry->dbdc, __entry->duration, __entry->pending)
++);
++
++TRACE_EVENT(mt7925_lab_roc_abort,
++	TP_PROTO(u8 bss, u8 token, u8 expected, u8 band, int result),
++	TP_ARGS(bss, token, expected, band, result),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u8, token)
++		__field(u8, expected)
++		__field(u8, band)
++		__field(int, result)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->token = token;
++		__entry->expected = expected;
++		__entry->band = band;
++		__entry->result = result;
++	),
++	TP_printk("bss=%u token=%u expected=%u band=%u result=%d",
++		  __entry->bss, __entry->token, __entry->expected, __entry->band, __entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_txs_wire,
++	TP_PROTO(u32 word0, u32 word1, u32 word2, u32 word3, u32 word4),
++	TP_ARGS(word0, word1, word2, word3, word4),
++	TP_STRUCT__entry(
++		__field(u32, word0)
++		__field(u32, word1)
++		__field(u32, word2)
++		__field(u32, word3)
++		__field(u32, word4)
++	),
++	TP_fast_assign(
++		__entry->word0 = word0;
++		__entry->word1 = word1;
++		__entry->word2 = word2;
++		__entry->word3 = word3;
++		__entry->word4 = word4;
++	),
++	TP_printk("word0=%u word1=%u word2=%u word3=%u word4=%u",
++		  __entry->word0, __entry->word1, __entry->word2, __entry->word3, __entry->word4)
++);
++
++TRACE_EVENT(mt7925_lab_rx_frame,
++	TP_PROTO(u16 wcid, u16 freq, u16 fc, u8 raw_bss, u8 encap, u8 u2m, u8 data),
++	TP_ARGS(wcid, freq, fc, raw_bss, encap, u2m, data),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u16, freq)
++		__field(u16, fc)
++		__field(u8, raw_bss)
++		__field(u8, encap)
++		__field(u8, u2m)
++		__field(u8, data)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->freq = freq;
++		__entry->fc = fc;
++		__entry->raw_bss = raw_bss;
++		__entry->encap = encap;
++		__entry->u2m = u2m;
++		__entry->data = data;
++	),
++	TP_printk("wcid=%u freq=%u fc=%u raw_bss=%u encap=%u u2m=%u data=%u",
++		  __entry->wcid, __entry->freq, __entry->fc, __entry->raw_bss, __entry->encap, __entry->u2m, __entry->data)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -1243,6 +1243,9 @@
+ 	u8 pid, txs_fm;
+ 	u16 wcidx;
+ 
++	trace_mt7925_lab_txs_wire(le32_to_cpu(txs_data[0]),
++		le32_to_cpu(txs_data[1]), le32_to_cpu(txs_data[2]),
++		le32_to_cpu(txs_data[3]), le32_to_cpu(txs_data[4]));
+ 	txs_fm = le32_get_bits(txs_data[0], MT_TXS0_TXS_FORMAT);
+ 
+ 	if (is_mt7928(&dev->mt76)) {
+@@ -1491,6 +1494,20 @@
+ 				!ret && !!(status->flag & RX_FLAG_8023));
+ 		}
+ 		if (!ret) {
++			if (observe && trace_mt7925_lab_rx_frame_enabled()) {
++				struct mt76_rx_status *status = (void *)skb->cb;
++				bool encap = status->flag & RX_FLAG_8023;
++				u16 fc = !encap && skb_headlen(skb) >= 2 ?
++					get_unaligned_le16(skb->data) : 0xffff;
++
++				trace_mt7925_lab_rx_frame(word1 & MT_RXD1_NORMAL_WLAN_IDX,
++					status->freq, fc,
++					FIELD_GET(MT_RXD2_NORMAL_BSSID, word2),
++					encap,
++					FIELD_GET(MT_RXD3_NORMAL_ADDR_TYPE, word3) ==
++					MT_RXD3_NORMAL_U2M,
++					!(word2 & MT_RXD2_NORMAL_NDATA));
++			}
+ 			mt76_rx(&dev->mt76, q, skb);
+ 			return;
+ 		}
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -450,7 +450,21 @@
+ 	tlv_len = skb->len;
+ 
+ 	mt7925_for_each_tlv(tlv, tlv_len) {
+-		switch (le16_to_cpu(tlv->tag)) {
++		u16 tag = le16_to_cpu(tlv->tag);
++		u16 len = le16_to_cpu(tlv->len);
++
++		if ((tag == UNI_EVENT_ROC_GRANT ||
++		     tag == UNI_EVENT_ROC_GRANT_SUB_LINK) &&
++		    len >= sizeof(struct mt7925_roc_grant_tlv)) {
++			struct mt7925_roc_grant_tlv *g = (void *)tlv;
++
++			trace_mt7925_lab_roc_wire(tag, len, g->bss_idx,
++				g->tokenid, dev->phy.roc_token_id, g->status,
++				g->reqtype, g->rfband, g->primarychannel,
++				g->dbdcband, le32_to_cpu(g->max_interval),
++				test_bit(MT76_STATE_ROC, &dev->mphy.state));
++		}
++		switch (tag) {
+ 		case UNI_EVENT_ROC_GRANT:
+ 			if (le16_to_cpu(tlv->len) <
+ 			    sizeof(struct mt7925_roc_grant_tlv))
+@@ -1629,6 +1643,7 @@
+ 			 u8 token_id)
+ {
+ 	struct mt792x_dev *dev = phy->dev;
++	int ret;
+ 	struct {
+ 		struct {
+ 			u8 rsv[4];
+@@ -1651,8 +1666,11 @@
+ 		},
+ 	};
+ 
+-	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(ROC),
+-				 &req, sizeof(req), true);
++	ret = mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(ROC),
++			       &req, sizeof(req), true);
++	trace_mt7925_lab_roc_abort(req.abort.bss_idx, token_id,
++		phy->roc_token_id, req.abort.dbdcband, ret);
++	return ret;
+ }
+ 
+ int mt7925_mcu_set_eeprom(struct mt792x_dev *dev)

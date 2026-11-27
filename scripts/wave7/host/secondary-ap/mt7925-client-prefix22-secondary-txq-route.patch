@@ -1,0 +1,177 @@
+--- a/mt76.h
++++ b/mt76.h
+@@ -552,6 +552,14 @@
+ 	void (*update_survey)(struct mt76_phy *phy);
+ 	int (*set_channel)(struct mt76_phy *phy);
+ 
++	/* Called under RCU before queueing each TXQ packet. A selected WCID
++	 * must remain valid until queue preparation returns, and its owning
++	 * station must match txq->sta.
++	 */
++	struct mt76_wcid *(*select_txq_wcid)(struct mt76_dev *dev,
++					  struct ieee80211_txq *txq,
++					  struct sk_buff *skb,
++					  struct mt76_wcid *default_wcid);
+ 	int (*tx_prepare_skb)(struct mt76_dev *dev, void *txwi_ptr,
+ 			      enum mt76_txq_id qid, struct mt76_wcid *wcid,
+ 			      struct ieee80211_sta *sta,
+--- a/tx.c
++++ b/tx.c
+@@ -515,6 +515,41 @@
+ 	       q->queued + MT_TXQ_FREE_THR >= q->ndesc;
+ }
+ 
++/* Select the physical MLO link per packet, not per TXQ. The TXQ's
++ * WCID is the primary even when an skb should leave on another link.
++ * Keep the chosen WCID RCU-protected through descriptor preparation.
++ */
++static int
++mt76_txq_send_one(struct mt76_phy *phy, struct ieee80211_txq *txq,
++		  struct sk_buff *skb, struct mt76_wcid *wcid,
++		  enum mt76_txq_id qid, bool *stop)
++{
++	struct mt76_dev *dev = phy->dev;
++	struct mt76_queue *q = phy->q_tx[qid];
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	int idx;
++
++	rcu_read_lock();
++	if (dev->drv->select_txq_wcid) {
++		struct mt76_wcid *selected;
++
++		selected = dev->drv->select_txq_wcid(dev, txq, skb, wcid);
++		if (selected)
++			wcid = selected;
++	}
++
++	if (!(wcid->tx_info & MT_WCID_TX_INFO_SET))
++		ieee80211_get_tx_rates(txq->vif, txq->sta, skb,
++				       info->control.rates, 1);
++
++	spin_lock(&q->lock);
++	idx = __mt76_tx_queue_skb(phy, qid, skb, wcid, txq->sta, stop);
++	spin_unlock(&q->lock);
++	rcu_read_unlock();
++
++	return idx;
++}
++
+ static int
+ mt76_txq_send_burst(struct mt76_phy *phy, struct mt76_queue *q,
+ 		    struct mt76_txq *mtxq, struct mt76_wcid *wcid)
+@@ -522,7 +557,6 @@
+ 	struct mt76_dev *dev = phy->dev;
+ 	struct ieee80211_txq *txq = mtxq_to_txq(mtxq);
+ 	enum mt76_txq_id qid = mt76_txq_get_qid(txq);
+-	struct ieee80211_tx_info *info;
+ 	struct sk_buff *skb;
+ 	int n_frames = 1;
+ 	bool stop = false;
+@@ -543,14 +577,7 @@
+ 	if (!skb)
+ 		return 0;
+ 
+-	info = IEEE80211_SKB_CB(skb);
+-	if (!(wcid->tx_info & MT_WCID_TX_INFO_SET))
+-		ieee80211_get_tx_rates(txq->vif, txq->sta, skb,
+-				       info->control.rates, 1);
+-
+-	spin_lock(&q->lock);
+-	idx = __mt76_tx_queue_skb(phy, qid, skb, wcid, txq->sta, &stop);
+-	spin_unlock(&q->lock);
++	idx = mt76_txq_send_one(phy, txq, skb, wcid, qid, &stop);
+ 	if (idx < 0)
+ 		return idx;
+ 
+@@ -568,14 +595,7 @@
+ 		if (!skb)
+ 			break;
+ 
+-		info = IEEE80211_SKB_CB(skb);
+-		if (!(wcid->tx_info & MT_WCID_TX_INFO_SET))
+-			ieee80211_get_tx_rates(txq->vif, txq->sta, skb,
+-					       info->control.rates, 1);
+-
+-		spin_lock(&q->lock);
+-		idx = __mt76_tx_queue_skb(phy, qid, skb, wcid, txq->sta, &stop);
+-		spin_unlock(&q->lock);
++		idx = mt76_txq_send_one(phy, txq, skb, wcid, qid, &stop);
+ 		if (idx < 0)
+ 			break;
+ 
+--- a/mt7925/mt7925.h
++++ b/mt7925/mt7925.h
+@@ -374,6 +374,9 @@
+ 			  struct mt7925_txpwr *txpwr);
+ void mt7925_mac_set_fixed_rate_table(struct mt792x_dev *dev,
+ 				     u8 tbl_idx, u16 rate_idx);
++struct mt76_wcid *
++mt7925_select_txq_wcid(struct mt76_dev *dev, struct ieee80211_txq *txq,
++		       struct sk_buff *skb, struct mt76_wcid *default_wcid);
+ void mt7925_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
+ 			   struct sk_buff *skb, struct mt76_wcid *wcid,
+ 			   struct ieee80211_key_conf *key, int pid,
+--- a/mt7925/pci.c
++++ b/mt7925/pci.c
+@@ -596,6 +596,7 @@
+ 				SURVEY_INFO_TIME_RX |
+ 				SURVEY_INFO_TIME_BSS_RX,
+ 		.token_size = MT7925_TOKEN_SIZE,
++		.select_txq_wcid = mt7925_select_txq_wcid,
+ 		.tx_prepare_skb = mt7925e_tx_prepare_skb,
+ 		.tx_complete_skb = mt76_connac_tx_complete_skb,
+ 		.rx_check = mt7925_rx_check,
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -745,6 +745,51 @@
+ 	}
+ }
+ 
++/* Lab discriminator: attempt user data over a truly active secondary
++ * peer without touching mac80211 MLD association or firmware membership.
++ * Called from the common TXQ enqueue path under RCU. Only the observed
++ * two-link 5 GHz-primary lab geometry is selected here.
++ */
++struct mt76_wcid *
++mt7925_select_txq_wcid(struct mt76_dev *dev, struct ieee80211_txq *txq,
++		       struct sk_buff *skb, struct mt76_wcid *default_wcid)
++{
++	struct ieee80211_vif *vif = txq->vif;
++	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
++	struct mt792x_link_sta *secondary;
++	struct mt792x_sta *msta;
++
++	if (!txq->sta || !vif ||
++	    vif->type != NL80211_IFTYPE_STATION ||
++	    !ieee80211_vif_is_mld(vif) ||
++	    !(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
++	    skb->len < ETH_HLEN ||
++	    !is_unicast_ether_addr(skb->data) ||
++	    skb->protocol == cpu_to_be16(ETH_P_PAE) ||
++	    ((const struct ethhdr *)skb->data)->h_proto ==
++	    cpu_to_be16(ETH_P_PAE))
++		return default_wcid;
++
++	msta = (void *)txq->sta->drv_priv;
++	if (msta->deflink_id != 1 ||
++	    default_wcid != &msta->deflink.wcid ||
++	    (READ_ONCE(msta->valid_links) & GENMASK(1, 0)) !=
++	    GENMASK(1, 0) ||
++	    (READ_ONCE(vif->active_links) & GENMASK(1, 0)) !=
++	    GENMASK(1, 0))
++		return default_wcid;
++
++	secondary = rcu_dereference(msta->link[0]);
++	if (!secondary || !secondary->wcid.link_valid ||
++	    test_bit(MT_WCID_FLAG_PS, &secondary->wcid.flags))
++		return default_wcid;
++
++	info->control.flags = u32_replace_bits(info->control.flags, 0,
++					       IEEE80211_TX_CTRL_MLO_LINK);
++	return &secondary->wcid;
++}
++EXPORT_SYMBOL_GPL(mt7925_select_txq_wcid);
++
+ void
+ mt7925_mac_write_txwi(struct mt76_dev *dev, __le32 *txwi,
+ 		      struct sk_buff *skb, struct mt76_wcid *wcid,

@@ -1,0 +1,102 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -1394,31 +1394,42 @@
+ }
+ 
+ struct mt7925_set_links_key_iter {
++	struct ieee80211_sta *sta;
+ 	unsigned long links;
++	int err;
+ };
+ 
+-/* Install the existing keys on the given links. */
++/* mac80211 switches per-link group keys after change_sta_links().
++ * The MLD-wide pairwise key must also be installed on newly added
++ * peer WCIDs. Never reinstall it on an existing peer or reseed its PN.
++ */
+ static void
+ mt7925_set_links_key_iter(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 			  struct ieee80211_sta *sta,
+ 			  struct ieee80211_key_conf *key, void *data)
+ {
+-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-	struct mt792x_sta *msta = sta ? (struct mt792x_sta *)sta->drv_priv :
+-				 &mvif->sta;
+ 	struct mt7925_set_links_key_iter *it = data;
+-	unsigned long links = key->link_id != -1 ? BIT(key->link_id) : it->links;
++	struct mt792x_sta *msta;
+ 	unsigned int link_id;
+ 
+-	links &= it->links;
++	if (it->err || sta != it->sta || key->link_id >= 0 ||
++	    !(key->flags & IEEE80211_KEY_FLAG_PAIRWISE))
++		return;
+ 
+-	for_each_set_bit(link_id, &links, IEEE80211_MLD_MAX_NUM_LINKS) {
+-		struct mt792x_link_sta *mlink = mt792x_sta_to_link(msta, link_id);
++	msta = (void *)sta->drv_priv;
++	for_each_set_bit(link_id, &it->links, IEEE80211_MLD_MAX_NUM_LINKS) {
++		struct mt792x_link_sta *mlink;
+ 
+-		if (!mlink)
+-			continue;
++		mlink = mt792x_sta_to_link(msta, link_id);
++		if (!mlink || mlink == &msta->deflink) {
++			it->err = -EINVAL;
++			return;
++		}
+ 
+-		mt7925_set_link_key(hw, SET_KEY, vif, sta, key, link_id, mlink);
++		it->err = mt7925_set_link_key(hw, SET_KEY, vif, sta, key,
++					      link_id, mlink);
++		if (it->err)
++			return;
+ 	}
+ }
+ 
+@@ -1483,12 +1494,19 @@
+ 
+ 			link_sta = mt792x_sta_to_link_sta(vif, sta,
+ 							  msta->deflink_id);
+-			mt7925_mac_set_links(vif);
+ 		}
+ 
+ 		mt7925_mac_link_sta_assoc(mdev, vif, link_sta);
+ 		break;
+ 	case MT76_STA_EVENT_AUTHORIZE:
++		/* Complete the four-way handshake on the original primary
++		 * before requesting a potentially band-changing MLO ROC.
++		 * The asynchronous activation runs after authorization.
++		 */
++		if (vif->type == NL80211_IFTYPE_STATION && !sta->tdls &&
++		    ieee80211_vif_is_mld(vif))
++			mt7925_mac_set_links(vif);
++
+ 		if (vif->type == NL80211_IFTYPE_NAN_DATA) {
+ 			int ret;
+ 
+@@ -2812,9 +2830,24 @@
+ 					goto out;
+ 			}
+ 		}
++		if (add) {
++			struct mt7925_set_links_key_iter it = {
++				.sta = sta,
++				.links = add,
++			};
++
++			ieee80211_iter_keys(hw, vif, mt7925_set_links_key_iter,
++					     &it);
++			err = it.err;
++		}
+ 	}
+ 
+ out:
++	/* mac80211 assumes the requested link activation succeeds even
++	 * on a driver error. Recover rather than leave an unkeyed link.
++	 */
++	if (err)
++		mt792x_reset(&dev->mt76);
+ 	mt792x_mutex_release(dev);
+ 
+ 	return err;

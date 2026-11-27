@@ -1,0 +1,724 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt792x.h
++++ b/drivers/net/wireless/mediatek/mt76/mt792x.h
+@@ -596,6 +596,7 @@
+ int mt792x_mcu_drv_pmctrl(struct mt792x_dev *dev);
+ int mt792x_mcu_fw_pmctrl(struct mt792x_dev *dev);
+ void mt792x_mac_link_bss_remove(struct mt792x_dev *dev,
++				struct ieee80211_bss_conf *link_conf,
+ 				struct mt792x_bss_conf *mconf,
+ 				struct mt792x_link_sta *mlink);
+ int mt792x_mcu_set_dev_active(struct mt792x_dev *dev,
+--- a/drivers/net/wireless/mediatek/mt76/mt792x_core.c
++++ b/drivers/net/wireless/mediatek/mt76/mt792x_core.c
+@@ -189,13 +189,20 @@
+ 		}
+ 	}
+ 
++	rcu_read_lock();
+ 	if (control->sta) {
+ 		struct mt792x_link_sta *mlink;
+ 		struct mt792x_sta *sta;
+ 		link_id = u32_get_bits(info->control.flags,
+ 				       IEEE80211_TX_CTRL_MLO_LINK);
+ 		sta = (struct mt792x_sta *)control->sta->drv_priv;
+-		mlink = mt792x_sta_to_link(sta, link_id);
++		if (!vif || !ieee80211_vif_is_mld(vif) ||
++		    link_id >= IEEE80211_LINK_UNSPECIFIED)
++			mlink = &sta->deflink;
++		else
++			mlink = rcu_dereference(sta->link[link_id]);
++		if (!mlink)
++			goto drop;
+ 		wcid = &mlink->wcid;
+ 	}
+ 
+@@ -212,7 +219,7 @@
+ 		if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP)
+ 			da = skb->data;
+ 
+-		if (mconf->bmc_valid && is_multicast_ether_addr(da))
++		if (READ_ONCE(mconf->bmc_valid) && is_multicast_ether_addr(da))
+ 			wcid = &mconf->bmc.wcid;
+ 	}
+ 
+@@ -223,22 +230,24 @@
+ 		struct ieee80211_bss_conf *conf;
+ 
+ 		link_id = wcid->link_id;
+-		rcu_read_lock();
++		if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
++			goto drop;
+ 		conf = rcu_dereference(vif->link_conf[link_id]);
+-		memcpy(hdr->addr2, conf->addr, ETH_ALEN);
+-
+ 		link_sta = rcu_dereference(control->sta->link[link_id]);
++		if (!conf || !link_sta)
++			goto drop;
++
++		memcpy(hdr->addr2, conf->addr, ETH_ALEN);
+ 		memcpy(hdr->addr1, link_sta->addr, ETH_ALEN);
+ 
+ 		if (vif->type == NL80211_IFTYPE_STATION)
+ 			memcpy(hdr->addr3, conf->bssid, ETH_ALEN);
+-		rcu_read_unlock();
+ 	}
+ 
+ 	if (mt76_connac_pm_ref(mphy, &dev->pm)) {
+ 		mt76_tx(mphy, control->sta, wcid, skb);
+ 		mt76_connac_pm_unref(mphy, &dev->pm);
+-		return;
++		goto unlock;
+ 	}
+ 
+ 	qid = skb_get_queue_mapping(skb);
+@@ -248,6 +257,12 @@
+ 	}
+ 
+ 	mt76_connac_pm_queue_skb(hw, &dev->pm, wcid, skb);
++unlock:
++	rcu_read_unlock();
++	return;
++drop:
++	rcu_read_unlock();
++	ieee80211_free_txskb(hw, skb);
+ }
+ EXPORT_SYMBOL_GPL(mt792x_tx);
+ 
+@@ -274,30 +289,38 @@
+ EXPORT_SYMBOL_GPL(mt792x_stop);
+ 
+ void mt792x_mac_link_bss_remove(struct mt792x_dev *dev,
++				struct ieee80211_bss_conf *link_conf,
+ 				struct mt792x_bss_conf *mconf,
+ 				struct mt792x_link_sta *mlink)
+ {
+-	struct ieee80211_vif *vif = container_of((void *)mconf->vif,
+-						 struct ieee80211_vif, drv_priv);
+-	struct ieee80211_bss_conf *link_conf;
+-	int idx = mlink->wcid.idx;
+-
+-	link_conf = mt792x_vif_to_bss_conf(vif, mconf->link_id);
++	struct mt792x_vif *mvif = mconf->vif;
++	struct mt76_wcid *wcid = &mlink->wcid;
++	int idx = MT792x_WTBL_RESERVED - mconf->mt76.idx;
++
++	lockdep_assert_held(&dev->mt76.mutex);
++	/* This is the VIF's reserved WCID, never a peer WCID. */
++	if (WARN_ON_ONCE(wcid->idx != idx ||
++			 rcu_access_pointer(dev->mt76.wcid[idx]) != wcid))
++		return;
+ 
+-	mt76_connac_free_pending_tx_skbs(&dev->pm, &mlink->wcid);
+-	mt792x_mcu_set_dev_active(dev, link_conf, mconf, &mlink->wcid, false);
++	if (mconf->dev_active &&
++	    (!link_conf || mt792x_mcu_set_dev_active(dev, link_conf, mconf,
++						   wcid, false))) {
++		/* Host ownership must still be retired after a firmware error. */
++		mconf->dev_active = false;
++		mt792x_reset(&dev->mt76);
++	}
+ 
+ 	rcu_assign_pointer(dev->mt76.wcid[idx], NULL);
++	synchronize_rcu();
++	mt76_connac_free_pending_tx_skbs(&dev->pm, wcid);
++	mt76_wcid_cleanup(&dev->mt76, wcid);
+ 
+ 	dev->mt76.vif_mask &= ~BIT_ULL(mconf->mt76.idx);
+-	mconf->vif->phy->omac_mask &= ~BIT_ULL(mconf->mt76.omac_idx);
+-
+-	spin_lock_bh(&dev->mt76.sta_poll_lock);
+-	if (!list_empty(&mlink->wcid.poll_list))
+-		list_del_init(&mlink->wcid.poll_list);
+-	spin_unlock_bh(&dev->mt76.sta_poll_lock);
+-
+-	mt76_wcid_cleanup(&dev->mt76, &mlink->wcid);
++	/* A secondary link can share the primary's OMAC. */
++	if (mconf == &mvif->bss_conf ||
++	    mconf->mt76.omac_idx != mvif->bss_conf.mt76.omac_idx)
++		mvif->phy->omac_mask &= ~BIT_ULL(mconf->mt76.omac_idx);
+ }
+ EXPORT_SYMBOL_GPL(mt792x_mac_link_bss_remove);
+ 
+@@ -331,7 +354,7 @@
+ 	mt792x_mutex_acquire(dev);
+ 
+ 	mconf = mt792x_link_conf_to_mconf(&vif->bss_conf);
+-	mt792x_mac_link_bss_remove(dev, mconf, &mvif->sta.deflink);
++	mt792x_mac_link_bss_remove(dev, &vif->bss_conf, mconf, &mvif->sta.deflink);
+ 
+ 	mt792x_mutex_release(dev);
+ }
+--- a/drivers/net/wireless/mediatek/mt76/mt76_connac_mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt76_connac_mac.c
+@@ -133,9 +133,7 @@
+ 		if (!pm->tx_q[i].skb)
+ 			continue;
+ 
+-		if (wcid && wcid->sta)
+-			sta = container_of((void *)wcid, struct ieee80211_sta,
+-					   drv_priv);
++		sta = wcid_to_sta(wcid);
+ 
+ 		mt76_tx(phy, sta, wcid, pm->tx_q[i].skb);
+ 		pm->tx_q[i].skb = NULL;
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -377,12 +377,13 @@
+ 	return err;
+ }
+ 
+-static int mt7925_mac_link_bss_add(struct mt792x_dev *dev,
+-				   struct ieee80211_bss_conf *link_conf,
+-				   struct mt792x_link_sta *mlink,
+-				   bool share_omac, u8 link_idx)
++/* Register host-side BSS resources independently of firmware activation. */
++static int mt7925_mac_link_bss_register(struct mt792x_dev *dev,
++					struct ieee80211_bss_conf *link_conf,
++					struct mt792x_bss_conf *mconf,
++					struct mt792x_link_sta *mlink,
++					bool mld, bool share_omac, u8 link_idx)
+ {
+-	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	struct ieee80211_vif *vif = link_conf->vif;
+ 	struct mt792x_vif *mvif = mconf->vif;
+ 	struct mt76_txq *mtxq;
+@@ -419,12 +420,12 @@
+ 		mconf->mt76.band_idx = mt7927_band_idx(chan->band);
+ 	}
+ 
+-	mconf->mt76.wmm_idx = ieee80211_vif_is_mld(vif) ?
++	mconf->mt76.wmm_idx = mld ?
+ 			      0 : mconf->mt76.idx % MT76_CONNAC_MAX_WMM_SETS;
+ 	/* Per-MLD 0-based link index for the firmware, independent of the
+ 	 * device-wide BSS index (mt76.idx).
+ 	 */
+-	mconf->mt76.link_idx = ieee80211_vif_is_mld(vif) ? link_idx : 0;
++	mconf->mt76.link_idx = mld ? link_idx : 0;
+ 
+ 	if (mvif->phy->mt76->chandef.chan &&
+ 	    mvif->phy->mt76->chandef.chan->band != NL80211_BAND_2GHZ)
+@@ -454,19 +455,38 @@
+ 
+ 	rcu_assign_pointer(dev->mt76.wcid[idx], &mlink->wcid);
+ 
++	/* The interface TXQ must not outlive a secondary reserved WCID. */
++	if (vif->txq && mlink == &mvif->sta.deflink) {
++		mtxq = (struct mt76_txq *)vif->txq->drv_priv;
++		mtxq->wcid = idx;
++	}
++
++out:
++	return ret;
++}
++
++static int mt7925_mac_link_bss_add(struct mt792x_dev *dev,
++				   struct ieee80211_bss_conf *link_conf,
++				   struct mt792x_bss_conf *mconf,
++				   struct mt792x_link_sta *mlink,
++				   bool share_omac, u8 link_idx)
++{
++	int ret;
++
++	ret = mt7925_mac_link_bss_register(dev, link_conf, mconf, mlink,
++					 ieee80211_vif_is_mld(link_conf->vif),
++					 share_omac, link_idx);
++	if (ret)
++		return ret;
++
+ 	ret = mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+ 					&mlink->wcid, true);
+ 	if (ret) {
++		mt792x_mac_link_bss_remove(dev, link_conf, mconf, mlink);
+ 		mt7925_p2p_bmc_remove(dev, mconf);
+-		goto out;
+-	}
+-
+-	if (vif->txq) {
+-		mtxq = (struct mt76_txq *)vif->txq->drv_priv;
+-		mtxq->wcid = idx;
++		mt792x_reset(&dev->mt76);
+ 	}
+ 
+-out:
+ 	return ret;
+ }
+ 
+@@ -486,8 +506,8 @@
+ 	mvif->deflink_id = IEEE80211_LINK_UNSPECIFIED;
+ 	mvif->mlo_pm_state = MT792x_MLO_LINK_DISASSOC;
+ 
+-	ret = mt7925_mac_link_bss_add(dev, &vif->bss_conf, &mvif->sta.deflink,
+-				      true, 0);
++	ret = mt7925_mac_link_bss_add(dev, &vif->bss_conf, &mvif->bss_conf,
++				      &mvif->sta.deflink, true, 0);
+ 	if (ret < 0)
+ 		goto out;
+ 
+@@ -519,7 +539,7 @@
+ 		dev->nan_vif = NULL;
+ 
+ 	mconf = mt792x_link_conf_to_mconf(&vif->bss_conf);
+-	mt792x_mac_link_bss_remove(dev, mconf, &mvif->sta.deflink);
++	mt792x_mac_link_bss_remove(dev, &vif->bss_conf, mconf, &mvif->sta.deflink);
+ 	mt7925_p2p_bmc_remove(dev, mconf);
+ 
+ 	mt792x_mutex_release(dev);
+@@ -1046,9 +1066,12 @@
+ static void mt7925_mac_link_sta_free_wcid(struct mt76_dev *mdev,
+ 					  struct mt792x_link_sta *mlink)
+ {
++	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+ 	struct mt76_wcid *wcid = &mlink->wcid;
+ 
+ 	rcu_assign_pointer(mdev->wcid[wcid->idx], NULL);
++	synchronize_rcu();
++	mt76_connac_free_pending_tx_skbs(&dev->pm, wcid);
+ 	mt76_wcid_cleanup(mdev, wcid);
+ 	mt76_wcid_mask_clear(mdev->wcid_mask, wcid->idx);
+ }
+@@ -1243,9 +1266,9 @@
+ 						  MT76_STA_INFO_STATE_NONE))
+ 				dev_dbg(dev->mt76.dev,
+ 					"failed to tear down the old STA_REC\n");
++			rcu_assign_pointer(msta->link[link_id], NULL);
+ 			mt7925_mac_link_sta_free_wcid(&dev->mt76,
+ 						      &msta->deflink);
+-			synchronize_rcu();
+ 			mlink = &msta->deflink;
+ 			is_deflink = true;
+ 		} else {
+@@ -1487,7 +1510,8 @@
+ static void mt7925_mac_link_sta_remove(struct mt76_dev *mdev,
+ 				       struct ieee80211_vif *vif,
+ 				       struct ieee80211_link_sta *link_sta,
+-				       struct mt792x_link_sta *mlink)
++				       struct mt792x_link_sta *mlink,
++				       bool release_wcid)
+ {
+ 	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+ 	struct mt76_wcid *wcid = &mlink->wcid;
+@@ -1508,6 +1532,7 @@
+ 
+ 	if (vif->type == NL80211_IFTYPE_STATION && !link_sta->sta->tdls) {
+ 		struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
++		struct mt792x_link_sta *owner;
+ 		struct mt792x_bss_conf *mconf;
+ 
+ 		mconf = mt792x_link_conf_to_mconf(link_conf);
+@@ -1518,38 +1543,34 @@
+ 		mconf->mt76.wmm_idx = mconf->mt76.idx %
+ 				      MT76_CONNAC_MAX_WMM_SETS;
+ 
+-		if (ieee80211_vif_is_mld(vif)) {
+-			/* Sub-links are removed. The primary link is kept for
+-			 * reconnect but deactivated in firmware.
+-			 */
+-			if (mconf != &mvif->bss_conf) {
+-				mt792x_mac_link_bss_remove(dev, mconf, mlink);
+-			} else {
+-				mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-							  &mlink->wcid, false);
+-			}
+-		} else {
+-			/* deactivate DEV and BSS, re-activated on the next connect */
+-			mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx, link_conf,
+-						link_sta, false);
+-			mt792x_mcu_set_dev_active(dev, link_conf, mconf,
+-						  &mlink->wcid, false);
+-		}
++		/* Peer removal does not own the VIF's BSS allocation.
++		 * Deactivate its firmware DEV using the reserved VIF WCID;
++		 * change_vif_links owns the eventual secondary BSS release.
++		 */
++		if (!ieee80211_vif_is_mld(vif))
++			mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx,
++						link_conf, link_sta, false);
++		owner = mt792x_sta_to_link(&mvif->sta, link_id);
++		if (WARN_ON_ONCE(!owner))
++			mt792x_reset(mdev);
++		else if (mt792x_mcu_set_dev_active(dev, link_conf, mconf,
++						   &owner->wcid, false))
++			mt792x_reset(mdev);
+ 	}
+ 
+-	spin_lock_bh(&mdev->sta_poll_lock);
+-	if (!list_empty(&mlink->wcid.poll_list))
+-		list_del_init(&mlink->wcid.poll_list);
+-	spin_unlock_bh(&mdev->sta_poll_lock);
+-
+-	mt7925_mac_link_sta_free_wcid(mdev, mlink);
++	/* __mt76_sta_remove() releases the embedded primary WCID
++	 * when the entire station is removed.
++	 */
++	if (release_wcid)
++		mt7925_mac_link_sta_free_wcid(mdev, mlink);
+ 
+ 	mt76_connac_power_save_sched(&dev->mphy, &dev->pm);
+ }
+ 
+ static int
+ mt7925_mac_sta_remove_links(struct mt792x_dev *dev, struct ieee80211_vif *vif,
+-			    struct ieee80211_sta *sta, unsigned long old_links)
++			    struct ieee80211_sta *sta, unsigned long old_links,
++			    bool removing_sta)
+ {
+ 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 	struct mt76_dev *mdev = &dev->mt76;
+@@ -1606,7 +1627,8 @@
+ 		mlink->sta = NULL;
+ 		mlink->pri_link = NULL;
+ 
+-		mt7925_mac_link_sta_remove(&dev->mt76, vif, link_sta, mlink);
++		mt7925_mac_link_sta_remove(&dev->mt76, vif, link_sta, mlink,
++					   !removing_sta || mlink != &msta->deflink);
+ 
+ 		if (mlink != &msta->deflink)
+ 			kfree_rcu(mlink, rcu_head);
+@@ -1656,10 +1678,10 @@
+ 	}
+ 
+ 	if (ieee80211_vif_is_mld(vif)) {
+-		mt7925_mac_sta_remove_links(dev, vif, sta, msta->valid_links);
++		mt7925_mac_sta_remove_links(dev, vif, sta, msta->valid_links, true);
+ 	} else {
+ 		mt7925_mac_link_sta_remove(mdev, vif, &sta->deflink,
+-					   &msta->deflink);
++					   &msta->deflink, false);
+ 	}
+ 
+ 	if (vif->type == NL80211_IFTYPE_STATION) {
+@@ -2517,6 +2539,44 @@
+ 	mt792x_mutex_release(dev);
+ }
+ 
++/* Unpublish a VIF link before retiring any of its owned WCIDs. The
++ * caller supplies the old mac80211 link config, which may already have
++ * disappeared from vif->link_conf.
++ */
++static void
++mt7925_retire_vif_link(struct mt792x_dev *dev, struct mt792x_vif *mvif,
++		       unsigned int link_id, struct ieee80211_bss_conf *link_conf,
++		       bool release_primary)
++{
++	struct mt792x_bss_conf *mconf;
++	struct mt792x_link_sta *mlink;
++
++	WRITE_ONCE(mvif->valid_links, mvif->valid_links & ~BIT(link_id));
++	mconf = rcu_replace_pointer(mvif->link_conf[link_id], NULL,
++				    lockdep_is_held(&dev->mt76.mutex));
++	mlink = rcu_replace_pointer(mvif->sta.link[link_id], NULL,
++				    lockdep_is_held(&dev->mt76.mutex));
++	if (WARN_ON_ONCE(!mconf || !mlink))
++		return;
++
++	if (mconf == &mvif->bss_conf && !release_primary) {
++		if (mconf->dev_active &&
++		    (!link_conf || mt792x_mcu_set_dev_active(dev, link_conf, mconf,
++							   &mlink->wcid, false)))
++			mt792x_reset(&dev->mt76);
++		return;
++	}
++
++	mt792x_mac_link_bss_remove(dev, link_conf, mconf, mlink);
++	mt7925_p2p_bmc_remove(dev, mconf);
++	/* BSS event iterators and TX readers may have retained the link. */
++	synchronize_rcu();
++	if (mconf != &mvif->bss_conf)
++		devm_kfree(dev->mt76.dev, mconf);
++	if (mlink != &mvif->sta.deflink)
++		devm_kfree(dev->mt76.dev, mlink);
++}
++
+ static int
+ mt7925_change_vif_links(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+ 			u16 old_links, u16 new_links,
+@@ -2527,128 +2587,158 @@
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 	unsigned long add = new_links & ~old_links;
+ 	unsigned long rem = old_links & ~new_links;
++	unsigned long registered = 0;
++	unsigned long used_slots = 0;
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 	struct mt792x_phy *phy = mt792x_hw_phy(hw);
+ 	struct ieee80211_bss_conf *link_conf;
+-	u8 link_idx = hweight16(old_links);
+-	unsigned int link_id;
+-	int err;
++	unsigned int link_id, primary;
++	bool legacy_released = false;
++	bool secondary_added = false;
++	int err = 0;
+ 
+ 	if (old_links == new_links)
+ 		return 0;
+ 
+ 	mt792x_mutex_acquire(dev);
++	primary = old_links ? mvif->deflink_id :
++		  new_links ? __ffs(new_links) : IEEE80211_LINK_UNSPECIFIED;
+ 
+-	for_each_set_bit(link_id, &rem, IEEE80211_MLD_MAX_NUM_LINKS) {
+-		mconf = rcu_access_pointer(mvif->link_conf[link_id]);
+-		mlink = rcu_access_pointer(mvif->sta.link[link_id]);
+-
+-		if (!mconf || !mlink)
++	/* Allocate everything first. An allocation failure must not remove
++	 * existing links or leak an earlier allocation.
++	 */
++	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
++		if (link_id == primary) {
++			mconfs[link_id] = &mvif->bss_conf;
++			mlinks[link_id] = &mvif->sta.deflink;
+ 			continue;
+-
+-		if (link_id != mvif->deflink_id) {
+-			/* STATION already deactivated the sub-link FW BSS in
+-			 * mt7925_mac_sta_remove(); AP has no such path.
+-			 */
+-			if (vif->type != NL80211_IFTYPE_STATION)
+-				mt792x_mac_link_bss_remove(dev, mconf, mlink);
+-			mt7925_p2p_bmc_remove(dev, mconf);
+-			devm_kfree(dev->mt76.dev, mconf);
+-			devm_kfree(dev->mt76.dev, mlink);
+ 		}
++		mconfs[link_id] = devm_kzalloc(dev->mt76.dev, sizeof(*mconf),
++					     GFP_KERNEL);
++		mlinks[link_id] = devm_kzalloc(dev->mt76.dev, sizeof(*mlink),
++					     GFP_KERNEL);
++		if (!mconfs[link_id] || !mlinks[link_id]) {
++			err = -ENOMEM;
++			goto free_allocations;
++		}
++	}
++
++	for_each_set_bit(link_id, &rem, IEEE80211_MLD_MAX_NUM_LINKS)
++		mt7925_retire_vif_link(dev, mvif, link_id, old[link_id], false);
+ 
+-		rcu_assign_pointer(mvif->link_conf[link_id], NULL);
+-		rcu_assign_pointer(mvif->sta.link[link_id], NULL);
++	if (!old_links && add) {
++		mt792x_mac_link_bss_remove(dev, &vif->bss_conf, &mvif->bss_conf,
++					   &mvif->sta.deflink);
++		mt7925_p2p_bmc_remove(dev, &mvif->bss_conf);
++		legacy_released = true;
++		mvif->deflink_id = primary;
++	}
++
++	/* The embedded primary retains slot zero even if its link is dormant. */
++	if (old_links)
++		used_slots |= BIT(mvif->bss_conf.mt76.link_idx);
++	for (link_id = 0; link_id < IEEE80211_MLD_MAX_NUM_LINKS; link_id++) {
++		if (!(mvif->valid_links & BIT(link_id)))
++			continue;
++		mconf = rcu_access_pointer(mvif->link_conf[link_id]);
++		if (mconf)
++			used_slots |= BIT(mconf->mt76.link_idx);
+ 	}
+ 
+ 	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
+-		if (!old_links) {
+-			mvif->deflink_id = link_id;
+-			mconf = &mvif->bss_conf;
+-			mlink = &mvif->sta.deflink;
+-		} else {
+-			mconf = devm_kzalloc(dev->mt76.dev, sizeof(*mconf),
+-					     GFP_KERNEL);
+-			mlink = devm_kzalloc(dev->mt76.dev, sizeof(*mlink),
+-					     GFP_KERNEL);
+-			if (!mconf || !mlink) {
+-				mt792x_mutex_release(dev);
+-				return -ENOMEM;
+-			}
++		u8 link_idx = link_id == primary ? 0 : __ffs(~used_slots);
++
++		mconf = mconfs[link_id];
++		mlink = mlinks[link_id];
++		link_conf = mt792x_vif_to_bss_conf(vif, link_id);
++		if (!link_conf) {
++			err = -EINVAL;
++			goto unwind;
+ 		}
+ 
+-		mconfs[link_id] = mconf;
+-		mlinks[link_id] = mlink;
+ 		mconf->link_id = link_id;
+ 		mconf->vif = mvif;
+ 		mlink->wcid.link_id = link_id;
+ 		mlink->wcid.link_valid = !!vif->valid_links;
+ 		mlink->wcid.def_wcid = &mvif->sta.deflink.wcid;
+-	}
+-
+-	if (hweight16(mvif->valid_links) == 0)
+-		mt792x_mac_link_bss_remove(dev, &mvif->bss_conf,
+-					   &mvif->sta.deflink);
+ 
+-	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
+-		mconf = mconfs[link_id];
+-		mlink = mlinks[link_id];
+-		link_conf = mt792x_vif_to_bss_conf(vif, link_id);
++		/* A returning primary can reuse the embedded reserved WCID. */
++		if (old_links && link_id == primary) {
++			err = mt792x_mcu_set_dev_active(dev, link_conf, mconf,
++							 &mlink->wcid, true);
++		} else {
++			err = mt7925_mac_link_bss_add(dev, link_conf, mconf, mlink,
++						      hweight16(new_links) != 3,
++						      link_idx);
++		}
++		if (err)
++			goto unwind;
+ 
+ 		rcu_assign_pointer(mvif->link_conf[link_id], mconf);
+ 		rcu_assign_pointer(mvif->sta.link[link_id], mlink);
++		WRITE_ONCE(mvif->valid_links, mvif->valid_links | BIT(link_id));
++		registered |= BIT(link_id);
++		used_slots |= BIT(link_idx);
++		secondary_added |= link_id != primary;
++	}
+ 
+-		err = mt7925_mac_link_bss_add(dev, link_conf, mlink,
+-					      hweight16(new_links) != 3,
+-					      link_idx++);
+-		if (err < 0)
+-			goto free;
+-
+-		if (mconf != &mvif->bss_conf) {
+-			/* Expose the registered BSS to the ROC grant callback. */
+-			WRITE_ONCE(mvif->valid_links,
+-				   mvif->valid_links | BIT(link_id));
+-			err = mt7925_set_mlo_roc(phy, &mvif->bss_conf,
+-						 vif->active_links);
+-			if (err < 0)
+-				goto free;
+-		}
++	/* A single MLO request after all selected BSSes have been registered. */
++	if (secondary_added) {
++		err = mt7925_set_mlo_roc(phy, &mvif->bss_conf, vif->active_links);
++		if (err)
++			goto unwind;
+ 	}
+ 
+-	mvif->valid_links = new_links;
++	WRITE_ONCE(mvif->valid_links, new_links);
+ 
+-	/* The normal MLO to legacy switch is handled on the sta_remove path,
+-	 * which deactivates the DEV and restores the legacy WMM index; the
+-	 * next connect, scan or off-channel reactivates the DEV with the
+-	 * legacy address. This only covers a failed connection setup in
+-	 * ieee80211_prep_connection(), where the links are torn down without
+-	 * a station removal.
+-	 */
+ 	if (!new_links) {
+ 		mvif->bss_conf.mt76.wmm_idx = mvif->bss_conf.mt76.idx %
+ 					      MT76_CONNAC_MAX_WMM_SETS;
+-		mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+-					  &mvif->sta.deflink.wcid, false);
++		if (mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
++					       &mvif->sta.deflink.wcid, false))
++			mt792x_reset(&dev->mt76);
+ 	}
+ 
+-	mt792x_mutex_release(dev);
++	goto out;
+ 
+-	return 0;
++unwind:
++	/* Retire secondary BSSes before the shared primary OMAC. */
++	for_each_set_bit(link_id, &registered, IEEE80211_MLD_MAX_NUM_LINKS) {
++		if (link_id == primary)
++			continue;
++		link_conf = mt792x_vif_to_bss_conf(vif, link_id);
++		mt7925_retire_vif_link(dev, mvif, link_id, link_conf, false);
++		mconfs[link_id] = NULL;
++		mlinks[link_id] = NULL;
++	}
++	if (primary < IEEE80211_MLD_MAX_NUM_LINKS && registered & BIT(primary)) {
++		link_conf = mt792x_vif_to_bss_conf(vif, primary);
++		mt7925_retire_vif_link(dev, mvif, primary, link_conf, legacy_released);
++	}
++	if (legacy_released) {
++		/* Restore host ownership without issuing another firmware
++		 * transaction after an activation/ROC failure. Reset replays it.
++		 */
++		mvif->deflink_id = IEEE80211_LINK_UNSPECIFIED;
++		mvif->bss_conf.link_id = vif->bss_conf.link_id;
++		mvif->sta.deflink.wcid.link_id = vif->bss_conf.link_id;
++		mvif->sta.deflink.wcid.link_valid = false;
++		mvif->sta.deflink.wcid.def_wcid = NULL;
++		if (mt7925_mac_link_bss_register(dev, &vif->bss_conf, &mvif->bss_conf,
++						 &mvif->sta.deflink, false, true, 0))
++			dev_err(dev->mt76.dev, "failed to restore legacy BSS resources\n");
++	}
++	mt792x_reset(&dev->mt76);
+ 
+-free:
+-	WRITE_ONCE(mvif->valid_links, old_links & ~rem);
++free_allocations:
+ 	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
+-		rcu_assign_pointer(mvif->link_conf[link_id], NULL);
+-		rcu_assign_pointer(mvif->sta.link[link_id], NULL);
+-
+-		if (mconfs[link_id] != &mvif->bss_conf) {
+-			mt7925_p2p_bmc_remove(dev, mconfs[link_id]);
++		if (mconfs[link_id] && mconfs[link_id] != &mvif->bss_conf)
+ 			devm_kfree(dev->mt76.dev, mconfs[link_id]);
+-		}
+-		if (mlinks[link_id] != &mvif->sta.deflink)
++		if (mlinks[link_id] && mlinks[link_id] != &mvif->sta.deflink)
+ 			devm_kfree(dev->mt76.dev, mlinks[link_id]);
+ 	}
+ 
++out:
+ 	mt792x_mutex_release(dev);
+ 
+ 	return err;
+@@ -2668,7 +2758,7 @@
+ 
+ 	mt792x_mutex_acquire(dev);
+ 
+-	err = mt7925_mac_sta_remove_links(dev, vif, sta, rem);
++	err = mt7925_mac_sta_remove_links(dev, vif, sta, rem, false);
+ 	if (err < 0)
+ 		goto out;
+ 
+@@ -3069,8 +3159,7 @@
+ 
+ 	if (ieee80211_vif_is_mld(vif)) {
+ 		struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+-		struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-		unsigned long valid = mvif->valid_links;
++		unsigned long valid = msta->valid_links;
+ 		struct mt792x_link_sta *mlink;
+ 		unsigned int link_id;
+ 
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/p2p.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/p2p.c
+@@ -294,7 +294,7 @@
+ 	rcu_assign_pointer(dev->mt76.wcid[idx], &mbmc->wcid);
+ 	mt7925_mac_wtbl_update(dev, idx, MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
+ 	mconf->mt76.bmc_wcid = idx;
+-	mconf->bmc_valid = true;
++	WRITE_ONCE(mconf->bmc_valid, true);
+ 
+ 	return 0;
+ }
+@@ -307,17 +307,12 @@
+ 	if (!mconf->bmc_valid)
+ 		return;
+ 
+-	mconf->bmc_valid = false;
++	WRITE_ONCE(mconf->bmc_valid, false);
+ 	mconf->mt76.bmc_wcid = 0;
+ 
+-	mt76_connac_free_pending_tx_skbs(&dev->pm, wcid);
+ 	rcu_assign_pointer(dev->mt76.wcid[wcid->idx], NULL);
+-
+-	spin_lock_bh(&dev->mt76.sta_poll_lock);
+-	if (!list_empty(&wcid->poll_list))
+-		list_del_init(&wcid->poll_list);
+-	spin_unlock_bh(&dev->mt76.sta_poll_lock);
+-
++	synchronize_rcu();
++	mt76_connac_free_pending_tx_skbs(&dev->pm, wcid);
+ 	mt76_wcid_cleanup(&dev->mt76, wcid);
+ 	mt76_wcid_mask_clear(dev->mt76.wcid_mask, wcid->idx);
+ }
