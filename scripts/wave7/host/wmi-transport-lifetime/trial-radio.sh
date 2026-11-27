@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Independent guarded stock->Guard8 radio experiment. Run on the isolated Asus lab.
+# Independent guarded native WBM routing trial on the isolated Asus lab.
 set -Eeuo pipefail
 umask 077
-base=/home/jan/firmware/wave7/trials/20261127-ahb-tx-completion-irq
+base=/home/jan/firmware/wave7/trials/20261127-ipq5332-wbm-route
+parent=/home/jan/firmware/wave7/trials/20261127-ahb-tx-completion-irq
 guard8=/home/jan/firmware/wave7/trials/20261120-secondary-ap-guard8
-native="$base/wave7-ahb-tx-completion-irq-dhcp-guard8-sysupgrade.bin"
-native_sha=d519a6acb4ec1d88a7a2284528748b69187e4122d668d59c77488948f3165fde
-rev=r0+38346-8b8a3f32c2-ap-dhcp-guard8
-builder=8b8a3f32c2943bf2de3a523f97006793f2f79fcc
-rollback=/home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut/wave7-netgear-primary-reo-lut-dhcp-guard8-sysupgrade.bin
-rollback_sha=ae9aa226c79d6263f9afaff4ec813ad34d1345966bba8fd81617073521498fb4
-rollback_rev=r0+38346-65f3c6bcfc-ap-dhcp-guard8
+native="$base/wave7-ipq5332-wbm-route-dhcp-guard8-sysupgrade.bin"
+native_sha=d30dc49c63ec5d3d803f2875b29a68ce6055f3f51ecf7e75a2bedf8346d5157a
+rev=r0+38346-6ce0c4af3e-ap-dhcp-guard8
+builder=6ce0c4af3ef70bf88b27e17c1e41ca933dc282d3
+rollback="$parent/wave7-ahb-tx-completion-irq-dhcp-guard8-sysupgrade.bin"
+rollback_sha=d519a6acb4ec1d88a7a2284528748b69187e4122d668d59c77488948f3165fde
+rollback_rev=r0+38346-8b8a3f32c2-ap-dhcp-guard8
 key=/home/jan/.ssh/wave7-root-rsa
 iface=enp4s0f4u2u2u4
 ip=192.168.76.250
@@ -126,6 +127,11 @@ verify_radio(){
     done
     remote 'cat /proc/interrupts' > "$out/irq-runtime.txt" || return 1
     rg -q "wbm2host-tx-completions-ring4$" "$out/irq-runtime.txt" || return 1
+    remote 'cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state' > "$out/srng-initial.txt" || return 1
+    rg -qx 'rx_release=5 rx_rbm=10 rx_buffer_rbm=10' "$out/srng-initial.txt" || return 1
+    rg -qx 'map tcl=3 wbm=3 rbm=8' "$out/srng-initial.txt" || return 1
+    rg -q '^WBM3 id=131 ' "$out/srng-initial.txt" || return 1
+    rg -q '^WBM_RX5 id=133 ' "$out/srng-initial.txt" || return 1
     remote 'lsmod | grep -E "^ath12k[[:space:]]"; lsmod | grep -E "^ath12k_wifi7[[:space:]]"; dmesg | grep -F "WBE.1.4-01734"' > "$out/radio-runtime.txt" || return 1
 }
 ready(){
@@ -161,27 +167,36 @@ case "${1:-}" in
     flock -n 8 || fail 'lab already reserved'
     common_preflight
     predecessor="$2"
-    case "$predecessor" in
-        /home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut/runs/netgear-primary-reo-lut-native-*)
-            [[ $(cat "$predecessor/status") == SOAK_PASS ]] || fail 'parent soak incomplete' ;;
-        "$base"/runs/ahb-tx-completion-irq-native-*)
-            [[ $(cat "$predecessor/status") == ROLLED_BACK ]] || fail 'rollback soak incomplete' ;;
-        *) fail 'unexpected predecessor run' ;;
-    esac
+    [[ $predecessor == "$parent"/runs/ahb-tx-completion-irq-native-* ]] || fail 'unexpected predecessor run'
+    [[ $(cat "$predecessor/status") == SOAK_PASS ]] || fail 'parent soak incomplete'
     source_rev=$rollback_rev
+    [[ -s $parent/radio.sha256 ]] || fail 'missing parent radio manifest'
     known="$predecessor/known_hosts"
     source_boot=$(value "$(cat "$predecessor/last-state.txt")" boot)
     state=$(read_state)
     [[ $(value "$state" boot) == "$source_boot" && $(value "$state" rev) == "$source_rev" && $(value "$state" merged_rev) == "$source_rev" ]] || fail 'predecessor identity changed'
     ready "$state" || fail 'predecessor unhealthy'
-    [[ $(remote 'sha256sum /rom/lib/modules/6.18.60/ath12k.ko') == "477ea1d123a13791fd204958a9be4fd62f7d471f8f849810bb2faed473e5d015  /rom/lib/modules/6.18.60/ath12k.ko" ]] || fail 'predecessor module identity'
-    tag=ahb-tx-completion-irq-native-$(date +%Y%m%d-%H%M%S)
+    # Require the sealed negative same-boot reproduction, not merely IRQ registration.
+    evidence="$predecessor/client-ab-20261127-162655"
+    [[ $(cat "$evidence/status") == exit=1 &&
+       $(cat "$evidence/client-variant.txt") == upstream-prefix22-authorize-single-link-trace &&
+       -s $evidence/band-24.ring3-ping.txt ]] || fail 'negative reproduction absent'
+    (cd "$evidence"; sha256sum -c SHA256SUMS) || fail 'negative reproduction integrity'
+    rg -qx 'verified=1' "$evidence/client-restore-status.txt" || fail 'client not restored'
+    jq -e --arg boot "$source_boot" '.boot == $boot and .pending_before == 0 and .pending_after == 6 and (.drained | not) and (.rings[] | select(.tcl == 3) | .queued == 6 and .completed == 0)' "$evidence/band-24.tx-ring-delta.json" >/dev/null || fail 'negative reproduction mismatch'
+
+    for path in /rom/lib/modules/6.18.60 /lib/modules/6.18.60; do
+        got=$(remote "cd '$path' && sha256sum ath12k.ko ath12k_wifi7.ko")
+        expect=$'acf054be38922d52bc483e1ac0c053c8f5fdebfa3030cf8068e84e5b5783b9cc  ath12k.ko\n20d87569ae03ce05efdb6bbbc4a33b8168aaf5212be0f5fa626bceba6e785e4c  ath12k_wifi7.ko'
+        [[ $got == "$expect" ]] || fail 'predecessor module identity'
+    done
+    tag=wbm-route-native-$(date +%Y%m%d-%H%M%S)
     out="$base/runs/$tag"
     mkdir -p "$out"
     printf '%s\n' "$source_boot" > "$out/stock-boot"
     printf '%s\n' "$state" > "$out/predecessor-state.txt"
     remote 'cat /proc/sys/kernel/random/boot_id; dmesg; logread' > "$out/predecessor-capture.txt"
-    dest=/tmp/wave7-ahb-irq-native.bin
+    dest=/tmp/wave7-wbm-route-native.bin
     upload "$native" "$dest"
     result=$(remote "sha256sum '$dest'; /sbin/sysupgrade -T -n '$dest'") || fail 'native image validation'
     [[ $result == "$native_sha  $dest"* ]] || fail 'native image hash'
@@ -223,7 +238,7 @@ case "${1:-}" in
     [[ $(cat "$out/status") == SOAK_PASS || $(cat "$out/status") == ROLLED_BACK ]]
     ;;
 --watch)
-    [[ $# == 2 && $2 == "$base"/runs/ahb-tx-completion-irq-native-* ]] || fail 'invalid run'
+    [[ $# == 2 && $2 == "$base"/runs/wbm-route-native-* ]] || fail 'invalid run'
     out=$2
     known="$out/known_hosts"
     exec 9>"$out/.watch.lock"
