@@ -164,6 +164,7 @@ test "$(stat -c %s "$work/publish/$name")" -lt 30000000
   echo "kernel_sha256=$(sha256sum "$work/kernel.itb" | cut -d' ' -f1)"
   echo "profile_squashfs_sha256=$(sha256sum "$root_sq" | cut -d' ' -f1)"
   echo "radio_firmware_files=46_sha256_verified"
+  echo "radio_release=$(cat "$repo/scripts/wave7/radio-release.txt")"
   echo "changed_root_files=10_plus_role_marker_and_three_helpers"
   echo "repacked_rootfs_roundtrip=identical"
   echo "original_to_final_inode_modes_and_owners=verified"
