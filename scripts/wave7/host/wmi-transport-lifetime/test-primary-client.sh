@@ -235,15 +235,35 @@ boundary_command(){
 }
 
 probe_client_wire_clock(){
-    local before after client_epoch
-    for _ in 1 2 3; do
-        before=$(date +%s.%N)
-        client_epoch=$(wyse 'date +%s.%N')
-        after=$(date +%s.%N)
-        [[ $before =~ ^[0-9]+[.][0-9]+$ && $client_epoch =~ ^[0-9]+[.][0-9]+$ &&
-           $after =~ ^[0-9]+[.][0-9]+$ ]] || return 1
-        printf '%s %s %s\n' "$before" "$client_epoch" "$after"
-    done
+    # One authenticated bidirectional channel. Measure only a request and
+    # its response, not the nested SSH handshake on every sample.
+    local before after client_epoch reply i rc=0 pid rx tx
+    coproc WIRE_CLOCK { wyse_stream 'printf "READY\n"; while IFS= read -r line; do [ "$line" = PROBE ] || exit 2; date +%s.%N || exit; done'; }
+    pid=$WIRE_CLOCK_PID
+    exec {rx}<&"${WIRE_CLOCK[0]}" {tx}>&"${WIRE_CLOCK[1]}"
+    # Close the original writer, otherwise EOF never reaches the peer.
+    local original_tx=${WIRE_CLOCK[1]}
+    exec {original_tx}>&-
+    if ! IFS= read -r -t 25 -u "$rx" reply || [[ $reply != READY ]]; then
+        rc=1
+    else
+        for ((i=0;i<8;i++)); do
+            before=$(date +%s.%N)
+            if ! printf 'PROBE\n' >&"$tx" || ! IFS= read -r -t 1 -u "$rx" client_epoch; then
+                rc=1; break
+            fi
+            after=$(date +%s.%N)
+            if [[ ! $before =~ ^[0-9]+[.][0-9]+$ || ! $client_epoch =~ ^[0-9]+[.][0-9]+$ ||
+                  ! $after =~ ^[0-9]+[.][0-9]+$ ]]; then
+                rc=1; break
+            fi
+            printf '%s %s %s\n' "$before" "$client_epoch" "$after"
+        done
+    fi
+    exec {tx}>&- {rx}<&-
+    if (( rc )); then kill "$pid" 2>/dev/null || :; fi
+    wait "$pid" || rc=1
+    return "$rc"
 }
 
 guard(){

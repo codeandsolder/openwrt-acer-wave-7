@@ -160,7 +160,7 @@ def clock_epoch(clocks, timestamp):
 
 
 def clock_probe(text):
-    """Bound remote-local realtime offset using three SSH round trips."""
+    """Intersect remote-local offset bounds from independent round trips."""
     rows = []
     for line in text.splitlines():
         fields = line.split()
@@ -170,10 +170,10 @@ def clock_probe(text):
         require(0 <= after - before < 1 and (not rows or before >= rows[-1][2]),
                 'invalid client/wire clock round trip')
         rows.append((before, client, after))
-    require(len(rows) == 3, 'incomplete client/wire clock probe')
+    require(3 <= len(rows) <= 16, 'incomplete client/wire clock probe')
     low = max(client - after for before, client, after in rows)
     high = min(client - before for before, client, after in rows)
-    require(low <= high and high - low < 0.25, 'inconsistent client/wire clock bound')
+    require(low <= high, 'inconsistent client/wire clock bound')
     return ((rows[0][1] + rows[-1][1]) / 2, (low + high) / 2, (high - low) / 2)
 
 
@@ -461,6 +461,15 @@ def selftest():
             raise AssertionError('invalid boundary evidence accepted')
     probe0 = clock_probe('10.000 110.010 10.020\n10.030 110.040 10.050\n10.060 110.070 10.080')
     probe1 = clock_probe('20.000 120.010 20.020\n20.030 120.040 20.050\n20.060 120.070 20.080')
+    # A slow round trip gives a wider interval, not a contradiction.
+    wide = clock_probe('10.000 110.200 10.400\n10.500 110.700 10.900\n11.000 111.200 11.400')
+    assert abs(wide[2] - 0.2) < 1e-8
+    try:
+        clock_probe('10.000 110.200 10.400\n10.500 111.700 10.900\n11.000 111.200 11.400')
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('disjoint clock bounds accepted')
     mapped, error = wire_clock(probe0, probe1, 115.0)
     assert abs(mapped - 15.0) < 1e-8 and 0.009 < error < 0.011
     certain, ambiguous = wire_group_with_uncertainty(packets, (1.0, 0.05), (2.0, 0.05), station)
