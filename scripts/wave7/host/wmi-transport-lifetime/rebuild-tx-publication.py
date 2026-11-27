@@ -37,7 +37,7 @@ def main():
     if re.findall(rb'^\+\+\+ b/(.+)$', patch, re.M) != [str(SOURCE).encode()]:
         raise ValueError('only the TX translation unit may change')
     subprocess.run(['patch', '--batch', '-p1'], input=patch, cwd=tree, check=True)
-    changed = subprocess.check_output(sync[:2] + ['--dry-run', '--itemize-changes'] + sync[2:], text=True).splitlines()
+    changed = subprocess.check_output(sync[:2] + ['--dry-run', '--itemize-changes', '--no-times', '--omit-dir-times'] + sync[2:], text=True).splitlines()
     if len(changed) != 1 or changed[0].split(maxsplit=1)[1] != str(SOURCE):
         raise ValueError(f'unexpected input delta: {changed}')
     objects = [Path(p) for p in (tree / MODULE.with_suffix('.mod')).read_text().splitlines() if p]
