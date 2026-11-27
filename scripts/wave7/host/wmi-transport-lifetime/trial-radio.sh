@@ -161,11 +161,14 @@ case "${1:-}" in
     flock -n 8 || fail 'lab already reserved'
     common_preflight
     predecessor="$2"
-    [[ $predecessor == /home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut/runs/netgear-primary-reo-lut-native-* ]] || fail 'unexpected predecessor run'
-    case "$(cat "$predecessor/status")" in
-        SOAK_PASS) source_rev=$rollback_rev ;;
-        *) fail 'predecessor has not completed guarded soak' ;;
+    case "$predecessor" in
+        /home/jan/firmware/wave7/trials/20261125-netgear-primary-reo-lut/runs/netgear-primary-reo-lut-native-*)
+            [[ $(cat "$predecessor/status") == SOAK_PASS ]] || fail 'parent soak incomplete' ;;
+        "$base"/runs/ahb-tx-completion-irq-native-*)
+            [[ $(cat "$predecessor/status") == ROLLED_BACK ]] || fail 'rollback soak incomplete' ;;
+        *) fail 'unexpected predecessor run' ;;
     esac
+    source_rev=$rollback_rev
     known="$predecessor/known_hosts"
     source_boot=$(value "$(cat "$predecessor/last-state.txt")" boot)
     state=$(read_state)
