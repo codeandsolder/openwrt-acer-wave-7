@@ -18,6 +18,7 @@ shift
 bands=(5 24)
 wired_capture=none
 dhcp_boundaries=0
+icmp_boundaries=0
 ip6_observe=0
 dual_hold=0
 dual_soak=0
@@ -49,6 +50,7 @@ for arg in "$@"; do
             wired_capture=ndp ;;
         --client-ip6-observe) ip6_observe=1 ;;
         --dhcp-boundaries) dhcp_boundaries=1 ;;
+        --icmp-boundaries) icmp_boundaries=1 ;;
         --client-dual-hold) dual_hold=1 ;;
         --client-dual-soak) dual_hold=1; dual_soak=1 ;;
         --client-load) dual_hold=1; dual_load=1 ;;
@@ -130,6 +132,12 @@ if (( dhcp_boundaries )) && { [[ $wired_capture != ndp ]] ||
     (( !ip6_observe || !reconnect_datapath )); }; then
     fail "DHCP boundaries require wired provisioning, client clock and reconnect traces"
 fi
+if (( icmp_boundaries && !reconnect_datapath )); then
+    fail "ICMP boundaries require reconnect traces"
+fi
+boundary_profiles=()
+if (( dhcp_boundaries )); then boundary_profiles+=(dhcp4); fi
+if (( icmp_boundaries )); then boundary_profiles+=(echo4); fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if (( ap_ring3_probe )); then
     [[ ${#bands[@]} == 1 && ${bands[0]} == 24 && $variant == upstream-prefix22-authorize-single-link-trace ]] || fail "ring3 probe requires single-link 2.4 GHz case"
@@ -161,12 +169,12 @@ fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
 [[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'
-if (( dhcp_boundaries )); then
+if (( ${#boundary_profiles[@]} )); then
     boundary_dir=$(dirname "$helper")
-    boundary_arm="$boundary_dir/dhcp-boundary-arm64"
-    boundary_x86="$boundary_dir/dhcp-boundary-x86_64"
+    boundary_arm="$boundary_dir/packet-boundary-arm64"
+    boundary_x86="$boundary_dir/packet-boundary-x86_64"
     for tool in "$boundary_arm" "$boundary_x86"; do
-        [[ -f $tool && ! -L $tool ]] || fail 'missing immutable DHCP observer'
+        [[ -f $tool && ! -L $tool ]] || fail 'missing immutable packet observer'
     done
     boundary_arm_hash=$(sha256sum "$boundary_arm" | cut -d' ' -f1)
     boundary_x86_hash=$(sha256sum "$boundary_x86" | cut -d' ' -f1)
@@ -193,9 +201,9 @@ done
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
 printf "%s\n" "$variant" > "$out/client-variant.txt"
-if (( dhcp_boundaries )); then
-    printf '%s  dhcp-boundary-arm64\n%s  dhcp-boundary-x86_64\n' \
-        "$boundary_arm_hash" "$boundary_x86_hash" > "$out/dhcp-boundary-binaries.sha256"
+if (( ${#boundary_profiles[@]} )); then
+    printf '%s  packet-boundary-arm64\n%s  packet-boundary-x86_64\n' \
+        "$boundary_arm_hash" "$boundary_x86_hash" > "$out/packet-boundary-binaries.sha256"
 fi
 remote_stream(){
     ssh -T -i /home/jan/.ssh/wave7-root-rsa \
@@ -229,10 +237,12 @@ wyse_stream(){
 }
 wyse(){ wyse_stream "$1" </dev/null; }
 boundary_command(){
-    # Only fixed interface names, validated digests, bounded durations and
-    # boot IDs enter the remote command. Binary bytes travel through stdin.
-    local body='set -eu; [ "$(cat /proc/sys/kernel/random/boot_id)" = "$4" ]; umask 077; d=$(mktemp -d /tmp/wave7-dhcp.XXXXXXXX); trap "rm -f -- \"$d/observer\"; rmdir -- \"$d\"" EXIT; cat > "$d/observer"; [ "$(sha256sum "$d/observer" | cut -d " " -f 1)" = "$3" ]; chmod 700 "$d/observer"; "$d/observer" "$1" "$2"; [ "$(cat /proc/sys/kernel/random/boot_id)" = "$4" ]'
-    printf "sh -c '%s' sh %s %s %s %s" "$body" "$1" "$2" "$3" "$4"
+    # Only fixed interface names, validated digests, bounded durations,
+    # boot IDs and enumerated profiles enter the remote command. Binary
+    # bytes travel through stdin.
+    [[ $5 == dhcp4 || $5 == echo4 ]] || return 2
+    local body='set -eu; [ "$(cat /proc/sys/kernel/random/boot_id)" = "$4" ]; umask 077; d=$(mktemp -d /tmp/wave7-boundary.XXXXXXXX); trap "rm -f -- \"$d/observer\"; rmdir -- \"$d\"" EXIT; cat > "$d/observer"; [ "$(sha256sum "$d/observer" | cut -d " " -f 1)" = "$3" ]; chmod 700 "$d/observer"; "$d/observer" "$1" "$2" "$5"; [ "$(cat /proc/sys/kernel/random/boot_id)" = "$4" ]'
+    printf "sh -c '%s' sh %s %s %s %s %s" "$body" "$1" "$2" "$3" "$4" "$5"
 }
 
 probe_client_wire_clock(){
@@ -358,8 +368,10 @@ ap_trace_pid=''
 client_control_pid=''
 wired_capture_pid=''
 ip6_pid=''
-ap_dhcp_pid=''
-client_dhcp_pid=''
+boundary_pids=()
+boundary_logs=()
+boundary_markers=()
+boundary_errors=()
 load_client_pid=''
 ap_irq_pid=''
 restore_client(){
@@ -403,8 +415,7 @@ cleanup(){
     if [[ -n $client_control_pid ]]; then wait "$client_control_pid" || :; fi
     if [[ -n $wired_capture_pid ]]; then wait "$wired_capture_pid" || :; fi
     if [[ -n $ip6_pid ]]; then wait "$ip6_pid" || :; fi
-    if [[ -n $ap_dhcp_pid ]]; then wait "$ap_dhcp_pid" || :; fi
-    if [[ -n $client_dhcp_pid ]]; then wait "$client_dhcp_pid" || :; fi
+    for pid in "${boundary_pids[@]}"; do wait "$pid" || :; done
     if [[ -n $ap_irq_pid ]]; then wait "$ap_irq_pid" || rc=1; fi
     if [[ -n $ap_link_tool ]]; then
         remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_link_tool/iw'; rmdir '$ap_link_tool'" || rc=1
@@ -551,16 +562,29 @@ for band in "${bands[@]}"; do
         wyse "bash $client/client-ip6-observe.sh $tag $client_boot $observe_seconds" > "$prefix.client-ip6.txt" 2>&1 &
         ip6_pid=$!
     fi
-    if (( dhcp_boundaries )); then
-        remote_stream "$(boundary_command ap-mld0 "$observe_seconds" "$boundary_arm_hash" "$boot")" \
-            < "$boundary_arm" > "$prefix.ap-dhcp-boundary.txt" \
-            2> "$prefix.ap-dhcp-boundary-error.txt" &
-        ap_dhcp_pid=$!
-        wyse_stream "sudo -n $(boundary_command wlp2s0 "$observe_seconds" "$boundary_x86_hash" "$client_boot")" \
-            < "$boundary_x86" > "$prefix.client-dhcp-boundary.txt" \
-            2> "$prefix.client-dhcp-boundary-error.txt" &
-        client_dhcp_pid=$!
-    fi
+    for profile in "${boundary_profiles[@]}"; do
+        case "$profile" in
+            dhcp4) kind=dhcp; label=DHCP ;;
+            echo4) kind=icmp4; label=ICMP4 ;;
+        esac
+        for side in ap client; do
+            log="$prefix.$side-$kind-boundary.txt"
+            err="$prefix.$side-$kind-boundary-error.txt"
+            if [[ $side == ap ]]; then
+                iface=ap-mld0
+                remote_stream "$(boundary_command "$iface" "$observe_seconds" "$boundary_arm_hash" "$boot" "$profile")" \
+                    < "$boundary_arm" > "$log" 2> "$err" &
+            else
+                iface=wlp2s0
+                wyse_stream "sudo -n $(boundary_command "$iface" "$observe_seconds" "$boundary_x86_hash" "$client_boot" "$profile")" \
+                    < "$boundary_x86" > "$log" 2> "$err" &
+            fi
+            boundary_pids+=("$!")
+            boundary_logs+=("$log")
+            boundary_errors+=("$err")
+            boundary_markers+=("^${label}_OBSERVER_READY iface=$iface ")
+        done
+    done
     # Independent starts above may race for a busy host. No association
     # starts until each observer is live and has emitted its marker.
     pids=("$trace_pid" "$sample_pid" "$ap_trace_pid" "$client_control_pid")
@@ -578,11 +602,9 @@ for band in "${bands[@]}"; do
         logs+=("$prefix.client-ip6.txt")
         markers+=('^CLIENT_IP6_OBSERVER_READY ')
     fi
-    if (( dhcp_boundaries )); then
-        pids+=("$ap_dhcp_pid" "$client_dhcp_pid")
-        logs+=("$prefix.ap-dhcp-boundary.txt" "$prefix.client-dhcp-boundary.txt")
-        markers+=('^DHCP_OBSERVER_READY iface=ap-mld0 ' '^DHCP_OBSERVER_READY iface=wlp2s0 ')
-    fi
+    pids+=("${boundary_pids[@]}")
+    logs+=("${boundary_logs[@]}")
+    markers+=("${boundary_markers[@]}")
     deadline=$((SECONDS + 45))
     while :; do
         ready=1
@@ -704,17 +726,18 @@ for band in "${bands[@]}"; do
         ip6_pid=''
         rg -qx "CLIENT_IP6_OBSERVER_END samples=$((observe_seconds + 1))" "$prefix.client-ip6.txt" || cases_failed=1
     fi
-    if (( dhcp_boundaries )); then
-        wait "$ap_dhcp_pid" || cases_failed=1
-        ap_dhcp_pid=''
-        wait "$client_dhcp_pid" || cases_failed=1
-        client_dhcp_pid=''
-        for side in ap client; do
-            [[ ! -s $prefix.$side-dhcp-boundary-error.txt ]] || cases_failed=1
-            rg -q '^DHCP_OBSERVER_END .* malformed=0 packets=[0-9]+ drops=0$' \
-                "$prefix.$side-dhcp-boundary.txt" || cases_failed=1
-        done
-    fi
+    for i in "${!boundary_pids[@]}"; do
+        wait "${boundary_pids[i]}" || cases_failed=1
+        [[ ! -s ${boundary_errors[i]} ]] || cases_failed=1
+        # Derive the precise closing marker from the expected ready marker.
+        end_marker=${boundary_markers[i]/_OBSERVER_READY/_OBSERVER_END}
+        rg -q "${end_marker}.* malformed=0 packets=[0-9]+ drops=0$" \
+            "${boundary_logs[i]}" || cases_failed=1
+    done
+    boundary_pids=()
+    boundary_logs=()
+    boundary_errors=()
+    boundary_markers=()
     if [[ $wired_capture != none ]]; then
         capture_rc=0
         wait "$wired_capture_pid" || capture_rc=$?

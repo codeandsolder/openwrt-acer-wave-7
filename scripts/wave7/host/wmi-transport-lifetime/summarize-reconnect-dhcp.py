@@ -13,6 +13,8 @@ from pathlib import Path
 import re
 import runpy
 
+from packet_boundary import clock_epoch, parse_observer
+
 INTERFACES = {'enp4s0f4u2u4', 'enp4s0f4u2u2u4'}
 TYPES = {1: 'discover', 2: 'offer', 3: 'request', 4: 'decline', 5: 'ack',
          6: 'nak', 7: 'release', 8: 'inform'}
@@ -94,69 +96,21 @@ def group(packets, begin, end, station):
     return [dict(xid=xid, packets=rows, wire_exchanges=exchange_timing(rows), messages={kind: {iface: sum(r['message'] == kind and r['interface'] == iface for r in rows) for iface in sorted(INTERFACES)} for kind in sorted({r['message'] for r in rows})}) for xid, rows in by_xid.items()]
 
 
+def decode_dhcp_boundary(fields):
+    require(len(fields) == 7, 'invalid boundary DHCP fields')
+    src, dst, op, xid, client, offered, kind = fields
+    require((src, dst) in {('67', '68'), ('68', '67'), ('67', '67')} and op in {'1', '2'},
+            'invalid boundary packet protocol')
+    require(re.fullmatch(r'0x[0-9a-f]{8}', xid) and MAC.fullmatch(client),
+            'invalid boundary packet identity')
+    require(kind.isdecimal() and 0 <= int(kind) <= 255, 'invalid boundary DHCP type')
+    ipaddress.IPv4Address(offered)
+    return dict(udp_src=int(src), udp_dst=int(dst), op=int(op), xid=xid, client=client,
+                offered_ipv4=offered, message=TYPES.get(int(kind), f'type_{kind}') if int(kind) else 'undecoded')
+
+
 def parse_boundary_observer(text, iface):
-    """Validate metadata and independent realtime/mono clock anchors."""
-    lines = text.splitlines()
-    require(len(lines) >= 4, 'incomplete boundary observer')
-    ready = re.fullmatch(r'DHCP_OBSERVER_READY iface=(\S+) ifindex=(\d+) duration=(\d+)', lines[0])
-    end = re.fullmatch(r'DHCP_OBSERVER_END iface=(\S+) seen=(\d+) decoded=(\d+) malformed=(\d+) packets=(\d+) drops=(\d+)', lines[-1])
-    require(ready and end and ready[1] == end[1] == iface and int(ready[2]) > 0,
-            'boundary observer identity or markers')
-    rows, clocks, link_downs = [], [], []
-    for line in lines[1:-1]:
-        fields = line.split()
-        require(fields, 'empty boundary observer record')
-        if fields[0] == 'DHCP_LINK_DOWN':
-            require(len(fields) == 3 and re.fullmatch(r'\d+\.\d+', fields[1]) and
-                    fields[2] == f'ifindex={ready[2]}', 'invalid link-down witness')
-            link_downs.append(float(fields[1]))
-            continue
-        if fields[0] == 'DHCP_CLOCK':
-            require(len(fields) == 4 and all(re.fullmatch(r'\d+\.\d+', f) for f in fields[1:]),
-                    'invalid boundary clock')
-            before, epoch, after = map(float, fields[1:])
-            require(0 <= after - before < 0.05, 'uncertain boundary clock anchor')
-            clocks.append(((before + after) / 2, epoch))
-            continue
-        require(len(fields) == 13 and fields[0] == 'DHCP_PACKET',
-                'invalid boundary packet record')
-        _, epoch, name, direction, ips, ipd, src, dst, op, xid, client, offered, kind = fields
-        require(name == iface and direction in {'tx', 'rx'} and re.fullmatch(r'\d+\.\d+', epoch),
-                'invalid boundary packet interface or direction')
-        require((src, dst) in {('67', '68'), ('68', '67'), ('67', '67')} and op in {'1', '2'},
-                'invalid boundary packet protocol')
-        require(re.fullmatch(r'0x[0-9a-f]{8}', xid) and MAC.fullmatch(client),
-                'invalid boundary packet identity')
-        require(kind.isdecimal() and 0 <= int(kind) <= 255, 'invalid boundary DHCP type')
-        for addr in (ips, ipd, offered):
-            ipaddress.IPv4Address(addr)
-        rows.append(dict(epoch=float(epoch), interface=iface, direction=direction,
-                         ipv4_src=ips, ipv4_dst=ipd, udp_src=int(src), udp_dst=int(dst),
-                         op=int(op), xid=xid, client=client, offered_ipv4=offered,
-                         message=TYPES.get(int(kind), f'type_{kind}') if int(kind) else 'undecoded'))
-    seen, decoded, malformed, packets, drops = map(int, end.groups()[1:])
-    require(seen == decoded == packets == len(rows) and malformed == drops == 0,
-            'boundary observer packet loss or undecodable packet')
-    require(len(clocks) >= 2 and clocks[-1][0] - clocks[0][0] >= int(ready[3]) - 0.1,
-            'short boundary clock capture')
-    for (m0, e0), (m1, e1) in zip(clocks, clocks[1:]):
-        require(0 < m1 - m0 < 2.5 and abs((e1 - e0) - (m1 - m0)) < 0.1,
-                'boundary clock gap or realtime step')
-    require(link_downs == sorted(link_downs) and all(clocks[0][0] <= t <= clocks[-1][0] for t in link_downs),
-            'link-down witness outside capture')
-    return sorted(rows, key=lambda row: row['epoch']), clocks, link_downs
-
-
-def clock_epoch(clocks, timestamp):
-    mono = [m for m, _ in clocks]
-    if timestamp == mono[-1]:
-        return clocks[-1][1]
-    i = bisect.bisect_right(mono, timestamp) - 1
-    require(i >= 0 and i + 1 < len(clocks), 'authorization outside clock capture')
-    lo, hi = clocks[i:i + 2]
-    require(0 < hi[0] - lo[0] < 2.5, 'clock sample gap')
-    return lo[1] + (hi[1] - lo[1]) * (timestamp - lo[0]) / (hi[0] - lo[0])
-
+    return parse_observer(text, iface, 'DHCP', decode_dhcp_boundary)
 
 
 def clock_probe(text):

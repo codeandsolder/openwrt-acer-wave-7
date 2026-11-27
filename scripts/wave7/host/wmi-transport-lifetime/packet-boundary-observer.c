@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT OR Apache-2.0 */
 /*
- * Passive DHCPv4 metadata at a Linux netdev boundary. AF_PACKET/SOCK_DGRAM
+ * Passive DHCPv4 and ICMPv4 echo metadata at a Linux netdev boundary. AF_PACKET/SOCK_DGRAM
  * sees the network header, without promiscuous mode or retained payload.
  * This is a host-stack witness, not a radio-air capture.
  */
@@ -22,6 +22,13 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+enum profile { DHCP4, ECHO4 };
+
+static const char *profile_name(enum profile profile)
+{
+    return profile == DHCP4 ? "DHCP" : "ICMP4";
+}
 
 struct dhcp_meta {
     uint8_t src[4], dst[4], offered[4], client[6];
@@ -47,7 +54,7 @@ static bool dhcp_ports(uint16_t src, uint16_t dst)
            (src == 68 && dst == 67);
 }
 
-static bool decode(const uint8_t *p, size_t n, struct dhcp_meta *m)
+static bool decode_dhcp(const uint8_t *p, size_t n, struct dhcp_meta *m)
 {
     if (n < 20 || p[0] >> 4 != 4 || p[9] != 17)
         return false;
@@ -126,6 +133,50 @@ static struct sock_filter dhcp_filter[] = {
     BPF_STMT(BPF_RET | BPF_K, 0),
 };
 
+/* Only unfragmented IPv4 echo requests/replies are decodable. First
+ * fragments with an echo header reach the decoder and fail accounting. */
+static struct sock_filter echo4_filter[] = {
+    BPF_STMT(BPF_LD | BPF_W | BPF_ABS, SKF_AD_OFF + SKF_AD_PROTOCOL),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ETH_P_IP, 0, 9),
+    BPF_STMT(BPF_LD | BPF_B | BPF_ABS, 9),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 1, 0, 7),
+    BPF_STMT(BPF_LD | BPF_H | BPF_ABS, 6),
+    BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, 0x1fff, 5, 0),
+    BPF_STMT(BPF_LDX | BPF_B | BPF_MSH, 0),
+    BPF_STMT(BPF_LD | BPF_B | BPF_IND, 0),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 8, 0, 1),
+    BPF_STMT(BPF_RET | BPF_K, 65535),
+    BPF_STMT(BPF_RET | BPF_K, 0),
+};
+
+struct echo4_meta {
+    uint8_t src[4], dst[4], type;
+    uint16_t identifier, sequence, ip_length, ip_id;
+};
+
+static bool decode_echo4(const uint8_t *p, size_t n, struct echo4_meta *m)
+{
+    if (n < 20 || p[0] >> 4 != 4 || p[9] != 1)
+        return false;
+    size_t ihl = (size_t)(p[0] & 15) * 4;
+    size_t total = be16(p + 2);
+    if (ihl < 20 || ihl > total || total > n ||
+        total - ihl < 8 || (be16(p + 6) & 0x3fff))
+        return false;
+    const uint8_t *icmp = p + ihl;
+    if ((icmp[0] != 0 && icmp[0] != 8) || icmp[1])
+        return false;
+    *m = (struct echo4_meta){
+        .type = icmp[0], .identifier = be16(icmp + 4),
+        .sequence = be16(icmp + 6), .ip_length = (uint16_t)total,
+        .ip_id = be16(p + 4),
+    };
+    memcpy(m->src, p + 12, 4);
+    memcpy(m->dst, p + 16, 4);
+    return true;
+}
+
 static int attach(int fd, struct sock_filter *filter, unsigned short count)
 {
     struct sock_fprog program = {.len = count, .filter = filter};
@@ -143,20 +194,20 @@ static int64_t monotonic_ms(void)
 
 /* Relate the kernel's realtime packet timestamp to this host's mono ftrace
  * clock without assuming that either remote host shares its clock offset. */
-static int clock_anchor(void)
+static int clock_anchor(enum profile profile)
 {
     struct timespec before, realtime, after;
     if (clock_gettime(CLOCK_MONOTONIC, &before) ||
         clock_gettime(CLOCK_REALTIME, &realtime) ||
         clock_gettime(CLOCK_MONOTONIC, &after))
         return -1;
-    return printf("DHCP_CLOCK %jd.%09ld %jd.%09ld %jd.%09ld\n",
-                  (intmax_t)before.tv_sec, before.tv_nsec,
+    return printf("%s_CLOCK %jd.%09ld %jd.%09ld %jd.%09ld\n",
+                  profile_name(profile), (intmax_t)before.tv_sec, before.tv_nsec,
                   (intmax_t)realtime.tv_sec, realtime.tv_nsec,
                   (intmax_t)after.tv_sec, after.tv_nsec) < 0 ? -1 : 0;
 }
 
-static int emit(const struct timespec *t, const char *iface, unsigned pkttype,
+static int emit_dhcp(const struct timespec *t, const char *iface, unsigned pkttype,
                 const struct dhcp_meta *m)
 {
     char src[INET_ADDRSTRLEN], dst[INET_ADDRSTRLEN], offered[INET_ADDRSTRLEN];
@@ -175,11 +226,26 @@ static int emit(const struct timespec *t, const char *iface, unsigned pkttype,
                   offered, (unsigned)m->type) < 0 ? -1 : 0;
 }
 
+static int emit_echo4(const struct timespec *t, const char *iface,
+                      unsigned pkttype, const struct echo4_meta *m)
+{
+    char src[INET_ADDRSTRLEN], dst[INET_ADDRSTRLEN];
+    if (!inet_ntop(AF_INET, m->src, src, sizeof(src)) ||
+        !inet_ntop(AF_INET, m->dst, dst, sizeof(dst)))
+        return -1;
+    return printf("ICMP4_PACKET %jd.%09ld %s %s %s %s %u %u %u %u %u\n",
+                  (intmax_t)t->tv_sec, t->tv_nsec, iface,
+                  pkttype == PACKET_OUTGOING ? "tx" : "rx", src, dst,
+                  (unsigned)m->type, (unsigned)m->identifier,
+                  (unsigned)m->sequence, (unsigned)m->ip_length,
+                  (unsigned)m->ip_id) < 0 ? -1 : 0;
+}
+
 /* One message from a nonblocking socket. Return 0 when drained, 1 on a
  * witnessed packet, -1 on a socket/clock/output failure. An undecodable
  * packet is counted separately and makes a negative claim unavailable. */
 static int receive_one(int fd, const char *iface, unsigned index,
-                       uint64_t *seen, uint64_t *bad)
+                       enum profile profile, uint64_t *seen, uint64_t *bad)
 {
     uint8_t packet[65536];
     union {
@@ -230,12 +296,17 @@ static int receive_one(int fd, const char *iface, unsigned index,
         errno = EPROTO;
         return -1;
     }
-    struct dhcp_meta meta;
-    if (!decode(packet, (size_t)n, &meta)) {
-        ++*bad;
-        return 1;
+    if (profile == DHCP4) {
+        struct dhcp_meta meta;
+        if (decode_dhcp(packet, (size_t)n, &meta))
+            return emit_dhcp(&timestamp, iface, address.sll_pkttype, &meta) ? -1 : 1;
+    } else {
+        struct echo4_meta meta;
+        if (decode_echo4(packet, (size_t)n, &meta))
+            return emit_echo4(&timestamp, iface, address.sll_pkttype, &meta) ? -1 : 1;
     }
-    return emit(&timestamp, iface, address.sll_pkttype, &meta) ? -1 : 1;
+    ++*bad;
+    return 1;
 }
 
 /* NetworkManager may administratively lower a Wi-Fi netdev to change its
@@ -243,7 +314,7 @@ static int receive_one(int fd, const char *iface, unsigned index,
  * reports ENETDOWN and registers the same hook again on NETDEV_UP. A device
  * unregister, in contrast, clears the socket's binding. Never silently
  * continue after removal/replacement or an unrelated socket error. */
-static int link_down(int fd, const char *iface, unsigned index, int error)
+static int link_down(int fd, const char *iface, unsigned index, enum profile profile, int error)
 {
     struct sockaddr_ll bound = {0};
     socklen_t len = sizeof(bound);
@@ -259,11 +330,11 @@ static int link_down(int fd, const char *iface, unsigned index, int error)
     struct timespec mono;
     if (clock_gettime(CLOCK_MONOTONIC, &mono))
         return -1;
-    return printf("DHCP_LINK_DOWN %jd.%09ld ifindex=%u\n",
-                  (intmax_t)mono.tv_sec, mono.tv_nsec, index) < 0 ? -1 : 0;
+    return printf("%s_LINK_DOWN %jd.%09ld ifindex=%u\n",
+                  profile_name(profile), (intmax_t)mono.tv_sec, mono.tv_nsec, index) < 0 ? -1 : 0;
 }
 
-static int observe(const char *iface, unsigned seconds)
+static int observe(const char *iface, unsigned seconds, enum profile profile)
 {
     unsigned index = if_nametoindex(iface);
     if (!index)
@@ -279,17 +350,19 @@ static int observe(const char *iface, unsigned seconds)
     };
     if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) ||
         setsockopt(fd, SOL_SOCKET, SO_TIMESTAMPNS, &one, sizeof(one)) ||
-        attach(fd, dhcp_filter, sizeof(dhcp_filter) / sizeof(dhcp_filter[0])) ||
+        (profile == DHCP4 ?
+         attach(fd, dhcp_filter, sizeof(dhcp_filter) / sizeof(dhcp_filter[0])) :
+         attach(fd, echo4_filter, sizeof(echo4_filter) / sizeof(echo4_filter[0]))) ||
         bind(fd, (struct sockaddr *)&address, sizeof(address)))
         goto done;
     int64_t start = monotonic_ms();
     if (start < 0)
         goto done;
     int64_t deadline = start + (int64_t)seconds * 1000;
-    if (printf("DHCP_OBSERVER_READY iface=%s ifindex=%u duration=%u\n",
-               iface, index, seconds) < 0)
+    if (printf("%s_OBSERVER_READY iface=%s ifindex=%u duration=%u\n",
+               profile_name(profile), iface, index, seconds) < 0)
         goto done;
-    if (clock_anchor())
+    if (clock_anchor(profile))
         goto done;
     int64_t next_anchor = start + 1000;
     uint64_t seen = 0, bad = 0;
@@ -306,7 +379,7 @@ static int observe(const char *iface, unsigned seconds)
                 errno = ENODEV;
                 goto done;
             }
-            if (clock_anchor())
+            if (clock_anchor(profile))
                 goto done;
             next_anchor = now + 1000;
         }
@@ -326,12 +399,12 @@ static int observe(const char *iface, unsigned seconds)
             int error = 0;
             socklen_t len = sizeof(error);
             if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &len) ||
-                len != sizeof(error) || link_down(fd, iface, index, error))
+                len != sizeof(error) || link_down(fd, iface, index, profile, error))
                 goto done;
         }
         if (ready && (pollfd.revents & POLLIN) &&
-            receive_one(fd, iface, index, &seen, &bad) < 0 &&
-            link_down(fd, iface, index, errno))
+            receive_one(fd, iface, index, profile, &seen, &bad) < 0 &&
+            link_down(fd, iface, index, profile, errno))
             goto done;
     }
     /* Stop admission before draining to avoid treating queued tail packets
@@ -341,19 +414,19 @@ static int observe(const char *iface, unsigned seconds)
         goto done;
     int result;
     do {
-        result = receive_one(fd, iface, index, &seen, &bad);
+        result = receive_one(fd, iface, index, profile, &seen, &bad);
     } while (result > 0);
     if (result < 0)
         goto done;
-    if (if_nametoindex(iface) != index || clock_anchor())
+    if (if_nametoindex(iface) != index || clock_anchor(profile))
         goto done;
     struct tpacket_stats stats = {0};
     socklen_t stats_len = sizeof(stats);
     if (getsockopt(fd, SOL_PACKET, PACKET_STATISTICS, &stats, &stats_len) ||
         stats_len != sizeof(stats))
         goto done;
-    if (printf("DHCP_OBSERVER_END iface=%s seen=%" PRIu64 " decoded=%" PRIu64
-               " malformed=%" PRIu64 " packets=%u drops=%u\n", iface,
+    if (printf("%s_OBSERVER_END iface=%s seen=%" PRIu64 " decoded=%" PRIu64
+               " malformed=%" PRIu64 " packets=%u drops=%u\n", profile_name(profile), iface,
                seen, seen - bad, bad, stats.tp_packets, stats.tp_drops) < 0)
         goto done;
     rc = (bad || stats.tp_drops ||
@@ -365,12 +438,19 @@ done:
 
 int main(int argc, char **argv)
 {
-    if (argc != 3 || strlen(argv[1]) >= IF_NAMESIZE ||
+    if (argc != 4 || strlen(argv[1]) >= IF_NAMESIZE ||
         strspn(argv[1], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
                         "0123456789_.:-") != strlen(argv[1])) {
-        fprintf(stderr, "usage: %s IFACE SECONDS (1..1800)\n", argv[0]);
+        fprintf(stderr, "usage: %s IFACE SECONDS (1..1800) dhcp4|echo4\n", argv[0]);
         return 2;
     }
+    enum profile profile;
+    if (!strcmp(argv[3], "dhcp4"))
+        profile = DHCP4;
+    else if (!strcmp(argv[3], "echo4"))
+        profile = ECHO4;
+    else
+        return 2;
     char *end;
     errno = 0;
     unsigned long duration = strtoul(argv[2], &end, 10);
@@ -378,8 +458,8 @@ int main(int argc, char **argv)
         return 2;
     if (setvbuf(stdout, NULL, _IOLBF, 0))
         return 1;
-    int rc = observe(argv[1], (unsigned)duration);
+    int rc = observe(argv[1], (unsigned)duration, profile);
     if (rc < 0)
-        perror("DHCP boundary observer");
+        perror("packet boundary observer");
     return rc ? 1 : 0;
 }

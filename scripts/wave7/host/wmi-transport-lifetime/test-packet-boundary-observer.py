@@ -39,13 +39,23 @@ def frame(src, dst, payload, sport=68, dport=67, proto=17,
     return dst + src + bytes.fromhex('0800') + header + udp
 
 
+def echo_frame(src, dst, kind, ident, seq, *, code=0, frag=0, ipopts=b''):
+    icmp = struct.pack('!BBHHH', kind, code, 0, ident, seq) + bytes(56)
+    icmp = icmp[:2] + struct.pack('!H', ip_checksum(icmp)) + icmp[4:]
+    header = struct.pack('!BBHHHBBH4s4s', 0x45 + len(ipopts) // 4, 0,
+                         20 + len(ipopts) + len(icmp), 123, frag, 64, 1, 0,
+                         bytes.fromhex('c0a84c02'), bytes.fromhex('c0a84c91')) + ipopts
+    header = header[:10] + struct.pack('!H', ip_checksum(header)) + header[12:]
+    return dst + src + bytes.fromhex('0800') + header + icmp
+
 def mac(iface):
     link, = json.loads(subprocess.check_output(['ip', '-j', 'link', 'show', 'dev', iface]))
     return bytes.fromhex(link['address'].replace(':', ''))
 
 
-def start(binary, iface):
-    p = subprocess.Popen([binary, iface, '2'], stdout=subprocess.PIPE,
+def start(binary, iface, profile='dhcp4'):
+    label = 'DHCP' if profile == 'dhcp4' else 'ICMP4'
+    p = subprocess.Popen([binary, iface, '2', profile], stdout=subprocess.PIPE,
                          stderr=subprocess.PIPE, text=True)
     with selectors.DefaultSelector() as selector:
         selector.register(p.stdout, selectors.EVENT_READ)
@@ -53,29 +63,30 @@ def start(binary, iface):
             p.kill()
             raise RuntimeError('observer readiness timed out')
         ready = p.stdout.readline()
-    if not ready.startswith(f'DHCP_OBSERVER_READY iface={iface} '):
+    if not ready.startswith(f'{label}_OBSERVER_READY iface={iface} '):
         p.kill()
         _, err = p.communicate(timeout=3)
         raise RuntimeError(f'missing readiness: {ready!r} {err!r}')
     return p
 
 
-def finish(process, iface, malformed, expected, link_downs=0):
+def finish(process, iface, malformed, expected, link_downs=0, profile='dhcp4'):
+    label = 'DHCP' if profile == 'dhcp4' else 'ICMP4'
     out, err = process.communicate(timeout=6)
     assert process.returncode == bool(malformed), (process.returncode, out, err)
     assert not err, err
     all_rows = out.splitlines()
     anchors = [tuple(map(float, row.split()[1:])) for row in all_rows
-               if row.startswith('DHCP_CLOCK ')]
+               if row.startswith(f'{label}_CLOCK ')]
     assert len(anchors) >= 2
     assert all(before <= after and after - before < 0.05 and realtime > before
                for before, realtime, after in anchors)
     assert all(a[0] < b[0] for a, b in zip(anchors, anchors[1:]))
-    down = [row for row in all_rows if row.startswith('DHCP_LINK_DOWN ')]
+    down = [row for row in all_rows if row.startswith(f'{label}_LINK_DOWN ')]
     assert len(down) == link_downs, down
-    rows = [row for row in all_rows if not row.startswith(('DHCP_CLOCK ', 'DHCP_LINK_DOWN '))]
+    rows = [row for row in all_rows if not row.startswith((f'{label}_CLOCK ', f'{label}_LINK_DOWN '))]
     end = dict(item.split('=') for item in rows[-1].split()[1:])
-    assert rows[-1].startswith('DHCP_OBSERVER_END ')
+    assert rows[-1].startswith(f'{label}_OBSERVER_END ')
     assert end == {'iface': iface, 'seen': str(len(expected) + malformed),
                    'decoded': str(len(expected)), 'malformed': str(malformed),
                    'packets': str(len(expected) + malformed), 'drops': '0'}, (end, out)
@@ -83,13 +94,17 @@ def finish(process, iface, malformed, expected, link_downs=0):
     actual = []
     for row in rows[:-1]:
         fields = row.split()
-        assert fields[0] == 'DHCP_PACKET' and fields[2] == iface
+        assert fields[0] == f'{label}_PACKET' and fields[2] == iface
         assert float(fields[1]) > 0
         assert fields[4:6] == ['192.168.76.2', '192.168.76.145']
-        assert fields[10] == '02:01:02:03:04:05'
-        assert fields[11] == '192.168.76.145'
-        actual.append((fields[3], int(fields[6]), int(fields[7]),
-                       int(fields[8]), int(fields[9], 16), int(fields[12])))
+        if profile == 'dhcp4':
+            assert fields[10] == '02:01:02:03:04:05'
+            assert fields[11] == '192.168.76.145'
+            actual.append((fields[3], int(fields[6]), int(fields[7]),
+                           int(fields[8]), int(fields[9], 16), int(fields[12])))
+        else:
+            assert len(fields) == 11
+            actual.append((fields[3], *map(int, fields[6:])))
     assert actual == expected, (actual, expected)
 
 
@@ -141,6 +156,30 @@ def main():
                     if p.poll() is None:
                         p.kill()
                         p.wait()
+        echo_cases = [
+            (left, echo_frame(left_mac, right_mac, 8, 321, 17)),
+            (right, echo_frame(right_mac, left_mac, 0, 321, 17, ipopts=bytes([1,1,1,0]))),
+            (left, echo_frame(left_mac, right_mac, 3, 321, 17)),
+            (left, echo_frame(left_mac, right_mac, 8, 321, 17, frag=1)),
+            packets[0],
+        ]
+        for malformed, fixtures in ((0, echo_cases), (2, [
+            (left, echo_frame(left_mac, right_mac, 8, 321, 18, code=1)),
+            (left, echo_frame(left_mac, right_mac, 8, 321, 19, frag=0x2000)),
+        ])):
+            a, b = start(binary, LEFT, 'echo4'), start(binary, RIGHT, 'echo4')
+            try:
+                for sock, data in fixtures:
+                    assert sock.send(data) == len(data)
+                l = [('tx', 8, 321, 17, 84, 123), ('rx', 0, 321, 17, 88, 123)] if not malformed else []
+                r = [('rx' if row[0] == 'tx' else 'tx', *row[1:]) for row in l]
+                finish(a, LEFT, malformed, l, profile='echo4')
+                finish(b, RIGHT, malformed, r, profile='echo4')
+            finally:
+                for p in (a, b):
+                    if p.poll() is None:
+                        p.kill()
+                        p.wait()
         # Exercise the actual packet-notifier down/up path without replacing
         # the bound netdev. Both directions must still be observed afterwards.
         a, b = start(binary, LEFT), start(binary, RIGHT)
@@ -170,7 +209,7 @@ def main():
             if a.poll() is None:
                 a.kill()
                 a.wait()
-    print('DHCP_BOUNDARY_ACTUAL_VETH_PASS')
+    print('PACKET_BOUNDARY_ACTUAL_VETH_PASS')
 
 
 if __name__ == '__main__':
