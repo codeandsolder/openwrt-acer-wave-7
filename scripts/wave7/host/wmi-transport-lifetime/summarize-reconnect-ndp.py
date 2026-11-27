@@ -35,13 +35,15 @@ def main():
     aw = helpers['parse_trace'](ap, 'ap', 1, True)
     require(len(cw) == len(aw), 'authorization window counts differ')
     tokens = helpers['token_windows'](client, cw)['windows']
-    stats = read('wired-ndp-status.txt')
-    require('Packets captured:' in stats, 'capture incomplete')
-    interfaces = re.findall(r"Packets received/dropped on interface '([^']+)': (\d+)/(\d+) \(pcap:(\d+)/dumpcap:(\d+)/flushed:(\d+)/ps_ifdrop:(\d+)\)", stats)
-    require({v[0] for v in interfaces} == {'enp4s0f4u2u4', 'enp4s0f4u2u2u4'} and len(interfaces) == 2 and all(not any(map(int, v[2:])) for v in interfaces), 'capture missing interface or dropped packets')
     require(not read('wired-ndp-decode.txt').strip(), 'wired decode warning')
-    wire = [line.split('\t') for line in read('wired-ndp.txt').splitlines() if line.strip()]
-    require(all(len(row) >= 8 for row in wire), 'malformed wired packet')
+    ndp = read('wired-ndp.txt')
+    dhcp = None
+    if prefix + 'wired-dhcp.txt' in sealed:
+        require(not read('wired-provisioning-split.txt').strip(), 'wired split warning')
+        dhcp = read('wired-dhcp.txt')
+    capture = runpy.run_path(str(Path(__file__).with_name('split-wired-provisioning.py')))
+    capture['verify_capture'](read('wired-ndp-status.txt'), ndp, dhcp)
+    wire = [line.split('\t') for line in ndp.splitlines()]
     text = read('client-ip6.txt')
     chunks = re.findall(r'^IP6_SAMPLE index=(\d+) epoch=(\d+\.\d+) monotonic=(\d+\.\d+)\n(.*?)^IP6_SAMPLE_END index=\1$', text, re.M | re.S)
     samples = [(float(mono), float(epoch), {key: int(n) for key, n in re.findall(r'^IP6_COUNTER (\S+) (\d+)$', body, re.M)}) for _, epoch, mono, body in chunks]

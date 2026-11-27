@@ -37,14 +37,19 @@ def parse_packets(text):
             if ip:
                 ipaddress.IPv4Address(ip)
         require(not xid or re.fullmatch(r'0x[0-9a-f]{8}', xid), 'invalid xid')
-        require(not chaddr or MAC.fullmatch(chaddr), 'invalid client address')
+        # Wireshark uses dhcp.hw.mac_addr for the fixed BOOTP chaddr and
+        # subsequently decoded Ethernet client identifiers. The first
+        # occurrence is the header address; retain all occurrences for audit.
+        addresses = chaddr.split(',') if chaddr else []
+        require(all(MAC.fullmatch(address) for address in addresses), 'invalid client address')
         require(not op or op in {'1', '2'}, 'invalid BOOTP operation')
         require(not typ or typ.isdecimal() and 0 <= int(typ) <= 255, 'invalid DHCP type')
         packets.append(dict(epoch=float(time), interface=iface, eth_src=src, eth_dst=dst,
                             ipv4_src=ips, ipv4_dst=ipd, udp_src=int(udp_src), udp_dst=int(udp_dst),
-                            op=int(op) if op else None, xid=xid or None, client=chaddr or None,
+                            op=int(op) if op else None, xid=xid or None, client=addresses[0] if addresses else None,
+                            client_address_fields=addresses,
                             offered_ipv4=yiaddr or None, message=TYPES.get(int(typ), f'type_{typ}') if typ else 'undecoded'))
-    return packets
+    return sorted(packets, key=lambda packet: packet['epoch'])
 
 
 def group(packets, begin, end, station):
@@ -65,6 +70,19 @@ def selftest():
     assert grouped[0]['messages']['discover'] == {a:1,b:1}
     assert grouped[0]['messages']['ack'] == {a:1,b:0}
     assert not group(packets, 2, 3, station)
+    other = '02:01:02:03:04:06'
+    repeated = parse_packets(row(1.0, a, '0x12345678', 1, station + ',' + station))[0]
+    assert repeated['client'] == station and repeated['client_address_fields'] == [station, station]
+    distinct = parse_packets(row(1.0, a, '0x12345678', 1, station + ',' + other))[0]
+    assert distinct['client'] == station and distinct['client_address_fields'] == [station, other]
+    assert not group([distinct], 0, 2, other)
+    assert [r['epoch'] for r in parse_packets('\n'.join([row(2.0, a, '0x12345678', 1), row(1.0, b, '0x12345678', 1)]))] == [1, 2]
+    try:
+        parse_packets(row(1.0, a, '0x12345678', 1, station + ',invalid'))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('malformed repeated address accepted')
     print('WIRED_DHCP_SUMMARY_SELFTEST_PASS')
 
 
@@ -86,12 +104,11 @@ def main():
         name = prefix + name
         require(name in sealed, f'unsealed {name}')
         return (a.trial / name).read_text()
-    stats = read('wired-ndp-status.txt')
-    require('Packets captured:' in stats, 'capture incomplete')
-    iface = re.findall(r"Packets received/dropped on interface '([^']+)': (\d+)/(\d+) \(pcap:(\d+)/dumpcap:(\d+)/flushed:(\d+)/ps_ifdrop:(\d+)\)", stats)
-    require(len(iface)==2 and {i[0] for i in iface} == INTERFACES and all(not any(map(int,i[2:])) for i in iface), 'capture dropped packets or missing interface')
     require(not read('wired-ndp-decode.txt').strip() and not read('wired-provisioning-split.txt').strip(), 'capture decode warnings')
-    packets = parse_packets(read('wired-dhcp.txt'))
+    dhcp = read('wired-dhcp.txt')
+    capture = runpy.run_path(str(Path(__file__).with_name('split-wired-provisioning.py')))
+    capture['verify_capture'](read('wired-ndp-status.txt'), read('wired-ndp.txt'), dhcp)
+    packets = parse_packets(dhcp)
     cw = helpers['parse_trace'](read('client-control-trace.txt'), 'client', 1)
     aw = helpers['parse_trace'](read('ap-control-trace.txt'), 'ap', 1, True)
     require(len(cw) == len(aw), 'authorization windows differ')

@@ -626,8 +626,10 @@ for band in "${bands[@]}"; do
         wired_capture_pid=''
         if [[ $wired_capture == ndp ]]; then
             if [[ $capture_rc != 0 ]] || [[ -s $prefix.wired-provisioning-split.txt ]] ||
-               ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt" ||
-               ! rg -q "Packets received/dropped on interface 'enp4s0f4u2u2u4': [0-9]+/0 \(pcap:[0-9]+/dumpcap:0/flushed:0/ps_ifdrop:0\)" "$prefix.wired-ndp-status.txt"; then
+               [[ -s $prefix.wired-ndp-decode.txt ]] ||
+               ! uv run --no-project python -B "$(dirname "$helper")/split-wired-provisioning.py" \
+                    --ndp "$prefix.wired-ndp.txt" --dhcp "$prefix.wired-dhcp.txt" \
+                    --verify-status "$prefix.wired-ndp-status.txt"; then
                 cases_failed=1
             fi
         elif [[ $capture_rc != 124 && $capture_rc != 0 ]] ||
