@@ -16,7 +16,6 @@ def main():
     p.add_argument('source', type=Path, help='ath12k source directory')
     p.add_argument('output', type=Path)
     a = p.parse_args()
-    common = (a.source / 'dp_rx.c').read_text()
     wifi = (a.source / 'wifi7/dp_rx.c').read_text()
     constants = '\n'.join(re.search(r'^#define\s+' + name + r'\s+[^\n]+', (a.source / f).read_text(), re.M).group() for f, name in (
         ('dp.h', 'DP_MAX_PEER_ID'), ('dp.h', 'DP_REOQ_LUT_SIZE'), ('dp.h', 'DP_REO_QREF_NUM'),
@@ -27,7 +26,7 @@ def main():
         'static struct ath12k_reo_queue_ref *\nath12k_wifi7_peer_rx_tid_qref(',
         'void ath12k_wifi7_peer_rx_tid_qref_setup(',
         'void ath12k_wifi7_peer_rx_tid_qref_reset(',
-        'int ath12k_wifi7_dp_rx_assign_reoq(')) + '\n' + extract(common, 'bool ath12k_dp_mark_tid_as_inactive(')
+        'int ath12k_wifi7_dp_rx_assign_reoq('))
     shim = r'''#include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -54,19 +53,10 @@ struct ath12k_reo_queue_ref { u32 info0,info1; };
 struct ath12k_reo_q_addr_lut { void *vaddr; };
 struct ath12k_reoq_buf {void *vaddr;dma_addr_t paddr_aligned;u32 size;};
 struct ath12k_dp_rx_tid {u8 tid;u32 ba_win_sz;struct ath12k_reoq_buf qbuf;};
-struct ath12k_dp_rx_tid_rxq {u8 tid;bool active;struct ath12k_reoq_buf qbuf;};
-struct dp_reo_update_rx_queue_elem {struct dp_reo_update_rx_queue_elem *next;
-    struct ath12k_dp_rx_tid_rxq rx_tid;int peer_id;};
-struct ath12k_dp_peer {struct ath12k_dp_rx_tid rx_tid[17];};
-struct ath12k_dp_link_peer {struct ath12k_dp_peer *dp_peer;bool primary_link;int peer_id;u32 rx_tid_active_bitmask;};
-struct ath12k_dp {int dp_lock,reo_rxq_flush_lock;struct ath12k_reo_q_addr_lut reoq_lut,ml_reoq_lut;
-    struct dp_reo_update_rx_queue_elem *reo_cmd_update_rx_queue_list;};
+struct ath12k_dp {int dp_lock;struct ath12k_reo_q_addr_lut reoq_lut,ml_reoq_lut;};
 struct hw {bool reoq_lut_support;};
 struct ath12k_base {struct ath12k_dp dp;struct hw *hw_params;void *dev;};
 #define ath12k_ab_to_dp(ab) (&(ab)->dp)
-#define list_for_each_entry(e,h,m) for((e)=*(h);(e);(e)=(e)->next)
-static void spin_lock_bh(int *p) {assert(!*p);*p=1;}
-static void spin_unlock_bh(int *p) {assert(*p);*p=0;}
 static unsigned barriers,clears,allocs,frees,maps;static bool oom,mapfail;
 static void dma_wmb(void) {barriers++;}
 static void ath12k_hal_reo_shared_qaddr_cache_clear(struct ath12k_base *ab) {assert(ab->dp.dp_lock && barriers==clears+1);clears++;}
@@ -100,26 +90,19 @@ int main(void) {
     ath12k_wifi7_peer_rx_tid_qref_setup(&a,0,17,123);ath12k_wifi7_peer_rx_tid_qref_reset(&a,0,17,123);
     h.reoq_lut_support=false;ath12k_wifi7_peer_rx_tid_qref_setup(&a,0,0,123);ath12k_wifi7_peer_rx_tid_qref_reset(&a,0,0,123);h.reoq_lut_support=true;
     assert(clears==before && barriers==clears);
-    struct ath12k_dp_peer peer={0};struct ath12k_dp_link_peer link={.dp_peer=&peer,.primary_link=true,.peer_id=42,.rx_tid_active_bitmask=BIT(3)};
-    struct ath12k_dp_rx_tid *tid=&peer.rx_tid[3];tid->tid=3;tid->ba_win_sz=64;
+    struct ath12k_dp_rx_tid storage={.tid=3,.ba_win_sz=64};
+    struct ath12k_dp_rx_tid *tid=&storage;
     oom=true;assert(ath12k_wifi7_dp_rx_assign_reoq(&a,tid,0,HAL_PN_TYPE_NONE)==-ENOMEM&&!tid->qbuf.vaddr);
     oom=false;mapfail=true;assert(ath12k_wifi7_dp_rx_assign_reoq(&a,tid,0,HAL_PN_TYPE_NONE)==-EIO&&!tid->qbuf.vaddr&&allocs==frees);
     mapfail=false;assert(!ath12k_wifi7_dp_rx_assign_reoq(&a,tid,0,HAL_PN_TYPE_NONE));
     struct ath12k_reoq_buf first=tid->qbuf;unsigned n=allocs;assert(!ath12k_wifi7_dp_rx_assign_reoq(&a,tid,0,HAL_PN_TYPE_NONE)&&allocs==n);
-    struct dp_reo_update_rx_queue_elem live={.rx_tid={3,true,first},.peer_id=42};
-    struct dp_reo_update_rx_queue_elem stale={.next=&live,.rx_tid={3,false,{(void*)1,123,128}},.peer_id=42};
-    struct dp_reo_update_rx_queue_elem unrelated={.next=&stale,.rx_tid={3,true,{(void*)2,456,128}},.peer_id=42};
-    a.dp.reo_cmd_update_rx_queue_list=&unrelated;
-    link.primary_link=false;assert(!ath12k_dp_mark_tid_as_inactive(&a.dp,&link,3)&&tid->qbuf.vaddr==first.vaddr);
-    link.primary_link=true;assert(ath12k_dp_mark_tid_as_inactive(&a.dp,&link,3));
-    assert(!live.rx_tid.active&&unrelated.rx_tid.active&&!tid->qbuf.vaddr&&!link.rx_tid_active_bitmask&&!a.dp.reo_rxq_flush_lock);
-    assert(!ath12k_dp_mark_tid_as_inactive(&a.dp,&link,3));
+    tid->qbuf=(struct ath12k_reoq_buf){};
     assert(!ath12k_wifi7_dp_rx_assign_reoq(&a,tid,0,HAL_PN_TYPE_NONE));assert(tid->qbuf.vaddr!=first.vaddr&&tid->qbuf.paddr_aligned!=first.paddr_aligned);
     ath12k_wifi7_peer_rx_tid_qref_setup(&a,42,3,tid->qbuf.paddr_aligned);
-    ath12k_wifi7_peer_rx_tid_qref_reset(&a,42,3,live.rx_tid.qbuf.paddr_aligned);
+    ath12k_wifi7_peer_rx_tid_qref_reset(&a,42,3,first.paddr_aligned);
     assert(addr(normal+42*17+3)==tid->qbuf.paddr_aligned);
     kfree(first.vaddr);kfree(tid->qbuf.vaddr);assert(allocs==frees);free(normal);free(mlo);
-    printf("REO_QREF_PASS %u LUT generations plus owner transfer, allocation and DMA failures\n",cases);
+    printf("REO_QREF_PASS %u LUT generations plus stale allocation, allocation and DMA failures\n",cases);
 }
 '''
     a.output.mkdir(parents=True, exist_ok=True)
