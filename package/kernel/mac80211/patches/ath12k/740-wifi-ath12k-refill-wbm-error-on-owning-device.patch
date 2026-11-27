@@ -1,6 +1,13 @@
 From: Lorenzo Bianconi <lorenzo.bianconi@oss.qualcomm.com>
 Subject: [PATCH] wifi: ath12k: fix DP used for WBM error buffer refill
 
+ath12k_wifi7_dp_rx_process_wbm_err() replenishes RX buffers belonging to a
+partner device, but passes the current device's DP object while using the
+partner device's refill ring. This can map replacement buffers with the
+wrong DMA device and access the wrong RX descriptor state in multi-device
+setups. Use the partner device's DP object consistently when replenishing
+its RX buffers.
+
 Tested-on: WCN7850 hw2.0 PCI WLAN.HMT.1.1.c7-00108-QCAHMTSWPL_V1.0_V2.0_SILICONZ_UPSTREAM-3
 
 Fixes: 1d18b197bc4b ("wifi: ath12k: add partner device buffer support in receive data path")
