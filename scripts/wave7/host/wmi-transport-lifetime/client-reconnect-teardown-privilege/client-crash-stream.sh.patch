@@ -1,0 +1,26 @@
+--- a/client-crash-stream.sh
++++ b/client-crash-stream.sh
+@@ -104,6 +104,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+@@ -189,6 +190,7 @@
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
++      $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-retire-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-unassign-trace ||
+       $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-retire-trace ||
+@@ -206,6 +208,7 @@
+     if [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-id-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-primary-first-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace ||
++          $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-defer-mld-fw20261016-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-group-band-retire-trace ||
+           $variant == upstream-prefix22-authorize-delayed-links-reconnect-active-detach-trace ]]; then
