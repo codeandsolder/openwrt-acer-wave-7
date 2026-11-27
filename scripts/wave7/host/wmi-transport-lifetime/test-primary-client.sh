@@ -22,6 +22,7 @@ dual_reconnect=0
 reconnect_count=1
 reconnect_datapath=0
 ap_irq_spread=0
+ap_ring3_probe=0
 ap_link_stats=0
 ap_link_tool=""
 client_rx_arg=--none
@@ -50,6 +51,7 @@ for arg in "$@"; do
         --client-reconnect-twice) dual_hold=1; dual_reconnect=1; reconnect_count=2 ;;
         --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
+        --ap-ring3-probe) ap_ring3_probe=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
@@ -118,6 +120,10 @@ if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
     fail "reconnect datapath capture requires a reconnect-capable variant"
 fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
+if (( ap_ring3_probe )); then
+    [[ ${#bands[@]} == 1 && ${bands[0]} == 24 && $variant == upstream-prefix22-authorize-single-link-trace ]] || fail "ring3 probe requires single-link 2.4 GHz case"
+    (( !dual_hold && !dual_load && !dual_reconnect )) || fail "ring3 probe requires short isolated hold"
+fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
@@ -393,6 +399,7 @@ for band in "${bands[@]}"; do
         done
     fi
     snapshot_rx > "$prefix.rx-before.txt"
+    remote 'cat /proc/interrupts' > "$prefix.irq-before.txt"
     snapshot_icmp > "$prefix.icmp-before.txt"
     wyse "sudo -n bash $client/client-crash-stream.sh $tag $variant $client_boot $observe_seconds" > "$prefix.client-trace.txt" 2>&1 &
     trace_pid=$!
@@ -540,6 +547,28 @@ for band in "${bands[@]}"; do
         done
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
+    elif (( ap_ring3_probe )); then
+        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 &
+        load_client_pid=$!
+        deadline=$((SECONDS + 45))
+        ready=''
+        while (( SECONDS < deadline )); do
+            ready=$(wyse "cat $client_data/$tag/early-only-snapshot.txt 2>/dev/null" || :)
+            if [[ $ready == *' ipv4=192.168.76.145 '* ]] && rg -qx 'mac80211_active_links=0x0*1' <<< "$ready"; then break; fi
+            ready=''
+            kill -0 "$load_client_pid" 2>/dev/null || break
+            sleep .25
+        done
+        printf '%s\n' "$ready" > "$prefix.ring3-client-ready.txt"
+        if [[ -z $ready ]] || ! guard; then
+            cases_failed=1
+        else
+            snapshot_rx > "$prefix.ring3-before.txt"
+            remote 'taskset -c 3 ping -I br-lan -c 30 -i 0.1 -W 1 192.168.76.145' > "$prefix.ring3-ping.txt" 2>&1 || cases_failed=1
+            snapshot_rx > "$prefix.ring3-after.txt"
+        fi
+        wait "$load_client_pid" || rc=$?
+        load_client_pid=''
     else
         if (( reconnect_count == 2 )); then
             wyse "timeout $client_seconds bash $client/client-sustained-cycle.sh $tag --$mode-$variant --bssid-$band --reconnect-count=2" > "$prefix.client-run.txt" 2>&1 || rc=$?
@@ -590,6 +619,10 @@ for band in "${bands[@]}"; do
         exit 1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
+    remote 'cat /proc/interrupts' > "$prefix.irq-after.txt"
+    ring_args=()
+    if (( ap_ring3_probe )); then ring_args=(--require-ring3); fi
+    uv run --no-project python -B "$(dirname "$helper")/tx-ring-delta.py" "$prefix.rx-before.txt" "$prefix.rx-after.txt" --irq-before "$prefix.irq-before.txt" --irq-after "$prefix.irq-after.txt" "${ring_args[@]}" > "$prefix.tx-ring-delta.json" || cases_failed=1
     snapshot_icmp > "$prefix.icmp-after.txt"
     uv run --no-project python -B "$delta_helper" "$prefix.rx-before.txt" "$prefix.rx-after.txt" > "$prefix.rx-delta.json" || cases_failed=1
     result_file=short-hold-result.txt
