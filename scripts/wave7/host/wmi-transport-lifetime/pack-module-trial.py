@@ -32,19 +32,35 @@ def main():
     p.add_argument('--spec', type=Path, required=True)
     for arg in ('parent', 'modules', 'host-tree', 'out'):
         p.add_argument('--' + arg, type=Path, required=True)
+    for arg in ('replacement-fit', 'kernel-closure', 'kernel-config'):
+        p.add_argument('--' + arg, type=Path)
     a = p.parse_args()
     profile_spec = json.loads(a.spec.read_text())
-    check(set(profile_spec) == {'parent_sha', 'parent_rev', 'parent_builder', 'fit_sha', 'kernel', 'modules', 'patch_commit', 'patch_key', 'filename'}, 'spec keys')
+    base_keys = {'parent_sha', 'parent_rev', 'parent_builder', 'fit_sha', 'kernel', 'modules', 'patch_commit', 'patch_key', 'filename'}
+    kernel_keys = {'replacement_fit_sha', 'kernel_closure_sha', 'kernel_config_sha'}
+    kernel_trial = set(profile_spec) == base_keys | kernel_keys
+    check(kernel_trial or set(profile_spec) == base_keys, 'spec keys')
+    kernel_inputs = (a.replacement_fit, a.kernel_closure, a.kernel_config)
+    check(all(x is not None for x in kernel_inputs) if kernel_trial else all(x is None for x in kernel_inputs), 'kernel trial inputs')
     check(re.fullmatch(r'\d+\.\d+\.\d+', profile_spec['kernel']), 'kernel pin')
     moddir = Path('lib/modules') / profile_spec['kernel']
-    fit_sha = profile_spec['fit_sha']
+    parent_fit_sha = profile_spec['fit_sha']
+    fit_sha = profile_spec.get('replacement_fit_sha', parent_fit_sha)
     check(re.fullmatch(r'r0\+\d+-[a-f0-9]{10}-ap-dhcp-guard8', profile_spec['parent_rev']), 'parent revision')
     check(re.fullmatch(r'[a-z0-9_-]+\.bin', profile_spec['filename']), 'image filename')
     check(re.fullmatch(r'trial_[a-z0-9_]+_commit', profile_spec['patch_key']), 'patch key')
     check(all(re.fullmatch(r'[a-f0-9]{64}', profile_spec[k]) for k in ('parent_sha', 'fit_sha')), 'image pins')
     check(all(re.fullmatch(r'[a-f0-9]{40}', profile_spec[k]) for k in ('parent_builder', 'patch_commit')), 'commit pins')
     modules = profile_spec['modules']
-    check(modules and all(re.fullmatch(r'[a-zA-Z0-9_-]+\.ko', n) and len(pair) == 2 and pair[0] != pair[1] and all(re.fullmatch(r'[a-f0-9]{64}', h) for h in pair) for n, pair in modules.items()), 'module pins')
+    check(modules and all(re.fullmatch(r'[a-zA-Z0-9_-]+\.ko', n) and len(pair) == 2 and (kernel_trial or pair[0] != pair[1]) and all(re.fullmatch(r'[a-f0-9]{64}', h) for h in pair) for n, pair in modules.items()), 'module pins')
+    if kernel_trial:
+        check(all(re.fullmatch(r'[a-f0-9]{64}', profile_spec[key]) for key in kernel_keys), 'kernel pins')
+        check(fit_sha != parent_fit_sha and sha(a.replacement_fit) == fit_sha, 'replacement FIT pin')
+        check(sha(a.kernel_closure) == profile_spec['kernel_closure_sha'] and
+              sha(a.kernel_config) == profile_spec['kernel_config_sha'], 'kernel evidence pins')
+        closure = json.loads(a.kernel_closure.read_text())
+        check(closure['kernel'] == profile_spec['kernel'] and closure['module_count'] == len(modules), 'complete kernel closure')
+        check({m['filename']: [m['parent_sha256'], m['sha256']] for m in closure['modules'].values()} == modules, 'kernel module closure pins')
     patch_key = profile_spec['patch_key']
     repo = Path(__file__).resolve().parents[4]
     builder = cmd('git', '-C', repo, 'rev-parse', 'HEAD').strip()
@@ -65,7 +81,13 @@ def main():
             check(tf.extractfile('sysupgrade-acer_wave7/CONTROL').read() == b'BOARD=acer_wave7\n', 'parent board')
             for name in ('kernel', 'root'):
                 (t / name).write_bytes(tf.extractfile('sysupgrade-acer_wave7/' + name).read())
-        check(sha(t / 'kernel') == fit_sha, 'parent FIT')
+        check(sha(t / 'kernel') == parent_fit_sha, 'parent FIT')
+        if kernel_trial:
+            fit_helpers = runpy.run_path(str(Path(__file__).with_name('build-profile-fit.py')))
+            fit_helpers['verify_transition'](fit_helpers['fit_properties'](t / 'kernel'),
+                                             fit_helpers['fit_properties'](a.replacement_fit))
+            shutil.copyfile(a.replacement_fit, t / 'kernel')
+            check(sha(t / 'kernel') == fit_sha, 'replacement FIT copied')
         cmd(fwtool, '-i', t / 'metadata.json', a.parent)
         meta = json.loads((t / 'metadata.json').read_text())
         check(meta['version']['revision'] == profile_spec['parent_rev'] and 'acer,wave7' in meta['supported_devices'], 'parent metadata')
@@ -80,6 +102,8 @@ def main():
             os.umask(old_umask)
         original = read_manifest(root)
         check([p.name for p in (root / 'lib/modules').iterdir() if p.is_dir()] == [profile_spec['kernel']], 'parent kernel directory')
+        if kernel_trial:
+            check({f.name for f in (root / moddir).glob('*.ko')} == modules.keys(), 'full parent module inventory')
         module_delta = set()
         for name, (before, _) in modules.items():
             module = root / moddir / name
@@ -87,7 +111,8 @@ def main():
             check(cmd('modinfo', '-F', 'vermagic', module) == cmd('modinfo', '-F', 'vermagic', a.modules / name), f'module vermagic: {name}')
             check(cmd('modinfo', '-F', 'depends', module) == cmd('modinfo', '-F', 'depends', a.modules / name), f'module depends: {name}')
             module.write_bytes((a.modules / name).read_bytes())
-            module_delta.add(module.relative_to(root).as_posix())
+            if before != modules[name][1]:
+                module_delta.add(module.relative_to(root).as_posix())
         for rel in IDENTITIES[:4]:
             f = root / rel
             old = f.read_text()
@@ -104,6 +129,9 @@ def main():
         for name, (_, after) in modules.items():
             fields[module_key(name)] = after
         fields[patch_key] = cmd('git', '-C', repo, 'rev-parse', profile_spec['patch_commit']).strip()
+        if kernel_trial:
+            fields.update(trial_fit_sha256=fit_sha, trial_kernel_config_sha256=profile_spec['kernel_config_sha'],
+                          trial_kernel_closure_sha256=profile_spec['kernel_closure_sha'])
         profile.write_text(''.join(f'{k}={v}\n' for k,v in fields.items()))
         cmd('sh', '-c', '. "$1"; wave7_ap_check_image "$2"', 'sh', root / 'lib/wave7/overlay-reset.sh', root)
         current = read_manifest(root)
@@ -141,6 +169,8 @@ def main():
         for name, (_, after) in modules.items():
             meta['wave7_trial_radio'][module_key(name)] = after
         meta['wave7_trial_radio'][patch_key] = fields[patch_key]
+        if kernel_trial:
+            meta['wave7_trial_kernel'] = {key: profile_spec[key] for key in sorted(kernel_keys)}
         (t / 'new-meta').write_text(json.dumps(meta))
         cmd(fwtool, '-I', t / 'new-meta', output)
         cmd(fwtool, '-i', t / 'check-meta', output)
@@ -155,6 +185,8 @@ def main():
                       radio_release=fields['trial_radio_release'], firmware=radio_manifest,
                       module_sha256={k: sha(root / moddir / k) for k in sorted(modules)},
                       delta=delta, roundtrip_identical=True)
+        if kernel_trial:
+            report.update({key: profile_spec[key] for key in sorted(kernel_keys)})
         a.out.mkdir(mode=0o700)
         shutil.move(output, a.out / profile_spec['filename'])
         (a.out / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
