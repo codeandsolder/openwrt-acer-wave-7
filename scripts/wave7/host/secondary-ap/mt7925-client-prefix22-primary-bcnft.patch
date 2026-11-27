@@ -1,0 +1,22 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -2759,6 +2759,19 @@
+ 			mt792x_sta_to_link_sta(vif, sta, msta->deflink_id);
+ 
+ 		if (mlink && link_sta) {
++			struct ieee80211_bss_conf *link_conf =
++				mt792x_vif_to_bss_conf(vif, msta->deflink_id);
++
++			if (!link_conf)
++				return -EINVAL;
++
++			/* The VIF-level association callback has no legacy
++			 * beacon timing for an MLD. Refresh the primary
++			 * with its real link configuration before setup.
++			 */
++			err = mt7925_mcu_uni_bss_bcnft(dev, link_conf, true);
++			if (err)
++				return err;
+ 			err = mt7925_mcu_sta_mld_update(dev, vif, sta, mlink);
+ 			if (err)
+ 				return err;

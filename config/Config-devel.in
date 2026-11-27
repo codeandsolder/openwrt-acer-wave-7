@@ -134,6 +134,7 @@ menuconfig DEVEL
 
 	config CCACHE
 		bool "Use ccache" if DEVEL
+		depends on !EXTERNAL_SCCACHE
 		help
 		  Compiler cache; see https://ccache.samba.org/
 
@@ -143,6 +144,12 @@ menuconfig DEVEL
 		help
 		  Store ccache in this directory.
 		  If not set, uses './.ccache'
+
+	config EXTERNAL_SCCACHE
+		bool "Use externally managed sccache for C/C++" if DEVEL
+		help
+		  Wrap host and target C/C++ compiler invocations with the existing
+		  sccache executable on PATH. Do not build or launch a local cache.
 
 	config RUST_SCCACHE
 		bool "Use sccache for Rust" if DEVEL

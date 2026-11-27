@@ -1,0 +1,152 @@
+--- a/mt792x.h
++++ b/mt792x.h
+@@ -221,6 +221,10 @@
+ 	struct mt792x_phy *phy;
+ 	bool roc_join_held; /* join ROC kept until the STA is authorized */
+ 	u16 valid_links;
++	/* Experimental hw_scan active-link parking; zero means idle.
++	 * Set with wiphy lock, consumed upon scan completion/cancellation.
++	 */
++	u16 scan_saved_active_links;
+ 	u8 deflink_id;
+ 	enum mt792x_mlo_pm_state mlo_pm_state;
+ 
+--- a/mt7925/main.c
++++ b/mt7925/main.c
+@@ -505,6 +505,7 @@
+ 	mvif->bss_conf.vif = mvif;
+ 	mvif->sta.vif = mvif;
+ 	mvif->deflink_id = IEEE80211_LINK_UNSPECIFIED;
++	mvif->scan_saved_active_links = 0;
+ 	mvif->mlo_pm_state = MT792x_MLO_LINK_DISASSOC;
+ 
+ 	ret = mt7925_mac_link_bss_add(dev, &vif->bss_conf, &mvif->bss_conf,
+@@ -1814,6 +1815,33 @@
+ 					    mt7925_mlo_pm_iter, dev);
+ }
+ 
++/* Diagnostic: do not scan with multiple active MLD links. A scan on
++ * this MT7925/Atheros AP pair repeatedly causes firmware to send
++ * primary-link TX on the secondary RF band a second later.
++ * Iterate live VIFs rather than holding a pointer across a scan.
++ */
++static void
++mt7925_scan_restore_links_iter(void *data, u8 *mac,
++			       struct ieee80211_vif *vif)
++{
++	struct mt792x_vif *mvif = (void *)vif->drv_priv;
++	u16 saved = xchg(&mvif->scan_saved_active_links, 0);
++	u16 active = READ_ONCE(vif->active_links);
++
++	if (!saved)
++		return;
++	if (vif->type == NL80211_IFTYPE_STATION &&
++	    ieee80211_vif_is_mld(vif) && READ_ONCE(vif->cfg.assoc) &&
++	    !(saved & ~READ_ONCE(vif->valid_links)) &&
++	    mvif->bss_conf.link_id < IEEE80211_MLD_MAX_NUM_LINKS &&
++	    active == BIT(mvif->bss_conf.link_id)) {
++		ieee80211_set_active_links_async(vif, saved);
++		trace_mt7925_lab_scan_link_park(1, active, saved, 0);
++	} else {
++		trace_mt7925_lab_scan_link_park(2, active, saved, -ENOLINK);
++	}
++}
++
+ void mt7925_scan_work(struct work_struct *work)
+ {
+ 	struct mt792x_phy *phy;
+@@ -1859,6 +1887,10 @@
+ 						.aborted = false,
+ 					};
+ 					ieee80211_scan_completed(phy->mt76->hw, &info);
++					ieee80211_iterate_active_interfaces(
++						phy->mt76->hw,
++						IEEE80211_IFACE_ITER_RESUME_ALL,
++						mt7925_scan_restore_links_iter, dev);
+ 				}
+ 				break;
+ 			case UNI_EVENT_SCAN_DONE_CHNLINFO:
+@@ -1889,14 +1921,43 @@
+ 	struct mt792x_dev *dev = mt792x_hw_dev(hw);
+ 	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+ 	struct mt76_phy *mphy = hw->priv;
++	u16 saved = 0;
+ 	int err;
+ 
++	/* mac80211 calls hw_scan with wiphy locked; it is safe to switch
++	 * active links here but not after taking mt76.mutex, since mac80211
++	 * calls back into the driver during the transition.
++	 */
++	lockdep_assert_wiphy(hw->wiphy);
++	if (vif->type == NL80211_IFTYPE_STATION &&
++	    ieee80211_vif_is_mld(vif) && READ_ONCE(vif->cfg.assoc) &&
++	    hweight16(vif->active_links) >= 2 &&
++	    mvif->bss_conf.link_id < IEEE80211_MLD_MAX_NUM_LINKS &&
++	    (vif->active_links & BIT(mvif->bss_conf.link_id))) {
++		saved = vif->active_links;
++		err = ieee80211_set_active_links(
++			vif, BIT(mvif->bss_conf.link_id));
++		trace_mt7925_lab_scan_link_park(0, saved,
++					     vif->active_links, err);
++		if (err)
++			return err;
++		WRITE_ONCE(mvif->scan_saved_active_links, saved);
++	}
++
+ 	mt792x_mutex_acquire(dev);
+ 	mt792x_mcu_set_dev_active(dev, &vif->bss_conf, &mvif->bss_conf,
+ 				  &mvif->sta.deflink.wcid, true);
+ 	err = mt7925_mcu_hw_scan(mphy, vif, req);
+ 	mt792x_mutex_release(dev);
+ 
++	if (err && saved) {
++		WRITE_ONCE(mvif->scan_saved_active_links, 0);
++		if (ieee80211_set_active_links(vif, saved)) {
++			ieee80211_set_active_links_async(vif, saved);
++			trace_mt7925_lab_scan_link_park(3, vif->active_links,
++						       saved, err);
++		}
++	}
+ 	return err;
+ }
+ 
+@@ -1909,6 +1970,9 @@
+ 	mt792x_mutex_acquire(dev);
+ 	mt7925_mcu_cancel_hw_scan(mphy, vif);
+ 	mt792x_mutex_release(dev);
++	ieee80211_iterate_active_interfaces(
++		hw, IEEE80211_IFACE_ITER_RESUME_ALL,
++		mt7925_scan_restore_links_iter, dev);
+ }
+ 
+ static int
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -630,6 +630,27 @@
+               __entry->length)
+ );
+ 
++/* Experimental per-MLD parking/restoring of active links around scanning. */
++TRACE_EVENT(mt7925_lab_scan_link_park,
++    TP_PROTO(u8 phase, u16 from, u16 to, int status),
++    TP_ARGS(phase, from, to, status),
++    TP_STRUCT__entry(
++        __field(u8, phase)
++        __field(u16, from)
++        __field(u16, to)
++        __field(int, status)
++    ),
++    TP_fast_assign(
++        __entry->phase = phase;
++        __entry->from = from;
++        __entry->to = to;
++        __entry->status = status;
++    ),
++    TP_printk("phase=%u from=%#x to=%#x status=%d",
++              __entry->phase, __entry->from,
++              __entry->to, __entry->status)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH

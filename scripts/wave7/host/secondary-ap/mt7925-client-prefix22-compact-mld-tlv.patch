@@ -1,0 +1,35 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -2421,12 +2421,11 @@
+ 	struct mt792x_sta *msta = (struct mt792x_sta *)sta->drv_priv;
+ 	unsigned long valid = mvif->valid_links;
+ 	struct mt792x_link_sta *pri_mlink;
+-	struct sta_rec_mld *mld;
++	struct sta_rec_mld record = {};
++	struct sta_rec_mld *mld = &record;
+ 	unsigned int i, cnt = 0;
+ 	struct tlv *tlv;
+-
+-	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_MLD, sizeof(*mld));
+-	mld = (struct sta_rec_mld *)tlv;
++	size_t len;
+ 	memcpy(mld->mac_addr, sta->addr, ETH_ALEN);
+ 
+ 	/* primary_id is the wcid of the primary link; the link being added is
+@@ -2476,6 +2475,16 @@
+ 	/* secondary is link[1] */
+ 	if (mld->link_num > 1)
+ 		mld->secondary_id = mld->link[1].wlan_id;
++	/* Send the populated link array, not unused trailing slots.
++	 * This matches the variable-length MLD setup format used by
++	 * related MediaTek drivers; exact MT7925 ABI is under test.
++	 */
++	len = offsetof(struct sta_rec_mld, link) +
++	      sizeof(mld->link[0]) * mld->link_num;
++	tlv = mt76_connac_mcu_add_tlv(skb, STA_REC_MLD, len);
++	mld->tag = tlv->tag;
++	mld->len = tlv->len;
++	memcpy(tlv, mld, len);
+ 	for (i = 0; i < mld->link_num; i++)
+ 		trace_mt7925_lab_sta_mld_slot(mlink ? mlink->wcid.idx : U16_MAX,
+ 			le16_to_cpu(mld->primary_id), le16_to_cpu(mld->secondary_id),

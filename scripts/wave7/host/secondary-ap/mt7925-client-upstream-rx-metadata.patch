@@ -1,0 +1,143 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -487,6 +487,64 @@
+ 		  __entry->target, __entry->primary, __entry->secondary, __entry->slot, __entry->count, __entry->wcid, __entry->bss, __entry->valid)
+ );
+ 
++TRACE_EVENT(mt7925_lab_rxdesc,
++	TP_PROTO(u32 word1, u32 word2, u32 word3, u32 length, int result, u16 resolved_wcid, u8 link, u8 valid, u8 sta, u16 freq, u8 encap),
++	TP_ARGS(word1, word2, word3, length, result, resolved_wcid, link, valid, sta, freq, encap),
++	TP_STRUCT__entry(
++		__field(u32, word1)
++		__field(u32, word2)
++		__field(u32, word3)
++		__field(u32, length)
++		__field(int, result)
++		__field(u16, resolved_wcid)
++		__field(u8, link)
++		__field(u8, valid)
++		__field(u8, sta)
++		__field(u16, freq)
++		__field(u8, encap)
++	),
++	TP_fast_assign(
++		__entry->word1 = word1;
++		__entry->word2 = word2;
++		__entry->word3 = word3;
++		__entry->length = length;
++		__entry->result = result;
++		__entry->resolved_wcid = resolved_wcid;
++		__entry->link = link;
++		__entry->valid = valid;
++		__entry->sta = sta;
++		__entry->freq = freq;
++		__entry->encap = encap;
++	),
++	TP_printk("word1=%u word2=%u word3=%u length=%u result=%d resolved_wcid=%u link=%u valid=%u sta=%u freq=%u encap=%u",
++		  __entry->word1, __entry->word2, __entry->word3, __entry->length, __entry->result, __entry->resolved_wcid, __entry->link, __entry->valid, __entry->sta, __entry->freq, __entry->encap)
++);
++
++TRACE_EVENT(mt7925_lab_rx_frame,
++	TP_PROTO(u16 wcid, u16 freq, u16 fc, u8 raw_bss, u8 encap, u8 u2m, u8 data),
++	TP_ARGS(wcid, freq, fc, raw_bss, encap, u2m, data),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u16, freq)
++		__field(u16, fc)
++		__field(u8, raw_bss)
++		__field(u8, encap)
++		__field(u8, u2m)
++		__field(u8, data)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->freq = freq;
++		__entry->fc = fc;
++		__entry->raw_bss = raw_bss;
++		__entry->encap = encap;
++		__entry->u2m = u2m;
++		__entry->data = data;
++	),
++	TP_printk("wcid=%u freq=%u fc=%u raw_bss=%u encap=%u u2m=%u data=%u",
++		  __entry->wcid, __entry->freq, __entry->fc, __entry->raw_bss, __entry->encap, __entry->u2m, __entry->data)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -5,6 +5,7 @@
+ #include <linux/etherdevice.h>
+ #include <linux/timekeeping.h>
+ #include "mt7925.h"
++#include "lab_trace.h"
+ #include "p2p.h"
+ #include "../dma.h"
+ #include "regd.h"
+@@ -1460,21 +1461,60 @@
+ 		dev_kfree_skb(skb);
+ 		break;
+ 	case PKT_TYPE_NORMAL_MCU:
+-	case PKT_TYPE_NORMAL:
+-		if (!mt7925_mac_fill_rx(dev, skb)) {
++	case PKT_TYPE_NORMAL: {
++		bool observe = (trace_mt7925_lab_rxdesc_enabled() ||
++				trace_mt7925_lab_rx_frame_enabled()) &&
++			       skb_headlen(skb) >= 4 * sizeof(__le32);
++		u32 word1 = 0, word2 = 0, word3 = 0, length = skb->len;
++		int ret;
++
++		if (observe) {
++			word1 = le32_to_cpu(rxd[1]);
++			word2 = le32_to_cpu(rxd[2]);
++			word3 = le32_to_cpu(rxd[3]);
++		}
++
++		ret = mt7925_mac_fill_rx(dev, skb);
++		if (observe && trace_mt7925_lab_rxdesc_enabled()) {
++			struct mt76_rx_status *status = (void *)skb->cb;
++			struct mt76_wcid *wcid = ret ? NULL : status->wcid;
++
++			trace_mt7925_lab_rxdesc(word1, word2, word3, length, ret,
++				wcid ? wcid->idx : U16_MAX,
++				wcid ? wcid->link_id : U8_MAX,
++				wcid && wcid->link_valid, wcid && wcid->sta,
++				ret ? 0 : status->freq,
++				!ret && !!(status->flag & RX_FLAG_8023));
++		}
++		if (!ret) {
+ 			struct mt76_rx_status *status =
+ 				(struct mt76_rx_status *)skb->cb;
+-
+-			if (!(status->flag & RX_FLAG_8023) &&
+-			    mt7925_p2p_rx_drop_chan_mismatch(dev, skb)) {
++			bool encap = status->flag & RX_FLAG_8023;
++
++			if (!encap && mt7925_p2p_rx_drop_chan_mismatch(dev, skb)) {
+ 				dev_kfree_skb(skb);
+ 				return;
+ 			}
+ 
++			/* No payload or address: only accepted RX metadata. */
++			if (observe && trace_mt7925_lab_rx_frame_enabled()) {
++				u16 fc = !encap && skb_headlen(skb) >= 2 ?
++					get_unaligned_le16(skb->data) : U16_MAX;
++
++				trace_mt7925_lab_rx_frame(
++					FIELD_GET(MT_RXD1_NORMAL_WLAN_IDX, word1),
++					status->freq, fc,
++					FIELD_GET(MT_RXD2_NORMAL_BSSID, word2),
++					encap,
++					FIELD_GET(MT_RXD3_NORMAL_ADDR_TYPE, word3) ==
++					MT_RXD3_NORMAL_U2M,
++					!(word2 & MT_RXD2_NORMAL_NDATA));
++			}
+ 			mt76_rx(&dev->mt76, q, skb);
+ 			return;
+ 		}
+ 		fallthrough;
++	}
+ 	default:
+ 		dev_kfree_skb(skb);
+ 		break;

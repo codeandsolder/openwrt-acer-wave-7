@@ -6,8 +6,10 @@ They are deliberately **not** included in this public source repository.
 
 Use a private source tree containing IPQ5332/hw1.0 and
 QCN6432/hw1.0. On Acer, the canonical copy is
-~/firmware/wave7/vendor-radio/ath12k/; it was preserved from the
-working Linux 6.18.55 build.
+~/firmware/wave7/vendor-radio/wbe1.4-01734/ath12k/. The current pin is
+WLAN.WBE.1.4-01734-QCAHKSWPL_SILICONZ-1.162738.2.173996.1, preserving
+Acer calibration and BDFs and the exact 46-file set in the hardware-validated
+WBM image (SHA256 d30dc49c63ec5d3d803f2875b29a68ce6055f3f51ecf7e75a2bedf8346d5157a).
 
 Before building the firmware image, run:
 
@@ -18,7 +20,7 @@ make -j5 package/install
 make -j5 target/install
 ~~~
 
-Optionally set WAVE7_FIRMWARE_SOURCE to a different private source tree.
+Optionally pass a different private source tree as the second argument to stage.
 The stage command verifies the **45 private vendor files** against
 firmware.sha256 and the separately versioned QDSS trace configuration
 against diagnostic-firmware.sha256. It assembles the complete 46-file

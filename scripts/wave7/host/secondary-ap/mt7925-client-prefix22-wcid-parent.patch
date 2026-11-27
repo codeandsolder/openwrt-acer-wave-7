@@ -1,0 +1,42 @@
+--- a/mt76_connac_mac.c
++++ b/mt76_connac_mac.c
+@@ -377,7 +377,7 @@
+ 	if (wcid->sta) {
+ 		struct ieee80211_sta *sta;
+ 
+-		sta = container_of((void *)wcid, struct ieee80211_sta, drv_priv);
++		sta = wcid_to_sta(wcid);
+ 		wmm = sta->wme;
+ 	}
+ 
+@@ -652,8 +652,7 @@
+ 			struct ieee80211_sta *sta;
+ 			u8 tid;
+ 
+-			sta = container_of((void *)wcid, struct ieee80211_sta,
+-					   drv_priv);
++			sta = wcid_to_sta(wcid);
+ 			tid = FIELD_GET(MT_TXS0_TID, txs);
+ 
+ 			ieee80211_refresh_tx_agg_session_timer(sta, tid);
+@@ -1196,8 +1195,7 @@
+ 		wcid = __mt76_wcid_ptr(dev, wcid_idx);
+ 
+ 		if (wcid && wcid->sta) {
+-			sta = container_of((void *)wcid, struct ieee80211_sta,
+-					   drv_priv);
++			sta = wcid_to_sta(wcid);
+ 			mt76_wcid_add_poll(dev, wcid);
+ 		}
+ 	}
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -652,7 +652,7 @@
+ 	if (wcid->sta) {
+ 		struct ieee80211_sta *sta;
+ 
+-		sta = container_of((void *)wcid, struct ieee80211_sta, drv_priv);
++		sta = wcid_to_sta(wcid);
+ 		wmm = sta->wme;
+ 	}
+ 

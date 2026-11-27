@@ -1,0 +1,58 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -741,6 +741,22 @@
+ 
+ 		trace_mt7925_lab_mcu_rx(event->eid, event->seq, event->option,
+ 				       event->ext_eid, skb->len);
++	}
++
++	/* Observe only the fixed-size vendor BSS absence INFO event.
++	 * Do not change queue state, quotas, or event dispatch.
++	 */
++	if (trace_mt7925_lab_absence_enabled() &&
++	    skb->len == sizeof(*rxd) + 12) {
++		const struct mt7925_mcu_rxd *event = (const void *)skb->data;
++		const u8 *data = skb->data + sizeof(*event);
++
++		if (event->eid == 0x29 &&
++		    (event->option & MCU_UNI_CMD_UNSOLICITED_EVENT))
++			trace_mt7925_lab_absence(data[0],
++				data[4] | (u16)data[5] << 8,
++				data[6] | (u16)data[7] << 8,
++				data[8], data[9]);
+ 	}
+ 
+ 	if (rxd->option & MCU_UNI_CMD_UNSOLICITED_EVENT) {
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -172,6 +172,28 @@
+ 		  __entry->wcid, __entry->pid, __entry->word0)
+ );
+ 
++TRACE_EVENT(mt7925_lab_absence,
++	TP_PROTO(u8 bss, u16 tag, u16 len, u8 absent, u8 quota),
++	TP_ARGS(bss, tag, len, absent, quota),
++	TP_STRUCT__entry(
++		__field(u8, bss)
++		__field(u16, tag)
++		__field(u16, len)
++		__field(u8, absent)
++		__field(u8, quota)
++	),
++	TP_fast_assign(
++		__entry->bss = bss;
++		__entry->tag = tag;
++		__entry->len = len;
++		__entry->absent = absent;
++		__entry->quota = quota;
++	),
++	TP_printk("bss=%u tag=%u len=%u absent=%u quota=%u",
++		  __entry->bss, __entry->tag, __entry->len,
++		  __entry->absent, __entry->quota)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH

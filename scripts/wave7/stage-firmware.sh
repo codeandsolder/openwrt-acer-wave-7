@@ -40,8 +40,9 @@ mode=stage
 [ "$#" -eq 0 ] || mode=$1
 case "$mode" in
     stage)
-        source="$HOME/firmware/wave7/vendor-radio/ath12k"
-        [ -z "$(printenv WAVE7_FIRMWARE_SOURCE || :)" ] || source="$WAVE7_FIRMWARE_SOURCE"
+        source="$HOME/firmware/wave7/vendor-radio/wbe1.4-01734/ath12k"
+        [ "$#" -le 2 ] || exit 2
+    if [ "$#" -eq 2 ]; then source=$2; fi
         verify_tree "$source" "$vendor_manifest"
         verify_tree "$diagnostic_source" "$diagnostic_manifest"
 
@@ -61,7 +62,7 @@ case "$mode" in
         verify_tree "$2/lib/firmware/ath12k" "$vendor_manifest" "$diagnostic_manifest"
         ;;
     *)
-        echo "Usage: $0 [stage | verify-root ROOTFS]" >&2
+        echo "Usage: $0 [stage [SOURCE_DIR] | verify-root ROOTFS]" >&2
         exit 2
         ;;
 esac

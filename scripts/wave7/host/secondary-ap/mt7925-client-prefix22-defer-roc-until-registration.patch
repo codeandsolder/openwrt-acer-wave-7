@@ -1,0 +1,95 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -1352,35 +1352,21 @@
+ EXPORT_SYMBOL_GPL(mt7925_mac_sta_add);
+ 
+ static void
+-mt7925_mac_set_links(struct mt76_dev *mdev, struct ieee80211_vif *vif)
+-{
+-	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
+-	struct mt792x_vif *mvif = (struct mt792x_vif *)vif->drv_priv;
+-	struct ieee80211_bss_conf *link_conf =
+-		mt792x_vif_to_bss_conf(vif, mvif->deflink_id);
+-	struct cfg80211_chan_def *chandef = &link_conf->chanreq.oper;
+-	enum nl80211_band band = chandef->chan->band, secondary_band;
+-
+-	u16 sel_links = mt76_select_links(vif, 2);
+-	u8 secondary_link_id = __ffs(~BIT(mvif->deflink_id) & sel_links);
+-
+-	if (!ieee80211_vif_is_mld(vif) || hweight16(sel_links) < 2)
++mt7925_mac_set_links(struct ieee80211_vif *vif)
++{
++	u16 sel_links;
++
++	if (!ieee80211_vif_is_mld(vif))
+ 		return;
+ 
+-	link_conf = mt792x_vif_to_bss_conf(vif, secondary_link_id);
+-	secondary_band = link_conf->chanreq.oper.chan->band;
+-
+-	if (band == NL80211_BAND_2GHZ ||
+-	    (band == NL80211_BAND_5GHZ && secondary_band == NL80211_BAND_6GHZ)) {
+-		mt7925_abort_roc(mvif->phy, &mvif->bss_conf);
+-
+-		mt792x_mutex_acquire(dev);
+-
+-		mt7925_set_mlo_roc(mvif->phy, &mvif->bss_conf, sel_links);
+-
+-		mt792x_mutex_release(dev);
+-	}
+-
++	sel_links = mt76_select_links(vif, 2);
++	if (hweight16(sel_links) < 2)
++		return;
++
++	/* change_vif_links registers the new BSS before acquiring MLO ROC.
++	 * An earlier request can use the primary BSS as a fallback for an
++	 * unregistered secondary link.
++	 */
+ 	ieee80211_set_active_links_async(vif, sel_links);
+ }
+ 
+@@ -1474,7 +1460,7 @@
+ 
+ 			link_sta = mt792x_sta_to_link_sta(vif, sta,
+ 							  msta->deflink_id);
+-			mt7925_mac_set_links(mdev, vif);
++			mt7925_mac_set_links(vif);
+ 		}
+ 
+ 		mt7925_mac_link_sta_assoc(mdev, vif, link_sta);
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -1723,12 +1723,14 @@
+ 	/* 2-link MLSR/EMLSR always; 3-link HYBRID only if the chip supports it */
+ 	max_links = (phy->chip_cap & BIT(MT792x_CHIP_CAP_MLO_HYBRID_EN)) ? 3 : 2;
+ 	nlinks = hweight16(sel_links);
+-	if (!mconf || hweight16(vif->valid_links) < 2)
++	if (hweight16(vif->valid_links) < 2)
+ 		return -EPERM;
+-	if (nlinks < 2)
++	if (nlinks < 2 || nlinks > max_links ||
++	    mconf->link_id >= IEEE80211_MLD_MAX_NUM_LINKS ||
++	    !(sel_links & BIT(mconf->link_id)) ||
++	    (sel_links & ~mvif->valid_links) ||
++	    (sel_links & ~vif->valid_links))
+ 		return -EINVAL;
+-
+-	nlinks = min_t(u8, nlinks, max_links);
+ 
+ 	/* primary link first, then the remaining links one by one */
+ 	rem_links = sel_links & ~BIT(mconf->link_id);
+@@ -1749,6 +1751,13 @@
+ 			return -EPERM;
+ 
+ 		links[i].mconf = mt792x_vif_to_link(mvif, links[i].id);
++		if (!links[i].mconf ||
++		    links[i].mconf->link_id != links[i].id ||
++		    !links[i].mconf->dev_active)
++			return -ENOLINK;
++		for (int j = 0; j < i; j++)
++			if (links[j].mconf->mt76.idx == links[i].mconf->mt76.idx)
++				return -EINVAL;
+ 		links[i].tag = links[i].id == mconf->link_id ?
+ 			       UNI_ROC_ACQUIRE : UNI_ROC_SUB_LINK;
+ 

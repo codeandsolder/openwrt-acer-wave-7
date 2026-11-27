@@ -1,0 +1,69 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -545,6 +545,38 @@
+ 		  __entry->wcid, __entry->freq, __entry->fc, __entry->raw_bss, __entry->encap, __entry->u2m, __entry->data)
+ );
+ 
++TRACE_EVENT(mt7925_lab_txs_peer_data,
++	TP_PROTO(u16 wcid, u8 link, bool valid, u8 band, u8 pid,
++		 u8 format, u8 ack_error, bool encap, u32 length),
++	TP_ARGS(wcid, link, valid, band, pid, format, ack_error, encap, length),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u8, link)
++		__field(bool, valid)
++		__field(u8, band)
++		__field(u8, pid)
++		__field(u8, format)
++		__field(u8, ack_error)
++		__field(bool, encap)
++		__field(u32, length)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->link = link;
++		__entry->valid = valid;
++		__entry->band = band;
++		__entry->pid = pid;
++		__entry->format = format;
++		__entry->ack_error = ack_error;
++		__entry->encap = encap;
++		__entry->length = length;
++	),
++	TP_printk("wcid=%u link=%u valid=%u band=%u pid=%u format=%u ack_error=%u encap=%u length=%u",
++		  __entry->wcid, __entry->link, __entry->valid, __entry->band,
++		  __entry->pid, __entry->format, __entry->ack_error, __entry->encap,
++		  __entry->length)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -947,6 +947,25 @@
+ 
+ 	txs = le32_to_cpu(txs_data[0]);
+ 	info = IEEE80211_SKB_CB(skb);
++	/* Trace only a matched host skb containing peer data, using the
++	 * firmware-reported hardware band, without payload or addresses.
++	 * Do not request additional status or alter TX policy.
++	 */
++	if (wcid->sta && trace_mt7925_lab_txs_peer_data_enabled()) {
++		bool encap = info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP;
++		bool data = encap ||
++			(skb_headlen(skb) >= 2 &&
++			 ieee80211_is_data_present(
++				 ((struct ieee80211_hdr *)skb->data)->frame_control));
++
++		if (data)
++			trace_mt7925_lab_txs_peer_data(
++				wcid->idx, wcid->link_id, wcid->link_valid,
++				le32_get_bits(txs_data[2], MT_TXS2_BAND), pid,
++				FIELD_GET(MT_TXS0_TXS_FORMAT, txs),
++				FIELD_GET(MT_TXS0_ACK_ERROR_MASK, txs),
++				encap, skb->len);
++	}
+ 	if (!(txs & MT_TXS0_ACK_ERROR_MASK))
+ 		info->flags |= IEEE80211_TX_STAT_ACK;
+ 

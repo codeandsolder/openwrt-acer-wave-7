@@ -1,0 +1,192 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -2017,11 +2017,10 @@
+ 	return ret;
+ }
+ 
+-int
+-mt7925_mcu_uni_bss_bcnft(struct mt792x_dev *dev,
+-			 struct ieee80211_bss_conf *link_conf, bool enable)
+-{
+-	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
++static int
++mt7925_mcu_bcnft(struct mt792x_dev *dev, u8 bss_idx, u8 link_id,
++		 u16 interval, u8 dtim)
++{
+ 	struct {
+ 		struct {
+ 			u8 bss_idx;
+@@ -2038,58 +2037,40 @@
+ 		} __packed bcnft;
+ 	} __packed bcnft_req = {
+ 		.hdr = {
+-			.bss_idx = mconf->mt76.idx,
++			.bss_idx = bss_idx,
+ 		},
+ 		.bcnft = {
+ 			.tag = cpu_to_le16(UNI_BSS_INFO_BCNFT),
+ 			.len = cpu_to_le16(sizeof(struct bcnft_tlv)),
+-			.bcn_interval = cpu_to_le16(link_conf->beacon_int),
+-			.dtim_period = link_conf->dtim_period,
++			.bcn_interval = cpu_to_le16(interval),
++			.dtim_period = dtim,
+ 		},
+ 	};
+ 
+ 	int ret;
+ 
++	ret = mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
++				 &bcnft_req, sizeof(bcnft_req), true);
++	trace_mt7925_lab_bss_bcnft(bss_idx, link_id, interval, dtim, ret);
++	return ret;
++}
++
++int
++mt7925_mcu_uni_bss_bcnft(struct mt792x_dev *dev,
++			 struct ieee80211_bss_conf *link_conf, bool enable)
++{
++	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
++
+ 	if (link_conf->vif->type != NL80211_IFTYPE_STATION)
+ 		return 0;
+ 
+-	ret = mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
+-				 &bcnft_req, sizeof(bcnft_req), true);
+-	trace_mt7925_lab_bss_bcnft(mconf->mt76.idx, link_conf->link_id, link_conf->beacon_int, link_conf->dtim_period, ret);
+-	return ret;
+-}
+-
+-int
+-mt7925_mcu_set_bss_pm(struct mt792x_dev *dev,
+-		      struct ieee80211_bss_conf *link_conf,
+-		      bool enable)
+-{
+-	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+-	struct {
+-		struct {
+-			u8 bss_idx;
+-			u8 pad[3];
+-		} __packed hdr;
+-		struct bcnft_tlv {
+-			__le16 tag;
+-			__le16 len;
+-			__le16 bcn_interval;
+-			u8 dtim_period;
+-			u8 bmc_delivered_ac;
+-			u8 bmc_triggered_ac;
+-			u8 pad[3];
+-		} __packed enable;
+-	} req = {
+-		.hdr = {
+-			.bss_idx = mconf->mt76.idx,
+-		},
+-		.enable = {
+-			.tag = cpu_to_le16(UNI_BSS_INFO_BCNFT),
+-			.len = cpu_to_le16(sizeof(struct bcnft_tlv)),
+-			.dtim_period = link_conf->dtim_period,
+-			.bcn_interval = cpu_to_le16(link_conf->beacon_int),
+-		},
+-	};
++	return mt7925_mcu_bcnft(dev, mconf->mt76.idx, link_conf->link_id,
++			       link_conf->beacon_int, link_conf->dtim_period);
++}
++
++static int
++mt7925_mcu_bss_pm_disable(struct mt792x_dev *dev, u8 bss_idx)
++{
+ 	struct {
+ 		struct {
+ 			u8 bss_idx;
+@@ -2101,22 +2082,31 @@
+ 		} __packed disable;
+ 	} req1 = {
+ 		.hdr = {
+-			.bss_idx = mconf->mt76.idx,
++			.bss_idx = bss_idx,
+ 		},
+ 		.disable = {
+ 			.tag = cpu_to_le16(UNI_BSS_INFO_PM_DISABLE),
+ 			.len = cpu_to_le16(sizeof(struct pm_disable))
+ 		},
+ 	};
++	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
++				 &req1, sizeof(req1), true);
++}
++
++int
++mt7925_mcu_set_bss_pm(struct mt792x_dev *dev,
++		      struct ieee80211_bss_conf *link_conf,
++		      bool enable)
++{
++	struct mt792x_bss_conf *mconf = mt792x_link_conf_to_mconf(link_conf);
+ 	int err;
+ 
+-	err = mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
+-				&req1, sizeof(req1), true);
++	err = mt7925_mcu_bss_pm_disable(dev, mconf->mt76.idx);
+ 	if (err < 0 || !enable)
+ 		return err;
+ 
+-	return mt76_mcu_send_msg(&dev->mt76, MCU_UNI_CMD(BSS_INFO_UPDATE),
+-				 &req, sizeof(req), true);
++	return mt7925_mcu_bcnft(dev, mconf->mt76.idx, link_conf->link_id,
++			       link_conf->beacon_int, link_conf->dtim_period);
+ }
+ 
+ static void
+@@ -2632,19 +2622,51 @@
+ {
+ #define MT7925_FIF_BIT_CLR		BIT(1)
+ #define MT7925_FIF_BIT_SET		BIT(0)
++	struct mt792x_vif *mvif = (void *)vif->drv_priv;
++	struct ieee80211_bss_conf *link_conf;
++	u8 bss_idx = mvif->bss_conf.mt76.idx;
++	u8 link_id, dtim;
++	u16 interval;
+ 	int err = 0;
+ 
+ 	if (enable) {
+-		err = mt7925_mcu_uni_bss_bcnft(dev, &vif->bss_conf, true);
+-		if (err < 0)
+-			return err;
++		if (vif->type == NL80211_IFTYPE_STATION) {
++			/* Runtime-PM debugfs callers hold the device mutex,
++			 * not necessarily the wiphy lock. Snapshot only the
++			 * required link fields under RCU, then send the MCU
++			 * command without holding the RCU read lock.
++			 */
++			rcu_read_lock();
++			if (ieee80211_vif_is_mld(vif)) {
++				link_id = mvif->deflink_id;
++				if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS) {
++					rcu_read_unlock();
++					return -ENOLINK;
++				}
++				link_conf = rcu_dereference(vif->link_conf[link_id]);
++			} else {
++				link_conf = &vif->bss_conf;
++				link_id = link_conf->link_id;
++			}
++			if (!link_conf) {
++				rcu_read_unlock();
++				return -ENOLINK;
++			}
++			interval = READ_ONCE(link_conf->beacon_int);
++			dtim = READ_ONCE(link_conf->dtim_period);
++			rcu_read_unlock();
++			err = mt7925_mcu_bcnft(dev, bss_idx, link_id,
++					       interval, dtim);
++			if (err < 0)
++				return err;
++		}
+ 
+ 		return mt7925_mcu_set_rxfilter(dev, 0,
+ 					       MT7925_FIF_BIT_SET,
+ 					       MT_WF_RFCR_DROP_OTHER_BEACON);
+ 	}
+ 
+-	err = mt7925_mcu_set_bss_pm(dev, &vif->bss_conf, false);
++	err = mt7925_mcu_bss_pm_disable(dev, bss_idx);
+ 	if (err < 0)
+ 		return err;
+ 
