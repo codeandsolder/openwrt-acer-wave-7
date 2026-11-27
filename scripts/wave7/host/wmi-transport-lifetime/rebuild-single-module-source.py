@@ -47,7 +47,7 @@ def main():
         raise ValueError(f'unexpected input delta: {changed}')
     objects = [Path(p) for p in (tree / module.with_suffix('.mod')).read_text().splitlines() if p]
     if source.with_suffix('.o') not in objects:
-        raise ValueError('missing TX object from module inventory')
+        raise ValueError('missing selected object from module inventory')
     old_symvers = digest(parent / 'Module.symvers')
     for target in [source.with_suffix('.o'), module.with_suffix('.o'), Path('Module.symvers'), module.with_suffix('.mod.o'), module.with_suffix('.ko')]:
         cmdfile = tree / target.parent / ('.' + target.name + '.cmd')
