@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 import subprocess
+import re
 
 
 def main():
@@ -14,13 +15,15 @@ def main():
     start = text.index('int ath12k_mac_mgmt_tx(struct ath12k *ar, struct sk_buff *skb,')
     end = text.index('EXPORT_SYMBOL(ath12k_mac_mgmt_tx);', start)
     actual = text[start:end]
+    core = a.source.with_name('core.h').read_text()
+    constants = '\n'.join(re.search(r'^#define\s+' + name + r'\s+[^\n]+', core, re.M).group(0) for name in (
+        'ATH12K_TX_MGMT_NUM_PENDING_MAX', 'ATH12K_TX_MGMT_TARGET_MAX_SUPPORT_WMI', 'ATH12K_PRB_RSP_DROP_THRESHOLD'))
     shim = r'''#include <assert.h>
 #include <stdbool.h>
 #include <errno.h>
 #include <stdio.h>
 #define ATH12K_FLAG_CRASH_FLUSH 0
-#define ATH12K_PRB_RSP_DROP_THRESHOLD 32
-#define ATH12K_TX_MGMT_NUM_PENDING_MAX 512
+/* CONSTANTS */
 struct base { unsigned long dev_flags; };
 struct sk_buff { int unused; };
 struct sk_buff_head { unsigned qlen; int lock; };
@@ -58,7 +61,7 @@ static __attribute__((unused)) void skb_queue_tail(struct sk_buff_head *q, struc
 /* ACTUAL */
 int main(void) {
     unsigned cases=0;
-    for (unsigned q=0;q<=512;q++)
+    for (unsigned q=0;q<=ATH12K_TX_MGMT_NUM_PENDING_MAX;q++)
         for (unsigned extra=0;extra<=2;extra++)
             for (unsigned probe=0;probe<2;probe++)
                 for (unsigned crash=0;crash<2;crash++)
@@ -66,7 +69,7 @@ int main(void) {
                         struct base b={crash}; struct ath12k ar={.ab=&b,.wmi_mgmt_tx_queue={q,0},.num_pending_mgmt_tx=(int)(q+extra)};
                         struct sk_buff skb={0}; active=&ar; eager=fast; published=false; underflow=0;
                         int old=ar.num_pending_mgmt_tx;
-                        int expected=crash?-ESHUTDOWN:((probe && old>32)||q>=512)?-ENOSPC:0;
+                        int expected=crash?-ESHUTDOWN:((probe && old>ATH12K_PRB_RSP_DROP_THRESHOLD)||q>=ATH12K_TX_MGMT_NUM_PENDING_MAX)?-ENOSPC:0;
                         int result=ath12k_mac_mgmt_tx(&ar,&skb,probe);
                         assert(result==expected && !ar.wmi_mgmt_tx_queue.lock && !underflow);
                         assert(ar.num_pending_mgmt_tx==old+(expected==0 && !fast));
@@ -78,7 +81,7 @@ int main(void) {
 '''
     a.output.mkdir(parents=True, exist_ok=True)
     c, obj, exe = (a.output / f'mgmt-publication{suffix}' for suffix in ('.c','.o',''))
-    c.write_text(shim.replace('/* ACTUAL */', actual))
+    c.write_text(shim.replace('/* CONSTANTS */', constants).replace('/* ACTUAL */', actual))
     subprocess.run(['/usr/local/bin/sccache', 'cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-c', str(c), '-o', str(obj)], check=True)
     subprocess.run(['cc', str(obj), '-o', str(exe)], check=True)
     subprocess.run([str(exe)], check=True)
