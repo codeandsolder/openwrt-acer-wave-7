@@ -187,6 +187,92 @@ def data_token_submissions(text):
     return submissions, unmatched_free
 
 
+def teardown_tx_windows(control, lifecycle, windows):
+    """Match protected deauth/disassoc descriptors and status in local time.
+
+    A successful TX status is not itself proof that the AP retired the peer.
+    ROC evidence is positive-only because lifecycle and control are separate
+    streams; a missing grant must not be interpreted as a rejected grant.
+    """
+    events = []
+    for line in control.splitlines():
+        m = LINE.search(line)
+        if m and m[2] in {'mt7925_lab_mgmt_txd', 'mt7925_lab_mgmt_txs',
+                          'mt7925_lab_mgmt_tx_free'}:
+            f = dict(FIELD.findall(m[3]))
+            fc = int(f['fc'], 16)
+            if fc & 0x4000 and fc & 0x00fc in (0x00a0, 0x00c0):
+                events.append((float(m[1]), m[2], f))
+    rows, latest, unmatched = [], {}, []
+    for t, name, f in sorted(events, key=lambda e: e[0]):
+        cookie = f['cookie']
+        key = (cookie, f['seq'], f['fc'])
+        if name == 'mt7925_lab_mgmt_txd':
+            require(cookie not in {'0000000000000000', '(null)'}, 'invalid management cookie')
+            require(key not in latest or 'return' in latest[key], 'duplicate live teardown descriptor')
+            row = dict(f, submitted_at=t)
+            rows.append(row)
+            latest[key] = row
+            continue
+        row = latest.get(key)
+        if row is None:
+            unmatched.append(dict(f, event=name, time=t))
+            continue
+        if name == 'mt7925_lab_mgmt_tx_free':
+            require('return' not in row and f['desc_wcid'] == row['wcid'],
+                    'duplicate/mismatched teardown return')
+            header = int(f['header'], 16)
+            row['return'] = dict(f, time=t, latency_ms=round((t-row['submitted_at'])*1000, 3),
+                                 count=(header >> 24) & 15 if f['header_valid'] == '1' else None)
+        else:
+            require(f['wcid'] == row['wcid'] and f['link'] == row['link'], 'teardown TXS identity mismatch')
+            row.setdefault('tx_status', []).append(dict(f, time=t,
+                latency_ms=round((t-row['submitted_at'])*1000, 3)))
+    grants = []
+    active = {}
+    if lifecycle:
+        events = []
+        for line in lifecycle.splitlines():
+            m = LINE.search(line)
+            if m and m[2] in {'mt7925_lab_roc_wire', 'mt7925_lab_roc_sync', 'mt7925_lab_roc_abort'}:
+                events.append((float(m[1]), m[2], dict(FIELD.findall(m[3]))))
+        for t, name, f in sorted(events, key=lambda e: e[0]):
+            key = (f['bss'], f['token'])
+            if name == 'mt7925_lab_roc_wire':
+                # Any new grant using this token invalidates an old generation.
+                active.pop(key, None)
+                if f['type'] == '2' and f['status'] == '0' and f['token'] == f['expected']:
+                    row = dict(f, granted_at=t)
+                    active[key] = row
+                    grants.append(row)
+            elif name == 'mt7925_lab_roc_sync':
+                if key in active and f['phase'] == '1' and f['granted'] == '1' and f['result'] == '0':
+                    active[key]['confirmed_at'] = t
+            elif key in active:
+                row = active.pop(key)
+                row['abort'] = dict(f, time=t)
+    for row in rows:
+        t = row['submitted_at']
+        # A grant must be confirmed before TX and have a matching successful
+        # exact-band abort after it. Never guess which of multiple grants owns TX.
+        candidates = [g for g in grants if g.get('confirmed_at', float('inf')) <= t
+                      and g['dbdc'] == row['band'] and 'abort' in g
+                      and g['abort']['time'] >= t and g['abort']['band'] == row['band']
+                      and g['abort']['result'] == '0']
+        row['privilege_witness'] = candidates[0] if len(candidates) == 1 else None
+        row['privilege_candidates'] = len(candidates)
+        row['acked'] = any(x['ack_error'] == '0' for x in row.get('tx_status', []))
+    per_window = []
+    for w in windows:
+        matches = [r for r in rows if w['authorized_at'] <= r['submitted_at'] < w['observed_until']]
+        per_window.append({'authorized_at': w['authorized_at'], 'frames': matches,
+                           'acked': sum(r['acked'] for r in matches),
+                           'zero_attempts': sum(r.get('return', {}).get('count') == 0 for r in matches)})
+    return {'windows': per_window, 'unassigned': [r for r in rows if not any(
+            w['authorized_at'] <= r['submitted_at'] < w['observed_until'] for w in windows)],
+            'unmatched': unmatched}
+
+
 def token_windows(text, windows):
     submissions, unmatched_free = data_token_submissions(text)
     result = []
@@ -903,6 +989,22 @@ def selftest():
     assert retired["chanctx_unassignments"][0]["skipped"] == 1
     assert band_retirement_windows(late.replace("mt7925_lab_sta_result", "other"),
                                    ctl, retire_window)[0]["late_active_bss_updates"] is None
+    f = "cookie=0000000012345678 fc=0x40c0 seq=16"
+    teardown = (line(10.2, "mt7925_lab_mgmt_txd", f + " wcid=2 link=0 band=1")
+                + line(10.201, "mt7925_lab_mgmt_txs", f + " wcid=2 link=0 band=1 ack_error=0")
+                + line(10.202, "mt7925_lab_mgmt_tx_free", f + " desc_wcid=2 header_valid=1 header=41000000")
+                + line(20.2, "mt7925_lab_mgmt_txd", f + " wcid=2 link=0 band=1")
+                + line(20.4, "mt7925_lab_mgmt_tx_free", f + " desc_wcid=2 header_valid=1 header=40000000"))
+    grant = (line(10.1, "mt7925_lab_roc_wire", "bss=0 token=1 expected=1 type=2 status=0 dbdc=1")
+             + line(10.11, "mt7925_lab_roc_sync", "bss=0 token=1 phase=1 granted=1 result=0")
+             + line(10.3, "mt7925_lab_roc_abort", "bss=0 token=1 band=1 result=0"))
+    txs = teardown_tx_windows(teardown, grant, result)["windows"]
+    assert txs[0]["acked"] == 1 and txs[0]["zero_attempts"] == 0
+    assert txs[0]["frames"][0]["privilege_witness"]["token"] == "1"
+    assert txs[1]["acked"] == 0 and txs[1]["zero_attempts"] == 1
+    assert txs[1]["frames"][0]["privilege_witness"] is None
+    assert teardown_tx_windows(teardown, grant.replace("dbdc=1", "dbdc=0"),
+                               result)["windows"][0]["frames"][0]["privilege_witness"] is None
     print("RECONNECT_DATAPATH_SELFTEST_PASS")
 
 
@@ -930,6 +1032,7 @@ if __name__ == "__main__":
                                        args.allow_open_ap_peer and side == "ap")
             if side == "client":
                 result["wtbl_bindings"] = wtbl_pair_bindings(result[side])
+                lifecycle = None
                 lifecycle_name = f"band-{args.band}.client-trace.txt"
                 if lifecycle_name in sealed:
                     lifecycle = (args.trial / lifecycle_name).read_text()
@@ -938,6 +1041,8 @@ if __name__ == "__main__":
                         lifecycle, text, result[side])
                     result["band_group_refresh"] = band_group_refresh_windows(
                         lifecycle, text, result[side])
+                if "mt7925_lab_mgmt_txd:" in text:
+                    result["teardown_tx"] = teardown_tx_windows(text, lifecycle, result[side])
             if side == "client" and "mt7925_lab_mld_record_result:" in text:
                 result["mld_records"] = mld_records(text)
                 result["mld_lifetimes"] = mld_lifetimes(result["mld_records"], result[side], text)

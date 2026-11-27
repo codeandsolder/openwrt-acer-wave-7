@@ -52,7 +52,13 @@ def selftest():
     print('WBM_QUALIFICATION_SELFTEST_PASS')
 
 
-def verified(path, boot, band, reconnect):
+RECONNECT_VARIANTS = {
+    'band-group-refresh': 'upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace',
+    'teardown-privilege': 'upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace',
+}
+
+
+def verified(path, boot, band, reconnect, reconnect_variant='band-group-refresh'):
     names = seal(path)
     prefix = f'band-{band}'
     required = {'status', 'client-restore-status.txt', 'client-original-after.txt', 'client-variant.txt',
@@ -64,7 +70,7 @@ def verified(path, boot, band, reconnect):
     require('verified=1' in (path / 'client-restore-status.txt').read_text().splitlines(), 'restore not verified')
     require('STACK_ORIGINAL_PASS' in (path / 'client-original-after.txt').read_text(), 'original stack not attested')
     require((path / f'{prefix}.client-exit.txt').read_text().strip() == '0', 'client exit failed')
-    variant = 'upstream-prefix22-authorize-delayed-links-reconnect-band-group-refresh-trace' if reconnect else 'upstream-prefix22-authorize-single-link-trace'
+    variant = RECONNECT_VARIANTS[reconnect_variant] if reconnect else 'upstream-prefix22-authorize-single-link-trace'
     require((path / 'client-variant.txt').read_text().strip() == variant, 'wrong client variant')
     rings = []
     for kind in ('tx-ring-delta', 'qcn-tx-ring-delta'):
@@ -138,7 +144,8 @@ def verified(path, boot, band, reconnect):
         require(all(row['complete_pair'] is True for row in bindings), 'incomplete WTBL pair')
         require(all(row['membership_matches'] is True and row['record_retired'] is True for row in memberships),
                 'scheduler membership/retirement incomplete')
-        refresh = helpers['band_group_refresh_windows']((path / lifecycle).read_text(), client_trace, cw)
+        lifecycle_trace = (path / lifecycle).read_text()
+        refresh = helpers['band_group_refresh_windows'](lifecycle_trace, client_trace, cw)
         require(all(all(move['group_refresh_before_sta'] for move in row['migrations']) for row in refresh),
                 'BSS group refresh not acknowledged before station MLD update')
         if band == '24':
@@ -148,6 +155,28 @@ def verified(path, boot, band, reconnect):
                                'wtbl_complete': [row['complete_pair'] for row in bindings],
                                'scheduler_retired': [row['record_retired'] for row in memberships],
                                'band_migrations': [len(row['migrations']) for row in refresh]}
+        if reconnect_variant == 'teardown-privilege':
+            require(not any(row['right_censored'] for row in aw), 'AP peer not retired')
+            evidence = helpers['teardown_tx_windows'](client_trace, lifecycle_trace, cw)
+            require(not evidence['unassigned'] and not evidence['unmatched'],
+                    'unassigned teardown TX evidence')
+            result['teardown'] = []
+            for w, row in zip(cw, evidence['windows'], strict=True):
+                require(len(row['frames']) == row['acked'] == 1 and row['zero_attempts'] == 0,
+                        'protected teardown not acknowledged exactly once')
+                frame = row['frames'][0]
+                grant = frame['privilege_witness']
+                require(grant and frame.get('return', {}).get('count', 0) > 0,
+                        'missing exact-band grant or token return')
+                peers = [p for p in w['wtbl'] if p['stage'] == 7
+                         and p['wcid'] == int(frame['wcid']) and p['link'] == int(frame['link'])]
+                require(len(peers) == 1 and peers[0]['bss'] == int(grant['bss'])
+                        and peers[0]['host_band'] == int(grant['dbdc']),
+                        'grant does not belong to teardown peer')
+                result['teardown'].append(dict(ack_ms=min(t['latency_ms'] for t in frame['tx_status']
+                                                        if t['ack_error'] == '0'),
+                                                token_ms=frame['return']['latency_ms'],
+                                                band=int(grant['dbdc']), bss=int(grant['bss'])))
     else:
         require(read('short-hold-result.txt') == 'short_hold_all_replies=1', 'group test hold failed')
     result['holds'] = []
@@ -165,6 +194,7 @@ def main():
     p.add_argument('boot', nargs='?')
     p.add_argument('--selftest', action='store_true')
     p.add_argument('group', type=Path, nargs='?')
+    p.add_argument('--reconnect-variant', choices=RECONNECT_VARIANTS, default='band-group-refresh')
     p.add_argument('--reconnect24', type=Path)
     p.add_argument('--reconnect5', type=Path)
     a = p.parse_args()
@@ -177,7 +207,7 @@ def main():
     results = [verified(a.group, a.boot, '24', False)] if a.group else []
     for band, path in [('24', a.reconnect24), ('5', a.reconnect5)]:
         if path:
-            results.append(verified(path, a.boot, band, True))
+            results.append(verified(path, a.boot, band, True, a.reconnect_variant))
     print(json.dumps(results, indent=2))
 
 
