@@ -28,6 +28,8 @@ reconnect_count=1
 reconnect_datapath=0
 ap_irq_spread=0
 ap_aql=none
+ap_pmu=0
+ap_pmu_dir=""
 ap_ring3_probe=0
 ap_link_stats=0
 ap_link_tool=""
@@ -59,6 +61,7 @@ for arg in "$@"; do
         --client-reconnect-twice) dual_hold=1; dual_reconnect=1; reconnect_count=2 ;;
         --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
+        --ap-pmu) ap_pmu=1 ;;
         --ap-aql-on|--ap-aql-off)
             [[ $ap_aql == none ]] || fail 'one AQL profile'
             if [[ $arg == --ap-aql-on ]]; then ap_aql=1; else ap_aql=0; fi ;;
@@ -143,6 +146,7 @@ boundary_profiles=()
 if (( dhcp_boundaries )); then boundary_profiles+=(dhcp4); fi
 if (( icmp_boundaries )); then boundary_profiles+=(echo4); fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
+if (( ap_pmu && !dual_load )); then fail "PMU profile requires isolated TCP load trial"; fi
 if [[ $ap_aql != none ]] && (( !dual_load )); then fail "AQL profile requires isolated TCP load trial"; fi
 if (( ap_ring3_probe )); then
     [[ ${#bands[@]} == 1 && ${bands[0]} == 24 && $variant == upstream-prefix22-authorize-single-link-trace ]] || fail "ring3 probe requires single-link 2.4 GHz case"
@@ -174,6 +178,17 @@ fi
 helper=$(dirname "$(realpath "$0")")/ap-control-trace.sh
 delta_helper=$(dirname "$helper")/rx-counter-delta.py
 [[ -r $helper && -r $delta_helper ]] || fail 'missing AP evidence helper'
+if (( ap_pmu )); then
+    pmu_dir=$(dirname "$helper")
+    pmu_binary="$pmu_dir/pmu-counter-arm64"
+    [[ -f $pmu_binary && ! -L $pmu_binary && -f $pmu_dir/pmu-counter.sha256 ]] ||
+        fail 'missing immutable PMU observer'
+    pmu_hash=$(sha256sum "$pmu_binary" | cut -d' ' -f1)
+    [[ $(cat "$pmu_dir/pmu-counter.sha256") == "$pmu_hash  pmu-counter-arm64" ]] ||
+        fail 'PMU observer pin'
+    pmu_notes=$(jq -er '.kernel_notes_sha256 | select(test("^[a-f0-9]{64}$"))' "$manifest") ||
+        fail 'PMU requires attested diagnostic kernel'
+fi
 if (( ${#boundary_profiles[@]} )); then
     boundary_dir=$(dirname "$helper")
     boundary_arm="$boundary_dir/packet-boundary-arm64"
@@ -386,6 +401,7 @@ boundary_errors=()
 load_client_pid=''
 ap_irq_pid=''
 ap_aql_pid=''
+ap_pmu_pid=''
 restore_client(){
     local deadline=$((SECONDS + $1)) request_rc=0
     local check="sudo -n bash $client/client-module-stack.sh $variant --check-original"
@@ -430,6 +446,10 @@ cleanup(){
     for pid in "${boundary_pids[@]}"; do wait "$pid" || :; done
     if [[ -n $ap_irq_pid ]]; then wait "$ap_irq_pid" || rc=1; fi
     if [[ -n $ap_aql_pid ]]; then wait "$ap_aql_pid" || rc=1; fi
+    if [[ -n $ap_pmu_pid ]]; then wait "$ap_pmu_pid" || rc=1; fi
+    if [[ -n $ap_pmu_dir ]]; then
+        remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_pmu_dir/pmu'; rmdir '$ap_pmu_dir'" || rc=1
+    fi
     if [[ -n $ap_link_tool ]]; then
         remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_link_tool/iw'; rmdir '$ap_link_tool'" || rc=1
     fi
@@ -466,6 +486,14 @@ if (( ap_link_stats )); then
     ap_link_tool=$(remote 'mktemp -d /tmp/wave7-iw.XXXXXX')
     [[ $ap_link_tool =~ ^/tmp/wave7-iw[.][a-zA-Z0-9]{6}$ ]] || fail 'link stats temporary path'
     remote_stream "set -eu; cat > '$ap_link_tool/iw'; [ \"\$(sha256sum '$ap_link_tool/iw' | cut -d' ' -f1)\" = '$digest' ]; chmod 700 '$ap_link_tool/iw'" < "$tool"
+fi
+if (( ap_pmu )); then
+    [[ $(remote 'sha256sum /sys/kernel/notes') == "$pmu_notes  /sys/kernel/notes" ]] ||
+        fail 'PMU running kernel identity'
+    ap_pmu_dir=$(remote 'mktemp -d /tmp/wave7-pmu.XXXXXX')
+    [[ $ap_pmu_dir =~ ^/tmp/wave7-pmu[.][a-zA-Z0-9]{6}$ ]] || fail 'PMU temporary path'
+    remote_stream "set -eu; cat > '$ap_pmu_dir/pmu'; [ \"\$(sha256sum '$ap_pmu_dir/pmu' | cut -d' ' -f1)\" = '$pmu_hash' ]; chmod 700 '$ap_pmu_dir/pmu'" < "$pmu_binary"
+    printf '%s  pmu-counter-arm64\n' "$pmu_hash" > "$out/pmu-counter.sha256"
 fi
 active=1
 wyse "sudo -n bash $client/client-module-stack.sh $variant --activate" > "$out/client-activate.txt" 2>&1
@@ -522,6 +550,16 @@ for band in "${bands[@]}"; do
         until [[ -s $prefix.ap-aql-profile.txt ]] && rg -q '^AQL_PROFILE_READY ' "$prefix.ap-aql-profile.txt"; do
             kill -0 "$ap_aql_pid" 2>/dev/null || fail 'AQL profile failed'
             (( SECONDS < deadline )) || fail 'AQL profile readiness timeout'
+            sleep .25
+        done
+    fi
+    if (( ap_pmu )); then
+        remote "exec '$ap_pmu_dir/pmu' '$boot'" > "$prefix.ap-pmu-profile.txt" 2>&1 &
+        ap_pmu_pid=$!
+        deadline=$((SECONDS + 15))
+        until [[ -s $prefix.ap-pmu-profile.txt ]] && rg -qx "PMU_READY boot=$boot cpus=4 seconds=335" "$prefix.ap-pmu-profile.txt"; do
+            kill -0 "$ap_pmu_pid" 2>/dev/null || fail 'PMU observer failed'
+            (( SECONDS < deadline )) || fail 'PMU observer readiness timeout'
             sleep .25
         done
     fi
@@ -805,6 +843,11 @@ for band in "${bands[@]}"; do
         wait "$ap_aql_pid" || cases_failed=1
         ap_aql_pid=''
         rg -qx 'AQL_PROFILE_END rc=0' "$prefix.ap-aql-profile.txt" || cases_failed=1
+    fi
+    if (( ap_pmu )); then
+        wait "$ap_pmu_pid" || cases_failed=1
+        ap_pmu_pid=''
+        rg -qx 'PMU_END rc=0' "$prefix.ap-pmu-profile.txt" || cases_failed=1
     fi
     if ! guard; then
         echo "AP_FAULT_AFTER_BAND_$band"

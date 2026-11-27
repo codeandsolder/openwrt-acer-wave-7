@@ -426,6 +426,16 @@ def main():
         boots = {result[mode]["radio"]["boot"] for mode in MODES}
         require(len(boots) == 1, "load phases crossed boots")
         result["aql_profile"] = parse_aql_profile(profile.read_text(), boots.pop(), intervals)
+    pmu_profile = Path(f"{prefix}.ap-pmu-profile.txt")
+    if pmu_profile.exists():
+        spec = importlib.util.spec_from_file_location("pmu_profile", Path(__file__).with_name("pmu-profile.py"))
+        pmu = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(pmu)
+        intervals = {mode: (result[mode]["radio"]["start_s"], result[mode]["radio"]["end_s"])
+                     for mode in MODES}
+        boots = {result[mode]["radio"]["boot"] for mode in MODES}
+        require(len(boots) == 1, "PMU load phases crossed boots")
+        result["pmu_profile"] = pmu.parse(pmu_profile.read_text(), boots.pop(), intervals)
     event = re.compile(r"(\d+\.\d+): drv_ampdu_action: .* tid (\d+), ssn (\d+), buf_size (\d+), amsdu (\d+), timeout (\d+) action (\d+)")
     actions = ("rx_start", "rx_stop", "tx_start", "tx_stop_cont",
                "tx_stop_flush", "tx_stop_flush_cont", "tx_operational")
