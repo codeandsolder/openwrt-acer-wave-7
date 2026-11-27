@@ -14,7 +14,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
 +++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
-@@ -257,6 +257,8 @@ int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev,
+@@ -257,6 +257,8 @@
  		hdr = (void *)skb->data;
  	}
  map:
@@ -23,7 +23,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	ti.paddr = dma_map_single(dp->dev, skb->data, skb->len, DMA_TO_DEVICE);
  	if (dma_mapping_error(dp->dev, ti.paddr)) {
  		atomic_inc(&dp->device_stats.tx_err.misc_fail);
-@@ -375,14 +377,11 @@ skip_htt_meta:
+@@ -375,15 +377,12 @@
  
  	ath12k_wifi7_hal_tx_cmd_desc_setup(ab, hal_tcl_desc, &ti);
  
