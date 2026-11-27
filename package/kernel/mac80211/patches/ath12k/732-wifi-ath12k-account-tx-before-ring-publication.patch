@@ -1,0 +1,43 @@
+From: codeandsolder <codeandsolder@gmail.com>
+Subject: [PATCH] wifi: ath12k: account TX before ring publication
+
+Once the TCL producer pointer is published, another CPU can process
+its completion and release the skb. Increment the pending count before
+publication, so a concurrent completion cannot decrement an unaccounted
+packet and miss the wakeup of a flush waiter.
+
+The debug dump also dereferences the skb after publication. Move it
+before the DMA mapping, while the buffer is still CPU-owned; label it as
+an attempted TX because subsequent submission can fail.
+
+Signed-off-by: codeandsolder <codeandsolder@gmail.com>
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -257,6 +257,8 @@ int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev,
+ 		hdr = (void *)skb->data;
+ 	}
+ map:
++	ath12k_dbg_dump(ab, ATH12K_DBG_DP_TX, NULL, "dp tx msdu attempt: ",
++			skb->data, skb->len);
+ 	ti.paddr = dma_map_single(dp->dev, skb->data, skb->len, DMA_TO_DEVICE);
+ 	if (dma_mapping_error(dp->dev, ti.paddr)) {
+ 		atomic_inc(&dp->device_stats.tx_err.misc_fail);
+@@ -375,14 +377,11 @@ skip_htt_meta:
+ 
+ 	ath12k_wifi7_hal_tx_cmd_desc_setup(ab, hal_tcl_desc, &ti);
+ 
++	/* Completions can run on another CPU as soon as the ring is published. */
++	atomic_inc(&dp_pdev->num_tx_pending);
+ 	ath12k_hal_srng_access_end(ab, tcl_ring);
+ 
+ 	spin_unlock_bh(&tcl_ring->lock);
+ 
+-	ath12k_dbg_dump(ab, ATH12K_DBG_DP_TX, NULL, "dp tx msdu: ",
+-			skb->data, skb->len);
+-
+-	atomic_inc(&dp_pdev->num_tx_pending);
+-
+ 	return 0;
+ 
+ fail_unmap_dma_ext:
