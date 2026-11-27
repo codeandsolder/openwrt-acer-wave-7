@@ -266,6 +266,83 @@ def host_exchanges(rows, request_direction, response_direction):
     return exchange_timing(eligible)
 
 
+# AF_PACKET and net_dev_start_xmit observe adjacent points on the same host.
+# Without a shared skb identifier in AF_PACKET this is a timing candidate,
+# not an exact packet identity. Refuse ambiguous candidates rather than
+# picking the nearest one.
+TX_MATCH_RADIUS_S = 0.0005
+
+
+def client_tx_candidates(rows, clocks, trace, helpers, windows):
+    epochs = [e for _, e in clocks]
+    xmits = []
+    for line in trace.splitlines():
+        match = helpers['LINE'].search(line)
+        if not match or match[2] != 'net_dev_start_xmit':
+            continue
+        fields = dict(helpers['FIELD'].findall(match[3]))
+        if fields.get('dev') == 'wlp2s0':
+            xmits.append((float(match[1]), fields))
+    xmits.sort(key=lambda x: x[0])
+    times = [t for t, _ in xmits]
+    by_cookie = {}
+    for i, (_, fields) in enumerate(xmits):
+        by_cookie.setdefault(fields['skbaddr'], []).append(i)
+    submissions, _ = helpers['data_token_submissions'](trace)
+    descriptors = {}
+    for row in submissions:
+        descriptors.setdefault(row['cookie'], []).append(row)
+    proposals = {}
+    for j, packet in enumerate(rows):
+        if packet['direction'] != 'tx':
+            continue
+        epoch = packet['epoch']
+        i = bisect.bisect_right(epochs, epoch) - 1
+        if not 0 <= i < len(clocks)-1:
+            packet['tx_candidate'] = {'status': 'outside_clock_anchors'}
+            continue
+        (m0, e0), (m1, e1) = clocks[i:i+2]
+        mono = m0 + (m1-m0)*(epoch-e0)/(e1-e0)
+        bounds = [w for w in windows if w['authorized_at'] <= mono < w['observed_until']]
+        if len(bounds) != 1:
+            packet['tx_candidate'] = {'status': 'outside_authorized_window'}
+            continue
+        lo = bisect.bisect_left(times, mono-TX_MATCH_RADIUS_S)
+        hi = bisect.bisect_right(times, mono+TX_MATCH_RADIUS_S)
+        indices = [k for k in range(lo, hi) if xmits[k][1]['protocol'] == '0x0800']
+        proposals[j] = (mono, indices, bounds[0])
+    claims = {}
+    for _, indices, _ in proposals.values():
+        for k in indices:
+            claims[k] = claims.get(k, 0) + 1
+    for j, (mono, indices, window) in proposals.items():
+        packet = rows[j]
+        if len(indices) != 1 or claims[indices[0]] != 1:
+            packet['tx_candidate'] = {'status': 'ambiguous_netdev' if indices else 'no_netdev_candidate',
+                                      'candidate_count': len(indices)}
+            continue
+        k = indices[0]
+        t, fields = xmits[k]
+        cookie = fields['skbaddr']
+        reuse = by_cookie[cookie]
+        pos = bisect.bisect_right(reuse, k)
+        limit = min(window['observed_until'],
+                    times[reuse[pos]] if pos < len(reuse) else float('inf'))
+        matching = [d for d in descriptors.get(cookie, [])
+                    if t <= d['submitted_at'] < limit
+                    and d['length'] == fields['len'] and d['protocol'] == fields['protocol']]
+        evidence = {'netdev_at': t, 'clock_delta_us': round((t-mono)*1e6, 3),
+                    'cookie': cookie, 'length': int(fields['len'])}
+        if len(matching) != 1:
+            packet['tx_candidate'] = dict(evidence, status='ambiguous_descriptor' if matching else
+                                          'no_descriptor_candidate', candidate_count=len(matching))
+            continue
+        descriptor = matching[0]
+        packet['tx_candidate'] = dict(evidence, status='matched_candidate',
+                                      host_queue_ms=round((descriptor['submitted_at']-t)*1000, 3),
+                                      descriptor=descriptor)
+
+
 def join_boundaries(wired, client, ap, *, station=None, all_rows=None):
     """Keep local witnesses separate; cross-host epoch is not a causal clock."""
     by_xid = {t['xid']: dict(t, client_packets=[], ap_packets=[]) for t in wired}
@@ -388,6 +465,24 @@ def selftest():
     assert abs(mapped - 15.0) < 1e-8 and 0.009 < error < 0.011
     certain, ambiguous = wire_group_with_uncertainty(packets, (1.0, 0.05), (2.0, 0.05), station)
     assert len(ambiguous) == 1 and len(certain[0]['packets']) == 4
+    helpers = runpy.run_path(str(Path(__file__).with_name('summarize-reconnect-datapath.py')))
+    tx = lambda t, cookie: f'task [000] .... {t:.6f}: net_dev_start_xmit: dev=wlp2s0 skbaddr={cookie} protocol=0x0800 len=329'
+    descriptor = lambda t, cookie: f'task [000] .... {t:.6f}: mt7925_lab_data_txd: cookie={cookie} length=329 protocol=0x0800 wcid=2'
+    a, b = '00000000abcdef01', '00000000abcdef02'
+    rows = [dict(request, epoch=e) for e in [100.5, 101.5, 101.7]]
+    trace = '\n'.join([tx(10.50001, a), descriptor(10.8, a),
+                        tx(11.50001, a), tx(11.70001, b), tx(11.70002, a)])
+    # Keep token pairing independent in the fixture; real trace uses the
+    # production helper and requires a return before a cookie is reused.
+    client_tx_candidates(rows, clocks, trace, helpers,
+                         [{'authorized_at': 10.1, 'observed_until': 11.9}])
+    assert [r['tx_candidate']['status'] for r in rows] == [
+        'matched_candidate', 'no_descriptor_candidate', 'ambiguous_netdev']
+    assert rows[0]['tx_candidate']['host_queue_ms'] == 299.99
+    rows = [dict(request, epoch=100.5), dict(request, epoch=100.50002)]
+    client_tx_candidates(rows, clocks, trace, helpers,
+                         [{'authorized_at': 10.1, 'observed_until': 11.9}])
+    assert all(r['tx_candidate']['status'] == 'ambiguous_netdev' for r in rows)
     print('WIRED_DHCP_SUMMARY_SELFTEST_PASS')
 
 
@@ -414,7 +509,8 @@ def main():
     capture = runpy.run_path(str(Path(__file__).with_name('split-wired-provisioning.py')))
     capture['verify_capture'](read('wired-ndp-status.txt'), read('wired-ndp.txt'), dhcp)
     packets = parse_packets(dhcp)
-    cw = helpers['parse_trace'](read('client-control-trace.txt'), 'client', 1)
+    client_trace = read('client-control-trace.txt')
+    cw = helpers['parse_trace'](client_trace, 'client', 1)
     aw = helpers['parse_trace'](read('ap-control-trace.txt'), 'ap', 1, True)
     require(len(cw) == len(aw), 'authorization windows differ')
     text = read('client-ip6.txt')
@@ -433,6 +529,7 @@ def main():
         for side, iface in (('client', 'wlp2s0'), ('ap', 'ap-mld0')):
             require(not read(f'{side}-dhcp-boundary-error.txt').strip(), 'boundary observer error')
             local[side] = parse_boundary_observer(read(f'{side}-dhcp-boundary.txt'), iface)
+        client_tx_candidates(*local['client'][:2], client_trace, helpers, cw)
     windows = []
     assigned = {'client': 0, 'ap': 0}
     for i, (c, w) in enumerate(zip(cw, aw), 1):
