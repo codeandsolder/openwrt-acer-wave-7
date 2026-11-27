@@ -22,6 +22,7 @@ IDENTITIES = helpers['IDENTITIES']
 MODDIR = helpers['MODDIR']
 RADIO = helpers['RADIO']
 PROFILES = {
+    'mgmt-latency-v2': {'parent_sha': '7917cdefed1b05a76a8b9b59b0f224fc7ffac752469e16b9a5239e8bf02a5378', 'parent_rev': 'r0+38346-a0dabf5ba3-ap-dhcp-guard8', 'modules': {'ath12k.ko': ('c72b4c0c6878e0eff70f5100ffb30857ea09eaa19dd631bfbbdb99a4ca628bdd', '40e5457a6d8ee9fc9b6aeff919417a3e2549c3f89b929b83f9d6ef0745f49410'), 'mac80211.ko': ('3be5c85345b025bdcae2c24b4fd57f5a45e6974ef62086f2bea0c92ad8d722c0', 'e98aec90e52e6f065eefd283da779505a009ab935bc51e5a8cdd8f98fb916b0b')}, 'patch_commit': '058c4e90bc', 'patch_key': 'trial_mgmt_lifetime_trace_fix_commit', 'filename': 'wave7-mgmt-latency-v2-dhcp-guard8-sysupgrade.bin'},
     'mgmt-latency': dict(
         parent_sha='5129cef427c4afbfbfdc1dcf978f46dbaef632c4bdb0b70c99e0568df56dd53b',
         parent_rev='r0+38346-d353bf48ef-ap-dhcp-guard8',
