@@ -40,6 +40,15 @@ PROFILES = {
         patch_commit='c6c3a6bd6e', patch_key='trial_tx_ownership_patch_commit',
         filename='wave7-tx-publish-ownership-dhcp-guard8-sysupgrade.bin',
     ),
+    'wbm-route-tx-ownership': dict(
+        parent_sha='d30dc49c63ec5d3d803f2875b29a68ce6055f3f51ecf7e75a2bedf8346d5157a',
+        parent_rev='r0+38346-6ce0c4af3e-ap-dhcp-guard8',
+        modules={'ath12k_wifi7.ko': (
+            'c9b69a269ebef16fde007aafd4dc1cdcbf646519463754ecf2e1cd8d1dddfd5a',
+            '5a482713899f12a7513d4200e065a164a373aa3eed6794baedfac8e5d513a689')},
+        patch_commit='ca2888f702', patch_key='trial_tx_ownership_patch_commit',
+        filename='wave7-wbm-route-tx-ownership-dhcp-guard8-sysupgrade.bin',
+    ),
     'wbm-route': dict(
         parent_sha='d519a6acb4ec1d88a7a2284528748b69187e4122d668d59c77488948f3165fde',
         parent_rev='r0+38346-8b8a3f32c2-ap-dhcp-guard8',

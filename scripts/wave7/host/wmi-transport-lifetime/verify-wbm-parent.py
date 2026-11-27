@@ -58,7 +58,7 @@ def verified(path, boot, band, reconnect):
         r = physical['correlation']['3']
         require(r['physical'] == 3 and r['rbm'] == 8 and r['queued'] == r['completed'] == rings[0]['rings'][3]['queued'] > 0 and r['tcl_produced_matches'] and r['wbm_consumed_matches'] and r['drained'], 'TCL3 physical proof absent')
     rx = json.loads((path / f'{prefix}.rx-delta.json').read_text())
-    require(set(rx['increments']) == {'ahb-c000000.wifi', 'ahb-soc@0:wifi'} and all(d.get('RX totals/Invalid RBM', 0) == 0 for d in rx['increments'].values()), 'invalid RX RBM increments')
+    require(rx['boot'] == boot and set(rx['increments']) == {'ahb-c000000.wifi', 'ahb-soc@0:wifi'} and all(d.get('RX totals/Invalid RBM', 0) == 0 for d in rx['increments'].values()), 'invalid RX RBM increments')
     tag = (path / f'{prefix}.tag').read_text().strip()
     require(re.fullmatch(r'0498-\d{8}-\d{6}', tag), 'invalid client archive tag')
     with tarfile.open(path / f'{prefix}.client.tar') as tar:
