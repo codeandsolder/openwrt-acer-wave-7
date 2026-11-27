@@ -1,0 +1,65 @@
+--- a/mt7925/lab_trace.h
++++ b/mt7925/lab_trace.h
+@@ -594,6 +594,42 @@
+ 		  __entry->length)
+ );
+ 
++/* Observe host TXD link selection separately from firmware-reported TXS
++ * physical band. Never copy payloads, addresses or packet identifiers. */
++TRACE_EVENT(mt7925_lab_tx_route,
++    TP_PROTO(u16 wcid, u8 link, bool valid, u8 configured_band,
++             u8 descriptor_tgid, bool mld, u8 pid, bool encap, u32 length),
++    TP_ARGS(wcid, link, valid, configured_band, descriptor_tgid,
++            mld, pid, encap, length),
++    TP_STRUCT__entry(
++        __field(u16, wcid)
++        __field(u8, link)
++        __field(bool, valid)
++        __field(u8, configured_band)
++        __field(u8, descriptor_tgid)
++        __field(bool, mld)
++        __field(u8, pid)
++        __field(bool, encap)
++        __field(u32, length)
++    ),
++    TP_fast_assign(
++        __entry->wcid = wcid;
++        __entry->link = link;
++        __entry->valid = valid;
++        __entry->configured_band = configured_band;
++        __entry->descriptor_tgid = descriptor_tgid;
++        __entry->mld = mld;
++        __entry->pid = pid;
++        __entry->encap = encap;
++        __entry->length = length;
++    ),
++    TP_printk("wcid=%u link=%u valid=%u configured_band=%u descriptor_tgid=%u mld=%u pid=%u encap=%u length=%u",
++              __entry->wcid, __entry->link, __entry->valid,
++              __entry->configured_band, __entry->descriptor_tgid,
++              __entry->mld, __entry->pid, __entry->encap,
++              __entry->length)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+--- a/mt7925/mac.c
++++ b/mt7925/mac.c
+@@ -868,6 +868,17 @@
+ 	}
+ 
+ 	mt7925_p2p_txwi_override(dev, txwi, skb);
++
++	/* Descriptor intent at enqueue, before firmware chooses the band.
++	 * Trace only per-peer station skbs; no payload or address capture.
++	 */
++	if (vif && vif->type == NL80211_IFTYPE_STATION && wcid->sta &&
++	    trace_mt7925_lab_tx_route_enabled())
++		trace_mt7925_lab_tx_route(
++			wcid->idx, wcid->link_id, wcid->link_valid,
++			mvif ? mvif->band_idx : MT792x_BAND_AUTO,
++			FIELD_GET(MT_TXD1_TGID, le32_to_cpu(txwi[1])),
++			ieee80211_vif_is_mld(vif), pid, is_8023, skb->len);
+ }
+ EXPORT_SYMBOL_GPL(mt7925_mac_write_txwi);
+ 

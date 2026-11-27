@@ -1,0 +1,382 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -618,6 +618,63 @@
+ 		  __entry->wcid, __entry->freq, __entry->fc, __entry->raw_bss, __entry->encap, __entry->u2m, __entry->data)
+ );
+ 
++TRACE_EVENT(mt7925_lab_roc_geometry,
++	TP_PROTO(u8 slot, u8 token, u8 bss, u8 bw, u8 bw_ap, u8 channel, u8 center, u8 center2, u8 sco, u8 extra),
++	TP_ARGS(slot, token, bss, bw, bw_ap, channel, center, center2, sco, extra),
++	TP_STRUCT__entry(
++		__field(u8, slot)
++		__field(u8, token)
++		__field(u8, bss)
++		__field(u8, bw)
++		__field(u8, bw_ap)
++		__field(u8, channel)
++		__field(u8, center)
++		__field(u8, center2)
++		__field(u8, sco)
++		__field(u8, extra)
++	),
++	TP_fast_assign(
++		__entry->slot = slot;
++		__entry->token = token;
++		__entry->bss = bss;
++		__entry->bw = bw;
++		__entry->bw_ap = bw_ap;
++		__entry->channel = channel;
++		__entry->center = center;
++		__entry->center2 = center2;
++		__entry->sco = sco;
++		__entry->extra = extra;
++	),
++	TP_printk("slot=%u token=%u bss=%u bw=%u bw_ap=%u channel=%u center=%u center2=%u sco=%u extra=%u",
++		  __entry->slot, __entry->token, __entry->bss, __entry->bw, __entry->bw_ap, __entry->channel, __entry->center, __entry->center2, __entry->sco, __entry->extra)
++);
++
++
++TRACE_EVENT(mt7925_lab_key_result,
++ TP_PROTO(u16 wcid, u8 bss, u8 link, int key_link, u8 key_index, u32 cipher, u8 pairwise, u8 add, int result),
++ TP_ARGS(wcid,bss,link,key_link,key_index,cipher,pairwise,add,result),
++ TP_STRUCT__entry(
++  __field(u16,wcid) __field(u8,bss) __field(u8,link) __field(int,key_link)
++  __field(u8,key_index) __field(u32,cipher) __field(u8,pairwise) __field(u8,add) __field(int,result)
++ ),
++ TP_fast_assign(
++  __entry->wcid=wcid; __entry->bss=bss; __entry->link=link; __entry->key_link=key_link;
++  __entry->key_index=key_index; __entry->cipher=cipher; __entry->pairwise=pairwise;
++  __entry->add=add; __entry->result=result;
++ ),
++ TP_printk("wcid=%u bss=%u link=%u key_link=%d key_index=%u cipher=%u pairwise=%u add=%u result=%d",
++  __entry->wcid,__entry->bss,__entry->link,__entry->key_link,__entry->key_index,
++  __entry->cipher,__entry->pairwise,__entry->add,__entry->result)
++);
++
++TRACE_EVENT(mt7925_lab_decap_config,
++ TP_PROTO(u16 wcid, u8 link, u8 enabled),
++ TP_ARGS(wcid,link,enabled),
++ TP_STRUCT__entry(__field(u16,wcid) __field(u8,link) __field(u8,enabled)),
++ TP_fast_assign(__entry->wcid=wcid; __entry->link=link; __entry->enabled=enabled;),
++ TP_printk("wcid=%u link=%u enabled=%u",__entry->wcid,__entry->link,__entry->enabled)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -1285,6 +1285,8 @@
+ 	wcid = &mlink->wcid;
+ 
+ 	hdr_trans->dis_rx_hdr_tran = !test_bit(MT_WCID_FLAG_HDR_TRANS, &wcid->flags);
++	trace_mt7925_lab_decap_config(wcid->idx, wcid->link_id,
++		!hdr_trans->dis_rx_hdr_tran);
+ 	if (test_bit(MT_WCID_FLAG_4ADDR, &wcid->flags)) {
+ 		hdr_trans->to_ds = true;
+ 		hdr_trans->from_ds = true;
+@@ -1475,69 +1477,145 @@
+ 		return ret;
+ 	}
+ 
+-	return mt76_mcu_skb_send_msg(dev, skb, mcu_cmd, true);
++	ret = mt76_mcu_skb_send_msg(dev, skb, mcu_cmd, true);
++	trace_mt7925_lab_key_result(wcid->idx, mconf->mt76.idx, wcid->link_id,
++		key->link_id, key->keyidx, key->cipher,
++		!!(key->flags & IEEE80211_KEY_FLAG_PAIRWISE), cmd == SET_KEY, ret);
++	return ret;
++}
++
++static int
++mt7925_roc_geometry(const struct cfg80211_chan_def *chandef,
++		    struct roc_acquire_tlv *req)
++{
++	int center, center2 = 0, primary40 = 0;
++	u8 bw, band;
++
++	if (!cfg80211_chandef_valid(chandef))
++		return -EINVAL;
++	switch (chandef->width) {
++	case NL80211_CHAN_WIDTH_20_NOHT:
++	case NL80211_CHAN_WIDTH_20:
++	case NL80211_CHAN_WIDTH_40:
++		bw = MT7925_CW_20_40MHZ;
++		break;
++	case NL80211_CHAN_WIDTH_80:
++		bw = MT7925_CW_80MHZ;
++		break;
++	case NL80211_CHAN_WIDTH_160:
++		bw = MT7925_CW_160MHZ;
++		break;
++	case NL80211_CHAN_WIDTH_80P80:
++		bw = MT7925_CW_80P80MHZ;
++		break;
++	case NL80211_CHAN_WIDTH_5:
++		bw = MT7925_CW_5MHZ;
++		break;
++	case NL80211_CHAN_WIDTH_10:
++		bw = MT7925_CW_10MHZ;
++		break;
++	case NL80211_CHAN_WIDTH_320:
++		bw = MT7925_CW_320MHZ;
++		break;
++	default:
++		return -EINVAL;
++	}
++	switch (chandef->chan->band) {
++	case NL80211_BAND_2GHZ:
++		band = 1;
++		break;
++	case NL80211_BAND_5GHZ:
++		band = 2;
++		break;
++	case NL80211_BAND_6GHZ:
++		band = 3;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	center = ieee80211_frequency_to_channel(chandef->center_freq1);
++	if (chandef->center_freq2)
++		center2 = ieee80211_frequency_to_channel(chandef->center_freq2);
++
++	/* SCO describes the secondary 20 MHz channel in the primary
++	 * forty, not the location relative to the entire 80/160/320.
++	 */
++	switch (chandef->width) {
++	case NL80211_CHAN_WIDTH_40:
++	case NL80211_CHAN_WIDTH_80:
++	case NL80211_CHAN_WIDTH_160:
++	case NL80211_CHAN_WIDTH_80P80:
++	case NL80211_CHAN_WIDTH_320:
++		primary40 = cfg80211_chandef_primary(chandef,
++						    NL80211_CHAN_WIDTH_40, NULL);
++		if (primary40 < 0)
++			return -EINVAL;
++		break;
++	default:
++		break;
++	}
++
++	req->band = band;
++	req->control_channel = chandef->chan->hw_value;
++	req->bw = req->bw_from_ap = bw;
++	req->center_chan = req->center_chan_from_ap = center;
++	req->center_chan2 = req->center_chan2_from_ap = center2;
++	req->sco = !primary40 ? 0 :
++		   chandef->chan->center_freq < primary40 ? 1 : 3;
++	return 0;
+ }
+ 
+ int mt7925_mcu_set_mlo_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
+ 			   u16 sel_links, int duration, u8 token_id)
+ {
+-	struct mt792x_vif *mvif = mconf->vif;
+-	struct ieee80211_vif *vif = container_of((void *)mvif,
+-						 struct ieee80211_vif, drv_priv);
++	struct wiphy *wiphy = phy->mt76->hw->wiphy;
++	struct mt792x_vif *mvif;
++	struct ieee80211_vif *vif;
+ 	struct ieee80211_bss_conf *link_conf;
+-	struct ieee80211_channel *chan;
+-	const u8 ch_band[] = {
+-		[NL80211_BAND_2GHZ] = 1,
+-		[NL80211_BAND_5GHZ] = 2,
+-		[NL80211_BAND_6GHZ] = 3,
+-	};
++	struct mt792x_bss_conf *link;
+ 	enum mt7925_roc_req type;
+-	int center_ch, i = 0;
+ 	bool is_AG_band = false;
++	unsigned int i;
++	u8 ids[2];
++	int ret;
+ 	struct {
+-		u8 id;
+-		u8 bss_idx;
+-		u16 tag;
+-		struct mt792x_bss_conf *mconf;
+-		struct ieee80211_channel *chan;
+-	} links[2];
+-
+-	struct {
+-		struct {
+-			u8 rsv[4];
+-		} __packed hdr;
++		u8 hdr[4];
+ 		struct roc_acquire_tlv roc[2];
+-	} __packed req = {
+-			.roc[0].tag = cpu_to_le16(UNI_ROC_NUM),
+-			.roc[0].len = cpu_to_le16(sizeof(struct roc_acquire_tlv)),
+-			.roc[1].tag = cpu_to_le16(UNI_ROC_NUM),
+-			.roc[1].len = cpu_to_le16(sizeof(struct roc_acquire_tlv))
+-	};
+-
+-	struct wiphy *wiphy = phy->mt76->hw->wiphy;
+-
+-	if (!mconf || hweight16(vif->valid_links) < 2 ||
+-	    hweight16(sel_links) != 2)
+-		return -EPERM;
+-
+-	for (i = 0; i < ARRAY_SIZE(links); i++) {
+-		links[i].id = i ? __ffs(~BIT(mconf->link_id) & sel_links) :
+-				 mconf->link_id;
+-		link_conf = mt792x_vif_to_bss_conf(vif, links[i].id);
+-		if (WARN_ON_ONCE(!link_conf))
+-			return -EPERM;
+-
+-		links[i].chan = link_conf->chanreq.oper.chan;
+-		if (WARN_ON_ONCE(!links[i].chan))
+-			return -EPERM;
+-
+-		links[i].mconf = mt792x_vif_to_link(mvif, links[i].id);
+-		links[i].tag = links[i].id == mconf->link_id ?
+-			       UNI_ROC_ACQUIRE : UNI_ROC_SUB_LINK;
+-
+-		is_AG_band |= links[i].chan->band == NL80211_BAND_2GHZ;
+-	}
+-
++	} __packed req = {};
++
++	BUILD_BUG_ON(sizeof(struct roc_acquire_tlv) != 24);
++	if (!mconf || mconf->link_id >= IEEE80211_LINK_UNSPECIFIED)
++		return -EINVAL;
++	mvif = mconf->vif;
++	vif = container_of((void *)mvif, struct ieee80211_vif, drv_priv);
++	if (!ieee80211_vif_is_mld(vif) || hweight16(sel_links) != 2 ||
++	    !(sel_links & BIT(mconf->link_id)) ||
++	    (sel_links & ~vif->valid_links))
++		return -EINVAL;
++
++	ids[0] = mconf->link_id;
++	ids[1] = __ffs(sel_links & ~BIT(ids[0]));
++	for (i = 0; i < ARRAY_SIZE(ids); i++) {
++		struct roc_acquire_tlv *roc = &req.roc[i];
++
++		link_conf = mt792x_vif_to_bss_conf(vif, ids[i]);
++		link = mt792x_vif_to_link(mvif, ids[i]);
++		if (!link_conf || !link || link->link_id != ids[i] ||
++		    (i && link->mt76.idx == req.roc[0].bss_idx))
++			return -EINVAL;
++
++		ret = mt7925_roc_geometry(&link_conf->chanreq.oper, roc);
++		if (ret)
++			return ret;
++		is_AG_band |= roc->band == 1;
++		roc->tag = cpu_to_le16(i ? UNI_ROC_SUB_LINK : UNI_ROC_ACQUIRE);
++		roc->len = cpu_to_le16(sizeof(*roc));
++		roc->bss_idx = link->mt76.idx;
++		roc->tokenid = token_id;
++		roc->maxinterval = cpu_to_le32(duration);
++		roc->extra_info = MT7925_ROC_EXTRA_INFO_MULTI_LINK;
++	}
+ 	if (!(wiphy->iftype_ext_capab[0].mld_capa_and_ops &
+ 	      IEEE80211_MLD_CAP_OP_MAX_SIMUL_LINKS))
+ 		type = is_AG_band ? MT7925_ROC_REQ_MLSR_AG :
+@@ -1545,49 +1623,24 @@
+ 	else
+ 		type = MT7925_ROC_REQ_JOIN;
+ 
+-	for (i = 0; i < ARRAY_SIZE(links) && i < hweight16(vif->active_links); i++) {
+-		if (WARN_ON_ONCE(!links[i].mconf || !links[i].chan))
+-			continue;
+-
+-		chan = links[i].chan;
+-		center_ch = ieee80211_frequency_to_channel(chan->center_freq);
+-		req.roc[i].len = cpu_to_le16(sizeof(struct roc_acquire_tlv));
+-		req.roc[i].tag = cpu_to_le16(links[i].tag);
+-		req.roc[i].tokenid = token_id;
+-		req.roc[i].reqtype = type;
+-		req.roc[i].maxinterval = cpu_to_le32(duration);
+-		req.roc[i].bss_idx = links[i].mconf->mt76.idx;
+-		req.roc[i].control_channel = chan->hw_value;
+-		req.roc[i].bw = CMD_CBW_20MHZ;
+-		req.roc[i].bw_from_ap = CMD_CBW_20MHZ;
+-		req.roc[i].center_chan = center_ch;
+-		req.roc[i].center_chan_from_ap = center_ch;
+-		req.roc[i].center_chan2 = 0;
+-		req.roc[i].center_chan2_from_ap = 0;
+-
+-		/* STR : 0xfe indicates BAND_ALL with enabling DBDC
+-		 * EMLSR : 0xff indicates (BAND_AUTO) without DBDC
+-		 */
+-		req.roc[i].dbdcband = type == MT7925_ROC_REQ_JOIN ? 0xfe : 0xff;
+-
+-		if (chan->hw_value < center_ch)
+-			req.roc[i].sco = 1; /* SCA */
+-		else if (chan->hw_value > center_ch)
+-			req.roc[i].sco = 3; /* SCB */
+-
+-		req.roc[i].band = ch_band[chan->band];
+-	}
+-
+-	for (i = 0; i < ARRAY_SIZE(req.roc); i++)
+-		trace_mt7925_lab_mlo_roc_req(i, le16_to_cpu(req.roc[i].tag),
+-			req.roc[i].bss_idx, req.roc[i].tokenid, req.roc[i].reqtype,
+-			req.roc[i].band, req.roc[i].control_channel,
+-			req.roc[i].dbdcband, le32_to_cpu(req.roc[i].maxinterval),
++	for (i = 0; i < ARRAY_SIZE(req.roc); i++) {
++		struct roc_acquire_tlv *roc = &req.roc[i];
++
++		roc->reqtype = type;
++		roc->dbdcband = type == MT7925_ROC_REQ_JOIN ? 0xfe : 0xff;
++		trace_mt7925_lab_mlo_roc_req(i, le16_to_cpu(roc->tag),
++			roc->bss_idx, token_id, type, roc->band,
++			roc->control_channel, roc->dbdcband, duration,
+ 			sel_links, vif->active_links);
+-	i = mt76_mcu_send_msg(&mvif->phy->dev->mt76, MCU_UNI_CMD(ROC),
+-			      &req, sizeof(req), true);
+-	trace_mt7925_lab_mlo_roc_result(token_id, i);
+-	return i;
++		trace_mt7925_lab_roc_geometry(i, token_id, roc->bss_idx,
++			roc->bw, roc->bw_from_ap, roc->control_channel,
++			roc->center_chan, roc->center_chan2, roc->sco,
++			roc->extra_info);
++	}
++	ret = mt76_mcu_send_msg(&mvif->phy->dev->mt76, MCU_UNI_CMD(ROC),
++			       &req, sizeof(req), true);
++	trace_mt7925_lab_mlo_roc_result(token_id, ret);
++	return ret;
+ }
+ 
+ int mt7925_mcu_set_roc(struct mt792x_phy *phy, struct mt792x_bss_conf *mconf,
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.h b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.h
+@@ -628,7 +628,9 @@
+ 	u8 reqtype;
+ 	__le32 maxinterval;
+ 	u8 dbdcband;
+-	u8 rsv[3];
++	u8 cnm_func_mask;
++	u8 extra_info;
++	u8 rsv;
+ } __packed;
+ 
+ enum ENUM_CMD_TEST_CTRL_ACT {
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h b/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
+@@ -68,6 +68,19 @@
+ 	MT7925_ROC_REQ_MLSR_AA,
+ 	MT7925_ROC_REQ_NUM
+ };
++
++/* Channel-manager width codes differ from CMD_CBW_* in BSS RLM. */
++enum mt7925_roc_width {
++	MT7925_CW_20_40MHZ,
++	MT7925_CW_80MHZ,
++	MT7925_CW_160MHZ,
++	MT7925_CW_80P80MHZ,
++	MT7925_CW_5MHZ,
++	MT7925_CW_10MHZ,
++	MT7925_CW_320MHZ,
++};
++
++#define MT7925_ROC_EXTRA_INFO_MULTI_LINK BIT(0)
+ 
+ enum {
+ 	UNI_EVENT_ROC_GRANT = 0,

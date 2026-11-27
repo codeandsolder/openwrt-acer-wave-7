@@ -1,0 +1,855 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mac80211.c b/drivers/net/wireless/mediatek/mt76/mac80211.c
+--- a/drivers/net/wireless/mediatek/mt76/mac80211.c
++++ b/drivers/net/wireless/mediatek/mt76/mac80211.c
+@@ -1744,7 +1744,9 @@
+ 
+ 	INIT_LIST_HEAD(&wcid->tx_list);
+ 	skb_queue_head_init(&wcid->tx_pending);
++	skb_queue_head_init(&wcid->tx_pending_data);
+ 	skb_queue_head_init(&wcid->tx_offchannel);
++	clear_bit(MT_WCID_FLAG_TX_CREDIT, &wcid->flags);
+ 
+ 	INIT_LIST_HEAD(&wcid->list);
+ 	idr_init(&wcid->pktid);
+@@ -1783,6 +1785,10 @@
+ 	spin_lock(&wcid->tx_pending.lock);
+ 	skb_queue_splice_tail_init(&wcid->tx_pending, &list);
+ 	spin_unlock(&wcid->tx_pending.lock);
++
++	spin_lock(&wcid->tx_pending_data.lock);
++	skb_queue_splice_tail_init(&wcid->tx_pending_data, &list);
++	spin_unlock(&wcid->tx_pending_data.lock);
+ 
+ 	spin_lock(&wcid->tx_offchannel.lock);
+ 	skb_queue_splice_tail_init(&wcid->tx_offchannel, &list);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt76.h b/drivers/net/wireless/mediatek/mt76/mt76.h
+--- a/drivers/net/wireless/mediatek/mt76/mt76.h
++++ b/drivers/net/wireless/mediatek/mt76/mt76.h
+@@ -362,6 +362,7 @@
+ 	MT_WCID_FLAG_4ADDR,
+ 	MT_WCID_FLAG_HDR_TRANS,
+ 	MT_WCID_FLAG_TDLS_PEER,
++	MT_WCID_FLAG_TX_CREDIT,
+ };
+ 
+ #define MT76_N_WCIDS 1088
+@@ -410,6 +411,7 @@
+ 
+ 	struct list_head tx_list;
+ 	struct sk_buff_head tx_pending;
++	struct sk_buff_head tx_pending_data; /* credit-controlled direct data */
+ 	struct sk_buff_head tx_offchannel;
+ 
+ 	struct list_head list;
+@@ -593,6 +595,14 @@
+ 				struct ieee80211_vif *vif,
+ 				struct ieee80211_bss_conf *link_conf,
+ 				struct mt76_vif_link *mlink);
++
++	/* Optional data admission before dequeue. A nonzero ticket reserves
++	 * credit; refund it if no skb is dequeued or submission fails.
++	 * Callbacks must be atomic and must not acquire queue locks.
++	 */
++	bool (*tx_data_reserve)(struct mt76_dev *dev, struct mt76_wcid *wcid,
++				u64 *ticket);
++	void (*tx_data_refund)(struct mt76_dev *dev, u64 ticket);
+ };
+ 
+ struct mt76_channel_state {
+diff --git a/drivers/net/wireless/mediatek/mt76/mt76_connac_mcu.h b/drivers/net/wireless/mediatek/mt76/mt76_connac_mcu.h
+--- a/drivers/net/wireless/mediatek/mt76/mt76_connac_mcu.h
++++ b/drivers/net/wireless/mediatek/mt76/mt76_connac_mcu.h
+@@ -1099,6 +1099,7 @@
+ 	MCU_UNI_EVENT_RDD_REPORT = 0x11,
+ 	MCU_UNI_EVENT_ROC = 0x27,
+ 	MCU_UNI_EVENT_MBMC = 0x28,
++	MCU_UNI_EVENT_BSS_ABSENCE = 0x29,
+ 	MCU_UNI_EVENT_TX_DONE = 0x2d,
+ 	MCU_UNI_EVENT_THERMAL = 0x35,
+ 	MCU_UNI_EVENT_RSSI_MONITOR = 0x41,
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/Makefile b/drivers/net/wireless/mediatek/mt76/mt7925/Makefile
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/Makefile
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/Makefile
+@@ -4,7 +4,7 @@
+ obj-$(CONFIG_MT7925E) += mt7925e.o
+ obj-$(CONFIG_MT7925U) += mt7925u.o
+ 
+-mt7925-common-y := mac.o mcu.o regd.o main.o init.o debugfs.o nan.o lab_trace.o
++mt7925-common-y := mac.o mcu.o regd.o main.o init.o debugfs.o nan.o lab_trace.o absence.o
+ CFLAGS_lab_trace.o := -I$(src)
+ mt7925-common-$(CONFIG_NL80211_TESTMODE) += testmode.o
+ mt7925e-y := pci.o pci_mac.o pci_mcu.o cached_cal.o
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/absence.c b/drivers/net/wireless/mediatek/mt76/mt7925/absence.c
+new file mode 100644
+--- /dev/null
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/absence.c
+@@ -0,0 +1,111 @@
++// SPDX-License-Identifier: BSD-3-Clause-Clear
++#include "mt7925.h"
++#include "mcu.h"
++#include "lab_trace.h"
++
++void mt7925_absence_bind(struct mt792x_dev *dev, struct mt792x_bss_conf *mconf,
++			 unsigned int link_id)
++{
++	spin_lock_bh(&dev->absence_lock);
++	mt792x_absence_register(&dev->absence, mconf->mt76.idx, mconf,
++				mconf->vif, link_id);
++	spin_unlock_bh(&dev->absence_lock);
++}
++
++void mt7925_absence_unbind(struct mt792x_dev *dev, struct mt792x_bss_conf *mconf)
++{
++	spin_lock_bh(&dev->absence_lock);
++	mt792x_absence_unregister(&dev->absence, mconf->mt76.idx, mconf);
++	spin_unlock_bh(&dev->absence_lock);
++	mt76_worker_schedule(&dev->mt76.tx_worker);
++}
++
++void mt7925_absence_unbind_owner(struct mt792x_dev *dev, struct mt792x_vif *mvif)
++{
++	spin_lock_bh(&dev->absence_lock);
++	mt792x_absence_unregister_owner(&dev->absence, mvif);
++	spin_unlock_bh(&dev->absence_lock);
++	mt76_worker_schedule(&dev->mt76.tx_worker);
++}
++
++void mt7925_absence_set_active(struct mt792x_dev *dev,
++			      struct mt792x_bss_conf *mconf, bool active)
++{
++	spin_lock_bh(&dev->absence_lock);
++	mt792x_absence_activate(&dev->absence, mconf->mt76.idx, mconf, active);
++	spin_unlock_bh(&dev->absence_lock);
++	mt76_worker_schedule(&dev->mt76.tx_worker);
++}
++
++void mt7925_absence_set_reset(struct mt792x_dev *dev, bool paused)
++{
++	spin_lock_bh(&dev->absence_lock);
++	mt792x_absence_reset(&dev->absence, paused);
++	spin_unlock_bh(&dev->absence_lock);
++}
++
++void mt7925_absence_event(struct mt792x_dev *dev, struct sk_buff *skb)
++{
++	unsigned int bss;
++	bool absent, changed;
++	u8 quota;
++
++	if (skb->len < sizeof(struct mt7925_mcu_rxd) ||
++	    !mt792x_absence_decode(skb->data + sizeof(struct mt7925_mcu_rxd),
++				   skb->len - sizeof(struct mt7925_mcu_rxd),
++				   &bss, &absent, &quota))
++		return;
++	spin_lock_bh(&dev->absence_lock);
++	changed = mt792x_absence_announce(&dev->absence, bss, absent, quota);
++	spin_unlock_bh(&dev->absence_lock);
++
++	/* Presence of any MLD member or a new quota can release a queue.
++	 * Schedule after releasing the lock, never block MCU RX on tx locks.
++	 */
++	if (changed && (!absent || quota))
++		mt76_worker_schedule(&dev->mt76.tx_worker);
++}
++
++bool mt7925_tx_data_reserve(struct mt76_dev *mdev, struct mt76_wcid *wcid,
++			   u64 *ticket)
++{
++	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
++	struct ieee80211_sta *sta = wcid_to_sta(wcid);
++	struct ieee80211_vif *vif;
++	struct mt792x_sta *msta;
++	bool allowed;
++
++	*ticket = 0;
++	if (!sta || sta->tdls)
++		return true;
++	msta = (void *)sta->drv_priv;
++	if (!msta->vif)
++		return true;
++	vif = container_of((void *)msta->vif, struct ieee80211_vif, drv_priv);
++
++	/* STA uplink data uses the firmware's peer-wide MLD station record.
++	 * AP power-save release, TDLS and NAN are separate scheduling domains.
++	 */
++	if (vif->type != NL80211_IFTYPE_STATION)
++		return true;
++
++	spin_lock_bh(&dev->absence_lock);
++	allowed = mt792x_absence_reserve(&dev->absence, msta->vif, wcid->link_id,
++					wcid->link_valid, ticket);
++	trace_mt7925_lab_credit(wcid->idx, wcid->link_id, allowed, *ticket);
++	spin_unlock_bh(&dev->absence_lock);
++	return allowed;
++}
++EXPORT_SYMBOL_GPL(mt7925_tx_data_reserve);
++
++void mt7925_tx_data_refund(struct mt76_dev *mdev, u64 ticket)
++{
++	struct mt792x_dev *dev = container_of(mdev, struct mt792x_dev, mt76);
++	bool restored;
++
++	spin_lock_bh(&dev->absence_lock);
++	restored = mt792x_absence_refund(&dev->absence, ticket);
++	trace_mt7925_lab_credit_refund(ticket, restored);
++	spin_unlock_bh(&dev->absence_lock);
++}
++EXPORT_SYMBOL_GPL(mt7925_tx_data_refund);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/init.c b/drivers/net/wireless/mediatek/mt76/mt7925/init.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/init.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/init.c
+@@ -258,6 +258,7 @@
+ 	init_waitqueue_head(&dev->pm.wait);
+ 	init_waitqueue_head(&dev->wait);
+ 	spin_lock_init(&dev->pm.txq_lock);
++	spin_lock_init(&dev->absence_lock);
+ 	INIT_DELAYED_WORK(&dev->mphy.mac_work, mt792x_mac_work);
+ 	INIT_DELAYED_WORK(&dev->phy.scan_work, mt7925_scan_work);
+ 	INIT_DELAYED_WORK(&dev->coredump.work, mt7925_coredump_work);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/lab_trace.h
+@@ -248,6 +248,41 @@
+ 		  __entry->bss, __entry->link, __entry->wcid, __entry->pid, __entry->qid, __entry->word1, __entry->word6, __entry->encap, __entry->sta)
+ );
+ 
++TRACE_EVENT(mt7925_lab_credit,
++	TP_PROTO(u16 wcid, u8 link, bool allowed, u64 ticket),
++	TP_ARGS(wcid, link, allowed, ticket),
++	TP_STRUCT__entry(
++		__field(u16, wcid)
++		__field(u8, link)
++		__field(bool, allowed)
++		__field(u64, ticket)
++	),
++	TP_fast_assign(
++		__entry->wcid = wcid;
++		__entry->link = link;
++		__entry->allowed = allowed;
++		__entry->ticket = ticket;
++	),
++	TP_printk("wcid=%u link=%u allowed=%u ticket=%llu",
++		  __entry->wcid, __entry->link, __entry->allowed,
++		  __entry->ticket)
++);
++
++TRACE_EVENT(mt7925_lab_credit_refund,
++	TP_PROTO(u64 ticket, bool restored),
++	TP_ARGS(ticket, restored),
++	TP_STRUCT__entry(
++		__field(u64, ticket)
++		__field(bool, restored)
++	),
++	TP_fast_assign(
++		__entry->ticket = ticket;
++		__entry->restored = restored;
++	),
++	TP_printk("ticket=%llu restored=%u", __entry->ticket,
++		  __entry->restored)
++);
++
+ #endif
+ 
+ #undef TRACE_INCLUDE_PATH
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mac.c
+@@ -1532,6 +1532,7 @@
+ 
+ 	dev_dbg(dev->mt76.dev, "chip reset\n");
+ 	dev->hw_full_reset = true;
++	mt7925_absence_set_reset(dev, true);
+ 	ieee80211_stop_queues(hw);
+ 
+ 	cancel_delayed_work_sync(&dev->mphy.mac_work);
+@@ -1566,6 +1567,7 @@
+ 	}
+ 
+ out:
++	mt7925_absence_set_reset(dev, false);
+ 	dev->hw_full_reset = false;
+ 	pm->suspended = false;
+ 	if (test_bit(MT76_REMOVED, &dev->mphy.state))
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/main.c b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -438,10 +438,13 @@
+ 
+ 	rcu_assign_pointer(dev->mt76.wcid[idx], &mlink->wcid);
+ 
++	mt7925_absence_bind(dev, mconf, link_conf->link_id);
+ 	ret = mt76_connac_mcu_uni_add_dev(&dev->mphy, link_conf, &mconf->mt76,
+ 					  &mlink->wcid, true);
+-	if (ret)
++	if (ret) {
++		mt7925_absence_unbind(dev, mconf);
+ 		goto out;
++	}
+ 
+ 	trace_mt7925_lab_binding(mconf->mt76.idx, link_conf->link_id,
+ 				    mlink->wcid.idx, mlink->wcid.idx,
+@@ -458,6 +461,15 @@
+ 	return ret;
+ }
+ 
++static void
++mt7925_mac_link_bss_remove(struct mt792x_dev *dev,
++			  struct mt792x_bss_conf *mconf,
++			  struct mt792x_link_sta *mlink)
++{
++	mt7925_absence_unbind(dev, mconf);
++	mt792x_mac_link_bss_remove(dev, mconf, mlink);
++}
++
+ static int
+ mt7925_add_interface(struct ieee80211_hw *hw, struct ieee80211_vif *vif)
+ {
+@@ -506,7 +518,8 @@
+ 		dev->nan_vif = NULL;
+ 
+ 	mconf = mt792x_link_conf_to_mconf(&vif->bss_conf);
+-	mt792x_mac_link_bss_remove(dev, mconf, &mvif->sta.deflink);
++	mt7925_mac_link_bss_remove(dev, mconf, &mvif->sta.deflink);
++	mt7925_absence_unbind_owner(dev, mvif);
+ 
+ 	mt792x_mutex_release(dev);
+ }
+@@ -1012,6 +1025,8 @@
+ 
+ 	if (link_sta->sta->tdls)
+ 		set_bit(MT_WCID_FLAG_TDLS_PEER, &mlink->wcid.flags);
++	else if (vif->type == NL80211_IFTYPE_STATION)
++		set_bit(MT_WCID_FLAG_TX_CREDIT, &mlink->wcid.flags);
+ 
+ 	wcid = &mlink->wcid;
+ 	ewma_signal_init(&wcid->rssi);
+@@ -1399,7 +1414,7 @@
+ 		mconf = mt792x_link_conf_to_mconf(link_conf);
+ 
+ 		if (ieee80211_vif_is_mld(vif))
+-			mt792x_mac_link_bss_remove(dev, mconf, mlink);
++			mt7925_mac_link_bss_remove(dev, mconf, mlink);
+ 		else
+ 			mt7925_mcu_add_bss_info(&dev->phy, mconf->mt76.ctx, link_conf,
+ 						link_sta, false);
+@@ -2363,7 +2378,7 @@
+ 			continue;
+ 
+ 		if (mconf != &mvif->bss_conf) {
+-			mt792x_mac_link_bss_remove(dev, mconf, mlink);
++			mt7925_mac_link_bss_remove(dev, mconf, mlink);
+ 			devm_kfree(dev->mt76.dev, mconf);
+ 			devm_kfree(dev->mt76.dev, mlink);
+ 		}
+@@ -2398,7 +2413,7 @@
+ 	}
+ 
+ 	if (hweight16(mvif->valid_links) == 0)
+-		mt792x_mac_link_bss_remove(dev, &mvif->bss_conf,
++		mt7925_mac_link_bss_remove(dev, &mvif->bss_conf,
+ 					   &mvif->sta.deflink);
+ 
+ 	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
+@@ -2425,7 +2440,7 @@
+ 
+ 	/* Restore the legacy BSS after disabling MLO */
+ 	if (old_links && !new_links) {
+-		mt792x_mac_link_bss_remove(dev, &mvif->bss_conf,
++		mt7925_mac_link_bss_remove(dev, &mvif->bss_conf,
+ 					   &mvif->sta.deflink);
+ 		err = mt7925_mac_link_bss_add(dev, &vif->bss_conf,
+ 					      &mvif->sta.deflink);
+@@ -2441,6 +2456,8 @@
+ 
+ free:
+ 	for_each_set_bit(link_id, &add, IEEE80211_MLD_MAX_NUM_LINKS) {
++		if (mconfs[link_id])
++			mt7925_absence_unbind(dev, mconfs[link_id]);
+ 		rcu_assign_pointer(mvif->link_conf[link_id], NULL);
+ 		rcu_assign_pointer(mvif->sta.link[link_id], NULL);
+ 
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -704,6 +704,9 @@
+ 	case MCU_UNI_EVENT_MBMC:
+ 		mt7925_mcu_handle_mbmc_event(dev, skb);
+ 		break;
++	case MCU_UNI_EVENT_BSS_ABSENCE:
++		mt7925_absence_event(dev, skb);
++		break;
+ 	case MCU_UNI_EVENT_SCAN_DONE:
+ 		mt7925_mcu_scan_event(dev, skb);
+ 		return;
+@@ -733,8 +736,11 @@
+ {
+ 	struct mt7925_mcu_rxd *rxd = (struct mt7925_mcu_rxd *)skb->data;
+ 
+-	if (skb_linearize(skb))
++	if (skb_linearize(skb) || skb->len < sizeof(*rxd)) {
++		dev_kfree_skb(skb);
+ 		return;
++	}
++	rxd = (void *)skb->data;
+ 
+ 	if (trace_mt7925_lab_mcu_rx_enabled() && skb->len >= sizeof(*rxd)) {
+ 		const struct mt7925_mcu_rxd *event = (const void *)skb->data;
+@@ -3177,7 +3183,10 @@
+ 
+ 	err = mt76_mcu_skb_send_msg(&dev->mt76, skb,
+ 				    MCU_UNI_CMD(BSS_INFO_UPDATE), true);
+-	return mt76_connac_mcu_bss_deact_err(&dev->mt76, err, enable);
++	err = mt76_connac_mcu_bss_deact_err(&dev->mt76, err, enable);
++	if (!err)
++		mt7925_absence_set_active(dev, mconf, enable);
++	return err;
+ }
+ 
+ int mt7925_mcu_add_bss_info(struct mt792x_phy *phy,
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h b/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mt7925.h
+@@ -283,6 +283,17 @@
+ int mt7925_register_device(struct mt792x_dev *dev);
+ void mt7925_unregister_device(struct mt792x_dev *dev);
+ int mt7925_run_firmware(struct mt792x_dev *dev);
++void mt7925_absence_bind(struct mt792x_dev *dev, struct mt792x_bss_conf *mconf,
++			 unsigned int link_id);
++void mt7925_absence_unbind(struct mt792x_dev *dev, struct mt792x_bss_conf *mconf);
++void mt7925_absence_unbind_owner(struct mt792x_dev *dev, struct mt792x_vif *mvif);
++void mt7925_absence_set_active(struct mt792x_dev *dev,
++			      struct mt792x_bss_conf *mconf, bool active);
++void mt7925_absence_set_reset(struct mt792x_dev *dev, bool paused);
++void mt7925_absence_event(struct mt792x_dev *dev, struct sk_buff *skb);
++bool mt7925_tx_data_reserve(struct mt76_dev *mdev, struct mt76_wcid *wcid,
++			   u64 *ticket);
++void mt7925_tx_data_refund(struct mt76_dev *mdev, u64 ticket);
+ int mt7925_mcu_set_bss_pm(struct mt792x_dev *dev,
+ 			  struct ieee80211_bss_conf *link_conf,
+ 			  bool enable);
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/pci.c b/drivers/net/wireless/mediatek/mt76/mt7925/pci.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/pci.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/pci.c
+@@ -597,6 +597,8 @@
+ 				SURVEY_INFO_TIME_BSS_RX,
+ 		.token_size = MT7925_TOKEN_SIZE,
+ 		.tx_prepare_skb = mt7925e_tx_prepare_skb,
++		.tx_data_reserve = mt7925_tx_data_reserve,
++		.tx_data_refund = mt7925_tx_data_refund,
+ 		.tx_complete_skb = mt76_connac_tx_complete_skb,
+ 		.rx_check = mt7925_rx_check,
+ 		.rx_skb = mt7925_queue_rx_skb,
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/usb.c b/drivers/net/wireless/mediatek/mt76/mt7925/usb.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/usb.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/usb.c
+@@ -167,6 +167,8 @@
+ 				SURVEY_INFO_TIME_RX |
+ 				SURVEY_INFO_TIME_BSS_RX,
+ 		.tx_prepare_skb = mt7925_usb_sdio_tx_prepare_skb,
++		.tx_data_reserve = mt7925_tx_data_reserve,
++		.tx_data_refund = mt7925_tx_data_refund,
+ 		.tx_complete_skb = mt7925_usb_sdio_tx_complete_skb,
+ 		.tx_status_data = mt7925_usb_sdio_tx_status_data,
+ 		.rx_skb = mt7925_queue_rx_skb,
+diff --git a/drivers/net/wireless/mediatek/mt76/mt792x.h b/drivers/net/wireless/mediatek/mt76/mt792x.h
+--- a/drivers/net/wireless/mediatek/mt76/mt792x.h
++++ b/drivers/net/wireless/mediatek/mt76/mt792x.h
+@@ -18,6 +18,8 @@
+ #define MT792x_WTBL_SIZE	20
+ #define MT792x_WTBL_RESERVED	(MT792x_WTBL_SIZE - 1)
+ #define MT792x_WTBL_STA		(MT792x_WTBL_RESERVED - MT792x_MAX_INTERFACES)
++
++#include "mt792x_absence.h"
+ 
+ #define MT792x_CFEND_RATE_DEFAULT	0x49	/* OFDM 24M */
+ #define MT792x_CFEND_RATE_11B		0x03	/* 11B LP, 11M */
+@@ -360,6 +362,9 @@
+ 		u32 size;
+ 		bool reused;
+ 	} cached_cal;
++
++	spinlock_t absence_lock;
++	struct mt792x_absence_state absence;
+ };
+ 
+ static inline struct mt792x_bss_conf *
+diff --git a/drivers/net/wireless/mediatek/mt76/mt792x_absence.h b/drivers/net/wireless/mediatek/mt76/mt792x_absence.h
+new file mode 100644
+--- /dev/null
++++ b/drivers/net/wireless/mediatek/mt76/mt792x_absence.h
+@@ -0,0 +1,221 @@
++/* SPDX-License-Identifier: BSD-3-Clause-Clear */
++#ifndef __MT792X_ABSENCE_H
++#define __MT792X_ABSENCE_H
++
++/* Called under the device's absence lock. Identity pointers are only compared,
++ * never dereferenced. The fifth index is the reserved P2P device BSS.
++ */
++#define MT792X_ABSENCE_SLOTS (MT792x_MAX_INTERFACES + 1)
++
++struct mt792x_absence_slot {
++	const void *identity;
++	const void *owner;
++	unsigned int link;
++	u32 epoch;
++	u8 quota;
++	bool active;
++	bool absent;
++};
++
++struct mt792x_absence_state {
++	struct mt792x_absence_slot slots[MT792X_ABSENCE_SLOTS];
++	bool paused;
++};
++
++static inline void
++mt792x_absence_clear(struct mt792x_absence_slot *slot)
++{
++	slot->epoch++;
++	slot->quota = 0;
++	slot->absent = false;
++}
++
++static inline void
++mt792x_absence_register(struct mt792x_absence_state *state, unsigned int bss,
++		       const void *identity, const void *owner, unsigned int link)
++{
++	struct mt792x_absence_slot *slot;
++
++	if (bss >= MT792X_ABSENCE_SLOTS)
++		return;
++	slot = &state->slots[bss];
++	mt792x_absence_clear(slot);
++	slot->identity = identity;
++	slot->owner = owner;
++	slot->link = link;
++	slot->active = false;
++}
++
++static inline void
++mt792x_absence_unregister(struct mt792x_absence_state *state, unsigned int bss,
++			 const void *identity)
++{
++	struct mt792x_absence_slot *slot;
++
++	if (bss >= MT792X_ABSENCE_SLOTS)
++		return;
++	slot = &state->slots[bss];
++	if (slot->identity != identity)
++		return;
++	mt792x_absence_clear(slot);
++	slot->identity = NULL;
++	slot->owner = NULL;
++	slot->active = false;
++}
++
++static inline void
++mt792x_absence_unregister_owner(struct mt792x_absence_state *state,
++			       const void *owner)
++{
++	unsigned int i;
++
++	for (i = 0; i < MT792X_ABSENCE_SLOTS; i++)
++		if (state->slots[i].identity && state->slots[i].owner == owner)
++			mt792x_absence_unregister(state, i, state->slots[i].identity);
++}
++
++static inline void
++mt792x_absence_activate(struct mt792x_absence_state *state, unsigned int bss,
++		       const void *identity, bool active)
++{
++	struct mt792x_absence_slot *slot;
++
++	if (bss >= MT792X_ABSENCE_SLOTS)
++		return;
++	slot = &state->slots[bss];
++	if (slot->identity != identity)
++		return;
++	if (!active)
++		mt792x_absence_clear(slot);
++	slot->active = active;
++}
++
++static inline bool
++mt792x_absence_announce(struct mt792x_absence_state *state, unsigned int bss,
++		       bool absent, u8 quota)
++{
++	struct mt792x_absence_slot *slot;
++
++	if (state->paused || bss >= MT792X_ABSENCE_SLOTS)
++		return false;
++	slot = &state->slots[bss];
++	if (!slot->identity)
++		return false;
++	/* Each event replaces the budget, including repeated absence events. */
++	slot->epoch++;
++	slot->absent = absent;
++	slot->quota = quota;
++	return true;
++}
++
++/* Four-byte BSS header followed by a validated complete TLV stream.
++ * Return false without mutating outputs on missing/duplicate/malformed INFO.
++ */
++static inline bool
++mt792x_absence_decode(const u8 *p, unsigned int len, unsigned int *bss,
++		       bool *absent, u8 *quota)
++{
++	unsigned int index;
++	bool found = false, a = false;
++	u8 q = 0;
++
++	if (len < 4)
++		return false;
++	index = p[0];
++	if (index >= MT792X_ABSENCE_SLOTS)
++		return false;
++	p += 4;
++	len -= 4;
++	while (len) {
++		u16 tag, size;
++
++		if (len < 4)
++			return false;
++		tag = p[0] | (u16)p[1] << 8;
++		size = p[2] | (u16)p[3] << 8;
++		if (size < 4 || size > len)
++			return false;
++		if (tag == 0) {
++			if (found || size != 8 || p[4] > 1)
++				return false;
++			found = true;
++			a = p[4];
++			q = p[5];
++		}
++		p += size;
++		len -= size;
++	}
++	if (!found)
++		return false;
++	*bss = index;
++	*absent = a;
++	*quota = q;
++	return true;
++}
++
++static inline void
++mt792x_absence_reset(struct mt792x_absence_state *state, bool paused)
++{
++	unsigned int i;
++
++	state->paused = paused;
++	for (i = 0; i < MT792X_ABSENCE_SLOTS; i++) {
++		mt792x_absence_clear(&state->slots[i]);
++		state->slots[i].active = false;
++	}
++}
++
++/* The firmware routes ordinary MLO traffic via its primary station record.
++ * Only charge the target BSS when the whole active MLD is absent. Unobserved
++ * states start as present, as in the vendor's zero-initialized absence bitmap.
++ * A ticket is consumed at admission, before dequeue, and may be refunded
++ * only against the same firmware announcement and BSS incarnation.
++ */
++static inline bool
++mt792x_absence_reserve(struct mt792x_absence_state *state, const void *owner,
++		      unsigned int link, bool mld, u64 *ticket)
++{
++	struct mt792x_absence_slot *target = NULL;
++	unsigned int i, bss = 0;
++
++	*ticket = 0;
++	if (state->paused)
++		return true;
++	for (i = 0; i < MT792X_ABSENCE_SLOTS; i++) {
++		struct mt792x_absence_slot *slot = &state->slots[i];
++
++		if (!slot->active || slot->owner != owner)
++			continue;
++		if (slot->link == link) {
++			target = slot;
++			bss = i;
++		}
++		if (mld && !slot->absent)
++			return true;
++	}
++	if (!target || !target->absent)
++		return true;
++	if (!target->quota)
++		return false;
++	target->quota--;
++	*ticket = ((u64)target->epoch << 8) | (bss + 1);
++	return true;
++}
++
++static inline bool
++mt792x_absence_refund(struct mt792x_absence_state *state, u64 ticket)
++{
++	unsigned int bss = (ticket & 0xff);
++	struct mt792x_absence_slot *slot;
++
++	if (!bss || bss > MT792X_ABSENCE_SLOTS)
++		return false;
++	slot = &state->slots[bss - 1];
++	if (!slot->identity || !slot->active || !slot->absent ||
++	    slot->epoch != (u32)(ticket >> 8) || slot->quota == 255)
++		return false;
++	slot->quota++;
++	return true;
++}
++
++#endif
+diff --git a/drivers/net/wireless/mediatek/mt76/tx.c b/drivers/net/wireless/mediatek/mt76/tx.c
+--- a/drivers/net/wireless/mediatek/mt76/tx.c
++++ b/drivers/net/wireless/mediatek/mt76/tx.c
+@@ -385,6 +385,11 @@
+ 	    ((info->control.flags & IEEE80211_TX_CTRL_DONT_USE_RATE_MASK) &&
+ 	     ieee80211_is_probe_req(hdr->frame_control)))
+ 		head = &wcid->tx_offchannel;
++	else if (phy->dev->drv->tx_data_reserve &&
++		 test_bit(MT_WCID_FLAG_TX_CREDIT, &wcid->flags) &&
++		 ((info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) ||
++		  ieee80211_is_data_present(hdr->frame_control)))
++		head = &wcid->tx_pending_data;
+ 	else
+ 		head = &wcid->tx_pending;
+ 
+@@ -503,7 +508,7 @@
+ 	enum mt76_txq_id qid = mt76_txq_get_qid(txq);
+ 	struct ieee80211_tx_info *info;
+ 	struct sk_buff *skb;
+-	int n_frames = 1;
++	int n_frames = 0;
+ 	bool stop = false;
+ 	int idx;
+ 
+@@ -518,34 +523,29 @@
+ 	    MT_MAX_NON_AQL_PKT)
+ 		return 0;
+ 
+-	skb = mt76_txq_dequeue(phy, mtxq);
+-	if (!skb)
+-		return 0;
+-
+-	info = IEEE80211_SKB_CB(skb);
+-	if (!(wcid->tx_info & MT_WCID_TX_INFO_SET))
+-		ieee80211_get_tx_rates(txq->vif, txq->sta, skb,
+-				       info->control.rates, 1);
+-
+-	spin_lock(&q->lock);
+-	idx = __mt76_tx_queue_skb(phy, qid, skb, wcid, txq->sta, &stop);
+-	spin_unlock(&q->lock);
+-	if (idx < 0)
+-		return idx;
+-
+-	if (test_bit(MT_WCID_FLAG_PS, &wcid->flags))
+-		goto out;
+-
+ 	do {
+-		if (test_bit(MT76_RESET, &phy->state) || phy->offchannel)
++		u64 ticket = 0;
++
++		if (n_frames &&
++		    (test_bit(MT76_RESET, &phy->state) || phy->offchannel ||
++		     stop || mt76_txq_stopped(q)))
+ 			break;
+ 
+-		if (stop || mt76_txq_stopped(q))
++		/* Do not dequeue data which cannot be admitted. The non-data
++		 * mac80211 TXQ is independent of ordinary data flow control.
++		 */
++		if (txq->sta && txq->tid < IEEE80211_NUM_TIDS &&
++		    test_bit(MT_WCID_FLAG_TX_CREDIT, &wcid->flags) &&
++		    dev->drv->tx_data_reserve &&
++		    !dev->drv->tx_data_reserve(dev, wcid, &ticket))
+ 			break;
+ 
+ 		skb = mt76_txq_dequeue(phy, mtxq);
+-		if (!skb)
++		if (!skb) {
++			if (ticket)
++				dev->drv->tx_data_refund(dev, ticket);
+ 			break;
++		}
+ 
+ 		info = IEEE80211_SKB_CB(skb);
+ 		if (!(wcid->tx_info & MT_WCID_TX_INFO_SET))
+@@ -555,16 +555,24 @@
+ 		spin_lock(&q->lock);
+ 		idx = __mt76_tx_queue_skb(phy, qid, skb, wcid, txq->sta, &stop);
+ 		spin_unlock(&q->lock);
+-		if (idx < 0)
++		if (idx < 0) {
++			if (ticket)
++				dev->drv->tx_data_refund(dev, ticket);
++			if (!n_frames)
++				return idx;
+ 			break;
++		}
+ 
+ 		n_frames++;
++		if (test_bit(MT_WCID_FLAG_PS, &wcid->flags))
++			break;
+ 	} while (1);
+ 
+-out:
+-	spin_lock(&q->lock);
+-	dev->queue_ops->kick(dev, q);
+-	spin_unlock(&q->lock);
++	if (n_frames) {
++		spin_lock(&q->lock);
++		dev->queue_ops->kick(dev, q);
++		spin_unlock(&q->lock);
++	}
+ 
+ 	return n_frames;
+ }
+@@ -681,6 +689,8 @@
+ 		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+ 		struct ieee80211_tx_info *info = IEEE80211_SKB_CB(skb);
+ 		int qid = skb_get_queue_mapping(skb);
++		u64 ticket = 0;
++		int idx;
+ 
+ 		if ((dev->drv->drv_flags & MT_DRV_HW_MGMT_TXQ) &&
+ 		    !(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
+@@ -698,14 +708,24 @@
+ 			break;
+ 		}
+ 
++		/* Credit-limited data has its own FIFO: do not block control
++		 * or offchannel work, or the next peer's pending list.
++		 */
++		if (head == &wcid->tx_pending_data &&
++		    dev->drv->tx_data_reserve &&
++		    !dev->drv->tx_data_reserve(dev, wcid, &ticket))
++			break;
++
+ 		__skb_unlink(skb, head);
+ 		spin_unlock(&head->lock);
+ 
+ 		sta = wcid_to_sta(wcid);
+ 		spin_lock(&q->lock);
+-		__mt76_tx_queue_skb(phy, qid, skb, wcid, sta, NULL);
++		idx = __mt76_tx_queue_skb(phy, qid, skb, wcid, sta, NULL);
+ 		dev->queue_ops->kick(dev, q);
+ 		spin_unlock(&q->lock);
++		if (idx < 0 && ticket)
++			dev->drv->tx_data_refund(dev, ticket);
+ 
+ 		spin_lock(&head->lock);
+ 	}
+@@ -738,9 +758,13 @@
+ 			ret = mt76_txq_schedule_pending_wcid(phy, wcid, &wcid->tx_offchannel);
+ 		if (ret >= 0 && !phy->offchannel)
+ 			ret = mt76_txq_schedule_pending_wcid(phy, wcid, &wcid->tx_pending);
++		if (ret >= 0 && !phy->offchannel)
++			ret = mt76_txq_schedule_pending_wcid(phy, wcid,
++							      &wcid->tx_pending_data);
+ 		spin_lock(&phy->tx_lock);
+ 
+ 		if ((!skb_queue_empty(&wcid->tx_pending) ||
++		     !skb_queue_empty(&wcid->tx_pending_data) ||
+ 		     !skb_queue_empty(&wcid->tx_offchannel)) &&
+ 		    list_empty(&wcid->tx_list))
+ 			list_add_tail(&wcid->tx_list, &phy->tx_list);

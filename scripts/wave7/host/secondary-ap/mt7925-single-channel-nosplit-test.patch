@@ -1,0 +1,25 @@
+diff --git a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/mcu.c
+@@ -3369,7 +3369,20 @@
+ 	}
+ 	chan_info->channel_type = sreq->n_channels ? 4 : 0;
+ 
+-	req->scan_func |= SCAN_FUNC_SPLIT_SCAN;
++	/* Lab discriminator: keep normal split scanning except for a
++	 * single requested channel on an associated MT7925 MLD station.
++	 * This is not a general firmware scan-policy fix.
++	 */
++	if (!is_mt7925(mdev) || vif->type != NL80211_IFTYPE_STATION ||
++	    !vif->cfg.assoc || hweight16(vif->valid_links) < 2 ||
++	    sreq->n_channels != 1)
++		req->scan_func |= SCAN_FUNC_SPLIT_SCAN;
++	else
++		dev_info(mdev->dev,
++			 "wave7-diag: no-split scan seq=%u bss=%u valid=%#x active=%#x freq=%u passive=%u\n",
++			 hdr->seq_num, hdr->bss_idx, vif->valid_links,
++			 vif->active_links, scan_list[0]->center_freq,
++			 !sreq->n_ssids);
+ 
+ 	tlv = mt76_connac_mcu_add_tlv(skb, UNI_SCAN_MISC, sizeof(*misc));
+ 	misc = (struct scan_misc_tlv *)tlv;

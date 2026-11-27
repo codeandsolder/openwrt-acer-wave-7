@@ -1,0 +1,52 @@
+--- a/drivers/net/wireless/mediatek/mt76/mt7925/main.c
++++ b/drivers/net/wireless/mediatek/mt76/mt7925/main.c
+@@ -2724,6 +2724,24 @@
+ 			return err;
+ 	}
+ 
++	for_each_set_bit(link_id, &new_links, IEEE80211_MLD_MAX_NUM_LINKS) {
++		struct ieee80211_link_sta *link_sta;
++		struct mt792x_link_sta *mlink;
++
++		if (link_id == msta->deflink_id)
++			continue;
++
++		mlink = mt792x_sta_to_link(msta, link_id);
++		link_sta = mt792x_sta_to_link_sta(vif, sta, link_id);
++		if (!mlink || !link_sta)
++			continue;
++
++		err = mt7925_mcu_sta_update(dev, link_sta, vif, mlink, true,
++					    MT76_STA_INFO_STATE_ASSOC);
++		if (err)
++			return err;
++	}
++
+ 	if (msta->deflink_id != IEEE80211_LINK_UNSPECIFIED &&
+ 	    (new_links & BIT(msta->deflink_id))) {
+ 		struct mt792x_link_sta *mlink =
+@@ -2738,24 +2756,6 @@
+ 			if (err)
+ 				return err;
+ 		}
+-	}
+-
+-	for_each_set_bit(link_id, &new_links, IEEE80211_MLD_MAX_NUM_LINKS) {
+-		struct ieee80211_link_sta *link_sta;
+-		struct mt792x_link_sta *mlink;
+-
+-		if (link_id == msta->deflink_id)
+-			continue;
+-
+-		mlink = mt792x_sta_to_link(msta, link_id);
+-		link_sta = mt792x_sta_to_link_sta(vif, sta, link_id);
+-		if (!mlink || !link_sta)
+-			continue;
+-
+-		err = mt7925_mcu_sta_update(dev, link_sta, vif, mlink, true,
+-					    MT76_STA_INFO_STATE_ASSOC);
+-		if (err)
+-			return err;
+ 	}
+ 
+ 	return 0;
