@@ -32,8 +32,26 @@ net/netif_receive_skb_entry
 net/netif_receive_skb_list_entry
 net/napi_gro_receive_entry
 net/netif_rx_entry'
+driver_mgmt_events='ath12k_mgmt/ath12k_mgmt_lifetime
+mac80211/ack_status_lifetime'
+mgmt_trace=0
 if [ "$4" = reconnect ]; then
+    n=0
+    for ev in $driver_mgmt_events; do
+        if [ -r "$root/events/$ev/format" ]; then n=$((n + 1)); fi
+    done
+    case "$n" in
+        0) ;;
+        2) events="$events
+$driver_mgmt_events"; mgmt_trace=1 ;;
+        *) echo 'incomplete management lifetime tracepoint closure' >&2; exit 1 ;;
+    esac
     events="$events
+cfg80211/rdev_mgmt_tx
+cfg80211/rdev_return_int_cookie
+cfg80211/rdev_add_station
+cfg80211/rdev_change_station
+cfg80211/rdev_del_station
 $net_events"
 fi
 if [ "$4" = full ]; then
@@ -72,6 +90,7 @@ for ev in $events; do
     echo 1 > "$inst/events/$ev/enable"
 done
 echo 1 > "$inst/tracing_on"
+printf 'AP_MGMT_LIFETIME=%s\n' "$mgmt_trace"
 printf 'AP_CONTROL_TRACE_READY boot=%s\n' "$boot"
 # No fractional sleep on this BusyBox. Keep the interval bounded even if
 # the observer connection is lost, and always remove this instance.
