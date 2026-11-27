@@ -151,6 +151,19 @@ menuconfig DEVEL
 		  Wrap host and target C/C++ compiler invocations with the existing
 		  sccache executable on PATH. Do not build or launch a local cache.
 
+	config EXTERNAL_SCCACHE_HOST_CC
+		string "Unwrapped host C compiler path" if EXTERNAL_SCCACHE
+		default "/usr/bin/cc"
+		help
+		  Actual compiler executable, not another cache wrapper. This avoids
+		  recursively submitting compiler identification to the managed daemon.
+
+	config EXTERNAL_SCCACHE_HOST_CXX
+		string "Unwrapped host C++ compiler path" if EXTERNAL_SCCACHE
+		default "/usr/bin/c++"
+		help
+		  Actual compiler executable, not another cache wrapper.
+
 	config RUST_SCCACHE
 		bool "Use sccache for Rust" if DEVEL
 		depends on USE_RUST_TOOLCHAIN
