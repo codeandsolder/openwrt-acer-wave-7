@@ -1,0 +1,204 @@
+--- a/drivers/net/wireless/ath/ath12k/Makefile
++++ b/drivers/net/wireless/ath/ath12k/Makefile
+@@ -22,7 +22,8 @@
+ 	    pci.o \
+ 	    dp_mon.o \
+ 	    fw.o \
+-	    p2p.o
++	    p2p.o \
++	    mgmt_trace.o
+ 
+ ath12k-$(CPTCFG_ATH12K_AHB) += ahb.o
+ 
+@@ -38,3 +39,4 @@
+ 
+ # for tracing framework to find trace.h
+ CFLAGS_trace.o := -I$(src)
++CFLAGS_mgmt_trace.o := -I$(src)
+--- /dev/null
++++ b/drivers/net/wireless/ath/ath12k/mgmt_trace.h
+@@ -0,0 +1,68 @@
++/* SPDX-License-Identifier: BSD-3-Clause-Clear */
++/* Management TX lifetime metadata, independent of payload tracing. */
++#undef TRACE_SYSTEM
++#define TRACE_SYSTEM ath12k_mgmt
++
++#if !defined(ATH12K_MGMT_TRACE_H) || defined(TRACE_HEADER_MULTI_READ)
++#define ATH12K_MGMT_TRACE_H
++
++#include <linux/tracepoint.h>
++#include <linux/unaligned.h>
++#include "core.h"
++
++TRACE_EVENT(ath12k_mgmt_lifetime,
++	TP_PROTO(struct ath12k *ar, const char *phase, struct sk_buff *skb,
++		 int desc, int vdev, s64 result, u32 freq, bool agnostic),
++	TP_ARGS(ar, phase, skb, desc, vdev, result, freq, agnostic),
++	TP_STRUCT__entry(
++		__string(device, dev_name(ar->ab->dev))
++		__string(wiphy, wiphy_name(ath12k_ar_to_hw(ar)->wiphy))
++		__string(phase, phase)
++		__field(u32, pdev)
++		__field(int, desc)
++		__field(int, vdev)
++		__field(s64, result)
++		__field(u32, freq)
++		__field(bool, agnostic)
++		__field(int, ack_id)
++		__field(int, link)
++		__field(u16, fc)
++		__field(u16, seq)
++		__field(u32, len)
++		__field(int, pending)
++	),
++	TP_fast_assign(
++		struct ieee80211_tx_info *info = skb ? IEEE80211_SKB_CB(skb) : NULL;
++
++		__assign_str(device);
++		__assign_str(wiphy);
++		__assign_str(phase);
++		__entry->pdev = ar->pdev->pdev_id;
++		__entry->desc = desc;
++		__entry->vdev = vdev;
++		__entry->result = result;
++		__entry->freq = freq;
++		__entry->agnostic = agnostic;
++		__entry->ack_id = info && info->status_data_idr ? info->status_data : -1;
++		__entry->link = skb ? ATH12K_SKB_CB(skb)->link_id : -1;
++		__entry->fc = skb && skb_headlen(skb) >= 2 ?
++			get_unaligned_le16(skb->data) : 0;
++		__entry->seq = skb && skb_headlen(skb) >= 24 ?
++			get_unaligned_le16(skb->data + 22) : 0;
++		__entry->len = skb ? skb->len : 0;
++		__entry->pending = atomic_read(&ar->num_pending_mgmt_tx);
++	),
++	TP_printk("device=%s wiphy=%s phase=%s pdev=%u desc=%d vdev=%d result=%lld freq=%u agnostic=%u ack_id=%d link=%d fc=0x%04x seq=0x%04x len=%u pending=%d",
++		  __get_str(device), __get_str(wiphy), __get_str(phase),
++		  __entry->pdev, __entry->desc, __entry->vdev, __entry->result,
++		  __entry->freq, __entry->agnostic, __entry->ack_id, __entry->link,
++		  __entry->fc, __entry->seq, __entry->len, __entry->pending)
++);
++
++#endif
++
++#undef TRACE_INCLUDE_PATH
++#define TRACE_INCLUDE_PATH .
++#undef TRACE_INCLUDE_FILE
++#define TRACE_INCLUDE_FILE mgmt_trace
++#include <trace/define_trace.h>
+--- /dev/null
++++ b/drivers/net/wireless/ath/ath12k/mgmt_trace.c
+@@ -0,0 +1,4 @@
++// SPDX-License-Identifier: BSD-3-Clause-Clear
++#include <linux/module.h>
++#define CREATE_TRACE_POINTS
++#include "mgmt_trace.h"
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -23,6 +23,7 @@
+ #include "debugfs_sta.h"
+ #include "dp.h"
+ #include "dp_cmn.h"
++#include "mgmt_trace.h"
+ 
+ #define CHAN2G(_channel, _freq, _flags) { \
+ 	.band                   = NL80211_BAND_2GHZ, \
+@@ -9252,6 +9253,7 @@
+ 
+ 	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+ 
++	trace_ath12k_mgmt_lifetime(ar, "drop", skb, -1, -1, -ECANCELED, 0, false);
+ 	ieee80211_free_txskb(ath12k_ar_to_hw(ar), skb);
+ 
+ 	num_mgmt = atomic_dec_if_positive(&ar->num_pending_mgmt_tx);
+@@ -9278,6 +9280,7 @@
+ 	dma_unmap_single(ar->ab->dev, ATH12K_SKB_CB(msdu)->paddr, msdu->len,
+ 			 DMA_TO_DEVICE);
+ 
++	trace_ath12k_mgmt_lifetime(ar, "cancel", msdu, buf_id, -1, -ECANCELED, 0, false);
+ 	info = IEEE80211_SKB_CB(msdu);
+ 	memset(&info->status, 0, sizeof(info->status));
+ 
+@@ -9341,6 +9344,7 @@
+ 		}
+ 	}
+ 
++	trace_ath12k_mgmt_lifetime(ar, "prepare", skb, buf_id, arvif->vdev_id, 0, 0, false);
+ 	paddr = dma_map_single(ab->dev, skb->data, skb->len, DMA_TO_DEVICE);
+ 	if (dma_mapping_error(ab->dev, paddr)) {
+ 		ath12k_warn(ab, "failed to DMA map mgmt Tx buffer\n");
+@@ -9362,6 +9366,7 @@
+ 	dma_unmap_single(ab->dev, skb_cb->paddr,
+ 			 skb->len, DMA_TO_DEVICE);
+ err_free_idr:
++	trace_ath12k_mgmt_lifetime(ar, "prepare_fail", skb, buf_id, arvif->vdev_id, ret, 0, false);
+ 	spin_lock_bh(&ar->txmgmt_idr_lock);
+ 	idr_remove(&ar->txmgmt_idr, buf_id);
+ 	spin_unlock_bh(&ar->txmgmt_idr_lock);
+@@ -9639,6 +9644,7 @@
+ 
+ 	/* Account before publishing to a worker that may already be running. */
+ 	atomic_inc(&ar->num_pending_mgmt_tx);
++	trace_ath12k_mgmt_lifetime(ar, "queue", skb, -1, -1, 0, 0, false);
+ 	__skb_queue_tail(q, skb);
+ 	spin_unlock_irqrestore(&q->lock, flags);
+ 	wiphy_work_queue(ath12k_ar_to_hw(ar)->wiphy, &ar->wmi_mgmt_tx_work);
+@@ -12773,9 +12779,12 @@
+ 		ret = -ETIMEDOUT;
+ 	}
+ 
++	trace_ath12k_mgmt_lifetime(ar, "flush_begin", NULL, -1, -1, 0, 0, false);
+ 	time_left = wait_event_timeout(ar->txmgmt_empty_waitq,
+ 				       (atomic_read(&ar->num_pending_mgmt_tx) == 0),
+ 				       ATH12K_FLUSH_TIMEOUT);
++	trace_ath12k_mgmt_lifetime(ar, "flush_end", NULL, -1, -1,
++				    time_left ? 0 : -ETIMEDOUT, 0, false);
+ 	if (time_left == 0) {
+ 		inflight = 0;
+ 		spin_lock_bh(&ar->txmgmt_idr_lock);
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -25,6 +25,7 @@
+ #include "peer.h"
+ #include "p2p.h"
+ #include "testmode.h"
++#include "mgmt_trace.h"
+ 
+ struct ath12k_wmi_svc_ready_parse {
+ 	bool wmi_svc_bitmap_done;
+@@ -870,6 +871,7 @@
+ 	struct ath12k_skb_cb *skb_cb;
+ 	u32 buf_len, buf_len_aligned;
+ 	u32 vdev_id = arvif->vdev_id;
++	u32 freq;
+ 	bool link_agnostic = false;
+ 	struct sk_buff *skb;
+ 	int ret, len;
+@@ -937,7 +939,11 @@
+ 	ml_params->hw_link_id = cpu_to_le32(WMI_MGMT_LINK_AGNOSTIC_ID);
+ 
+ send:
++	/* Copy scalars before publication: the completion may free frame and skb. */
++	freq = le32_to_cpu(cmd->chanfreq);
++	trace_ath12k_mgmt_lifetime(ar, "submit", NULL, buf_id, vdev_id, 0, freq, link_agnostic);
+ 	ret = ath12k_wmi_cmd_send(wmi, skb, WMI_MGMT_TX_SEND_CMDID);
++	trace_ath12k_mgmt_lifetime(ar, "submitted", NULL, buf_id, vdev_id, ret, freq, link_agnostic);
+ 	if (ret) {
+ 		ath12k_warn(ar->ab,
+ 			    "failed to submit WMI_MGMT_TX_SEND_CMDID cmd\n");
+@@ -6496,6 +6502,7 @@
+ 	msdu = idr_find(&ar->txmgmt_idr, desc_id);
+ 
+ 	if (!msdu) {
++		trace_ath12k_mgmt_lifetime(ar, "orphan", NULL, desc_id, -1, status, 0, false);
+ 		ath12k_warn(ar->ab, "received mgmt tx compl for invalid msdu_id: %d\n",
+ 			    desc_id);
+ 		spin_unlock_bh(&ar->txmgmt_idr_lock);
+@@ -6507,6 +6514,7 @@
+ 
+ 	skb_cb = ATH12K_SKB_CB(msdu);
+ 	dma_unmap_single(ar->ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
++	trace_ath12k_mgmt_lifetime(ar, "complete", msdu, desc_id, -1, status, 0, false);
+ 
+ 	info = IEEE80211_SKB_CB(msdu);
+ 	memset(&info->status, 0, sizeof(info->status));
