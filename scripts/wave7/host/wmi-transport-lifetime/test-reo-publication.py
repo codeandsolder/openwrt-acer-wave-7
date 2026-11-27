@@ -42,33 +42,29 @@ typedef uint32_t u32;
 enum hal_reo_cmd_type { HAL_REO_CMD_GET_QUEUE_STATS, HAL_REO_CMD_FLUSH_QUEUE,
     HAL_REO_CMD_FLUSH_CACHE, HAL_REO_CMD_UNBLOCK_CACHE, HAL_REO_CMD_FLUSH_TIMEOUT_LIST,
     HAL_REO_CMD_UPDATE_RX_QUEUE };
-enum hal_reo_cmd_status { HAL_REO_CMD_SUCCESS, HAL_REO_CMD_BLOCKED };
+enum hal_reo_cmd_status { HAL_REO_CMD_SUCCESS, HAL_REO_CMD_BLOCKED, HAL_REO_CMD_FAILED };
 struct ath12k_dp;
 struct ath12k_dp_rx_tid_rxq { int value; };
 struct ath12k_hal_reo_cmd { int flag; };
-struct ath12k_dp_rx_reo_cmd { struct ath12k_dp_rx_tid_rxq data;
-    void (*handler)(struct ath12k_dp *,void *,enum hal_reo_cmd_status); };
-struct ath12k_reo_cmd_pending { struct ath12k_dp_rx_reo_cmd *cmd; u16 status_tag; };
+struct ath12k_reo_cmd_pending { void (*handler)(struct ath12k_dp *,void *,enum hal_reo_cmd_status); void *ctx; u16 status_tag; };
 struct hal_srng { int lock; struct { struct { u32 hp; } src_ring; } u;
     u32 entry_size, ring_size; bool full; unsigned published, advanced; int desc; };
 struct ath12k_base;
 struct ath12k_dp { struct ath12k_base *ab; struct { unsigned ring_id; } reo_cmd_ring;
     struct ath12k_reo_cmd_pending reo_cmd_pending[DP_REO_CMD_RING_SIZE]; int reo_cmd_lock; };
 struct ath12k_base { struct ath12k_dp dp; struct { struct hal_srng srng_list[1]; } hal; };
-struct hal_reo_status { struct { u16 cmd_num; enum hal_reo_cmd_status cmd_status; } uniform_hdr; };
-static unsigned allocations, frees, callbacks;
-static bool oom, eager, fail_advance, wrong_number, fail_encode, reenter;
+struct hal_reo_status { struct { u16 cmd_num; enum hal_reo_cmd_status cmd_status; } uniform_hdr;
+    struct { struct { bool err_detected; unsigned cache_controller_flush_status_err; } flush_cache; } u; };
+static unsigned callbacks; static enum hal_reo_cmd_status last_status;
+static bool eager, fail_advance, wrong_number, fail_encode, reenter;
 static u16 eager_tag, eager_num;
 static struct ath12k_base *active;
 static void ath12k_wifi7_reo_cmd_complete(struct ath12k_dp *,u16,struct hal_reo_status *);
-static void *allocate(size_t n) { if (oom) return NULL; allocations++; return calloc(1,n); }
-#define kzalloc_obj(obj,flags) allocate(sizeof(obj))
-static void kfree(void *p) { if(p) { frees++; free(p); } }
 #define ath12k_ab_to_dp(ab) (&(ab)->dp)
 static void spin_lock_bh(int *lock) { assert(!*lock); *lock=1; }
 static void spin_unlock_bh(int *lock) { assert(*lock); *lock=0;
     if (active && lock==&active->dp.reo_cmd_lock && eager_num) {
-        struct hal_reo_status st={{eager_num,HAL_REO_CMD_SUCCESS}};
+        struct hal_reo_status st={.uniform_hdr={eager_num,HAL_REO_CMD_SUCCESS}};
         eager_num=0; ath12k_wifi7_reo_cmd_complete(&active->dp,eager_tag,&st);
     }
 }
@@ -99,17 +95,17 @@ static void ath12k_hal_srng_access_end(struct ath12k_base *ab,struct hal_srng *r
 /* ACTUAL */
 static void done(struct ath12k_dp *dp,void *ctx,enum hal_reo_cmd_status status) {
     assert(!dp->reo_cmd_lock && ((struct ath12k_dp_rx_tid_rxq *)ctx)->value==123);
-    assert(status==HAL_REO_CMD_SUCCESS || status==HAL_REO_CMD_BLOCKED); callbacks++;
+    last_status=status; callbacks++;
     if(reenter) { struct ath12k_hal_reo_cmd c={0}; reenter=false;
-        assert(ath12k_wifi7_dp_reo_cmd_send(dp->ab,NULL,HAL_REO_CMD_GET_QUEUE_STATS,&c,NULL)==0); }
+        assert(ath12k_wifi7_dp_reo_cmd_send(dp->ab,HAL_REO_CMD_GET_QUEUE_STATS,&c,NULL,NULL)==0); }
 }
 static void complete(struct ath12k_base *ab,u16 tag,u16 num) {
-    struct hal_reo_status st={{num,HAL_REO_CMD_SUCCESS}};
+    struct hal_reo_status st={.uniform_hdr={num,HAL_REO_CMD_SUCCESS}};
     ath12k_wifi7_reo_cmd_complete(&ab->dp,tag,&st);
 }
 static void init(struct ath12k_base *ab) { memset(ab,0,sizeof(*ab)); ab->dp.ab=ab;
     ab->hal.srng_list[0].entry_size=8;ab->hal.srng_list[0].ring_size=8*DP_REO_CMD_RING_SIZE;
-    active=ab; oom=eager=fail_advance=wrong_number=fail_encode=reenter=false;eager_num=0; }
+    active=ab; eager=fail_advance=wrong_number=fail_encode=reenter=false;eager_num=0; }
 int main(void) {
     struct ath12k_base a,b; struct ath12k_dp_rx_tid_rxq rx={123}; unsigned cases=0;
     const enum hal_reo_cmd_type types[]={HAL_REO_CMD_GET_QUEUE_STATS,HAL_REO_CMD_FLUSH_CACHE,HAL_REO_CMD_UPDATE_RX_QUEUE};
@@ -119,28 +115,36 @@ int main(void) {
     for(unsigned fast=0;fast<2;fast++) {
         init(&a); struct hal_srng *r=&a.hal.srng_list[0];
         struct ath12k_hal_reo_cmd cmd={(int)flags};
-        oom=failure==1;r->full=failure==2;fail_encode=failure==3;wrong_number=failure==4;fail_advance=failure==5;eager=fast;
+        r->full=failure==2;fail_encode=failure==3;wrong_number=failure==4;fail_advance=failure==5;eager=fast;
         unsigned before=callbacks; enum hal_reo_cmd_type t=failure==6?HAL_REO_CMD_FLUSH_QUEUE:types[i];
-        int expected=failure==6?-EOPNOTSUPP:(!flags&&cb)?-EINVAL:(oom&&cb)?-ENOMEM:r->full?-ENOBUFS:fail_encode?-ENOSPC:wrong_number?-EINVAL:fail_advance?-EIO:0;
-        assert(ath12k_wifi7_dp_reo_cmd_send(&a,&rx,t,&cmd,cb?done:NULL)==expected);
+        int expected=failure==6?-EOPNOTSUPP:(!flags&&cb)?-EINVAL:(failure==1&&!cb)?-EINVAL:r->full?-ENOBUFS:fail_encode?-ENOSPC:wrong_number?-EINVAL:fail_advance?-EIO:0;
+        assert(ath12k_wifi7_dp_reo_cmd_send(&a,t,&cmd,cb?done:NULL,(cb||failure==1)?&rx:NULL)==expected);
         assert(r->published==(expected==0)); assert(!r->lock&&!a.dp.reo_cmd_lock);
         if(expected==0&&flags) { if(!fast) {assert(a.dp.reo_cmd_pending[0].status_tag==tags[i]);
             complete(&a,tags[(i+1)%3],1); assert(a.dp.reo_cmd_pending[0].status_tag==tags[i]); }
             complete(&a,tags[i],0); complete(&a,tags[i],DP_REO_CMD_RING_SIZE+1);complete(&a,tags[i],1);complete(&a,tags[i],1); }
         assert(callbacks-before==(unsigned)(expected==0&&cb)); assert(!a.dp.reo_cmd_pending[0].status_tag);
-        assert(allocations==frees); cases++;
+        cases++;
     }
     init(&a); struct ath12k_hal_reo_cmd status={1},silent={0};
-    for(unsigned i=0;i<DP_REO_CMD_RING_SIZE;i++) assert(!ath12k_wifi7_dp_reo_cmd_send(&a,&rx,types[2],&status,i==0?done:NULL));
-    assert(ath12k_wifi7_dp_reo_cmd_send(&a,&rx,types[0],&silent,NULL)==-ENOBUFS);
+    for(unsigned i=0;i<DP_REO_CMD_RING_SIZE;i++) assert(!ath12k_wifi7_dp_reo_cmd_send(&a,types[2],&status,i==0?done:NULL,i==0?&rx:NULL));
+    assert(ath12k_wifi7_dp_reo_cmd_send(&a,types[0],&silent,NULL,NULL)==-ENOBUFS);
     assert(a.hal.srng_list[0].published==DP_REO_CMD_RING_SIZE);
-    init(&b); assert(!ath12k_wifi7_dp_reo_cmd_send(&b,&rx,types[2],&status,NULL));
+    init(&b); assert(!ath12k_wifi7_dp_reo_cmd_send(&b,types[2],&status,NULL,NULL));
     complete(&b,tags[2],1); assert(a.dp.reo_cmd_pending[0].status_tag==tags[2]);
-    complete(&a,tags[2],1); assert(!ath12k_wifi7_dp_reo_cmd_send(&a,&rx,types[0],&silent,NULL));
+    complete(&a,tags[2],1); assert(!ath12k_wifi7_dp_reo_cmd_send(&a,types[0],&silent,NULL,NULL));
     for(unsigned i=1;i<DP_REO_CMD_RING_SIZE;i++) complete(&a,tags[2],i+1);
-    assert(allocations==frees);
-    init(&a); reenter=true;eager=true;assert(!ath12k_wifi7_dp_reo_cmd_send(&a,&rx,types[0],&status,done));
-    assert(a.hal.srng_list[0].published==2 && !reenter && allocations==frees);
+    init(&a); reenter=true;eager=true;assert(!ath12k_wifi7_dp_reo_cmd_send(&a,types[0],&status,done,&rx));
+    assert(a.hal.srng_list[0].published==2 && !reenter);
+    for (unsigned hdr=0; hdr<3; hdr++) for (unsigned blocked=0; blocked<2; blocked++)
+    for (unsigned err=0; err<4; err++) {
+        init(&a); unsigned before=callbacks;
+        assert(!ath12k_wifi7_dp_reo_cmd_send(&a,types[1],&status,done,&rx));
+        struct hal_reo_status st={.uniform_hdr={1,(enum hal_reo_cmd_status)hdr},
+            .u.flush_cache={blocked,err}};
+        ath12k_wifi7_reo_cmd_complete(&a.dp,tags[1],&st);
+        assert(callbacks==before+1 && last_status==(hdr==HAL_REO_CMD_SUCCESS&&(blocked||err)?HAL_REO_CMD_FAILED:hdr));
+    }
     printf("REO_PUBLICATION_PASS cases=%u plus full ring, cross-radio and reentrant completion\n",cases);
 }
 '''
