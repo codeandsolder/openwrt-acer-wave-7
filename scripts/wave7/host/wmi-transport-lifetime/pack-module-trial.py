@@ -49,6 +49,15 @@ PROFILES = {
         patch_commit='ca2888f702', patch_key='trial_tx_ownership_patch_commit',
         filename='wave7-wbm-route-tx-ownership-dhcp-guard8-sysupgrade.bin',
     ),
+    'wbm-route-mgmt-ownership': dict(
+        parent_sha='c2d98cf5dd0ddf3673cc87733a47c6924a24250132b7d88d3e78066257cd6599',
+        parent_rev='r0+38346-6660d8c88d-ap-dhcp-guard8',
+        modules={'ath12k.ko': (
+            '99549926cd9054a44ea3f6aeba534d681af68e6375e380f858a55a290386c826',
+            '233688e202e491e20732c64e3a18a3126a932c73e339ef12e183e1fbf0836834')},
+        patch_commit='5bd9d63e8f', patch_key='trial_mgmt_tx_ownership_patch_commit',
+        filename='wave7-wbm-route-mgmt-ownership-dhcp-guard8-sysupgrade.bin',
+    ),
     'wbm-route': dict(
         parent_sha='d519a6acb4ec1d88a7a2284528748b69187e4122d668d59c77488948f3165fde',
         parent_rev='r0+38346-8b8a3f32c2-ap-dhcp-guard8',
