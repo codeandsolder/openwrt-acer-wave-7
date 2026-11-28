@@ -104,6 +104,7 @@ def read_run(path, band):
         identity[f'rx_error_stats_{mode}'] = 'rx_error_attribution' in extra
         identity[f'channel_survey_{mode}'] = 'channel_survey' in extra
         identity[f'htt_tx_{mode}'] = 'htt_tx' in extra
+        identity[f'htt_mlo_{mode}'] = 'htt_mlo' in extra
         identity[f'reo_command_{mode}'] = 'reo_command' in extra
         traffic = result['cases'][mode]
         station = d['station_delta']
@@ -126,6 +127,8 @@ def read_run(path, band):
                             rates=d['station_rates'])
         if 'reo_command' in extra:
             phases[mode]['reo_command'] = extra['reo_command']
+        if 'htt_mlo' in extra:
+            phases[mode]['htt_mlo'] = extra['htt_mlo']
         if 'htt_tx' in extra:
             phases[mode]['htt_tx'] = extra['htt_tx']
         if 'channel_survey' in extra:

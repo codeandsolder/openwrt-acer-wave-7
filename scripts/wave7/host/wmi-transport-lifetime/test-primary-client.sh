@@ -36,6 +36,7 @@ ap_ring3_probe=0
 ap_link_stats=0
 ap_channel_survey=0
 ap_htt_tx_stats=0
+ap_htt_mlo_stats=0
 ap_reo_command_stats=0
 ap_link_tool=""
 client_rx_arg=--none
@@ -76,6 +77,7 @@ for arg in "$@"; do
         --ap-link-stats) ap_link_stats=1 ;;
         --ap-channel-survey) ap_channel_survey=1 ;;
         --ap-htt-tx-stats) ap_htt_tx_stats=1 ;;
+        --ap-htt-mlo-stats) ap_htt_tx_stats=1; ap_htt_mlo_stats=1 ;;
         --ap-reo-command-stats) ap_reo_command_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
@@ -374,6 +376,7 @@ snapshot_reo_commands(){
         echo ==== END
         cat /proc/sys/kernel/random/boot_id"
 }
+htt_mlo_reader=$(cat "$(dirname "$helper")/ap-htt-mlo-reader.sh")
 snapshot_load(){
     local side=${1:?snapshot side required}
     [[ $side == before || $side == after ]] || return 2
@@ -404,6 +407,7 @@ snapshot_load(){
             iw dev ap-mld0 info 2>&1 || info_rc=\$?
             echo GEOMETRY_AFTER_END rc=\$info_rc
         }
+        $htt_mlo_reader
         capture_htt_tx(){
             found=0
             for f in /sys/kernel/debug/ath12k/*/mac*/htt_stats; do
@@ -443,6 +447,12 @@ snapshot_load(){
                 [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
             done
             [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        fi
+        if [ '$ap_htt_mlo_stats' = 1 ] && [ '$side' = before ]; then
+            if ! mlo_before=\$(capture_htt_mlo); then
+                printf '%s\\n' \"\$mlo_before\"
+                exit 1
+            fi
         fi
         if [ '$ap_channel_survey' = 1 ] && [ '$side' = before ]; then
             survey_before=\$(capture_channel_survey)
@@ -514,6 +524,14 @@ snapshot_load(){
         if [ '$ap_reo_command_stats' = 1 ]; then
             $reo_command_reader
             capture_reo_commands
+        fi
+        if [ '$ap_htt_mlo_stats' = 1 ]; then
+            echo ==== HTT_MLO
+            if [ '$side' = before ]; then
+                printf '%s\\n' \"\$mlo_before\"
+            else
+                capture_htt_mlo || exit 1
+            fi
         fi
         if [ '$ap_htt_tx_stats' = 1 ]; then
             echo ==== HTT_TX

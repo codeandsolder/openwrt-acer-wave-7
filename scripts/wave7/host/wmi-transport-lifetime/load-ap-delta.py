@@ -18,6 +18,10 @@ htt_spec = importlib.util.spec_from_file_location(
     "htt_tx", Path(__file__).with_name("htt-tx-stats.py"))
 htt = importlib.util.module_from_spec(htt_spec)
 htt_spec.loader.exec_module(htt)
+mlo_spec = importlib.util.spec_from_file_location(
+    "htt_mlo", Path(__file__).with_name("htt-mlo-stats.py"))
+htt_mlo = importlib.util.module_from_spec(mlo_spec)
+mlo_spec.loader.exec_module(htt_mlo)
 reo_spec = importlib.util.spec_from_file_location(
     "reo_command", Path(__file__).with_name("reo-command-stats.py"))
 reo_cmd = importlib.util.module_from_spec(reo_spec)
@@ -296,6 +300,10 @@ def parse(text):
         extra["reo_command"] = reo_cmd.parse_sections(sections_, tx.keys())
     if "HTT_TX" in sections_:
         extra["htt_tx"] = htt.describe_snapshot(sections_["HTT_TX"], tx.keys())
+    if "HTT_MLO" in sections_:
+        require("htt_tx" in extra, "MLO scheduler stats require pdev TX witness")
+        extra["htt_mlo"] = htt_mlo.describe_snapshot(sections_["HTT_MLO"],
+                                                     extra["htt_tx"]["radios"].keys())
     pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
              if k.startswith("PAGE_POOL ")}
     if pools:
@@ -415,6 +423,10 @@ def compare(before, after):
         extra["reo_command"] = reo_cmd.compare(a["extra"]["reo_command"], b["extra"]["reo_command"])
     if "htt_tx" in a["extra"]:
         extra["htt_tx"] = htt.compare(a["extra"]["htt_tx"], b["extra"]["htt_tx"])
+    if "htt_mlo" in a["extra"]:
+        extra["htt_mlo"] = htt_mlo.compare(a["extra"]["htt_mlo"], b["extra"]["htt_mlo"],
+                                           a["extra"]["htt_tx"], b["extra"]["htt_tx"],
+                                           extra["htt_tx"])
     if "rx_error_attribution" in a["extra"]:
         extra["rx_error_attribution"] = rx_error_delta(a["extra"]["rx_error_attribution"],
                                                        b["extra"]["rx_error_attribution"])
