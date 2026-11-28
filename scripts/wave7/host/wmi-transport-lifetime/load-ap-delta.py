@@ -151,6 +151,33 @@ def page_pool_delta(before, after):
     return result
 
 
+def parse_tx_matrices(radio):
+    tx = {}
+    for k, lines in radio.items():
+        device = k.split("/")[-2]
+        require(device not in tx, "duplicate radio identity")
+        tx[device] = {}
+        for line in lines:
+            if (m := MATRIX.fullmatch(line)) and m[1] in TX_MATRIX | SG_MATRIX:
+                for pair in m[2].split():
+                    index, value = pair.split(":")
+                    field = f"{m[1]}/{index}"
+                    require(field not in tx[device], "duplicate TX matrix entry")
+                    tx[device][field] = int(value)
+            elif (m := SCALAR.fullmatch(line)) and m[1] == "Misc Transmit Failures":
+                require(m[1] not in tx[device], "duplicate TX scalar")
+                tx[device][m[1]] = int(m[2])
+        matrices = {k.split("/")[0] for k in tx[device] if "/" in k}
+        require(matrices in (TX_MATRIX, TX_MATRIX | SG_MATRIX), "incomplete TX matrices")
+        if SG_MATRIX <= matrices:
+            rings = {k.split("/")[1] for k in tx[device] if k.startswith("tx_enqueued/")}
+            require(all({k.split("/")[1] for k in tx[device] if k.startswith(f"{name}/")} == rings
+                        for name in SG_MATRIX), "incomplete SG ring matrix")
+    require(len({bool(SG_MATRIX & {k.split("/")[0] for k in counters}) for counters in tx.values()}) == 1,
+            "incomplete per-radio SG statistics")
+    return tx
+
+
 def parse(text):
     header, sections_ = sections(text)
     required = {"CPU", "SOFTIRQ", "IRQ", "STATION", "AQL"}
@@ -202,27 +229,7 @@ def parse(text):
     require("total" in aql, "missing AQL pending")
     radio = {k: v for k, v in sections_.items() if k.startswith("/sys/kernel/debug/ath12k/") and k.endswith("/device_dp_stats")}
     rx_text = "\n".join(header + [line for k, v in radio.items() for line in ["===" + k, *v]])
-    tx = {}
-    for k, lines in radio.items():
-        device = k.split("/")[-2]
-        tx[device] = {}
-        for line in lines:
-            if (m := MATRIX.fullmatch(line)) and m[1] in TX_MATRIX | SG_MATRIX:
-                for pair in m[2].split():
-                    index, value = pair.split(":")
-                    field = f"{m[1]}/{index}"
-                    require(field not in tx[device], "duplicate TX matrix entry")
-                    tx[device][field] = int(value)
-            elif (m := SCALAR.fullmatch(line)) and m[1] == "Misc Transmit Failures":
-                tx[device][m[1]] = int(m[2])
-        matrices = {k.split("/")[0] for k in tx[device] if "/" in k}
-        require(matrices in (TX_MATRIX, TX_MATRIX | SG_MATRIX), "incomplete TX matrices")
-        if SG_MATRIX <= matrices:
-            rings = {k.split("/")[1] for k in tx[device] if k.startswith("tx_enqueued/")}
-            require(all({k.split("/")[1] for k in tx[device] if k.startswith(f"{name}/")} == rings
-                        for name in SG_MATRIX), "incomplete SG ring matrix")
-    require(len({bool(SG_MATRIX & {k.split("/")[0] for k in counters}) for counters in tx.values()}) == 1,
-            "incomplete per-radio SG statistics")
+    tx = parse_tx_matrices(radio)
     extra = {}
     pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
              if k.startswith("PAGE_POOL ")}
