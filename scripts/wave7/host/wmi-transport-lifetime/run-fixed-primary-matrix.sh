@@ -23,7 +23,9 @@ mkdir -m 700 "$out"
 exec > >(tee "$out/wrapper.log") 2>&1
 lock="$lab/20261120-secondary-ap-guard8/.lab-control.lock"
 [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'invalid lab lock'
-exec 8<>"$lock"
+if [[ ! /proc/self/fd/8 -ef "$lock" ]]; then
+    exec 8<>"$lock"
+fi
 flock -w 1800 8 || fail 'lab busy'
 manifest="$candidate/native-manifest.json"
 parent_manifest="$parent/native-manifest.json"
