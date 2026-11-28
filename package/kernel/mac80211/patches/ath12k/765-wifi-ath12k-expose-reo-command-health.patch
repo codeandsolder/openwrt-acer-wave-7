@@ -1,0 +1,340 @@
+Subject: [PATCH] wifi: ath12k: expose REO command completion health
+
+Record command publication and status consumption under the existing
+pending-slot lock. Separate BA, PN and validity updates from cache flush
+and queue-stat requests, and distinguish command-ring fullness from
+outstanding-slot backpressure. Expose a coherent read-only snapshot
+including command age and unsuccessful status counts. Report failures
+of commands without a callback using the existing ratelimited warning.
+
+No new hardware accesses, no change to callback ownership or retirement.
+---
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -470,11 +470,43 @@
+ 			[ATH12K_RX_ERROR_LINKS][ATH12K_RX_ERROR_TIDS];
+ };
+ 
++enum ath12k_reo_cmd_kind {
++	ATH12K_REO_CMD_STATS,
++	ATH12K_REO_CMD_FLUSH,
++	ATH12K_REO_CMD_BA,
++	ATH12K_REO_CMD_PN,
++	ATH12K_REO_CMD_VALID,
++	ATH12K_REO_CMD_OTHER,
++	ATH12K_REO_CMD_KINDS,
++};
++
++struct ath12k_reo_cmd_counters {
++	u64 submitted;
++	u64 statusless;
++	u64 ring_full;
++	u64 slot_busy;
++	u64 submit_failed;
++	u64 success;
++	u64 blocked;
++	u64 failed;
++	u64 resource_blocked;
++	u64 other_status;
++	u64 unhandled_failure;
++	u64 max_latency_ns;
++};
++
++struct ath12k_reo_cmd_stats {
++	struct ath12k_reo_cmd_counters kind[ATH12K_REO_CMD_KINDS];
++	u64 unmatched_status;
++};
++
+ struct ath12k_reo_cmd_pending {
+ 	void (*handler)(struct ath12k_dp *dp, void *ctx,
+ 			enum hal_reo_cmd_status status);
+ 	void *ctx;
+ 	u16 status_tag; /* zero means no outstanding status */
++	enum ath12k_reo_cmd_kind kind;
++	u64 submitted_ns;
+ };
+ 
+ struct ath12k_dp {
+@@ -511,6 +543,9 @@
+ 	struct ath12k_reo_cmd_pending reo_cmd_pending[DP_REO_CMD_RING_SIZE];
+ 	/* Protects pending slots; acquired before the REO command SRNG lock. */
+ 	spinlock_t reo_cmd_lock;
++	/* All command statistics and pending slots use reo_cmd_lock. */
++	struct ath12k_reo_cmd_stats reo_cmd_stats;
++	u64 reo_cmd_generation;
+ 	struct ath12k_hp_update_timer reo_cmd_timer;
+ 	struct ath12k_hp_update_timer tx_ring_timer[DP_TCL_NUM_RING_MAX];
+ 	struct ath12k_spt_info *spt_info;
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1564,6 +1564,8 @@
+ 	dp->ab = ab;
+ 
+ 	memset(dp->reo_cmd_pending, 0, sizeof(dp->reo_cmd_pending));
++	memset(&dp->reo_cmd_stats, 0, sizeof(dp->reo_cmd_stats));
++	dp->reo_cmd_generation++;
+ 	spin_lock_init(&dp->reo_cmd_lock);
+ 
+ 	/* Lock lifetime is the DP device lifetime, not the FW epoch.
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -3,6 +3,8 @@
+  * Copyright (c) 2018-2021 The Linux Foundation. All rights reserved.
+  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+  */
++
++#include <linux/ktime.h>
+ 
+ #include "dp_rx.h"
+ #include "../dp_peer.h"
+@@ -138,6 +140,35 @@
+ 	return ret;
+ }
+ 
++static enum ath12k_reo_cmd_kind
++ath12k_wifi7_reo_cmd_kind(enum hal_reo_cmd_type type, u32 upd0)
++{
++	bool ba, pn, valid;
++
++	switch (type) {
++	case HAL_REO_CMD_GET_QUEUE_STATS:
++		return ATH12K_REO_CMD_STATS;
++	case HAL_REO_CMD_FLUSH_CACHE:
++		return ATH12K_REO_CMD_FLUSH;
++	case HAL_REO_CMD_UPDATE_RX_QUEUE:
++		ba = upd0 & (HAL_REO_CMD_UPD0_BA_WINDOW_SIZE |
++			     HAL_REO_CMD_UPD0_SSN);
++		pn = upd0 & (HAL_REO_CMD_UPD0_PN | HAL_REO_CMD_UPD0_PN_SIZE |
++			     HAL_REO_CMD_UPD0_PN_VALID | HAL_REO_CMD_UPD0_PN_CHECK |
++			     HAL_REO_CMD_UPD0_PN_ERR | HAL_REO_CMD_UPD0_PN_HANDLE_ENABLE);
++		valid = upd0 & HAL_REO_CMD_UPD0_VLD;
++		if (ba + pn + valid != 1)
++			return ATH12K_REO_CMD_OTHER;
++		if (ba)
++			return ATH12K_REO_CMD_BA;
++		if (pn)
++			return ATH12K_REO_CMD_PN;
++		return ATH12K_REO_CMD_VALID;
++	default:
++		return ATH12K_REO_CMD_OTHER;
++	}
++}
++
+ int ath12k_wifi7_dp_reo_cmd_send(struct ath12k_base *ab,
+ 				 enum hal_reo_cmd_type type,
+ 				 struct ath12k_hal_reo_cmd *cmd,
+@@ -146,6 +177,9 @@
+ {
+ 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+ 	struct ath12k_reo_cmd_pending *pending;
++	struct ath12k_reo_cmd_counters *counters;
++	enum ath12k_reo_cmd_kind kind;
++	bool capacity_failure = false;
+ 	struct hal_srng *cmd_ring;
+ 	void *desc;
+ 	u16 status_tag;
+@@ -175,6 +209,8 @@
+ 		status_tag = 0;
+ 	}
+ 
++	kind = ath12k_wifi7_reo_cmd_kind(type, cmd->upd0);
++	counters = &dp->reo_cmd_stats.kind[kind];
+ 
+ 	cmd_ring = &ab->hal.srng_list[dp->reo_cmd_ring.ring_id];
+ 	spin_lock_bh(&dp->reo_cmd_lock);
+@@ -187,6 +223,8 @@
+ 	 */
+ 	desc = ath12k_hal_srng_src_peek(ab, cmd_ring);
+ 	if (!desc) {
++		counters->ring_full++;
++		capacity_failure = true;
+ 		ret = -ENOBUFS;
+ 		goto out;
+ 	}
+@@ -198,6 +236,8 @@
+ 	}
+ 	pending = &dp->reo_cmd_pending[slot];
+ 	if (pending->status_tag) {
++		counters->slot_busy++;
++		capacity_failure = true;
+ 		ret = -ENOBUFS;
+ 		goto out;
+ 	}
+@@ -214,6 +254,8 @@
+ 	pending->handler = cb;
+ 	pending->ctx = ctx;
+ 	pending->status_tag = status_tag;
++	pending->kind = kind;
++	pending->submitted_ns = status_tag ? ktime_get_ns() : 0;
+ 	/* Peek and advance use the same locked HP and cached TP. The
+ 	 * completion owner must be visible before access_end publishes HP.
+ 	 */
+@@ -222,8 +264,14 @@
+ 		ret = -EIO;
+ 		goto out;
+ 	}
++	if (status_tag)
++		counters->submitted++;
++	else
++		counters->statusless++;
+ 	ret = 0;
+ out:
++	if (ret && !capacity_failure)
++		counters->submit_failed++;
+ 	ath12k_hal_srng_access_end(ab, cmd_ring);
+ 	spin_unlock_bh(&cmd_ring->lock);
+ 	spin_unlock_bh(&dp->reo_cmd_lock);
+@@ -2296,21 +2344,25 @@
+ {
+ 	struct ath12k_reo_cmd_pending *pending;
+ 	struct ath12k_reo_cmd_pending completed;
++	struct ath12k_reo_cmd_counters *counters;
+ 	enum hal_reo_cmd_status result;
++	u64 latency;
+ 	u16 num = status->uniform_hdr.cmd_num;
+ 
+-	if (!num || num > ARRAY_SIZE(dp->reo_cmd_pending))
+-		return;
+-
+ 	spin_lock_bh(&dp->reo_cmd_lock);
+-	pending = &dp->reo_cmd_pending[num - 1];
+-	if (pending->status_tag != tag) {
++	if (!num || num > ARRAY_SIZE(dp->reo_cmd_pending)) {
++		dp->reo_cmd_stats.unmatched_status++;
+ 		spin_unlock_bh(&dp->reo_cmd_lock);
+ 		return;
+ 	}
++	pending = &dp->reo_cmd_pending[num - 1];
++	if (!pending->status_tag || pending->status_tag != tag) {
++		dp->reo_cmd_stats.unmatched_status++;
++		spin_unlock_bh(&dp->reo_cmd_lock);
++		return;
++	}
+ 	completed = *pending;
+ 	*pending = (struct ath12k_reo_cmd_pending){};
+-	spin_unlock_bh(&dp->reo_cmd_lock);
+ 
+ 	result = status->uniform_hdr.cmd_status;
+ 	/* A successful command header does not guarantee a cache invalidation. */
+@@ -2319,8 +2371,36 @@
+ 	     status->u.flush_cache.cache_controller_flush_status_err))
+ 		result = HAL_REO_CMD_FAILED;
+ 
++	counters = &dp->reo_cmd_stats.kind[completed.kind];
++	latency = ktime_get_ns() - completed.submitted_ns;
++	if (latency > counters->max_latency_ns)
++		counters->max_latency_ns = latency;
++	switch (result) {
++	case HAL_REO_CMD_SUCCESS:
++		counters->success++;
++		break;
++	case HAL_REO_CMD_BLOCKED:
++		counters->blocked++;
++		break;
++	case HAL_REO_CMD_FAILED:
++		counters->failed++;
++		break;
++	case HAL_REO_CMD_RESOURCE_BLOCKED:
++		counters->resource_blocked++;
++		break;
++	default:
++		counters->other_status++;
++		break;
++	}
++	if (!completed.handler && result != HAL_REO_CMD_SUCCESS)
++		counters->unhandled_failure++;
++	spin_unlock_bh(&dp->reo_cmd_lock);
++
+ 	if (completed.handler)
+ 		completed.handler(dp, completed.ctx, result);
++	else if (result != HAL_REO_CMD_SUCCESS)
++		ath12k_warn(dp->ab, "REO command kind %u slot %u failed: status %u\n",
++			    completed.kind, num, result);
+ }
+ 
+ void ath12k_wifi7_dp_rx_process_reo_status(struct ath12k_dp *dp)
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -4,6 +4,7 @@
+  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
+  */
+ 
++#include <linux/ktime.h>
+ #include <linux/seq_file.h>
+ 
+ #include "core.h"
+@@ -1357,8 +1358,74 @@
+ }
+ DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_wmi_services);
+ 
++static int ath12k_debugfs_reo_cmd_stats_show(struct seq_file *s, void *unused)
++{
++	struct ath12k_base *ab = s->private;
++	static const char * const names[] = {
++		[ATH12K_REO_CMD_STATS] = "stats",
++		[ATH12K_REO_CMD_FLUSH] = "flush",
++		[ATH12K_REO_CMD_BA] = "ba",
++		[ATH12K_REO_CMD_PN] = "pn",
++		[ATH12K_REO_CMD_VALID] = "valid",
++		[ATH12K_REO_CMD_OTHER] = "other",
++	};
++	struct ath12k_reo_cmd_stats snapshot;
++	u64 oldest[ATH12K_REO_CMD_KINDS] = {};
++	unsigned int pending[ATH12K_REO_CMD_KINDS] = {};
++	struct ath12k_dp *dp;
++	u64 now, generation;
++	unsigned int i;
++
++	if (!mutex_trylock(&ab->core_lock))
++		return -EBUSY;
++	if (!test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags) || !ab->dp) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODEV;
++	}
++
++	dp = ath12k_ab_to_dp(ab);
++	spin_lock_bh(&dp->reo_cmd_lock);
++	snapshot = dp->reo_cmd_stats;
++	generation = dp->reo_cmd_generation;
++	now = ktime_get_ns();
++	for (i = 0; i < ARRAY_SIZE(dp->reo_cmd_pending); i++) {
++		const struct ath12k_reo_cmd_pending *p = &dp->reo_cmd_pending[i];
++		u64 age;
++
++		if (!p->status_tag)
++			continue;
++		pending[p->kind]++;
++		age = now - p->submitted_ns;
++		if (age > oldest[p->kind])
++			oldest[p->kind] = age;
++	}
++	spin_unlock_bh(&dp->reo_cmd_lock);
++	mutex_unlock(&ab->core_lock);
++
++	seq_printf(s, "version=1 generation=%llu unmatched_status=%llu\n",
++		   generation, snapshot.unmatched_status);
++	seq_puts(s, "kind submitted statusless ring_full slot_busy submit_failed success blocked failed resource_blocked other_status unhandled_failure max_latency_ns pending oldest_pending_ns\n");
++	for (i = 0; i < ATH12K_REO_CMD_KINDS; i++) {
++		const struct ath12k_reo_cmd_counters *c = &snapshot.kind[i];
++
++		seq_printf(s, "%s %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu %u %llu\n",
++			   names[i], c->submitted, c->statusless, c->ring_full,
++			   c->slot_busy, c->submit_failed, c->success, c->blocked,
++			   c->failed, c->resource_blocked, c->other_status,
++			   c->unhandled_failure, c->max_latency_ns, pending[i], oldest[i]);
++	}
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_reo_cmd_stats);
++
+ void ath12k_debugfs_pdev_create(struct ath12k_base *ab)
+ {
++	debugfs_create_file("reo_cmd_stats", 0400, ab->debugfs_soc, ab,
++			    &ath12k_debugfs_reo_cmd_stats_fops);
++
+ 	debugfs_create_file("wmi_services", 0400, ab->debugfs_soc, ab,
+ 			    &ath12k_debugfs_wmi_services_fops);
+ 
