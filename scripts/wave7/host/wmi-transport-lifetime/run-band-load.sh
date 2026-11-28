@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 umask 077
 fail(){ echo "BAND_LOAD_FAIL $*" >&2; exit 1; }
-[[ $# == 2 || $# == 3 ]] || fail 'usage: RUN OUTPUT [RESUME_MATRIX | --rate-diagnostic]'
+[[ $# == 2 || $# == 3 ]] || fail 'usage: RUN OUTPUT [RESUME_MATRIX | --rate-diagnostic | --irq-diagnostic]'
 run=$(realpath -e "$1")
 base=$(dirname "$(dirname "$run")")
 out=$(realpath -m "$2")
@@ -11,9 +11,12 @@ lab=/home/jan/firmware/wave7/trials
 [[ "$run" == "$lab"/*/runs/native-* && "$out" == "$base"/harness-verification/* ]] || fail 'trial directory'
 resume=''
 rate_diagnostic=0
+irq_diagnostic=0
 if [[ $# == 3 ]]; then
     if [[ $3 == --rate-diagnostic ]]; then
         rate_diagnostic=1
+    elif [[ $3 == --irq-diagnostic ]]; then
+        irq_diagnostic=1
     else
         resume=$(realpath -e "$3")
         [[ "$resume" == "$base"/harness-verification/* && "$resume" != "$out" ]] || fail 'resume matrix'
@@ -63,6 +66,10 @@ remote_sha=$(ssh -o BatchMode=yes acer "ssh -o BatchMode=yes wyse-eth 'sha256sum
 [[ "$remote_sha" == "$local_sha" ]] || fail 'client helper digest'
 ids=("single-$band" "dual-$band" dual-24)
 rate_args=()
+if (( irq_diagnostic )); then
+    ids=("single-$band")
+    rate_args=(--ap-irq-spread)
+fi
 if (( rate_diagnostic )); then
     ids=("single-$band")
     rate_args=(--ap-htt-rate-stats)

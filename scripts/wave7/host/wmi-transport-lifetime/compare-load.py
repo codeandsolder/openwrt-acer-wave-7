@@ -55,6 +55,37 @@ def survey_geometry(lines):
     return result[0]
 
 
+def irq_profile(text, boot):
+    """Attest the complete reversible IRQ profile, including boot and restore."""
+    lines = text.splitlines()
+    require(len(lines) == 14, 'incomplete IRQ profile')
+    original, applied, restored = {}, {}, {}
+    plan = {3: '1', 4: '2', 5: '3', 8: '2'}
+    for line in lines[:4]:
+        m = re.fullmatch(r'IRQ_PROFILE_ORIGINAL irq=(\d+) group=(\d+) configured=0-3 effective=0', line)
+        require(m is not None, 'invalid original IRQ affinity')
+        irq, group = map(int, m.groups())
+        require(irq not in original and group in plan, 'unexpected IRQ group')
+        original[irq] = group
+    require(set(original.values()) == set(plan), 'incomplete IRQ group coverage')
+    for line in lines[4:8]:
+        m = re.fullmatch(r'IRQ_PROFILE_APPLIED irq=(\d+) cpu=([1-3])', line)
+        require(m is not None, 'invalid applied IRQ affinity')
+        irq, cpu = int(m[1]), m[2]
+        require(irq in original and irq not in applied and cpu == plan[original[irq]], 'incorrect applied IRQ affinity')
+        applied[irq] = cpu
+    require(lines[8] == f'IRQ_PROFILE_READY boot={boot} seconds=335', 'IRQ profile boot mismatch')
+    for line in lines[9:13]:
+        m = re.fullmatch(r'IRQ_PROFILE_RESTORE irq=(\d+) configured=0-3 effective=0', line)
+        require(m is not None, 'invalid restored IRQ affinity')
+        irq = int(m[1])
+        require(irq in applied and irq not in restored, 'unexpected restored IRQ')
+        restored[irq] = '0'
+    require(restored.keys() == applied.keys() and lines[13] == 'IRQ_PROFILE_END rc=0',
+            'IRQ restore not attested')
+    return applied
+
+
 def read_run(path, band):
     names = seal(path)
     prefix = path / f'band-{band}'
@@ -164,11 +195,18 @@ def read_run(path, band):
         m = re.search(r'^AQL_PROFILE_READY .* enabled=([01]) ', aql.read_text(), re.M)
         require(m, 'missing AQL profile state')
         identity['aql_enabled'] = int(m[1])
+    irq = Path(f'{prefix}.ap-irq-profile.txt')
+    applied = irq_profile(irq.read_text(), boot) if irq.exists() else None
+    if applied is not None:
+        for mode in load.MODES:
+            affinity = identity[f'affinity_{mode}']
+            require(all(affinity.get(n) == cpu for n, cpu in applied.items()),
+                    'measured affinity does not match applied IRQ profile')
     return dict(path=str(path), boot=boot, revision=state['rev'], image_sha256=manifest['image_sha256'],
-                identity=identity, phases=phases)
+                identity=identity, phases=phases, irq_profile=applied)
 
 
-def compare(a, b, *, describe_unmatched=False, compare_pm=False):
+def compare(a, b, *, describe_unmatched=False, compare_pm=False, compare_irq=False):
     mismatches = sorted(k for k in a['identity'].keys() | b['identity'].keys()
                         if a['identity'].get(k) != b['identity'].get(k))
     if compare_pm:
@@ -177,6 +215,20 @@ def compare(a, b, *, describe_unmatched=False, compare_pm=False):
         require(mismatches == ['pm', 'pm_control_profile'] and all(
             x['identity'].get('pm_control_profile') in iperf.PM_POLICIES for x in (a,b)),
                 f'PM contrast has uncontrolled differences: {mismatches}')
+    elif compare_irq:
+        require(a.get('boot') == b.get('boot') and a.get('image_sha256') == b.get('image_sha256'),
+                'IRQ contrast requires the same AP image and boot')
+        require(mismatches == sorted(['diagnostic_profiles', *(f'affinity_{mode}' for mode in load.MODES)]),
+                f'IRQ contrast has uncontrolled differences: {mismatches}')
+        require(a.get('irq_profile') is None and b.get('irq_profile'), 'missing IRQ experiment attestation')
+        before, after = a['identity'], b['identity']
+        require(sorted(before['diagnostic_profiles'] + ['irq-profile.txt']) == after['diagnostic_profiles'],
+                'unexpected diagnostic profile changes')
+        for mode in load.MODES:
+            original, applied = before[f'affinity_{mode}'], after[f'affinity_{mode}']
+            require(original.keys() == applied.keys() and all(v == '0' for v in original.values()),
+                    'unexpected baseline affinity')
+            require(applied == (original | b['irq_profile']), 'uncontrolled IRQ affinity changes')
     else:
         require(not mismatches or describe_unmatched, f'unmatched experimental conditions: {mismatches}')
     changes = {}
@@ -186,7 +238,7 @@ def compare(a, b, *, describe_unmatched=False, compare_pm=False):
             for k, v in p['directions'].items()}, rtt_ms={family: {
                 'before': p['latency'][family]['rtt_ms'], 'after': q['latency'][family]['rtt_ms']}
                 for family in ('v4', 'v6')})
-    return dict(matched=not mismatches, matched_except_pm=compare_pm, mismatches=mismatches,
+    return dict(matched=not mismatches, matched_except_pm=compare_pm, matched_except_irq=compare_irq, mismatches=mismatches,
                 baseline=a, candidate=b, changes=changes)
 
 
@@ -202,18 +254,21 @@ def main():
                         help='explicitly unmatched cross-band contrast')
     parser.add_argument('--compare-pm', action='store_true',
                         help='compare explicit requested PM policies on the same AP boot')
+    parser.add_argument('--compare-irq', action='store_true',
+                        help='compare an attested reversible IRQ profile on the same AP boot')
     args = parser.parse_args()
-    require(not (args.compare_pm and args.describe_unmatched), 'choose one comparison mode')
+    require(sum((args.compare_pm, args.compare_irq, args.describe_unmatched)) <= 1, 'choose one comparison mode')
     require(args.candidate_band is None or (args.describe_unmatched and not args.describe_run),
             'cross-band contrast must be explicitly unmatched')
     if args.describe_run:
-        require(args.candidate is None and not args.describe_unmatched and not args.compare_pm, 'baseline mode takes one run')
+        require(args.candidate is None and not args.describe_unmatched and not args.compare_pm and not args.compare_irq, 'baseline mode takes one run')
         print(json.dumps(read_run(args.baseline.resolve(), args.band), indent=2))
         return
     require(args.candidate is not None, 'comparison requires two runs')
     print(json.dumps(compare(read_run(args.baseline.resolve(), args.band),
                              read_run(args.candidate.resolve(), args.candidate_band or args.band),
-                             describe_unmatched=args.describe_unmatched, compare_pm=args.compare_pm), indent=2))
+                             describe_unmatched=args.describe_unmatched, compare_pm=args.compare_pm,
+                             compare_irq=args.compare_irq), indent=2))
 
 
 if __name__ == '__main__':
