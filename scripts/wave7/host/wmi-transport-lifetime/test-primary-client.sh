@@ -30,6 +30,7 @@ ap_irq_spread=0
 ap_aql=none
 ap_pmu=0
 ap_load_series=0
+ap_rx_error_stats=0
 ap_pmu_dir=""
 ap_ring3_probe=0
 ap_link_stats=0
@@ -64,6 +65,7 @@ for arg in "$@"; do
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-pmu) ap_pmu=1 ;;
         --ap-load-series) ap_load_series=1 ;;
+        --ap-rx-error-stats) ap_rx_error_stats=1 ;;
         --ap-aql-on|--ap-aql-off)
             [[ $ap_aql == none ]] || fail 'one AQL profile'
             if [[ $arg == --ap-aql-on ]]; then ap_aql=1; else ap_aql=0; fi ;;
@@ -150,6 +152,7 @@ if (( icmp_boundaries )); then boundary_profiles+=(echo4); fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if (( ap_pmu && !dual_load )); then fail "PMU profile requires isolated TCP load trial"; fi
 if (( ap_load_series && !dual_load )); then fail "load series requires isolated TCP load trial"; fi
+if (( ap_rx_error_stats && !dual_load )); then fail "RX error statistics require isolated TCP load trial"; fi
 if [[ $ap_aql != none ]] && (( !dual_load )); then fail "AQL profile requires isolated TCP load trial"; fi
 if (( ap_ring3_probe )); then
     [[ ${#bands[@]} == 1 && ${bands[0]} == 24 && $variant == upstream-prefix22-authorize-single-link-trace ]] || fail "ring3 probe requires single-link 2.4 GHz case"
@@ -385,6 +388,14 @@ snapshot_load(){
             echo ==== PAGE_POOL \"\${d##*/}\"
             cat \"\$f\"
         done
+        if [ '$ap_rx_error_stats' = 1 ]; then
+            for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do
+                d=\${f%/*}
+                [ -r \"\$d/rx_error_stats\" ] || exit 1
+                echo ==== RX_ERROR \"\${d##*/}\"
+                cat \"\$d/rx_error_stats\"
+            done
+        fi
         echo ==== END
         cat /proc/sys/kernel/random/boot_id"
 }

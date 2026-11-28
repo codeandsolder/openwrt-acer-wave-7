@@ -1,0 +1,207 @@
+Subject: [PATCH] wifi: ath12k: attribute WBM RX errors and bound codes
+
+WBM supplies a five-bit error code. Reserved values exceed the REO
+and RXDMA statistics arrays; drop them before indexing. Keep optional
+debugfs counts of all raw hardware codes, broken down by hardware link
+and completed descriptor TID. Incomplete MSDU-end metadata is counted
+in its own bucket. This is buffer accounting, not unique MPDU counting.
+
+Allocate diagnostics independently of datapath bring-up. No additional
+work is performed on the successful RX path and no REO/WMI command is
+issued when reading the counters.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -450,6 +450,25 @@
+ 	u32 reo_excep_msdu_buf_type;
+ };
+ 
++/* Hardware error codes are five bits, including reserved values.
++ * The final link/TID buckets denote unavailable descriptor metadata.
++ * Counters are WBM error buffers, not unique MPDUs.
++ */
++#define ATH12K_RX_ERROR_CODES 32
++#define ATH12K_RX_ERROR_LINKS (ATH12K_GROUP_MAX_RADIO + 1)
++#define ATH12K_RX_ERROR_TIDS (IEEE80211_NUM_TIDS + 1)
++
++enum ath12k_rx_error_source {
++	ATH12K_RX_ERROR_REO,
++	ATH12K_RX_ERROR_RXDMA,
++	ATH12K_RX_ERROR_SOURCES,
++};
++
++struct ath12k_rx_error_stats {
++	atomic64_t count[ATH12K_RX_ERROR_SOURCES][ATH12K_RX_ERROR_CODES]
++			[ATH12K_RX_ERROR_LINKS][ATH12K_RX_ERROR_TIDS];
++};
++
+ struct ath12k_reo_cmd_pending {
+ 	void (*handler)(struct ath12k_dp *dp, void *ctx,
+ 			enum hal_reo_cmd_status status);
+@@ -552,6 +571,7 @@
+ 	struct rhashtable *rhead_peer_addr;
+ 	struct rhashtable_params rhash_peer_addr_param;
+ 	struct ath12k_device_dp_stats device_stats;
++	struct ath12k_rx_error_stats *rx_error_stats;
+ };
+ 
+ static inline u32 ath12k_dp_arch_tx_get_vdev_bank_config(struct ath12k_dp *dp,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp.c
+@@ -180,6 +180,11 @@
+ 	mutex_init(&dp->link_peer_rhash_tbl_lock);
+ 	INIT_LIST_HEAD(&dp->peers);
+ 
++	/* Diagnostic allocation is independent of datapath bring-up. */
++#ifdef CPTCFG_ATH12K_DEBUGFS
++	dp->rx_error_stats = kvzalloc(sizeof(*dp->rx_error_stats), GFP_KERNEL);
++#endif
++
+ 	dp->ops = &ath12k_wifi7_dp_arch_ops;
+ 
+ 	return dp;
+@@ -187,5 +192,7 @@
+ 
+ void ath12k_wifi7_dp_device_free(struct ath12k_dp *dp)
+ {
++	if (dp)
++		kvfree(dp->rx_error_stats);
+ 	kfree(dp);
+ }
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_rx.c
+@@ -1791,6 +1791,9 @@
+ 	struct ath12k_skb_rxcb *rxcb = ATH12K_SKB_RXCB(msdu);
+ 	bool drop = false;
+ 
++	if (rxcb->err_code >= ARRAY_SIZE(dp->device_stats.rxdma_error))
++		return true;
++
+ 	dp->device_stats.rxdma_error[rxcb->err_code]++;
+ 
+ 	switch (rxcb->err_code) {
+@@ -1824,6 +1827,9 @@
+ 	struct ath12k_skb_rxcb *rxcb = ATH12K_SKB_RXCB(msdu);
+ 	bool drop = false;
+ 
++	if (rxcb->err_code >= ARRAY_SIZE(dp->device_stats.reo_error))
++		return true;
++
+ 	dp->device_stats.reo_error[rxcb->err_code]++;
+ 
+ 	switch (rxcb->err_code) {
+@@ -1848,6 +1854,40 @@
+ 	return drop;
+ }
+ 
++static void
++ath12k_wifi7_dp_rx_count_error(struct ath12k_rx_error_stats *stats,
++			       const struct ath12k_skb_rxcb *rxcb,
++			       const struct hal_rx_desc_data *rx_info)
++{
++	enum ath12k_rx_error_source source;
++	unsigned int link, tid;
++
++	if (!stats || rxcb->err_code >= ATH12K_RX_ERROR_CODES)
++		return;
++
++	switch (rxcb->err_rel_src) {
++	case HAL_WBM_REL_SRC_MODULE_REO:
++		source = ATH12K_RX_ERROR_REO;
++		break;
++	case HAL_WBM_REL_SRC_MODULE_RXDMA:
++		source = ATH12K_RX_ERROR_RXDMA;
++		break;
++	default:
++		return;
++	}
++
++	link = min_t(unsigned int, rxcb->hw_link_id, ATH12K_GROUP_MAX_RADIO);
++	/* MSDU-end TID is not usable before hardware completes that TLV.
++	 * A continuation buffer need not contain the final MSDU-end data.
++	 */
++	tid = IEEE80211_NUM_TIDS;
++	if (rx_info->msdu_done && !rxcb->is_continuation &&
++	    rx_info->tid < IEEE80211_NUM_TIDS)
++		tid = rx_info->tid;
++
++	atomic64_inc(&stats->count[source][rxcb->err_code][link][tid]);
++}
++
+ static void ath12k_wifi7_dp_rx_wbm_err(struct ath12k_pdev_dp *dp_pdev,
+ 				       struct napi_struct *napi,
+ 				       struct sk_buff *msdu,
+@@ -1864,6 +1904,7 @@
+ 	rx_info.rx_status = &rxs;
+ 
+ 	ath12k_dp_extract_rx_desc_data(dp->hal, &rx_info, rx_desc, rx_desc);
++	ath12k_wifi7_dp_rx_count_error(dp->rx_error_stats, rxcb, &rx_info);
+ 
+ 	switch (rxcb->err_rel_src) {
+ 	case HAL_WBM_REL_SRC_MODULE_REO:
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -1288,6 +1288,51 @@
+ }
+ DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_srng_state);
+ 
++static int ath12k_debugfs_rx_error_stats_show(struct seq_file *s, void *unused)
++{
++	struct ath12k_base *ab = s->private;
++	const struct ath12k_rx_error_stats *stats;
++	struct ath12k_dp *dp;
++	unsigned int source, code, link, tid;
++
++	if (!mutex_trylock(&ab->core_lock))
++		return -EBUSY;
++	if (!test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags) || !ab->dp) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODEV;
++	}
++
++	dp = ath12k_ab_to_dp(ab);
++	stats = dp->rx_error_stats;
++	if (!stats) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODATA;
++	}
++
++	seq_printf(s, "version=1 sources=%u codes=%u links=%u tids=%u\n",
++		   ATH12K_RX_ERROR_SOURCES, ATH12K_RX_ERROR_CODES,
++		   ATH12K_RX_ERROR_LINKS, ATH12K_RX_ERROR_TIDS);
++	for (source = 0; source < ATH12K_RX_ERROR_SOURCES; source++) {
++		for (code = 0; code < ATH12K_RX_ERROR_CODES; code++) {
++			for (link = 0; link < ATH12K_RX_ERROR_LINKS; link++) {
++				const atomic64_t *counts = stats->count[source][code][link];
++
++				seq_printf(s, "%u %u %u", source, code, link);
++				for (tid = 0; tid < ATH12K_RX_ERROR_TIDS; tid++)
++					seq_printf(s, " %llu",
++						   (unsigned long long)atomic64_read(&counts[tid]));
++				seq_putc(s, '\n');
++			}
++		}
++	}
++	mutex_unlock(&ab->core_lock);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_rx_error_stats);
++
+ void ath12k_debugfs_pdev_create(struct ath12k_base *ab)
+ {
+ 	debugfs_create_file("simulate_fw_crash", 0600, ab->debugfs_soc, ab,
+@@ -1296,6 +1341,10 @@
+ 	debugfs_create_file("device_dp_stats", 0400, ab->debugfs_soc, ab,
+ 			    &fops_device_dp_stats);
+ 
++	if (ab->dp && ab->dp->rx_error_stats)
++		debugfs_create_file("rx_error_stats", 0400, ab->debugfs_soc, ab,
++				    &ath12k_debugfs_rx_error_stats_fops);
++
+ 	/* AHB register access is direct; avoid waking windowed PCI devices. */
+ 	if (ab->hif.bus == ATH12K_BUS_AHB)
+ 		debugfs_create_file("srng_state", 0400, ab->debugfs_soc, ab,

@@ -63,6 +63,7 @@ def read_run(path, band):
         require('affinity' in extra, 'missing effective IRQ affinity')
         identity[f'affinity_{mode}'] = extra['affinity']
         identity[f'link_stats_{mode}'] = 'link_station' in extra
+        identity[f'rx_error_stats_{mode}'] = 'rx_error_attribution' in extra
         traffic = result['cases'][mode]
         station = d['station_delta']
         reo = {}

@@ -151,6 +151,53 @@ def page_pool_delta(before, after):
     return result
 
 
+RX_ERROR_SOURCES = ("REO", "RXDMA")
+RX_ERROR_CODES = 32
+RX_ERROR_LINKS = 7
+RX_ERROR_TIDS = 17
+
+
+def parse_rx_error_stats(lines):
+    header = "version=1 sources=2 codes=32 links=7 tids=17"
+    require(lines and lines[0] == header, "unknown RX error attribution schema")
+    result = {}
+    for line in lines[1:]:
+        fields = line.split()
+        require(len(fields) == 3 + RX_ERROR_TIDS and all(v.isdigit() for v in fields),
+                "invalid RX error attribution row")
+        source, code, link, *counts = map(int, fields)
+        key = (source, code, link)
+        require(source < len(RX_ERROR_SOURCES) and code < RX_ERROR_CODES and
+                link < RX_ERROR_LINKS and key not in result and
+                all(v < 2**64 for v in counts), "invalid or duplicate RX error row")
+        result[key] = tuple(counts)
+    require(len(result) == len(RX_ERROR_SOURCES) * RX_ERROR_CODES * RX_ERROR_LINKS,
+            "incomplete RX error attribution matrix")
+    return result
+
+
+def rx_error_delta(before, after):
+    require(before.keys() == after.keys(), "RX error device set changed")
+    result = {}
+    for dev in before:
+        rows = subtract(before[dev], after[dev])
+        by_code = {}
+        for (source, code, link), tids in rows.items():
+            for tid, count in enumerate(tids):
+                if not count:
+                    continue
+                key = f"{RX_ERROR_SOURCES[source]}/{code}"
+                entry = by_code.setdefault(key, {"total": 0, "links": {}})
+                entry["total"] += count
+                name = str(link) if link < RX_ERROR_LINKS - 1 else "unknown"
+                bucket = entry["links"].setdefault(name, {"total": 0, "descriptor_tids": {}})
+                bucket["total"] += count
+                name = str(tid) if tid < RX_ERROR_TIDS - 1 else "unknown"
+                bucket["descriptor_tids"][name] = count
+        result[dev] = by_code
+    return result
+
+
 def parse_tx_matrices(radio):
     tx = {}
     for k, lines in radio.items():
@@ -236,6 +283,11 @@ def parse(text):
     if pools:
         require(pools.keys() == tx.keys(), "incomplete per-radio page pool statistics")
         extra["page_pool"] = pools
+    errors = {k.split()[-1]: parse_rx_error_stats(v) for k, v in sections_.items()
+              if k.startswith("RX_ERROR ")}
+    if errors:
+        require(errors.keys() == tx.keys(), "incomplete per-radio RX error attribution")
+        extra["rx_error_attribution"] = errors
     if "AGGREGATION" in sections_:
         agg = sections_["AGGREGATION"]
         require(agg[0].endswith("/stations/" + sta[0][0]), "wrong aggregation station")
@@ -338,6 +390,9 @@ def compare(before, after):
                        "irq_pct": 100 * values[5] / total}
     require(a["extra"].keys() == b["extra"].keys(), "telemetry schema changed")
     extra = {}
+    if "rx_error_attribution" in a["extra"]:
+        extra["rx_error_attribution"] = rx_error_delta(a["extra"]["rx_error_attribution"],
+                                                       b["extra"]["rx_error_attribution"])
     if "page_pool" in a["extra"]:
         extra["page_pool"] = page_pool_delta(a["extra"]["page_pool"], b["extra"]["page_pool"])
     if "aggregation" in a["extra"]:
