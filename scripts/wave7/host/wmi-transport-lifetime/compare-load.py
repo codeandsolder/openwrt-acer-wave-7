@@ -62,6 +62,7 @@ def read_run(path, band):
         extra = d['extra']
         require('affinity' in extra, 'missing effective IRQ affinity')
         identity[f'affinity_{mode}'] = extra['affinity']
+        identity[f'link_stats_{mode}'] = 'link_station' in extra
         traffic = result['cases'][mode]
         station = d['station_delta']
         reo = {}
@@ -84,8 +85,6 @@ def read_run(path, band):
     identity['diagnostic_profiles'] = sorted(n.split('.ap-', 1)[1] for n in names
         if n.startswith(f'band-{band}.ap-') and
         (n.endswith('-profile.txt') or n.endswith('-series.txt')))
-    identity['link_stats'] = all('link_station' in load.parse(Path(
-        f'{prefix}.load-{mode}-ap-before.txt').read_text())['extra'] for mode in load.MODES)
     # AQL on/off, if used, must actually agree, not just share a filename.
     aql = Path(f'{prefix}.ap-aql-profile.txt')
     if aql.exists():
@@ -96,10 +95,10 @@ def read_run(path, band):
                 identity=identity, phases=phases)
 
 
-def compare(a, b):
+def compare(a, b, *, describe_unmatched=False):
     mismatches = sorted(k for k in a['identity'].keys() | b['identity'].keys()
                         if a['identity'].get(k) != b['identity'].get(k))
-    require(not mismatches, f'unmatched experimental conditions: {mismatches}')
+    require(not mismatches or describe_unmatched, f'unmatched experimental conditions: {mismatches}')
     changes = {}
     for mode in load.MODES:
         p, q = a['phases'][mode], b['phases'][mode]
@@ -107,7 +106,8 @@ def compare(a, b):
             for k, v in p['directions'].items()}, rtt_ms={family: {
                 'before': p['latency'][family]['rtt_ms'], 'after': q['latency'][family]['rtt_ms']}
                 for family in ('v4', 'v6')})
-    return dict(baseline=a, candidate=b, changes=changes)
+    return dict(matched=not mismatches, mismatches=mismatches,
+                baseline=a, candidate=b, changes=changes)
 
 
 def main():
@@ -115,9 +115,12 @@ def main():
     parser.add_argument('baseline', type=Path)
     parser.add_argument('candidate', type=Path)
     parser.add_argument('--band', required=True, choices=('24', '5'))
+    parser.add_argument('--describe-unmatched', action='store_true',
+                        help='report descriptive contrasts, explicitly identifying unmatched conditions')
     args = parser.parse_args()
     print(json.dumps(compare(read_run(args.baseline.resolve(), args.band),
-                             read_run(args.candidate.resolve(), args.band)), indent=2))
+                             read_run(args.candidate.resolve(), args.band),
+                             describe_unmatched=args.describe_unmatched), indent=2))
 
 
 if __name__ == '__main__':

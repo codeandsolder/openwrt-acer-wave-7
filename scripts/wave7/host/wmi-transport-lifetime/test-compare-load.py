@@ -15,6 +15,7 @@ a = dict(identity={'kernel': '7.4', 'firmware': 'A', 'stack': {'mt76': 'x'},
 b = copy.deepcopy(a)
 b['phases']['uplink']['directions']['uplink']['mbps'] = 125
 r = m.compare(a, b)
+assert r['matched'] and not r['mismatches']
 assert r['changes']['uplink']['goodput_pct']['uplink'] == 25
 for key in a['identity']:
     bad = copy.deepcopy(b)
@@ -25,4 +26,6 @@ for key in a['identity']:
         assert key in str(e)
     else:
         raise AssertionError(f'missing {key} accepted')
+    descriptive = m.compare(a, bad, describe_unmatched=True)
+    assert not descriptive['matched'] and descriptive['mismatches'] == [key]
 print('COMPARE_LOAD_SELFTEST_PASS')
