@@ -19,6 +19,10 @@ PER_ARRAYS = {"mcs_drop_rate": (0, 16), "per_histogram_count": (0, 101)}
 PER_SCALARS = {"rate_retry_mcs_drop_cnt", "low_latency_rate_cnt",
                "su_burst_rate_drop_cnt", "su_burst_rate_drop_fail_cnt"}
 PER_HEADER = "PER_HISTOGRAM_STATS"
+DURATION_HEADER = "HTT_TX_PDEV_PPDU_DUR_TLV:"
+DURATION_ARRAYS = {"tx_ppdu_dur_hist": (0, 16), "tx_ofdma_ppdu_dur_hist": (0, 16)}
+DURATION_COUNTERS = {"tx_success_time_us", "tx_fail_time_us", "pdev_up_time_us"}
+
 
 
 def require(ok, reason):
@@ -77,6 +81,15 @@ def decode(lines):
         require(extras.count(PER_HEADER) == 1, "missing or duplicate PER histogram")
         counters.update({k: scalar(extras, k) for k in sorted(PER_SCALARS)})
         arrays.update({k: histogram(extras, k, *shape) for k, shape in PER_ARRAYS.items()})
+    if DURATION_HEADER in extras:
+        require(extras.count(DURATION_HEADER) == 1, "duplicate PPDU duration TLV")
+        start = extras.index(DURATION_HEADER) + 1
+        end = start
+        while end < len(extras) and extras[end].strip() and not extras[end].endswith("_TLV:"):
+            end += 1
+        dur = extras[start:end]
+        counters.update({k: scalar(dur, k, 2**64) for k in sorted(DURATION_COUNTERS)})
+        arrays.update({k: histogram(dur, k, *shape) for k, shape in DURATION_ARRAYS.items()})
     return dict(mac_id=mac_id, counters=counters, histograms=arrays, ack_rssi_raw=gauge)
 
 

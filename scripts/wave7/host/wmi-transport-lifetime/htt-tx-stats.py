@@ -66,6 +66,24 @@ def histogram(lines, header, field, limit):
     return values
 
 
+MPDU_HIST_HEADER = "HTT_TX_PDEV_TRIED_MPDU_CNT_HIST_TLV:"
+
+
+def mpdu_histogram(lines):
+    """Variable-length firmware histogram of attempted MPDUs within each PPDU."""
+    if MPDU_HIST_HEADER not in lines:
+        return None
+    require(lines.count(MPDU_HIST_HEADER) == 1, "duplicate MPDU histogram")
+    i = lines.index(MPDU_HIST_HEADER)
+    require(i+2 < len(lines), "incomplete MPDU histogram")
+    m = re.fullmatch(r"hist_bin_size = (\d+)", lines[i+1])
+    require(m and 0 < int(m[1]) < 2**32, "invalid MPDU histogram bin size")
+    # The HTT tag length is 12 bits; one 32-bit word holds bin width.
+    values = histogram([MPDU_HIST_HEADER, lines[i+2]], MPDU_HIST_HEADER,
+                       "tried_mpdu_cnt_hist", 1022)
+    return dict(bin_size=int(m[1]), bins=values)
+
+
 def describe_snapshot(lines, expected_devices):
     radios = {}
     try:
@@ -92,6 +110,8 @@ def describe_snapshot(lines, expected_devices):
                 underruns = histogram(reply, "HTT_TX_PDEV_STATS_URRN_TLV:", "urrn_stats", 3)
                 radios[b[1]] = dict(qualified=True, start_ms=start, end_ms=end,
                                     mac_id=mac, counters=counters, flush=flush, underruns=underruns)
+                if (mpdu := mpdu_histogram(reply)) is not None:
+                    radios[b[1]]["mpdu_per_ppdu"] = mpdu
             except ValueError as exc:
                 radios[b[1]] = dict(qualified=False, reason=str(exc))
             i = j + 1
@@ -128,6 +148,18 @@ def compare(before, after):
             radios[key] = dict(qualified=True, mac_id=x["mac_id"],
                                wall_ms_range=[lo, hi], delta=delta,
                                histogram_delta=histograms)
+            require(("mpdu_per_ppdu" in x) == ("mpdu_per_ppdu" in y),
+                    "MPDU histogram presence changed")
+            if "mpdu_per_ppdu" in x:
+                left, right = x["mpdu_per_ppdu"], y["mpdu_per_ppdu"]
+                require(left["bin_size"] == right["bin_size"] and
+                        len(left["bins"]) == len(right["bins"]), "MPDU histogram schema changed")
+                require(all(a <= b for a,b in zip(left["bins"],right["bins"])),
+                        "MPDU histogram reset or wrap")
+                bins = [b-a for a,b in zip(left["bins"],right["bins"])]
+                total = sum(bins)
+                radios[key]["mpdu_per_ppdu"] = dict(bin_size=left["bin_size"], bins=bins,
+                    fraction_pct=[100*v/total for v in bins] if total else None)
         except ValueError as exc:
             radios[key] = dict(qualified=False, reason=str(exc))
     return dict(qualified=bool(radios) and all(v["qualified"] for v in radios.values()), radios=radios)

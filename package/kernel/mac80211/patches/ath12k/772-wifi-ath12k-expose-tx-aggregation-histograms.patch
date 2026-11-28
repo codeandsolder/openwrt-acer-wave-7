@@ -1,0 +1,236 @@
+Subject: [PATCH] wifi: ath12k: expose TX aggregation and PPDU duration histograms
+
+Expose firmware tag 82 in the pdev TX reply and tag 162 in the
+pdev TX rate reply. The tried MPDU histogram describes the number
+of MPDUs attempted within a PPDU, not the number of retransmissions.
+Preserve the firmware-provided bin width and variable array length.
+Report duration counters as combined 64-bit values.
+
+Use bounded array printers with full-width indices. The previous
+u8 loop index could wrap on a variable-length array, and subtracting
+the trailing comma could underflow when the buffer was full or empty.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/debugfs_htt_stats.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs_htt_stats.c
+@@ -15,31 +15,24 @@
+ print_array_to_buf_index(u8 *buf, u32 offset, const char *header, u32 stats_index,
+ 			 const __le32 *array, u32 array_len, const char *footer)
+ {
+-	int index = 0;
+-	u8 i;
++	u32 buf_len = ATH12K_HTT_STATS_BUF_SIZE;
++	u32 len = offset;
++	u32 i;
+ 
+-	if (header) {
+-		index += scnprintf(buf + offset,
+-				   ATH12K_HTT_STATS_BUF_SIZE - offset,
+-				   "%s = ", header);
+-	}
+-	for (i = 0; i < array_len; i++) {
+-		index += scnprintf(buf + offset + index,
+-				   (ATH12K_HTT_STATS_BUF_SIZE - offset) - index,
+-				   " %u:%u,", stats_index++, le32_to_cpu(array[i]));
+-	}
+-	/* To overwrite the last trailing comma */
+-	if (array_len > 0) {
+-		index--;
+-		*(buf + offset + index) = '\0';
+-	}
+-
+-	if (footer) {
+-		index += scnprintf(buf + offset + index,
+-				   (ATH12K_HTT_STATS_BUF_SIZE - offset) - index,
+-				   "%s", footer);
+-	}
+-	return index;
++	if (offset >= buf_len)
++		return 0;
++
++	if (header)
++		len += scnprintf(buf + len, buf_len - len, "%s = ", header);
++
++	for (i = 0; i < array_len && len < buf_len - 1; i++)
++		len += scnprintf(buf + len, buf_len - len, "%s%u:%u",
++				 i ? ", " : " ", stats_index++, le32_to_cpu(array[i]));
++
++	if (footer)
++		len += scnprintf(buf + len, buf_len - len, "%s", footer);
++
++	return len - offset;
+ }
+ 
+ static u32
+@@ -55,27 +48,23 @@
+ 		      const s8 *array, u32 array_len, const char *footer)
+ {
+ 	u32 buf_len = ATH12K_HTT_STATS_BUF_SIZE;
+-	int index = 0;
+-	u8 i;
++	u32 len = offset;
++	u32 i;
++
++	if (offset >= buf_len)
++		return 0;
+ 
+ 	if (header)
+-		index += scnprintf(buf + offset, buf_len - offset, "%s = ", header);
++		len += scnprintf(buf + len, buf_len - len, "%s = ", header);
+ 
+-	for (i = 0; i < array_len; i++) {
+-		index += scnprintf(buf + offset + index, (buf_len - offset) - index,
+-				   " %u:%d,", stats_index++, array[i]);
+-	}
++	for (i = 0; i < array_len && len < buf_len - 1; i++)
++		len += scnprintf(buf + len, buf_len - len, "%s%u:%d",
++				 i ? ", " : " ", stats_index++, array[i]);
+ 
+-	index--;
+-	if ((offset + index) < buf_len)
+-		buf[offset + index] = '\0';
++	if (footer)
++		len += scnprintf(buf + len, buf_len - len, "%s", footer);
+ 
+-	if (footer) {
+-		index += scnprintf(buf + offset + index, (buf_len - offset) - index,
+-				   "%s", footer);
+-	}
+-
+-	return index;
++	return len - offset;
+ }
+ 
+ static const char *ath12k_htt_ax_tx_rx_ru_size_to_str(u8 ru_size)
+@@ -477,6 +466,74 @@
+ }
+ 
+ static void
++ath12k_htt_print_tried_mpdu_hist(const void *tag_buf, u16 tag_len,
++				 struct debug_htt_stats_req *stats_req)
++{
++	const struct ath12k_htt_tx_pdev_tried_mpdu_cnt_hist_tlv *stats = tag_buf;
++	u32 buf_len = ATH12K_HTT_STATS_BUF_SIZE;
++	u32 len = stats_req->buf_len;
++	u8 *buf = stats_req->buf;
++	u32 bin_size, count;
++
++	len += scnprintf(buf + len, buf_len - len,
++			 "HTT_TX_PDEV_TRIED_MPDU_CNT_HIST_TLV:\n");
++
++	if (tag_len < sizeof(*stats) + sizeof(__le32) ||
++	    (tag_len - sizeof(*stats)) % sizeof(__le32)) {
++		len += scnprintf(buf + len, buf_len - len,
++				 "invalid_length = %u\n\n", tag_len);
++		goto out;
++	}
++
++	bin_size = le32_to_cpu(stats->hist_bin_size);
++	count = (tag_len - sizeof(*stats)) / sizeof(__le32);
++	len += scnprintf(buf + len, buf_len - len, "hist_bin_size = %u\n", bin_size);
++	len += print_array_to_buf(buf, len, "tried_mpdu_cnt_hist",
++				  stats->tried_mpdu_cnt_hist, count, "\n\n");
++out:
++	stats_req->buf_len = len;
++}
++
++static void
++ath12k_htt_print_tx_ppdu_duration(const void *tag_buf, u16 tag_len,
++				  struct debug_htt_stats_req *stats_req)
++{
++	const struct ath12k_htt_tx_pdev_ppdu_dur_tlv *stats = tag_buf;
++	u32 buf_len = ATH12K_HTT_STATS_BUF_SIZE;
++	u32 len = stats_req->buf_len;
++	u8 *buf = stats_req->buf;
++	u64 success, fail, up;
++
++	len += scnprintf(buf + len, buf_len - len,
++			 "HTT_TX_PDEV_PPDU_DUR_TLV:\n");
++
++	if (tag_len < sizeof(*stats)) {
++		len += scnprintf(buf + len, buf_len - len,
++				 "invalid_length = %u\n\n", tag_len);
++		goto out;
++	}
++
++	success = (u64)le32_to_cpu(stats->tx_success_time_us_high) << 32 |
++		  le32_to_cpu(stats->tx_success_time_us_low);
++	fail = (u64)le32_to_cpu(stats->tx_fail_time_us_high) << 32 |
++	       le32_to_cpu(stats->tx_fail_time_us_low);
++	up = (u64)le32_to_cpu(stats->pdev_up_time_us_high) << 32 |
++	     le32_to_cpu(stats->pdev_up_time_us_low);
++
++	len += scnprintf(buf + len, buf_len - len, "tx_success_time_us = %llu\n", success);
++	len += scnprintf(buf + len, buf_len - len, "tx_fail_time_us = %llu\n", fail);
++	len += scnprintf(buf + len, buf_len - len, "pdev_up_time_us = %llu\n", up);
++	len += print_array_to_buf(buf, len, "tx_ppdu_dur_hist",
++				  stats->tx_ppdu_dur_hist,
++				  ATH12K_HTT_PDEV_PPDU_DUR_HIST_BINS, "\n");
++	len += print_array_to_buf(buf, len, "tx_ofdma_ppdu_dur_hist",
++				  stats->tx_ofdma_ppdu_dur_hist,
++				  ATH12K_HTT_PDEV_PPDU_DUR_HIST_BINS, "\n\n");
++out:
++	stats_req->buf_len = len;
++}
++
++static void
+ htt_print_pdev_ctrl_path_tx_stats_tlv(const void *tag_buf, u16 tag_len,
+ 				      struct debug_htt_stats_req *stats_req)
+ {
+@@ -5810,6 +5867,12 @@
+ 	case HTT_STATS_TX_PDEV_FLUSH_TAG:
+ 		htt_print_tx_pdev_stats_flush_tlv(tag_buf, len, stats_req);
+ 		break;
++	case HTT_STATS_TX_PDEV_TRIED_MPDU_CNT_HIST_TAG:
++		ath12k_htt_print_tried_mpdu_hist(tag_buf, len, stats_req);
++		break;
++	case HTT_STATS_TX_PDEV_PPDU_DUR_TAG:
++		ath12k_htt_print_tx_ppdu_duration(tag_buf, len, stats_req);
++		break;
+ 	case HTT_STATS_TX_PDEV_SIFS_HIST_TAG:
+ 		htt_print_tx_pdev_stats_sifs_hist_tlv(tag_buf, len, stats_req);
+ 		break;
+--- a/drivers/net/wireless/ath/ath12k/debugfs_htt_stats.h
++++ b/drivers/net/wireless/ath/ath12k/debugfs_htt_stats.h
+@@ -218,6 +218,7 @@
+ 	HTT_STATS_PDEV_CCA_COUNTERS_TAG			= 73,
+ 	HTT_STATS_TX_PDEV_MPDU_STATS_TAG		= 74,
+ 	HTT_STATS_TX_SOUNDING_STATS_TAG			= 80,
++	HTT_STATS_TX_PDEV_TRIED_MPDU_CNT_HIST_TAG		= 82,
+ 	HTT_STATS_SCHED_TXQ_SCHED_ORDER_SU_TAG		= 86,
+ 	HTT_STATS_SCHED_TXQ_SCHED_INELIGIBILITY_TAG	= 87,
+ 	HTT_STATS_PDEV_OBSS_PD_TAG			= 88,
+@@ -257,6 +258,7 @@
+ 	HTT_STATS_DMAC_RESET_STATS_TAG			= 155,
+ 	HTT_STATS_PHY_TPC_STATS_TAG			= 157,
+ 	HTT_STATS_PDEV_PUNCTURE_STATS_TAG		= 158,
++	HTT_STATS_TX_PDEV_PPDU_DUR_TAG			= 162,
+ 	HTT_STATS_PDEV_SCHED_ALGO_OFDMA_STATS_TAG	= 165,
+ 	HTT_STATS_TXBF_OFDMA_AX_STEER_MPDU_STATS_TAG	= 172,
+ 	HTT_STATS_PDEV_MBSSID_CTRL_FRAME_STATS_TAG	= 176,
+@@ -414,6 +416,25 @@
+ 	DECLARE_FLEX_ARRAY(__le32, sifs_hist_status);
+ } __packed;
+ 
++/* Bin width and array length are supplied by the firmware TLV. */
++struct ath12k_htt_tx_pdev_tried_mpdu_cnt_hist_tlv {
++	__le32 hist_bin_size;
++	__le32 tried_mpdu_cnt_hist[];
++} __packed;
++
++#define ATH12K_HTT_PDEV_PPDU_DUR_HIST_BINS 16
++
++struct ath12k_htt_tx_pdev_ppdu_dur_tlv {
++	__le32 tx_ppdu_dur_hist[ATH12K_HTT_PDEV_PPDU_DUR_HIST_BINS];
++	__le32 tx_success_time_us_low;
++	__le32 tx_success_time_us_high;
++	__le32 tx_fail_time_us_low;
++	__le32 tx_fail_time_us_high;
++	__le32 pdev_up_time_us_low;
++	__le32 pdev_up_time_us_high;
++	__le32 tx_ofdma_ppdu_dur_hist[ATH12K_HTT_PDEV_PPDU_DUR_HIST_BINS];
++} __packed;
++
+ enum ath12k_htt_stats_hw_mode {
+ 	ATH12K_HTT_STATS_HWMODE_AC = 0,
+ 	ATH12K_HTT_STATS_HWMODE_AX = 1,

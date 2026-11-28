@@ -73,3 +73,25 @@ assert not h['describe_snapshot']([],dict(qualified=True,radios={}))['qualified'
 assert not h['describe_snapshot'](raw,dict(qualified=False))['qualified']
 assert not compare(parse(snapshot(100,50,False)),parse(snapshot(118,100,True)))['qualified']
 print('HTT_RATE_STATS_PASS')
+
+# Optional tag 162: independent 64-bit time counters and fixed 16-bin histograms.
+def with_duration(raw, value):
+    out=[]
+    for line in raw:
+        if line.startswith('HTT_RATE_END '):
+            out += [h['DURATION_HEADER'], *(f'{k} = {value}' for k in sorted(h['DURATION_COUNTERS'])),
+                    *(hist(k,s,value & 0xffffffff) for k,s in h['DURATION_ARRAYS'].items()), '']
+        out.append(line)
+    return out
+a=parse(with_duration(snapshot(100,50),2**32+100))
+b=parse(with_duration(snapshot(118,100),2**32+200))
+r=compare(a,b)
+assert a['qualified'] and b['qualified'] and r['qualified']
+for v in r['radios'].values():
+    assert v['delta']['tx_success_time_us']==100
+    assert v['histogram_delta']['tx_ppdu_dur_hist']==[100]*16
+raw=with_duration(snapshot(118,100),2**32+200)
+assert not parse([x for x in raw if not x.startswith('tx_ofdma_ppdu_dur_hist =')])['qualified']
+assert not parse([x.replace('tx_success_time_us = 4294967496','tx_success_time_us = 18446744073709551616') for x in raw])['qualified']
+assert not compare(a,parse(snapshot(118,100)))['qualified']
+print('HTT_PPDU_DURATION_PASS')

@@ -53,3 +53,43 @@ assert not parse(a,[x.replace("1:70,2:0", "1:4294967296,2:0") for x in b])["qual
 assert not h["compare"](pre,parse(c,[x.replace("1:150,2:0", "1:69,2:0") for x in d]))["qualified"]
 assert not h["compare"](pre,parse(c,[x.replace("1:150,2:0", "1:150") for x in d]))["qualified"]
 print("HTT_TX_STATS_PASS")
+
+# Direct tag 82 parser: exact bin width, arbitrary valid TLV length, no retries.
+header = h['MPDU_HIST_HEADER']
+for n in (1, 10, 255, 256, 1022):
+    lines = [header, 'hist_bin_size = 30', 'tried_mpdu_cnt_hist = ' +
+             ', '.join(f'{i}:{i+1}' for i in range(n))]
+    assert h['mpdu_histogram'](lines) == {'bin_size':30,'bins':list(range(1,n+1))}
+    for bad in (lines[:-1], lines+lines, [lines[0], 'hist_bin_size = 0', lines[2]],
+                [lines[0], 'invalid_length = 4']):
+        try:
+            h['mpdu_histogram'](bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('malformed aggregation histogram accepted')
+assert h['mpdu_histogram']([]) is None
+print('HTT_MPDU_HIST_PASS')
+
+def with_mpdu(raw, width, values):
+    out=[]
+    for line in raw:
+        if line.startswith("HTT_END "):
+            out += [header, f'hist_bin_size = {width}', 'tried_mpdu_cnt_hist = ' +
+                    ', '.join(f'{i}:{v}' for i,v in enumerate(values)), '']
+        out.append(line)
+    return out
+
+raw_a=reply("radio-a","10.00","10.01",10)+reply("radio-b","10.02","10.03",10)
+raw_b=reply("radio-a","20.00","20.01",20)+reply("radio-b","20.02","20.03",20)
+decode=lambda raw:h['describe_snapshot'](raw,devices)
+a=decode(with_mpdu(raw_a,30,[10,20,30]))
+b=decode(with_mpdu(raw_b,30,[12,25,33]))
+r=h['compare'](a,b)
+assert r['qualified']
+for v in r['radios'].values():
+    assert v['mpdu_per_ppdu']==dict(bin_size=30,bins=[2,5,3],fraction_pct=[20,50,30])
+for bad in (raw_b, with_mpdu(raw_b,31,[12,25,33]), with_mpdu(raw_b,30,[12,25]),
+            with_mpdu(raw_b,30,[9,25,33])):
+    assert not h['compare'](a,decode(bad))['qualified']
+print('HTT_MPDU_DELTA_PASS')
