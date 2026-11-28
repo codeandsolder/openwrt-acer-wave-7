@@ -24,7 +24,7 @@ remote_stream(){
     body=$(cat)
     (( ${#body} > 9000 )) || return 1
     printf '%s\n' "$body" | sh -n
-    [[ $body == *'capture_htt_mlo'* && $body == *'capture_tx_attempts'* &&
+    [[ $body == *'capture_htt_mlo'* && $body == *'capture_htt_rate'* && $body == *'capture_tx_attempts'* &&
        $body == *'capture_reo_commands'* && $body == *'echo ==== CPU'* &&
        $body == *'echo ==== END'* ]] || return 1
     echo STREAMED_COMPLETE_SCRIPT
@@ -38,6 +38,7 @@ for profile in 0 1; do
     ap_rx_error_stats=$profile
     ap_htt_tx_stats=$profile
     ap_htt_mlo_stats=$profile
+    ap_htt_rate_stats=$profile
     ap_reo_command_stats=$profile
     ap_tx_attempt_stats=$profile
     for side in before after; do

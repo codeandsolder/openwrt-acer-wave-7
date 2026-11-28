@@ -37,6 +37,7 @@ ap_link_stats=0
 ap_channel_survey=0
 ap_htt_tx_stats=0
 ap_htt_mlo_stats=0
+ap_htt_rate_stats=0
 ap_reo_command_stats=0
 ap_tx_attempt_stats=0
 client_pm_profile=""
@@ -82,6 +83,7 @@ for arg in "$@"; do
         --ap-link-stats) ap_link_stats=1 ;;
         --ap-channel-survey) ap_channel_survey=1 ;;
         --ap-htt-tx-stats) ap_htt_tx_stats=1 ;;
+        --ap-htt-rate-stats) ap_htt_tx_stats=1; ap_htt_rate_stats=1 ;;
         --ap-htt-mlo-stats) ap_htt_tx_stats=1; ap_htt_mlo_stats=1 ;;
         --ap-reo-command-stats) ap_reo_command_stats=1 ;;
         --ap-tx-attempt-stats) ap_tx_attempt_stats=1 ;;
@@ -395,7 +397,7 @@ snapshot_reo_commands(){
         echo ==== END
         cat /proc/sys/kernel/random/boot_id"
 }
-htt_mlo_reader=$(cat "$(dirname "$helper")/ap-htt-mlo-reader.sh")
+htt_reader=$(cat "$(dirname "$helper")/ap-htt-reader.sh")
 tx_attempt_reader=$(cat "$(dirname "$helper")/ap-tx-attempt-reader.sh")
 snapshot_load(){
     local side=${1:?snapshot side required}
@@ -430,38 +432,8 @@ snapshot_load(){
             echo GEOMETRY_AFTER_END rc=\$info_rc
         }
         $debugfs_reader
-        $htt_mlo_reader
+        $htt_reader
         $tx_attempt_reader
-        capture_htt_tx(){
-            found=0
-            for f in /sys/kernel/debug/ath12k/*/mac*/htt_stats; do
-                [ -r \"\$f\" ] || continue
-                found=1
-                dir=\${f%/*}
-                id=\${dir#/sys/kernel/debug/ath12k/}
-                old=\$(cat \"\$dir/htt_stats_type\") || return 1
-                read -r stamp rest </proc/uptime
-                echo HTT_BEGIN \"\$id\" \"\$stamp\" selector=\$old
-                rc=0
-                # Selector state is host-debugfs only. The driver cannot
-                # restore selector 0, so retain 1 for subsequent requests.
-                # Refuse to overwrite any other observer's selection.
-                case \"\$old\" in
-                    0|1) echo 1 > \"\$dir/htt_stats_type\" || rc=\$? ;;
-                    *) rc=2 ;;
-                esac
-                if [ \"\$rc\" = 0 ]; then
-                    cat \"\$f\" 2>&1 || rc=\$?
-                fi
-                read -r stamp rest </proc/uptime
-                echo HTT_END \"\$id\" \"\$stamp\" rc=\$rc
-                # A timed-out HTT response may still arrive later. Abort
-                # this trial rather than issue further requests on its cookie.
-                [ \"\$rc\" = 0 ] || return 1
-                [ \"\$(cat \"\$dir/htt_stats_type\")\" = 1 ] || return 1
-            done
-            [ \"\$found\" = 1 ]
-        }
         if [ '$ap_htt_tx_stats' = 1 ] && [ '$side' = before ]; then
             if ! htt_before=\$(capture_htt_tx); then
                 printf '%s\\n' \"\$htt_before\"
@@ -471,6 +443,12 @@ snapshot_load(){
                 [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
             done
             [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        fi
+        if [ '$ap_htt_rate_stats' = 1 ] && [ '$side' = before ]; then
+            if ! rate_before=\$(capture_htt_rate); then
+                printf '%s\n' \"\$rate_before\"
+                exit 1
+            fi
         fi
         if [ '$ap_htt_mlo_stats' = 1 ] && [ '$side' = before ]; then
             if ! mlo_before=\$(capture_htt_mlo); then
@@ -561,6 +539,14 @@ snapshot_load(){
         if [ '$ap_reo_command_stats' = 1 ]; then
             $reo_command_reader
             capture_reo_commands
+        fi
+        if [ '$ap_htt_rate_stats' = 1 ]; then
+            echo ==== HTT_RATE
+            if [ '$side' = before ]; then
+                printf '%s\n' \"\$rate_before\"
+            else
+                capture_htt_rate || exit 1
+            fi
         fi
         if [ '$ap_htt_mlo_stats' = 1 ]; then
             echo ==== HTT_MLO

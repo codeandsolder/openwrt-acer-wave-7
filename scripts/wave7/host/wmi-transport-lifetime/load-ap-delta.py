@@ -18,6 +18,10 @@ htt_spec = importlib.util.spec_from_file_location(
     "htt_tx", Path(__file__).with_name("htt-tx-stats.py"))
 htt = importlib.util.module_from_spec(htt_spec)
 htt_spec.loader.exec_module(htt)
+rate_spec = importlib.util.spec_from_file_location(
+    "htt_rate", Path(__file__).with_name("htt-rate-stats.py"))
+htt_rate = importlib.util.module_from_spec(rate_spec)
+rate_spec.loader.exec_module(htt_rate)
 mlo_spec = importlib.util.spec_from_file_location(
     "htt_mlo", Path(__file__).with_name("htt-mlo-stats.py"))
 htt_mlo = importlib.util.module_from_spec(mlo_spec)
@@ -306,6 +310,9 @@ def parse(text):
         extra["tx_attempt"] = tx_attempt.parse_sections(sections_, tx.keys())
     if "HTT_TX" in sections_:
         extra["htt_tx"] = htt.describe_snapshot(sections_["HTT_TX"], tx.keys())
+    if "HTT_RATE" in sections_:
+        require("htt_tx" in extra, "rate stats require pdev TX witness")
+        extra["htt_rate"] = htt_rate.describe_snapshot(sections_["HTT_RATE"], extra["htt_tx"])
     if "HTT_MLO" in sections_:
         require("htt_tx" in extra, "MLO scheduler stats require pdev TX witness")
         witness = extra["htt_tx"]
@@ -434,6 +441,10 @@ def compare(before, after):
         extra["tx_attempt"] = tx_attempt.compare(a["extra"]["tx_attempt"], b["extra"]["tx_attempt"])
     if "htt_tx" in a["extra"]:
         extra["htt_tx"] = htt.compare(a["extra"]["htt_tx"], b["extra"]["htt_tx"])
+    if "htt_rate" in a["extra"]:
+        extra["htt_rate"] = htt_rate.compare(a["extra"]["htt_rate"], b["extra"]["htt_rate"],
+                                              a["extra"]["htt_tx"], b["extra"]["htt_tx"],
+                                              extra["htt_tx"])
     if "htt_mlo" in a["extra"]:
         extra["htt_mlo"] = htt_mlo.compare(a["extra"]["htt_mlo"], b["extra"]["htt_mlo"],
                                            a["extra"]["htt_tx"], b["extra"]["htt_tx"],

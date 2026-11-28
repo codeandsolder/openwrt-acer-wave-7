@@ -120,6 +120,7 @@ def read_run(path, band):
         identity[f'rx_error_stats_{mode}'] = 'rx_error_attribution' in extra
         identity[f'channel_survey_{mode}'] = 'channel_survey' in extra
         identity[f'htt_tx_{mode}'] = 'htt_tx' in extra
+        identity[f'htt_rate_{mode}'] = 'htt_rate' in extra
         identity[f'htt_mlo_{mode}'] = 'htt_mlo' in extra
         identity[f'reo_command_{mode}'] = 'reo_command' in extra
         identity[f'tx_attempt_{mode}'] = 'tx_attempt' in extra
@@ -146,6 +147,8 @@ def read_run(path, band):
             phases[mode]['tx_attempt'] = extra['tx_attempt']
         if 'reo_command' in extra:
             phases[mode]['reo_command'] = extra['reo_command']
+        if 'htt_rate' in extra:
+            phases[mode]['htt_rate'] = extra['htt_rate']
         if 'htt_mlo' in extra:
             phases[mode]['htt_mlo'] = extra['htt_mlo']
         if 'htt_tx' in extra:
