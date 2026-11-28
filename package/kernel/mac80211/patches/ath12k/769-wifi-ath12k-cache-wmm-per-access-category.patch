@@ -1,0 +1,190 @@
+Subject: [PATCH] wifi: ath12k: retain all deferred WMM access categories
+
+mac80211 configures each access category separately before a link vdev
+may exist. Retain the latest parameters for every category rather than
+overwriting the previous category. The firmware WMM command contains
+all four categories, so populate the complete cached configuration
+before submitting it, then apply cached U-APSD settings.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -291,9 +291,8 @@
+ };
+ 
+ struct ath12k_tx_conf {
+-	bool changed;
+-	u16 ac;
+-	struct ieee80211_tx_queue_params tx_queue_params;
++	unsigned long changed;
++	struct ieee80211_tx_queue_params tx_queue_params[IEEE80211_NUM_ACS];
+ };
+ 
+ struct ath12k_key_conf {
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -8406,15 +8406,12 @@
+ 	return ret;
+ }
+ 
+-static int ath12k_mac_conf_tx(struct ath12k_link_vif *arvif, u16 ac,
+-			      const struct ieee80211_tx_queue_params *params)
++static int ath12k_mac_set_wmm_params(struct ath12k_link_vif *arvif, u16 ac,
++				     const struct ieee80211_tx_queue_params *params)
+ {
+ 	struct wmi_wmm_params_arg *p = NULL;
+-	struct ath12k *ar = arvif->ar;
+-	struct ath12k_base *ab = ar->ab;
+-	int ret;
+ 
+-	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
++	lockdep_assert_wiphy(ath12k_ar_to_hw(arvif->ar)->wiphy);
+ 
+ 	switch (ac) {
+ 	case IEEE80211_AC_VO:
+@@ -8431,16 +8428,28 @@
+ 		break;
+ 	}
+ 
+-	if (WARN_ON(!p)) {
+-		ret = -EINVAL;
+-		goto exit;
+-	}
++	if (WARN_ON(!p))
++		return -EINVAL;
+ 
+ 	p->cwmin = params->cw_min;
+ 	p->cwmax = params->cw_max;
+ 	p->aifs = params->aifs;
+ 	p->txop = params->txop;
+ 
++	return 0;
++}
++
++static int ath12k_mac_conf_tx(struct ath12k_link_vif *arvif, u16 ac,
++			      const struct ieee80211_tx_queue_params *params)
++{
++	struct ath12k *ar = arvif->ar;
++	struct ath12k_base *ab = ar->ab;
++	int ret;
++
++	ret = ath12k_mac_set_wmm_params(arvif, ac, params);
++	if (ret)
++		return ret;
++
+ 	ret = ath12k_wmi_send_wmm_update_cmd(ar, arvif->vdev_id,
+ 					     &arvif->wmm_params);
+ 	if (ret) {
+@@ -8458,6 +8467,64 @@
+ 	return ret;
+ }
+ 
++static int ath12k_mac_cache_tx_conf(struct ath12k_tx_conf *conf, u16 ac,
++				    const struct ieee80211_tx_queue_params *params)
++{
++	if (ac >= IEEE80211_NUM_ACS)
++		return -EINVAL;
++
++	conf->tx_queue_params[ac] = *params;
++	conf->changed |= BIT(ac);
++
++	return 0;
++}
++
++static void ath12k_mac_flush_tx_conf(struct ath12k_link_vif *arvif,
++				     const struct ath12k_tx_conf *conf)
++{
++	struct ath12k *ar = arvif->ar;
++	unsigned int ac;
++	int ret;
++
++	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
++
++	if (!conf->changed)
++		return;
++
++	/* The WMI command carries all four ACs. Populate the complete
++	 * cached configuration before sending it to the new vdev.
++	 */
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
++		if (!(conf->changed & BIT(ac)))
++			continue;
++
++		ret = ath12k_mac_set_wmm_params(arvif, ac,
++						&conf->tx_queue_params[ac]);
++		if (ret)
++			return;
++	}
++
++	ret = ath12k_wmi_send_wmm_update_cmd(ar, arvif->vdev_id,
++					     &arvif->wmm_params);
++	if (ret) {
++		ath12k_warn(ar->ab, "unable to apply cached WMM to vdev %u: %d\n",
++			    arvif->vdev_id, ret);
++		return;
++	}
++
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
++		if (!(conf->changed & BIT(ac)))
++			continue;
++
++		ret = ath12k_conf_tx_uapsd(arvif, ac,
++					   conf->tx_queue_params[ac].uapsd);
++		if (ret)
++			ath12k_warn(ar->ab,
++				    "unable to apply cached U-APSD to vdev %u AC %u: %d\n",
++				    arvif->vdev_id, ac, ret);
++	}
++}
++
+ int ath12k_mac_op_conf_tx(struct ieee80211_hw *hw,
+ 			  struct ieee80211_vif *vif,
+ 			  unsigned int link_id, u16 ac,
+@@ -8470,7 +8537,7 @@
+ 
+ 	lockdep_assert_wiphy(hw->wiphy);
+ 
+-	if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS)
++	if (link_id >= IEEE80211_MLD_MAX_NUM_LINKS || ac >= IEEE80211_NUM_ACS)
+ 		return -EINVAL;
+ 
+ 	arvif = wiphy_dereference(hw->wiphy, ahvif->link[link_id]);
+@@ -8479,11 +8546,7 @@
+ 		if (!cache)
+ 			return -ENOSPC;
+ 
+-		cache->tx_conf.changed = true;
+-		cache->tx_conf.ac = ac;
+-		cache->tx_conf.tx_queue_params = *params;
+-
+-		return 0;
++		return ath12k_mac_cache_tx_conf(&cache->tx_conf, ac, params);
+ 	}
+ 
+ 	ret = ath12k_mac_conf_tx(arvif, ac, params);
+@@ -10829,24 +10892,14 @@
+ 	struct ath12k_vif *ahvif = arvif->ahvif;
+ 	struct ieee80211_vif *vif = ath12k_ahvif_to_vif(ahvif);
+ 	struct ath12k_vif_cache *cache = ahvif->cache[arvif->link_id];
+-	struct ath12k_base *ab = ar->ab;
+ 	struct ieee80211_bss_conf *link_conf;
+ 
+-	int ret;
+-
+ 	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+ 
+ 	if (!cache)
+ 		return;
+ 
+-	if (cache->tx_conf.changed) {
+-		ret = ath12k_mac_conf_tx(arvif, cache->tx_conf.ac,
+-					 &cache->tx_conf.tx_queue_params);
+-		if (ret)
+-			ath12k_warn(ab,
+-				    "unable to apply tx config parameters to vdev %d\n",
+-				    ret);
+-	}
++	ath12k_mac_flush_tx_conf(arvif, &cache->tx_conf);
+ 
+ 	if (cache->bss_conf_changed) {
+ 		link_conf = ath12k_mac_get_link_bss_conf(arvif);
