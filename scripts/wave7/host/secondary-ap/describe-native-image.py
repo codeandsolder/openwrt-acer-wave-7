@@ -106,6 +106,32 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch, closu
                 sha, path = line.split('  ', 1)
                 require(path not in pinned_radio, 'duplicate radio pin')
                 pinned_radio[path] = sha
+        band_profile = meta.get('wave7_trial_lab_band_profile')
+        band_identity = {}
+        if band_profile is not None:
+            band = runpy.run_path(str(repo / 'scripts/wave7/host/wmi-transport-lifetime/band-profile.py'))
+            name = band_profile['name']
+            require(set(band_profile) == {'name', 'before', 'after'} and name in band['PROFILES'],
+                    'band profile schema')
+            require(profile['trial_lab_band_profile'] == name and
+                    profile['trial_lab_wireless_sha256'] == band_profile['after'] ==
+                    digest(root / 'etc/config/wireless'), 'band policy identity')
+            pinned_radio = band['radio_pins'](pinned_radio, name)
+            _, fit = band['properties']((t / 'kernel').read_bytes())
+            _, dt = band['properties'](fit['/images/fdt-1', 'data'])
+            frequency = band['PROFILES'][name][0]
+            require(dt[band['RADIO'], 'qcom,board_id'] == (0x91 if frequency == 6 else 0x53).to_bytes(4, 'big'),
+                    'band board ID')
+            for i, hog in enumerate(band['HOGS']):
+                node = band['TLMM'] + '/' + hog
+                props = {k[1]: v for k, v in dt.items() if k[0] == node}
+                require(props == {'gpio-hog': b'', 'gpios': (49+i).to_bytes(4, 'big') + bytes(4),
+                                  'line-name': hog.encode() + b'\0',
+                                  'output-high' if i == (frequency == 6) else 'output-low': b''},
+                        'band GPIO identity')
+            band_identity = {'band_profile': name}
+        else:
+            require('trial_lab_band_profile' not in profile, 'unattested band profile')
         require(actual_radio == pinned_radio and len(actual_radio) == 46, 'radio closure differs from pin')
         require(not any(p.is_symlink() for p in radio.rglob('*')), 'radio symlink')
         diagnostics = {}
@@ -140,7 +166,7 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch, closu
         return dict(image=image.name, image_sha256=sha256, revision=revision, kernel=kernel,
                     builder_commit=builder, fit_sha256=digest(t / 'kernel'), rootfs_sha256=digest(t / 'root'),
                     radio_release=radio_release, radio_sha256=actual_radio, module_sha256=module_hashes,
-                    policy_sha256={p: digest(root / p) for p in POLICY}, **diagnostics)
+                    policy_sha256={p: digest(root / p) for p in POLICY}, **diagnostics, **band_identity)
 
 
 def main():

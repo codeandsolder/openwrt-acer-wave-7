@@ -20,6 +20,7 @@ read_manifest = helpers['read_manifest']
 verify_special_nodes = helpers['verify_special_nodes']
 IDENTITIES = helpers['IDENTITIES']
 RADIO = helpers['RADIO']
+bands = runpy.run_path(str(Path(__file__).with_name('band-profile.py')))
 
 
 def module_key(name):
@@ -54,11 +55,22 @@ def main():
         p.add_argument('--' + arg, type=Path, required=True)
     for arg in ('replacement-fit', 'kernel-closure', 'kernel-config'):
         p.add_argument('--' + arg, type=Path)
+    p.add_argument('--band-files', type=Path)
     a = p.parse_args()
     profile_spec = json.loads(a.spec.read_text())
     base_keys = {'parent_sha', 'parent_rev', 'parent_builder', 'fit_sha', 'kernel', 'modules', 'patch_commit', 'patch_key', 'filename'}
     kernel_keys = {'replacement_fit_sha', 'kernel_closure_sha', 'kernel_config_sha'}
     policy_trial = 'lab_primary_channel' in profile_spec
+    band_trial = 'lab_band_profile' in profile_spec
+    band = profile_spec.get('lab_band_profile', {})
+    if band_trial:
+        check(set(band) == {'name', 'before', 'after'} and band['name'] in bands['PROFILES'] and
+              all(re.fullmatch(r'[a-f0-9]{64}', band[k]) for k in ('before', 'after')),
+              'band profile pins')
+        check(not profile_spec['modules'], 'band control must retain all modules')
+        check((a.band_files is not None) == band['name'].startswith('6g'), '6 GHz private inputs')
+    else:
+        check(a.band_files is None, 'unexpected band files')
     if policy_trial:
         check(set(profile_spec['lab_primary_channel']) == {'before', 'after'} and
               all(re.fullmatch(r'[a-f0-9]{64}', v)
@@ -67,7 +79,9 @@ def main():
               'lab wireless policy pins')
     kernel_trial = set(profile_spec) == base_keys | kernel_keys
     check(kernel_trial or set(profile_spec) == base_keys |
-          ({'lab_primary_channel'} if policy_trial else set()), 'spec keys')
+          ({'lab_primary_channel'} if policy_trial else set()) |
+          ({'lab_band_profile'} if band_trial else set()), 'spec keys')
+    check(not (policy_trial and band_trial), 'exclusive policy profiles')
     kernel_inputs = (a.replacement_fit, a.kernel_closure, a.kernel_config)
     check(all(x is not None for x in kernel_inputs) if kernel_trial else all(x is None for x in kernel_inputs), 'kernel trial inputs')
     check(re.fullmatch(r'\d+\.\d+\.\d+', profile_spec['kernel']), 'kernel pin')
@@ -80,7 +94,7 @@ def main():
     check(all(re.fullmatch(r'[a-f0-9]{64}', profile_spec[k]) for k in ('parent_sha', 'fit_sha')), 'image pins')
     check(all(re.fullmatch(r'[a-f0-9]{40}', profile_spec[k]) for k in ('parent_builder', 'patch_commit')), 'commit pins')
     modules = profile_spec['modules']
-    check((modules or policy_trial) and all(re.fullmatch(r'[a-zA-Z0-9_-]+\.ko', n) and len(pair) == 2 and (kernel_trial or pair[0] != pair[1]) and all(re.fullmatch(r'[a-f0-9]{64}', h) for h in pair) for n, pair in modules.items()), 'module pins')
+    check((modules or policy_trial or band_trial) and all(re.fullmatch(r'[a-zA-Z0-9_-]+\.ko', n) and len(pair) == 2 and (kernel_trial or pair[0] != pair[1]) and all(re.fullmatch(r'[a-f0-9]{64}', h) for h in pair) for n, pair in modules.items()), 'module pins')
     if kernel_trial:
         check(all(re.fullmatch(r'[a-f0-9]{64}', profile_spec[key]) for key in kernel_keys), 'kernel pins')
         check(fit_sha != parent_fit_sha and sha(a.replacement_fit) == fit_sha, 'replacement FIT pin')
@@ -116,6 +130,11 @@ def main():
                                              fit_helpers['fit_properties'](a.replacement_fit))
             shutil.copyfile(a.replacement_fit, t / 'kernel')
             check(sha(t / 'kernel') == fit_sha, 'replacement FIT copied')
+        if band_trial:
+            bands['build_fit'](t / 'kernel', t / 'band.fit', band['name'], tools, repo,
+                               profile_spec['kernel'], int(cmd('git', '-C', repo, 'show', '-s', '--format=%ct', builder)))
+            shutil.copyfile(t / 'band.fit', t / 'kernel')
+            fit_sha = sha(t / 'kernel')
         cmd(fwtool, '-i', t / 'metadata.json', a.parent)
         meta = json.loads((t / 'metadata.json').read_text())
         check(meta['version']['revision'] == profile_spec['parent_rev'] and 'acer,wave7' in meta['supported_devices'], 'parent metadata')
@@ -149,6 +168,23 @@ def main():
             wireless.write_bytes(fixed_lab_primary(wireless.read_bytes()))
             check(sha(wireless) == pins['after'], 'candidate wireless policy digest')
             policy_delta.add('etc/config/wireless')
+        radio_delta = set()
+        if band_trial:
+            wireless = root / 'etc/config/wireless'
+            check(sha(wireless) == band['before'], 'parent wireless digest')
+            wireless.write_bytes(bands['wireless'](wireless.read_bytes(), band['name']))
+            check(sha(wireless) == band['after'], 'band wireless digest')
+            if band['before'] != band['after']:
+                policy_delta.add('etc/config/wireless')
+            for name, pair in bands['PINS'].items():
+                f = root / RADIO / name
+                check(f.is_file() and not f.is_symlink() and sha(f) == pair[0], 'parent band pin ' + name)
+                if band['name'].startswith('6g'):
+                    donor = a.band_files / Path(name).name
+                    check(donor.is_file() and sha(donor) == pair[1] and donor.stat().st_size == 109568,
+                          '6 GHz board/calibration pin ' + name)
+                    f.write_bytes(donor.read_bytes())
+                    radio_delta.add(f.relative_to(root).as_posix())
         for rel in IDENTITIES[:4]:
             f = root / rel
             old = f.read_text()
@@ -171,11 +207,15 @@ def main():
         if policy_trial:
             fields['trial_lab_primary_channel'] = '36'
             fields['trial_lab_wireless_sha256'] = profile_spec['lab_primary_channel']['after']
+        if band_trial:
+            fields['trial_lab_band_profile'] = band['name']
+            fields['trial_lab_primary_channel'] = str(bands['PROFILES'][band['name']][1])
+            fields['trial_lab_wireless_sha256'] = band['after']
         profile.write_text(''.join(f'{k}={v}\n' for k,v in fields.items()))
         cmd('sh', '-c', '. "$1"; wave7_ap_check_image "$2"', 'sh', root / 'lib/wave7/overlay-reset.sh', root)
         current = read_manifest(root)
         delta = sorted(k for k in original.keys() | current.keys() if original.get(k) != current.get(k))
-        check(set(delta) == set(IDENTITIES) | module_delta | policy_delta, 'unexpected root delta: ' + str(delta))
+        check(set(delta) == set(IDENTITIES) | module_delta | policy_delta | radio_delta, 'unexpected root delta: ' + str(delta))
         check(original.keys() == current.keys() and all(original[k][0] == current[k][0] and original[k][2] == current[k][2] for k in original), 'root inventory/types/modes')
         cmd(mksq, root, t / 'new.sq', '-nopad', '-noappend', '-root-owned', '-comp', 'xz', '-Xpreset', '9', '-Xe', '-Xlc', '0', '-Xlp', '2', '-Xpb', '2', '-b', '256k', '-p', '/dev d 755 0 0', '-p', '/dev/console c 600 0 0 5 1', '-no-xattrs', '-block-readers', '4', '-small-readers', '4')
         check((t / 'new.sq').stat().st_size <= 29204480, 'rootfs limit')
@@ -194,6 +234,8 @@ def main():
                 digest, path = line.split('  ', 1)
                 check(path not in pinned_radio, 'duplicate radio pin')
                 pinned_radio[path] = digest
+        if band_trial:
+            pinned_radio = bands['radio_pins'](pinned_radio, band['name'])
         check(radio_manifest == pinned_radio and len(radio_manifest) == 46, 'radio closure differs from pin')
         check(not any(p.is_symlink() for p in (root / RADIO).rglob('*')), 'radio symlink')
         check(fields['trial_radio_release'] == (repo / 'scripts/wave7/radio-release.txt').read_text().strip(), 'radio release pin')
@@ -210,6 +252,8 @@ def main():
         meta['wave7_trial_radio'][patch_key] = fields[patch_key]
         if policy_trial:
             meta['wave7_trial_lab_primary_channel'] = profile_spec['lab_primary_channel']
+        if band_trial:
+            meta['wave7_trial_lab_band_profile'] = band
         if kernel_trial:
             meta['wave7_trial_kernel'] = {key: profile_spec[key] for key in sorted(kernel_keys)}
         (t / 'new-meta').write_text(json.dumps(meta))
@@ -228,6 +272,8 @@ def main():
                       delta=delta, roundtrip_identical=True)
         if policy_trial:
             report['lab_primary_channel'] = profile_spec['lab_primary_channel']
+        if band_trial:
+            report['lab_band_profile'] = band
         if kernel_trial:
             report.update({key: profile_spec[key] for key in sorted(kernel_keys)})
         a.out.mkdir(mode=0o700)

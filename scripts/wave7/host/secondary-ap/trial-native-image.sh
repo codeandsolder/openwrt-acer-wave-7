@@ -59,7 +59,37 @@ verify_artifacts(){
     validate_manifest "$rollback_manifest" "$parent"
     [[ $(jq -er .image_sha256 "$candidate_manifest") != $(jq -er .image_sha256 "$rollback_manifest") ]] || fail 'identical images'
     [[ $(jq -er .radio_release "$candidate_manifest") == $(jq -er .radio_release "$rollback_manifest") ]] || fail 'radio release changed'
-    [[ $(jq -cS .radio_sha256 "$candidate_manifest") == $(jq -cS .radio_sha256 "$rollback_manifest") ]] || fail 'radio firmware changed in cross-kernel comparison'
+    # Ordinary native comparisons remain exact. Explicit RF profiles may
+    # differ only in the two stock board-specific external-radio files.
+    if jq -e 'has("band_profile")' "$candidate_manifest" >/dev/null ||
+       jq -e 'has("band_profile")' "$rollback_manifest" >/dev/null; then
+        local m name expected_board expected_cal
+        for m in "$candidate_manifest" "$rollback_manifest"; do
+            name=$(jq -er '.band_profile // "5g80"' "$m")
+            case "$name" in
+                5g80|5g160)
+                    expected_board=f63bb6540a01b18dd342493f7cac32573ceb5888b048a92da6600a21633f42f7
+                    expected_cal=ee077ea46ebe8d9dae38af54bf4a03881742e2ac80a24a7e852f6398817e1aa5 ;;
+                6g80|6g160)
+                    expected_board=bdfdf48ff3c3859997dd4afceaa72c561d72926923138bdb20f142a28b78f811
+                    expected_cal=5e2cc782f6f0cd002b5243d27f99f432de3c88d72b5baa5b0544033359df0e3b ;;
+                *) fail 'invalid band profile' ;;
+            esac
+            jq -e --arg b "$expected_board" --arg c "$expected_cal" '
+              .radio_sha256["QCN6432/hw1.0/board.bin"] == $b and
+              .radio_sha256["QCN6432/hw1.0/caldata_1.bin"] == $c' "$m" >/dev/null ||
+                fail 'stock band pins'
+        done
+        [[ $(jq -cS '.radio_sha256 | del(.["QCN6432/hw1.0/board.bin"], .["QCN6432/hw1.0/caldata_1.bin"])' "$candidate_manifest") == \
+           $(jq -cS '.radio_sha256 | del(.["QCN6432/hw1.0/board.bin"], .["QCN6432/hw1.0/caldata_1.bin"])' "$rollback_manifest") ]] ||
+            fail 'unrelated radio firmware changed'
+        [[ $(jq -cS .module_sha256 "$candidate_manifest") == $(jq -cS .module_sha256 "$rollback_manifest") &&
+           $(jq -er .kernel "$candidate_manifest") == $(jq -er .kernel "$rollback_manifest") ]] ||
+            fail 'RF experiment changed driver modules/kernel version'
+    else
+        [[ $(jq -cS .radio_sha256 "$candidate_manifest") == $(jq -cS .radio_sha256 "$rollback_manifest") ]] ||
+            fail 'radio firmware changed in cross-kernel comparison'
+    fi
 }
 verify_artifacts
 native="$base/$(jq -er .image "$candidate_manifest")"
