@@ -4,9 +4,9 @@
 set -Eeuo pipefail
 umask 077
 fail(){ echo "FIXED_PRIMARY_FAIL $*" >&2; exit 1; }
-[[ $# == 5 || $# == 6 ]] || fail "usage: $0 --baseline|--compare CANDIDATE_DIR PREDECESSOR_DIR PREDECESSOR_RUN_OR_MATRIX OUTPUT [RESUME_MATRIX]"
+[[ $# == 5 || $# == 6 ]] || fail "usage: $0 --baseline|--compare|--compare-partial CANDIDATE_DIR PREDECESSOR_DIR PREDECESSOR_RUN_OR_MATRIX OUTPUT [RESUME_MATRIX]"
 mode=$1
-[[ $mode == --baseline || $mode == --compare ]] || fail 'mode'
+[[ $mode == --baseline || $mode == --compare || $mode == --compare-partial ]] || fail 'mode'
 candidate=$(realpath -e "$2")
 parent=$(realpath -e "$3")
 source=$(realpath -e "$4")
@@ -45,6 +45,19 @@ verify_case(){
     verify_restored "$run" "$a"
     [[ $(cat "$a/status") == exit=0 ]] || fail 'unqualified case'
 }
+declare -A comparable=()
+# A diagnostic partial matrix is deliberately distinct from full matched
+# qualification. A self-qualified archive may be a per-profile parent,
+# but an unqualified case can never become comparison evidence.
+parent_profile_eligible(){
+    local matrix=$1 id=$2 a=$3
+    [[ $(cat "$a/status") == exit=0 ]] || return 1
+    if rg -q "^QUALIFIED $id " "$matrix/wrapper.log"; then
+        return 0
+    fi
+    [[ $mode == --compare-partial ]] &&
+        rg -q "^STANDALONE $id " "$matrix/wrapper.log"
+}
 if [[ $mode == --baseline ]]; then
     [[ $source == "$parent"/runs/native-* ]] || fail 'baseline predecessor run'
     prev=$source
@@ -58,17 +71,36 @@ if [[ $mode == --baseline ]]; then
     rg -q STACK_ORIGINAL_PASS "$latest/client-original-after.txt" || fail 'predecessor client stack'
 else
     [[ $source == "$parent"/harness-verification/* && $wireless == "$old_wireless" ]] || fail 'matched predecessor policy'
-    rg -q '^COMPLETE ' "$source/wrapper.log" || fail 'parent matrix incomplete'
+    terminal=$(tail -1 "$source/wrapper.log")
+    if [[ $mode == --compare ]]; then
+        [[ $terminal == COMPLETE\ * ]] || fail 'parent matrix incomplete'
+    else
+        [[ $terminal == COMPLETE\ * || $terminal == INCOMPLETE\ * ]] || fail 'parent matrix not sealed'
+    fi
     prev=$(realpath -e "$(cat "$source/run-directory.txt")")
+    [[ "$prev" == "$parent"/runs/native-* && $(cat "$prev/status") == SOAK_PASS ]] || fail 'parent soak'
+    parent_sha=$(jq -er .image_sha256 "$parent_manifest")
     for id in "${ids[@]}"; do
         a=$(realpath -e "$(cat "$source/$id-dir.txt")")
-        verify_case "$prev" "$a"
-        if [[ -f "$source/$id-comparison.json" ]]; then
-            jq -e '.matched == true' "$source/$id-comparison.json" >/dev/null
-        else
-            jq -e --arg p "$a" --arg w "$wireless" '.path == $p and .identity.wireless_policy == $w' "$source/$id-baseline.json" >/dev/null
+        verify_restored "$prev" "$a"
+        if ! parent_profile_eligible "$source" "$id" "$a"; then
+            [[ $mode == --compare-partial ]] || fail "unqualified parent $id"
+            comparable[$id]=0
+            echo "PARENT_UNQUALIFIED $id"
+            continue
         fi
+        verify_case "$prev" "$a"
+        # Recompute qualification from the sealed run, not the mutable
+        # summary JSON or a label alone.
+        case "$id" in single-5|dual-5) band=5 ;; dual-24) band=24 ;; esac
+        uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-run "$a" > "$out/parent-$id-qualified.json"
+        jq -e --arg p "$a" --arg w "$wireless" --arg sha "$parent_sha"             '.path == $p and .identity.wireless_policy == $w and .image_sha256 == $sha' "$out/parent-$id-qualified.json" >/dev/null
+        comparable[$id]=1
     done
+    [[ ${comparable[single-5]} == 1 || ${comparable[dual-5]} == 1 || ${comparable[dual-24]} == 1 ]] || fail 'no qualified parent profile'
+    latest=$(find "$prev" -maxdepth 1 -type d -name 'client-ab-*' -printf '%p\n' | sort | tail -1)
+    [[ -n $latest ]] || fail 'missing latest predecessor client case'
+    verify_restored "$prev" "$latest"
 fi
 [[ "$prev" == "$parent"/runs/native-* && $(cat "$prev/status") == SOAK_PASS ]] || fail 'parent soak'
 local_sha=$(sha256sum "$h/secondary-ap/client-sustained.sh" | cut -d' ' -f1)
@@ -124,7 +156,7 @@ for id in "${ids[@]}"; do
     # sealed candidate boot; incomplete/failed cases require a fresh run.
     a=''
     if [[ -n $resume && -f "$resume/$id-dir.txt" ]] &&
-       rg -q "^QUALIFIED $id " "$resume/wrapper.log"; then
+       rg -q "^(QUALIFIED|STANDALONE) $id " "$resume/wrapper.log"; then
         existing=$(realpath -e "$(cat "$resume/$id-dir.txt")")
         if [[ "$existing" == "$run"/client-ab-* && $(cat "$existing/status") == exit=0 ]]; then
             verify_case "$run" "$existing"
@@ -155,18 +187,27 @@ for id in "${ids[@]}"; do
     fi
     printf '%s\n' "$a" > "$out/$id-dir.txt"
     attest "$out/$id-geometry-after.txt"
-    if [[ $mode == --baseline ]]; then
-        if ! uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-run "$a" > "$out/$id-baseline.json" ||
-           ! jq -e --arg w "$wireless" '.identity.wireless_policy == $w and (.identity.geometry | index("channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz") != null)' "$out/$id-baseline.json" >/dev/null; then
-            echo "UNQUALIFIED $id baseline $(date -Is)"
-            failed+=("$id")
-            continue
+    # Every candidate must independently qualify before being used as
+    # either a comparison endpoint or a new per-profile baseline.
+    if ! uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-run "$a" > "$out/$id-baseline.json" ||
+       ! jq -e --arg w "$wireless" '.identity.wireless_policy == $w and (.identity.geometry | index("channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz") != null)' "$out/$id-baseline.json" >/dev/null; then
+        echo "UNQUALIFIED $id baseline $(date -Is)"
+        failed+=("$id")
+        continue
+    fi
+    if [[ $mode != --baseline ]]; then
+        matched=0
+        if [[ ${comparable[$id]} == 1 ]]; then
+            old=$(realpath -e "$(cat "$source/$id-dir.txt")")
+            if uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-unmatched "$old" "$a" > "$out/$id-comparison.json" &&
+               jq -e '.matched == true' "$out/$id-comparison.json" >/dev/null; then
+                matched=1
+            fi
         fi
-    else
-        old=$(realpath -e "$(cat "$source/$id-dir.txt")")
-        if ! uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-unmatched "$old" "$a" > "$out/$id-comparison.json" ||
-           ! jq -e '.matched == true' "$out/$id-comparison.json" >/dev/null; then
-            echo "UNQUALIFIED $id comparison $(date -Is)"
+        if (( !matched )); then
+            # Explicitly record a standalone result, never promote it
+            # to matched evidence or declare this matrix complete.
+            echo "STANDALONE $id $(date -Is)"
             failed+=("$id")
             continue
         fi
