@@ -1,0 +1,16 @@
+{
+  "parent_sha": "ef22d632824ad47da0b64d13d296da23e2f168dd6d195854cef55f8fdc6bf121",
+  "parent_rev": "r0+39019-d9383eedb5-ap-dhcp-guard8",
+  "parent_builder": "d9383eedb500bd15547aa1d0abc3e2aa7343c46b",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {},
+  "patch_commit": "f7276edd515c00ae88104d26d16ad5788da19d67",
+  "patch_key": "trial_rf_band_profile_commit",
+  "filename": "wave7-lab-band-5g160-dhcp-guard8-sysupgrade.bin",
+  "lab_band_profile": {
+    "name": "5g160",
+    "before": "dffaede0018713d32e4d84927118ae8064c7521d72d013fb5df17620b96b45fb",
+    "after": "703e2829fd7ab9477d31aa57a42b4922aa845880d85365b7576b23bebd665311"
+  }
+}
