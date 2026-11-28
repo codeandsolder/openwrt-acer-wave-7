@@ -1,0 +1,34 @@
+Subject: [PATCH] wifi: ath12k: service REO status before RX exhausts NAPI
+
+REO status, RX exceptions and WBM RX release share an interrupt group
+on IPQ5332 and QCN6432 (and other Wi-Fi 7 variants). A saturated error
+ring can consume every NAPI packet budget before the status ring is
+visited. Command retirement then depends on RX becoming idle.
+
+Visit REO status before packet work on positive-budget polls, preserving
+the entire RX budget and TX completion behavior. The status reader drains
+only the finite cached head-pointer snapshot, not an unbounded live ring.
+Do not add status processing to zero-budget TX-only polls.
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp.c
+@@ -38,3 +38,9 @@
++	/* REO command completion must not depend on the RX packet budget.
++	 * Drain the finite status snapshot before RX errors can exhaust it.
++	 */
++	if (budget > 0 && dp->hw_params->ring_mask->reo_status[grp_id])
++		ath12k_wifi7_dp_rx_process_reo_status(dp);
++
+ 	if (dp->hw_params->ring_mask->rx_err[grp_id]) {
+ 		work_done = ath12k_wifi7_dp_rx_process_err(dp, napi, budget);
+ 		budget -= work_done;
+@@ -124,9 +130,6 @@
+ 			}
+ 		}
+ 	}
+-
+-	if (dp->hw_params->ring_mask->reo_status[grp_id])
+-		ath12k_wifi7_dp_rx_process_reo_status(dp);
+ 
+ 	if (dp->hw_params->ring_mask->host2rxdma[grp_id]) {
+ 		struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;

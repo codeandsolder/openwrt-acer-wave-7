@@ -141,7 +141,7 @@ int main(void){
         int result=ath12k_wifi7_dp_service_srng(&dp,&grp,budget);
         unsigned expected_rx=min_t(unsigned,budget,rxavail);
         assert(rx_done==expected_rx && result==(int)(more?budget:expected_rx));
-        assert(maintenance==((budget>expected_rx)?2u:0u));
+        assert(maintenance==((budget>0)?1u:0u)+((budget>expected_rx)?1u:0u));
         for(unsigned i=0;i<4;i++){
             unsigned n=available[(backlog+i)%4];
             unsigned expect=(bits&BIT(i))?min_t(unsigned,n,limit):0;
