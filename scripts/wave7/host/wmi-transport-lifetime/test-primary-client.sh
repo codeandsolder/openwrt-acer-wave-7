@@ -35,6 +35,7 @@ ap_pmu_dir=""
 ap_ring3_probe=0
 ap_link_stats=0
 ap_channel_survey=0
+ap_htt_tx_stats=0
 ap_link_tool=""
 client_rx_arg=--none
 variant_mgmt_profile=--none
@@ -73,6 +74,7 @@ for arg in "$@"; do
         --ap-ring3-probe) ap_ring3_probe=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
         --ap-channel-survey) ap_channel_survey=1 ;;
+        --ap-htt-tx-stats) ap_htt_tx_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
         --client-delayed-links) select_variant upstream-prefix22-authorize-delayed-links-trace --none --none ;;
@@ -165,6 +167,7 @@ if (( ap_ring3_probe )); then
 fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
 if (( ap_channel_survey && !dual_load )); then fail "channel survey requires isolated TCP load trial"; fi
+if (( ap_htt_tx_stats && !dual_load )); then fail "HTT TX stats require isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -362,6 +365,46 @@ snapshot_load(){
             iw dev ap-mld0 info 2>&1 || info_rc=\$?
             echo GEOMETRY_AFTER_END rc=\$info_rc
         }
+        capture_htt_tx(){
+            found=0
+            for f in /sys/kernel/debug/ath12k/*/mac*/htt_stats; do
+                [ -r \"\$f\" ] || continue
+                found=1
+                dir=\${f%/*}
+                id=\${dir#/sys/kernel/debug/ath12k/}
+                old=\$(cat \"\$dir/htt_stats_type\") || return 1
+                read -r stamp rest </proc/uptime
+                echo HTT_BEGIN \"\$id\" \"\$stamp\" selector=\$old
+                rc=0
+                # Selector state is host-debugfs only. The driver cannot
+                # restore selector 0, so retain 1 for subsequent requests.
+                # Refuse to overwrite any other observer's selection.
+                case \"\$old\" in
+                    0|1) printf '1\\n' > \"\$dir/htt_stats_type\" || rc=\$? ;;
+                    *) rc=2 ;;
+                esac
+                if [ \"\$rc\" = 0 ]; then
+                    cat \"\$f\" 2>&1 || rc=\$?
+                fi
+                read -r stamp rest </proc/uptime
+                echo HTT_END \"\$id\" \"\$stamp\" rc=\$rc
+                # A timed-out HTT response may still arrive later. Abort
+                # this trial rather than issue further requests on its cookie.
+                [ \"\$rc\" = 0 ] || return 1
+                [ \"\$(cat \"\$dir/htt_stats_type\")\" = 1 ] || return 1
+            done
+            [ \"\$found\" = 1 ]
+        }
+        if [ '$ap_htt_tx_stats' = 1 ] && [ '$side' = before ]; then
+            if ! htt_before=\$(capture_htt_tx); then
+                printf '%s\\n' \"\$htt_before\"
+                exit 1
+            fi
+            for p in 0 1 2; do
+                [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
+            done
+            [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        fi
         if [ '$ap_channel_survey' = 1 ] && [ '$side' = before ]; then
             survey_before=\$(capture_channel_survey)
             for p in 0 1 2; do
@@ -428,6 +471,18 @@ snapshot_load(){
                 echo ==== RX_ERROR \"\${d##*/}\"
                 cat \"\$d/rx_error_stats\"
             done
+        fi
+        if [ '$ap_htt_tx_stats' = 1 ]; then
+            echo ==== HTT_TX
+            if [ '$side' = before ]; then
+                printf '%s\\n' \"\$htt_before\"
+            else
+                capture_htt_tx || exit 1
+            fi
+            for p in 0 1 2; do
+                [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
+            done
+            [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
         fi
         if [ '$ap_channel_survey' = 1 ]; then
             echo ==== CHANNEL_SURVEY
