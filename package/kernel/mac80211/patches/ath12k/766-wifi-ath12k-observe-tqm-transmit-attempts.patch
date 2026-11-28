@@ -1,0 +1,204 @@
+Subject: [PATCH] wifi: ath12k: observe TQM transmit attempts independently
+
+The Qualcomm WBM completion format carries a seven-bit transmit count
+valid for TQM records. Preserve the raw count, release reason and the
+separately qualified release-list position in diagnostic counters.
+
+Count records reaching MSDU status processing, not unique MPDUs or
+airtime. Do not mix these counters with HTT PPDU retry accounting or
+change mac80211 status delivery. Exclude WBM internal-error records.
+
+Allocate optional diagnostics independently of datapath bring-up.
+Read counters without issuing hardware commands.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -465,6 +465,27 @@
+ 	ATH12K_RX_ERROR_SOURCES,
+ };
+ 
++/* Hardware TQM release reason and transmit count are four and seven
++ * bits respectively. These counters describe completion records that
++ * reach MSDU status processing, not distinct over-the-air MPDUs.
++ */
++#define ATH12K_TX_ATTEMPT_REASONS 16
++#define ATH12K_TX_ATTEMPT_COUNTS 128
++
++enum ath12k_tx_attempt_class {
++	ATH12K_TX_ATTEMPT_DIRECT,
++	ATH12K_TX_ATTEMPT_LIST_MIDDLE,
++	ATH12K_TX_ATTEMPT_LIST_FIRST,
++	ATH12K_TX_ATTEMPT_LIST_LAST,
++	ATH12K_TX_ATTEMPT_LIST_SINGLE,
++	ATH12K_TX_ATTEMPT_CLASSES,
++};
++
++struct ath12k_tx_attempt_stats {
++	atomic64_t count[ATH12K_TX_ATTEMPT_REASONS][ATH12K_TX_ATTEMPT_CLASSES]
++			[ATH12K_TX_ATTEMPT_COUNTS];
++};
++
+ struct ath12k_rx_error_stats {
+ 	atomic64_t count[ATH12K_RX_ERROR_SOURCES][ATH12K_RX_ERROR_CODES]
+ 			[ATH12K_RX_ERROR_LINKS][ATH12K_RX_ERROR_TIDS];
+@@ -608,6 +629,7 @@
+ 	struct rhashtable_params rhash_peer_addr_param;
+ 	struct ath12k_device_dp_stats device_stats;
+ 	struct ath12k_rx_error_stats *rx_error_stats;
++	struct ath12k_tx_attempt_stats *tx_attempt_stats;
+ };
+ 
+ static inline u32 ath12k_dp_arch_tx_get_vdev_bank_config(struct ath12k_dp *dp,
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp.c
+@@ -186,6 +186,7 @@
+ 	/* Diagnostic allocation is independent of datapath bring-up. */
+ #ifdef CPTCFG_ATH12K_DEBUGFS
+ 	dp->rx_error_stats = kvzalloc(sizeof(*dp->rx_error_stats), GFP_KERNEL);
++	dp->tx_attempt_stats = kvzalloc(sizeof(*dp->tx_attempt_stats), GFP_KERNEL);
+ #endif
+ 
+ 	dp->ops = &ath12k_wifi7_dp_arch_ops;
+@@ -195,7 +196,9 @@
+ 
+ void ath12k_wifi7_dp_device_free(struct ath12k_dp *dp)
+ {
+-	if (dp)
++	if (dp) {
++		kvfree(dp->tx_attempt_stats);
+ 		kvfree(dp->rx_error_stats);
++	}
+ 	kfree(dp);
+ }
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_tx.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_tx.h
+@@ -56,6 +56,7 @@
+ 	u32 flags; /* %HAL_TX_STATUS_FLAGS_ */
+ 	u32 ppdu_id;
+ 	u8 try_cnt;
++	u8 attempt_class;
+ 	u8 tid;
+ 	u16 peer_id;
+ 	enum hal_tx_rate_stats_pkt_type pkt_type;
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -57,6 +57,19 @@
+ 	return 0;
+ }
+ 
++static void
++ath12k_wifi7_dp_tx_count_attempts(struct ath12k_tx_attempt_stats *stats,
++				  const struct hal_tx_status *ts)
++{
++	if (!stats || ts->buf_rel_source != HAL_WBM_REL_SRC_MODULE_TQM ||
++	    ts->status >= ATH12K_TX_ATTEMPT_REASONS ||
++	    ts->attempt_class >= ATH12K_TX_ATTEMPT_CLASSES ||
++	    ts->try_cnt >= ATH12K_TX_ATTEMPT_COUNTS)
++		return;
++
++	atomic64_inc(&stats->count[ts->status][ts->attempt_class][ts->try_cnt]);
++}
++
+ #define ATH12K_AST_HASH_MASK	0xF
+ 
+ /* TODO: Remove the export once this file is built with wifi7 ko */
+@@ -734,6 +747,8 @@
+ 	/* skip tx rate update from ieee80211_status*/
+ 	info->status.rates[0].idx = -1;
+ 
++	ath12k_wifi7_dp_tx_count_attempts(dp->tx_attempt_stats, ts);
++
+ 	switch (ts->status) {
+ 	case HAL_WBM_TQM_REL_REASON_FRAME_ACKED:
+ 		if (!(info->flags & IEEE80211_TX_CTL_NO_ACK)) {
+@@ -826,6 +841,26 @@
+ 	ts->status = le32_get_bits(desc->info0,
+ 				   HAL_WBM_COMPL_TX_INFO0_TQM_RELEASE_REASON);
+ 
++	/* The transmit count is valid for TQM, independently of WBM's
++	 * optional MSDU-list release details. Keep count zero as reported.
++	 */
++	ts->try_cnt = le32_get_bits(desc->info1,
++				    HAL_WBM_COMPL_TX_INFO1_TRANSMIT_COUNT);
++	ts->attempt_class = ATH12K_TX_ATTEMPT_DIRECT;
++	if (le32_get_bits(desc->info0, HAL_WBM_COMPL_TX_INFO0_WBM_INTERNAL_ERROR)) {
++		ts->attempt_class = ATH12K_TX_ATTEMPT_CLASSES;
++	} else if (desc->info1 & cpu_to_le32(HAL_WBM_COMPL_TX_INFO1_SW_REL_DETAILS_VALID)) {
++		bool first = desc->info2 & cpu_to_le32(HAL_WBM_COMPL_TX_INFO2_FIRST_MSDU);
++		bool last = desc->info2 & cpu_to_le32(HAL_WBM_COMPL_TX_INFO2_LAST_MSDU);
++
++		if (first)
++			ts->attempt_class = last ? ATH12K_TX_ATTEMPT_LIST_SINGLE :
++						   ATH12K_TX_ATTEMPT_LIST_FIRST;
++		else
++			ts->attempt_class = last ? ATH12K_TX_ATTEMPT_LIST_LAST :
++						   ATH12K_TX_ATTEMPT_LIST_MIDDLE;
++	}
++
+ 	ts->ppdu_id = le32_get_bits(desc->info1,
+ 				    HAL_WBM_COMPL_TX_INFO1_TQM_STATUS_NUMBER);
+ 
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -1334,6 +1334,49 @@
+ }
+ DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_rx_error_stats);
+ 
++static int ath12k_debugfs_tx_attempt_stats_show(struct seq_file *s, void *unused)
++{
++	struct ath12k_base *ab = s->private;
++	const struct ath12k_tx_attempt_stats *stats;
++	struct ath12k_dp *dp;
++	unsigned int reason, class, count;
++
++	if (!mutex_trylock(&ab->core_lock))
++		return -EBUSY;
++	if (!test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags) || !ab->dp) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODEV;
++	}
++
++	dp = ath12k_ab_to_dp(ab);
++	stats = dp->tx_attempt_stats;
++	if (!stats) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODATA;
++	}
++
++	seq_printf(s, "version=1 generation=%llu reasons=%u classes=%u counts=%u\n",
++		   dp->reo_cmd_generation, ATH12K_TX_ATTEMPT_REASONS,
++		   ATH12K_TX_ATTEMPT_CLASSES, ATH12K_TX_ATTEMPT_COUNTS);
++	for (reason = 0; reason < ATH12K_TX_ATTEMPT_REASONS; reason++) {
++		for (class = 0; class < ATH12K_TX_ATTEMPT_CLASSES; class++) {
++			const atomic64_t *counts = stats->count[reason][class];
++
++			seq_printf(s, "%u %u", reason, class);
++			for (count = 0; count < ATH12K_TX_ATTEMPT_COUNTS; count++)
++				seq_printf(s, " %llu",
++					   (unsigned long long)atomic64_read(&counts[count]));
++			seq_putc(s, '\n');
++		}
++	}
++	mutex_unlock(&ab->core_lock);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_tx_attempt_stats);
++
+ static int ath12k_debugfs_wmi_services_show(struct seq_file *s, void *unused)
+ {
+ 	struct ath12k_base *ab = s->private;
+@@ -1435,6 +1478,10 @@
+ 	debugfs_create_file("device_dp_stats", 0400, ab->debugfs_soc, ab,
+ 			    &fops_device_dp_stats);
+ 
++	if (ab->dp && ab->dp->tx_attempt_stats)
++		debugfs_create_file("tx_attempt_stats", 0400, ab->debugfs_soc, ab,
++				    &ath12k_debugfs_tx_attempt_stats_fops);
++
+ 	if (ab->dp && ab->dp->rx_error_stats)
+ 		debugfs_create_file("rx_error_stats", 0400, ab->debugfs_soc, ab,
+ 				    &ath12k_debugfs_rx_error_stats_fops);
