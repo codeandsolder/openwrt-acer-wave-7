@@ -416,7 +416,7 @@ snapshot_load(){
                 # restore selector 0, so retain 1 for subsequent requests.
                 # Refuse to overwrite any other observer's selection.
                 case \"\$old\" in
-                    0|1) printf '1\\n' > \"\$dir/htt_stats_type\" || rc=\$? ;;
+                    0|1) echo 1 > \"\$dir/htt_stats_type\" || rc=\$? ;;
                     *) rc=2 ;;
                 esac
                 if [ \"\$rc\" = 0 ]; then
