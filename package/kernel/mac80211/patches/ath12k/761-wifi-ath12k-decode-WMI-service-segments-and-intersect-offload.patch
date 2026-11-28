@@ -1,0 +1,200 @@
+Subject: [PATCH] wifi: ath12k: decode WMI service segments and intersect offload
+
+The service-available event carries an explicit bitmap offset, which
+is not always 128. Decode it relative to that offset, accept short
+or empty aligned extension arrays, and stop at the supported service
+limit instead of setting padding bits. Ignore unrelated TLVs.
+
+Ethernet encapsulation and decapsulation are shared mac80211 hardware
+capabilities. Advertise them only when all participating radios
+report support. Expose the decoded service IDs per SoC via passive
+read-only debugfs to distinguish an absent service from MLO policy.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/wmi.c
++++ b/drivers/net/wireless/ath/ath12k/wmi.c
+@@ -17,6 +17,7 @@
+ #include <linux/cleanup.h>
+ #include <linux/percpu.h>
+ #include <linux/refcount.h>
++#include <linux/unaligned.h>
+ #include "core.h"
+ #include "debugfs.h"
+ #include "debug.h"
+@@ -7916,62 +7917,62 @@
+ 	rcu_read_unlock();
+ }
+ 
++/* Extended WMI service maps contain 32 services per little-endian word. */
++static void ath12k_wmi_decode_service_bitmap(unsigned long *svc_map,
++					     const void *bitmap, u32 offset,
++					     u16 words)
++{
++	const u8 *bytes = bitmap;
++	u32 bit, count, value;
++	u16 i;
++
++	for (i = 0; i < words && offset < WMI_MAX_EXT2_SERVICE;
++	     i++, offset += WMI_AVAIL_SERVICE_BITS_IN_SIZE32) {
++		value = get_unaligned_le32(bytes + i * sizeof(u32));
++		count = min_t(u32, WMI_AVAIL_SERVICE_BITS_IN_SIZE32,
++			      WMI_MAX_EXT2_SERVICE - offset);
++		for (bit = 0; bit < count; bit++)
++			if (value & BIT(bit))
++				set_bit(offset + bit, svc_map);
++	}
++}
++
+ static int ath12k_wmi_tlv_services_parser(struct ath12k_base *ab,
+ 					  u16 tag, u16 len,
+ 					  const void *ptr,
+ 					  void *data)
+ {
+ 	const struct wmi_service_available_event *ev;
+-	u16 wmi_ext2_service_words;
+-	__le32 *wmi_ext2_service_bitmap;
+-	int i, j;
+-	u16 expected_len;
+-
+-	expected_len = WMI_SERVICE_SEGMENT_BM_SIZE32 * sizeof(u32);
+-	if (len < expected_len) {
+-		ath12k_warn(ab, "invalid length %d for the WMI services available tag 0x%x\n",
+-			    len, tag);
+-		return -EINVAL;
+-	}
++	u32 offset;
+ 
+ 	switch (tag) {
+ 	case WMI_TAG_SERVICE_AVAILABLE_EVENT:
+-		ev = (struct wmi_service_available_event *)ptr;
+-		for (i = 0, j = WMI_MAX_SERVICE;
+-		     i < WMI_SERVICE_SEGMENT_BM_SIZE32 && j < WMI_MAX_EXT_SERVICE;
+-		     i++) {
+-			do {
+-				if (le32_to_cpu(ev->wmi_service_segment_bitmap[i]) &
+-				    BIT(j % WMI_AVAIL_SERVICE_BITS_IN_SIZE32))
+-					set_bit(j, ab->wmi_ab.svc_map);
+-			} while (++j % WMI_AVAIL_SERVICE_BITS_IN_SIZE32);
+-		}
+-
++		if (len < sizeof(*ev))
++			return -EINVAL;
++
++		ev = ptr;
++		offset = le32_to_cpu(ev->wmi_service_segment_offset);
++		if (offset < WMI_MAX_SERVICE)
++			return -EINVAL;
++
++		ath12k_wmi_decode_service_bitmap(ab->wmi_ab.svc_map,
++						 ev->wmi_service_segment_bitmap,
++						 offset, WMI_SERVICE_SEGMENT_BM_SIZE32);
+ 		ath12k_dbg(ab, ATH12K_DBG_WMI,
+-			   "wmi_ext_service_bitmap 0x%x 0x%x 0x%x 0x%x",
+-			   ev->wmi_service_segment_bitmap[0],
+-			   ev->wmi_service_segment_bitmap[1],
+-			   ev->wmi_service_segment_bitmap[2],
+-			   ev->wmi_service_segment_bitmap[3]);
++			   "wmi service segment offset %u\n", offset);
+ 		break;
+ 	case WMI_TAG_ARRAY_UINT32:
+-		wmi_ext2_service_bitmap = (__le32 *)ptr;
+-		wmi_ext2_service_words = len / sizeof(u32);
+-		for (i = 0, j = WMI_MAX_EXT_SERVICE;
+-		     i < wmi_ext2_service_words && j < WMI_MAX_EXT2_SERVICE;
+-		     i++) {
+-			do {
+-				if (__le32_to_cpu(wmi_ext2_service_bitmap[i]) &
+-				    BIT(j % WMI_AVAIL_SERVICE_BITS_IN_SIZE32))
+-					set_bit(j, ab->wmi_ab.svc_map);
+-			} while (++j % WMI_AVAIL_SERVICE_BITS_IN_SIZE32);
+-			ath12k_dbg(ab, ATH12K_DBG_WMI,
+-				   "wmi_ext2_service bitmap 0x%08x\n",
+-				   __le32_to_cpu(wmi_ext2_service_bitmap[i]));
+-		}
+-
+-		break;
+-	}
++		if (len % sizeof(u32))
++			return -EINVAL;
++
++		ath12k_wmi_decode_service_bitmap(ab->wmi_ab.svc_map, ptr,
++						 WMI_MAX_EXT_SERVICE,
++						 len / sizeof(u32));
++		ath12k_dbg(ab, ATH12K_DBG_WMI,
++			   "wmi extended service words %zu\n", len / sizeof(u32));
++		break;
++	}
++
+ 	return 0;
+ }
+ 
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -14926,6 +14926,7 @@
+ 		WLAN_CIPHER_SUITE_GCMP_256,
+ 		WLAN_CIPHER_SUITE_CCMP_256,
+ 	};
++	bool eth_offload = true;
+ 	int ret, i, j;
+ 	u32 ht_cap = U32_MAX, antennas_rx = 0, antennas_tx = 0;
+ 	bool is_6ghz = false, is_raw_mode = false, is_monitor_disable = false;
+@@ -14966,6 +14967,12 @@
+ 
+ 		if (ar->supports_6ghz)
+ 			is_6ghz = true;
++
++		/* mac80211 advertises encapsulation offload for the whole
++		 * hardware interface, not for individual MLO links.
++		 */
++		eth_offload &= test_bit(WMI_TLV_SERVICE_ETH_OFFLOAD,
++				       ar->ab->wmi_ab.svc_map);
+ 
+ 		if (test_bit(ATH12K_FLAG_RAW_MODE, &ar->ab->dev_flags))
+ 			is_raw_mode = true;
+@@ -15017,7 +15024,7 @@
+ 	ieee80211_hw_set(hw, REPORTS_LOW_ACK);
+ 	ieee80211_hw_set(hw, NO_VIRTUAL_MONITOR);
+ 
+-	if (test_bit(WMI_TLV_SERVICE_ETH_OFFLOAD, ar->wmi->wmi_ab->svc_map)) {
++	if (eth_offload) {
+ 		ieee80211_hw_set(hw, SUPPORTS_TX_ENCAP_OFFLOAD);
+ 		ieee80211_hw_set(hw, SUPPORTS_RX_DECAP_OFFLOAD);
+ 	}
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -1333,8 +1333,35 @@
+ }
+ DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_rx_error_stats);
+ 
++static int ath12k_debugfs_wmi_services_show(struct seq_file *s, void *unused)
++{
++	struct ath12k_base *ab = s->private;
++	unsigned long service;
++
++	if (!mutex_trylock(&ab->core_lock))
++		return -EBUSY;
++	if (!test_bit(ATH12K_FLAG_REGISTERED, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_RECOVERY, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags) ||
++	    test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags)) {
++		mutex_unlock(&ab->core_lock);
++		return -ENODEV;
++	}
++
++	seq_printf(s, "version=1 limit=%u\n", WMI_MAX_EXT2_SERVICE);
++	for_each_set_bit(service, ab->wmi_ab.svc_map, WMI_MAX_EXT2_SERVICE)
++		seq_printf(s, "%lu\n", service);
++
++	mutex_unlock(&ab->core_lock);
++	return 0;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_wmi_services);
++
+ void ath12k_debugfs_pdev_create(struct ath12k_base *ab)
+ {
++	debugfs_create_file("wmi_services", 0400, ab->debugfs_soc, ab,
++			    &ath12k_debugfs_wmi_services_fops);
++
+ 	debugfs_create_file("simulate_fw_crash", 0600, ab->debugfs_soc, ab,
+ 			    &fops_simulate_fw_crash);
+ 
