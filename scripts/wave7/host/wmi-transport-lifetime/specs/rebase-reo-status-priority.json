@@ -1,0 +1,20 @@
+{
+  "parent_sha": "3d0edd2d27494ea42aea21dca379162057b93ffb3d36d419183eb996a7211d7d",
+  "parent_rev": "r0+39019-3f87b581f3-ap-dhcp-guard8",
+  "parent_builder": "3f87b581f39be1c07c04a89111488833e258bd61",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "ceb174ed15bdf64eee97c8844bd23c7c33f6348d50ede98d79b10bbe31723a5b",
+      "ea3129174752d7db3ca766f20a62b7fd15815c228febb8d5bdc15a69d55ee0a7"
+    ],
+    "ath12k_wifi7.ko": [
+      "b85ff51efd2f304b3145a87daf815bd05c68f29d6de811ef9d965b36369c4606",
+      "5b971474488e90cfc9d3a917f49c7170eb747ca15704e96d233be1d9b772413d"
+    ]
+  },
+  "patch_commit": "fe4dd5513986b9f0ba8bbc0c9a0ba4f46ad0a786",
+  "patch_key": "trial_reo_status_priority_commit",
+  "filename": "wave7-rebase-reo-status-priority-dhcp-guard8-sysupgrade.bin"
+}
