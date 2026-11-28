@@ -1,14 +1,16 @@
+From 534459ac562b207ba1a9bb2c95dba77b5939e2da Mon Sep 17 00:00:00 2001
+From: Pavankumar Nandeshwar <pavankumar.nandeshwar@oss.qualcomm.com>
 Subject: [PATCH] wifi: ath12k: size RX release ring by memory profile
 
-Backport upstream 534459ac562b207ba1a9bb2c95dba77b5939e2da
-(Pavankumar Nandeshwar, Qualcomm). Bursts of OOR and other RX errors
+Backport the upstream RX release ring sizing fix.
+Bursts of OOR and other RX errors
 can overwhelm the existing 1024-entry WBM release ring and stall
 RXDMA/REO. Use 16384 entries for default and 8192 for 512 MiB, as
 upstream. The downstream 256 MiB profile has the same datapath
 pool sizes as the 512 MiB profile; use 8192 there as well.
 Keep downstream radio-specific release ring selection unchanged.
 
-Upstream: https://github.com/torvalds/linux/commit/534459ac562b207ba1a9bb2c95dba77b5939e2da
+Link: https://patch.msgid.link/20260721110459.2203038-1-pavankumar.nandeshwar@oss.qualcomm.com
 ---
 --- a/drivers/net/wireless/ath/ath12k/core.c
 +++ b/drivers/net/wireless/ath/ath12k/core.c
