@@ -1,0 +1,97 @@
+Subject: [PATCH] wifi: ath12k: initialize Wi-Fi 7 REO descriptor types
+
+The Wi-Fi 7 firmware descriptor ABI uses buffer type 9 for the 1K
+bitmap and 10 for the MPDU-link extension, not the Wi-Fi 6 values.
+Use one enum rather than conflicting definitions. For a newly
+allocated queue with a BA window above 256, initialize its 1K bitmap
+header followed by all ten allocated extension headers. Preserve
+the small-window preallocation scheme and do not write into live
+DMA-owned descriptors on a BA update.
+
+The QCA5332 and QCN6432 generated firmware headers describe this
+layout and the vendor generic BE HAL uses extension type 10.
+This is a descriptor ABI correction, not a proven throughput fix.
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_desc.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_desc.h
+@@ -2035,14 +2035,11 @@
+ 	HAL_DESC_BUF_TYPE_RX_MSDU_LINK,
+ 	HAL_DESC_BUF_TYPE_RX_MPDU_LINK,
+ 	HAL_DESC_BUF_TYPE_RX_REO_QUEUE,
++	HAL_DESC_BUF_TYPE_RX_REO_QUEUE_1K,
+ 	HAL_DESC_BUF_TYPE_RX_REO_QUEUE_EXT,
+ 	HAL_DESC_BUF_TYPE_RX_BUFFER,
+ 	HAL_DESC_BUF_TYPE_IDLE_LINK,
+ };
+-
+-#define HAL_DESC_REO_OWNED		4
+-#define HAL_DESC_REO_QUEUE_DESC		8
+-#define HAL_DESC_REO_QUEUE_EXT_DESC	9
+ 
+ #define HAL_DESC_HDR_INFO0_OWNER	GENMASK(3, 0)
+ #define HAL_DESC_HDR_INFO0_BUF_TYPE	GENMASK(7, 4)
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_rx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_rx.c
+@@ -760,9 +760,16 @@
+ 				      u32 start_seq, enum hal_pn_type type)
+ {
+ 	struct hal_rx_reo_queue_ext *ext_desc;
+-
+-	ath12k_wifi7_hal_reo_set_desc_hdr(&qdesc->desc_hdr, HAL_DESC_REO_OWNED,
+-					  HAL_DESC_REO_QUEUE_DESC,
++	struct hal_rx_reo_queue_1k *bitmap;
++	static const u32 magic[] = {
++		REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_1,
++		REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_2,
++		REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_3,
++	};
++	unsigned int i, num_ext = 3;
++
++	ath12k_wifi7_hal_reo_set_desc_hdr(&qdesc->desc_hdr, HAL_DESC_OWNER_REO,
++					  HAL_DESC_BUF_TYPE_RX_REO_QUEUE,
+ 					  REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_0);
+ 
+ 	qdesc->rx_queue_num = le32_encode_bits(tid, HAL_RX_REO_QUEUE_RX_QUEUE_NUMBER);
+@@ -820,21 +827,27 @@
+ 	 * size changes and also send WMI message to FW to change the REO
+ 	 * queue descriptor in Rx peer entry as part of dp_rx_tid_update.
+ 	 */
+-	memset(ext_desc, 0, 3 * sizeof(*ext_desc));
+-	ath12k_wifi7_hal_reo_set_desc_hdr(&ext_desc->desc_hdr,
+-					  HAL_DESC_REO_OWNED,
+-					  HAL_DESC_REO_QUEUE_EXT_DESC,
+-					  REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_1);
+-	ext_desc++;
+-	ath12k_wifi7_hal_reo_set_desc_hdr(&ext_desc->desc_hdr,
+-					  HAL_DESC_REO_OWNED,
+-					  HAL_DESC_REO_QUEUE_EXT_DESC,
+-					  REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_2);
+-	ext_desc++;
+-	ath12k_wifi7_hal_reo_set_desc_hdr(&ext_desc->desc_hdr,
+-					  HAL_DESC_REO_OWNED,
+-					  HAL_DESC_REO_QUEUE_EXT_DESC,
+-					  REO_QUEUE_DESC_MAGIC_DEBUG_PATTERN_3);
++	/* A queue initially configured for a large BA window has a
++	 * 1K bitmap descriptor before its ten MPDU-link extensions.
++	 * Small windows retain the three preinitialized extensions.
++	 * Do not change the layout of an already DMA-owned queue here.
++	 */
++	if (ba_window_size > 256) {
++		bitmap = (void *)ext_desc;
++		memset(bitmap, 0, sizeof(*bitmap));
++		ath12k_wifi7_hal_reo_set_desc_hdr(&bitmap->desc_hdr,
++						  HAL_DESC_OWNER_REO,
++						  HAL_DESC_BUF_TYPE_RX_REO_QUEUE_1K, 0);
++		ext_desc = (void *)(bitmap + 1);
++		num_ext = 10;
++	}
++
++	memset(ext_desc, 0, num_ext * sizeof(*ext_desc));
++	for (i = 0; i < num_ext; i++)
++		ath12k_wifi7_hal_reo_set_desc_hdr(&ext_desc[i].desc_hdr,
++						  HAL_DESC_OWNER_REO,
++						  HAL_DESC_BUF_TYPE_RX_REO_QUEUE_EXT,
++						  i < ARRAY_SIZE(magic) ? magic[i] : 0);
+ }
+ 
+ void ath12k_wifi7_hal_reo_init_cmd_ring_tlv64(struct ath12k_base *ab,
