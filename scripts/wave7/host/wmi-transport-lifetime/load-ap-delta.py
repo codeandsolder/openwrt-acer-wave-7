@@ -10,6 +10,10 @@ import subprocess
 spec = importlib.util.spec_from_file_location("rx_delta", Path(__file__).with_name("rx-counter-delta.py"))
 rx = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rx)
+survey_spec = importlib.util.spec_from_file_location(
+    "channel_survey", Path(__file__).with_name("channel-survey.py"))
+survey = importlib.util.module_from_spec(survey_spec)
+survey_spec.loader.exec_module(survey)
 MODES = ("uplink", "downlink", "bidirectional")
 CPU = re.compile(r"^cpu(\d+)\s+([\d ]+)$")
 IRQ = re.compile(r"^\s*(\d+):\s+(.*)$")
@@ -278,6 +282,8 @@ def parse(text):
     rx_text = "\n".join(header + [line for k, v in radio.items() for line in ["===" + k, *v]])
     tx = parse_tx_matrices(radio)
     extra = {}
+    if "CHANNEL_SURVEY" in sections_:
+        extra["channel_survey"] = survey.describe_snapshot(sections_["CHANNEL_SURVEY"])
     pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
              if k.startswith("PAGE_POOL ")}
     if pools:
@@ -390,6 +396,9 @@ def compare(before, after):
                        "irq_pct": 100 * values[5] / total}
     require(a["extra"].keys() == b["extra"].keys(), "telemetry schema changed")
     extra = {}
+    if "channel_survey" in a["extra"]:
+        extra["channel_survey"] = survey.compare(a["extra"]["channel_survey"],
+                                                 b["extra"]["channel_survey"])
     if "rx_error_attribution" in a["extra"]:
         extra["rx_error_attribution"] = rx_error_delta(a["extra"]["rx_error_attribution"],
                                                        b["extra"]["rx_error_attribution"])

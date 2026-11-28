@@ -34,6 +34,7 @@ ap_rx_error_stats=0
 ap_pmu_dir=""
 ap_ring3_probe=0
 ap_link_stats=0
+ap_channel_survey=0
 ap_link_tool=""
 client_rx_arg=--none
 variant_mgmt_profile=--none
@@ -71,6 +72,7 @@ for arg in "$@"; do
             if [[ $arg == --ap-aql-on ]]; then ap_aql=1; else ap_aql=0; fi ;;
         --ap-ring3-probe) ap_ring3_probe=1 ;;
         --ap-link-stats) ap_link_stats=1 ;;
+        --ap-channel-survey) ap_channel_survey=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
         --client-delayed-links) select_variant upstream-prefix22-authorize-delayed-links-trace --none --none ;;
@@ -159,6 +161,7 @@ if (( ap_ring3_probe )); then
     (( !dual_hold && !dual_load && !dual_reconnect )) || fail "ring3 probe requires short isolated hold"
 fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
+if (( ap_channel_survey && !dual_load )); then fail "channel survey requires isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -328,6 +331,8 @@ snapshot_icmp(){
         cat /proc/net/snmp'
 }
 snapshot_load(){
+    local side=${1:?snapshot side required}
+    [[ $side == before || $side == after ]] || return 2
     # Never query station firmware after an SSR. This executes at the
     # edges of each TCP case, not in the saturated packet path.
     remote "set -eu
@@ -336,6 +341,31 @@ snapshot_load(){
             [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
         done
         [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        capture_channel_survey(){
+            # Query only at the case boundaries. get_survey can send WMI
+            # commands and wait for firmware, so never add it to load-series.
+            echo GEOMETRY_BEFORE
+            info_rc=0
+            iw dev ap-mld0 info 2>&1 || info_rc=\$?
+            echo GEOMETRY_BEFORE_END rc=\$info_rc
+            read -r stamp rest </proc/uptime
+            echo SURVEY_BEGIN \$stamp
+            survey_rc=0
+            iw dev ap-mld0 survey dump 2>&1 || survey_rc=\$?
+            read -r stamp rest </proc/uptime
+            echo SURVEY_END \$stamp rc=\$survey_rc
+            echo GEOMETRY_AFTER
+            info_rc=0
+            iw dev ap-mld0 info 2>&1 || info_rc=\$?
+            echo GEOMETRY_AFTER_END rc=\$info_rc
+        }
+        if [ '$ap_channel_survey' = 1 ] && [ '$side' = before ]; then
+            survey_before=\$(capture_channel_survey)
+            for p in 0 1 2; do
+                [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
+            done
+            [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        fi
         cat /proc/sys/kernel/random/boot_id
         cat /proc/uptime
         echo ==== CPU
@@ -395,6 +425,18 @@ snapshot_load(){
                 echo ==== RX_ERROR \"\${d##*/}\"
                 cat \"\$d/rx_error_stats\"
             done
+        fi
+        if [ '$ap_channel_survey' = 1 ]; then
+            echo ==== CHANNEL_SURVEY
+            if [ '$side' = before ]; then
+                printf '%s\\n' \"\$survey_before\"
+            else
+                capture_channel_survey
+            fi
+            for p in 0 1 2; do
+                [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
+            done
+            [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
         fi
         echo ==== END
         cat /proc/sys/kernel/random/boot_id"
@@ -756,7 +798,7 @@ for band in "${bands[@]}"; do
                     sleep .1
                 done
             fi
-            snapshot_load > "$prefix.load-$direction-ap-before.txt" || { cases_failed=1; break; }
+            snapshot_load before > "$prefix.load-$direction-ap-before.txt" || { cases_failed=1; break; }
             args=()
             case $direction in
                 uplink) args=(-R) ;;
@@ -769,7 +811,7 @@ for band in "${bands[@]}"; do
                 2>"$prefix.load-$direction-errors.txt" || load_rc=$?
             printf '%s\n' "$load_rc" > "$prefix.load-$direction-exit.txt"
             if (( load_rc )); then cases_failed=1; break; fi
-            snapshot_load > "$prefix.load-$direction-ap-after.txt" || { cases_failed=1; break; }
+            snapshot_load after > "$prefix.load-$direction-ap-after.txt" || { cases_failed=1; break; }
         done
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
