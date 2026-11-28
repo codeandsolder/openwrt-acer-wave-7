@@ -530,7 +530,7 @@ def parse_aql_profile(text, boot, intervals):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("run", type=Path)
-    p.add_argument("--band", choices=("24", "5"), required=True)
+    p.add_argument("--band", choices=("24", "5", "6"), required=True)
     args = p.parse_args()
     subprocess.run(["sha256sum", "-c", "SHA256SUMS", "--status"], cwd=args.run, check=True)
     prefix = args.run / f"band-{args.band}"

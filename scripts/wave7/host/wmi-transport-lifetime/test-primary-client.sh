@@ -53,6 +53,7 @@ select_variant() {
 for arg in "$@"; do
     case "$arg" in
         --band=5) bands=(5) ;;
+        --band=6) bands=(6) ;;
         --band=24) bands=(24) ;;
         --wired-capture)
             [[ $wired_capture == none ]] || fail 'one wired capture profile'
@@ -741,6 +742,14 @@ for band in "${bands[@]}"; do
     guard || fail 'AP health before association'
     tag=0498-$(date +%Y%m%d-%H%M%S)
     prefix="$out/band-$band"
+    # Exact same client helper: its BSSID pin selects link 1, not a frequency.
+    bssid_band=$band
+    if [[ $band == 6 ]]; then
+        [[ $(jq -er .band_profile "$manifest") == 6g* ]] || fail '6 GHz requires attested RF profile'
+        bssid_band=5
+    elif [[ $band == 5 && $(jq -r '.band_profile // "5g80"' "$manifest") == 6g* ]]; then
+        fail '5 GHz requested on 6 GHz RF profile'
+    fi
     printf '%s\n' "$tag" > "$prefix.tag"
     if (( dhcp_boundaries )); then
         probe_client_wire_clock > "$prefix.client-wire-clock-before.txt" || fail 'client/wire clock preflight'
@@ -924,7 +933,7 @@ for band in "${bands[@]}"; do
     if (( dual_load )); then
         # Wyse listens only on its temporary Wi-Fi address. Initiate TCP
         # from the existing Asus direct NIC so no firewall change is needed.
-        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band ${client_pm_profile}" \
+        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$bssid_band ${client_pm_profile}" \
             > "$prefix.client-run.txt" 2>&1 &
         load_client_pid=$!
         target=''
@@ -997,7 +1006,7 @@ for band in "${bands[@]}"; do
             fi
         fi
     elif (( ap_ring3_probe )); then
-        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 &
+        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$bssid_band" > "$prefix.client-run.txt" 2>&1 &
         load_client_pid=$!
         deadline=$((SECONDS + 45))
         ready=''
@@ -1030,9 +1039,9 @@ for band in "${bands[@]}"; do
         load_client_pid=''
     else
         if (( reconnect_count == 2 )); then
-            wyse "timeout $client_seconds bash $client/client-sustained-cycle.sh $tag --$mode-$variant --bssid-$band --reconnect-count=2" > "$prefix.client-run.txt" 2>&1 || rc=$?
+            wyse "timeout $client_seconds bash $client/client-sustained-cycle.sh $tag --$mode-$variant --bssid-$bssid_band --reconnect-count=2" > "$prefix.client-run.txt" 2>&1 || rc=$?
         else
-            wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 || rc=$?
+            wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$bssid_band" > "$prefix.client-run.txt" 2>&1 || rc=$?
         fi
     fi
     printf '%s\n' "$rc" > "$prefix.client-exit.txt"

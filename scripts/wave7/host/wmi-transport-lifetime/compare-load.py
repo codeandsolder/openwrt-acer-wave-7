@@ -80,6 +80,17 @@ def read_run(path, band):
     require(state['boot'] == boot and state['rev'] == manifest['revision'] and
             state['builder'] == manifest['builder_commit'] and
             (path.parent / 'status').read_text().strip() == 'SOAK_PASS', 'AP identity mismatch')
+    profile = manifest.get('band_profile')
+    if profile is not None:
+        bands = runpy.run_path(str(Path(__file__).with_name('band-profile.py')))
+        high, ch, width, center = bands['PROFILES'][profile]
+        freq = (5000 if high == 5 else 5950) + 5*ch
+        require(ap_geometry[1] == 'channel 1 (2412 MHz), width: 20 MHz, center1: 2412 MHz' and
+                ap_geometry[4] == f'channel {ch} ({freq} MHz), width: {width} MHz, center1: {center} MHz',
+                'unexpected RF profile geometry')
+        require(band in ('24', str(high)), 'wrong band label')
+    else:
+        require(band != '6', '6 GHz requires RF profile')
     pm = iperf.pm_values(archive['pm-selected.txt'])
     pm_profile = result['pm_load_profile']
     requested_pm = path / 'client-pm-profile.txt'
@@ -89,6 +100,8 @@ def read_run(path, band):
                     preference=archive['association-preference.txt'], pm=pm, pm_control_profile=pm_profile,
                     variant=(path / 'client-variant.txt').read_text().strip(),
                     iperf_source=result['source'], active_link_mask=result['active_link_mask'], kernel_ap=state['kernel'], radio_ap=state['radio'])
+    if profile is not None:
+        identity['band_profile'] = profile
     phases = {}
     for mode in load.MODES:
         pre = Path(f'{prefix}.load-{mode}-ap-before.txt').read_text()
@@ -179,20 +192,24 @@ def main():
     parser.add_argument('baseline', type=Path)
     parser.add_argument('candidate', type=Path, nargs='?')
     parser.add_argument('--describe-run', action='store_true', help='qualify a new independent baseline')
-    parser.add_argument('--band', required=True, choices=('24', '5'))
+    parser.add_argument('--band', required=True, choices=('24', '5', '6'))
     parser.add_argument('--describe-unmatched', action='store_true',
                         help='report descriptive contrasts, explicitly identifying unmatched conditions')
+    parser.add_argument('--candidate-band', choices=('24', '5', '6'),
+                        help='explicitly unmatched cross-band contrast')
     parser.add_argument('--compare-pm', action='store_true',
                         help='compare explicit requested PM policies on the same AP boot')
     args = parser.parse_args()
     require(not (args.compare_pm and args.describe_unmatched), 'choose one comparison mode')
+    require(args.candidate_band is None or (args.describe_unmatched and not args.describe_run),
+            'cross-band contrast must be explicitly unmatched')
     if args.describe_run:
         require(args.candidate is None and not args.describe_unmatched and not args.compare_pm, 'baseline mode takes one run')
         print(json.dumps(read_run(args.baseline.resolve(), args.band), indent=2))
         return
     require(args.candidate is not None, 'comparison requires two runs')
     print(json.dumps(compare(read_run(args.baseline.resolve(), args.band),
-                             read_run(args.candidate.resolve(), args.band),
+                             read_run(args.candidate.resolve(), args.candidate_band or args.band),
                              describe_unmatched=args.describe_unmatched, compare_pm=args.compare_pm), indent=2))
 
 
