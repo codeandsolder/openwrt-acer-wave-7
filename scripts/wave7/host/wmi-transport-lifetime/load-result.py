@@ -63,7 +63,9 @@ def load_link_profile(files, band):
     require(len(variants) == 1, "missing or ambiguous client module variant")
     if variants[0] != "upstream-prefix22-authorize-single-link-trace":
         return 3
-    bssids = {"24": ("70:5A:6F:5A:BB:16", 1), "5": ("4E:5A:6F:5A:BB:16", 2)}
+    # RF profiles change the high link's frequency, never its link ID or BSSID.
+    high = ("4E:5A:6F:5A:BB:16", 2)
+    bssids = {"24": ("70:5A:6F:5A:BB:16", 1), "5": high, "6": high}
     require(band in bssids, "single-active-link control requires pinned band")
     bssid, active = bssids[band]
     actual = files["association-preference.txt"].splitlines()[0].replace(r"\:", ":")

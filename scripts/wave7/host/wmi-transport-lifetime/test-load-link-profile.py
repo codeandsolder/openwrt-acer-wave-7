@@ -27,12 +27,14 @@ for expected in (1, 2, 3):
         rejects(load.check_link, f'active=0x{expected} valid=0x{valid} dormant=0x{dormant}', expected)
 
 single = 'upstream-prefix22-authorize-single-link-trace'
-for band, bssid, active in [('24', r'70\:5A\:6F\:5A\:BB\:16', 1), ('5', r'4E\:5A\:6F\:5A\:BB\:16', 2)]:
+for band, bssid, active in [('24', r'70\:5A\:6F\:5A\:BB\:16', 1), ('5', r'4E\:5A\:6F\:5A\:BB\:16', 2), ('6', r'4E\:5A\:6F\:5A\:BB\:16', 2)]:
     files = {'module-stack.txt': f'STACK_CANDIDATE_PASS variant={single} boot=example\n',
              'association-preference.txt': bssid + '\n\n0\n'}
     assert load.load_link_profile(files, band) == active
     rejects(load.load_link_profile, files, '5' if band == '24' else '24')
     rejects(load.load_link_profile, files, 'invalid')
+    if band == '24':
+        rejects(load.load_link_profile, files, '6')
     bad = dict(files, **{'module-stack.txt': ''})
     rejects(load.load_link_profile, bad, band)
     bad = dict(files, **{'module-stack.txt': files['module-stack.txt'] * 2})

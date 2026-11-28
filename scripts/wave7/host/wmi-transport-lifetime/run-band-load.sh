@@ -3,12 +3,17 @@
 set -Eeuo pipefail
 umask 077
 fail(){ echo "BAND_LOAD_FAIL $*" >&2; exit 1; }
-[[ $# == 2 ]] || fail 'usage: RUN OUTPUT'
+[[ $# == 2 || $# == 3 ]] || fail 'usage: RUN OUTPUT [RESUME_MATRIX]'
 run=$(realpath -e "$1")
 base=$(dirname "$(dirname "$run")")
 out=$(realpath -m "$2")
 lab=/home/jan/firmware/wave7/trials
 [[ "$run" == "$lab"/*/runs/native-* && "$out" == "$base"/harness-verification/* ]] || fail 'trial directory'
+resume=''
+if [[ $# == 3 ]]; then
+    resume=$(realpath -e "$3")
+    [[ "$resume" == "$base"/harness-verification/* && "$resume" != "$out" ]] || fail 'resume matrix'
+fi
 h=$(dirname "$(dirname "$(realpath "$0")")")
 lock="$lab/20261120-secondary-ap-guard8/.lab-control.lock"
 [[ -f $lock && ! -L $lock && -O $lock ]] || fail 'lab lock'
@@ -55,6 +60,16 @@ failed=()
 for id in "single-$band" "dual-$band" dual-24; do
     select_band=${id#*-}
     case "$id" in single-*) variant=--client-single-link ;; *) variant=--client-reconnect-teardown-privilege-trace ;; esac
+    if [[ -n $resume ]] && rg -q "^QUALIFIED $id " "$resume/wrapper.log"; then
+        a=$(realpath -e "$(cat "$resume/$id-dir.txt")")
+        [[ "$a" == "$run"/client-ab-* && $(cat "$a/status") == exit=0 ]] || fail 'resume case identity'
+        (cd "$a"; sha256sum -c SHA256SUMS >/dev/null) || fail 'resume case seal'
+        uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$select_band" --describe-run "$a" > "$out/$id-qualified.json"
+        printf '%s\n' "$a" > "$out/$id-dir.txt"
+        echo "REUSE $id $a"
+        echo "QUALIFIED $id $(date -Is)"
+        continue
+    fi
     echo "START $id $(date -Is)"
     attest "$out/$id-before.txt"
     rc=0
