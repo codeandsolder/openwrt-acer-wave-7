@@ -1,5 +1,3 @@
-diff --git a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
-index c52ac16..e14b30a 100644
 --- a/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
 +++ b/Documentation/devicetree/bindings/remoteproc/qcom,multipd-pil.yaml
 @@ -28,6 +28,33 @@ properties:

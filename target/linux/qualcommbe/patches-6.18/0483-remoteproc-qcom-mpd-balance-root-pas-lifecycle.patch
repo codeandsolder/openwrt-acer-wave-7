@@ -9,9 +9,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/remoteproc/qcom_q6v5_mpd.c
 +++ b/drivers/remoteproc/qcom_q6v5_mpd.c
-@@ -117,22 +117,37 @@
- {
- 	struct q6_wcss *wcss = rproc->priv;
+@@ -119,18 +119,33 @@ static int q6_wcss_start(struct rproc *r
  	int ret;
  	const struct wcss_data *desc = wcss->desc;
  
@@ -24,16 +22,13 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	if (ret) {
 -		dev_err(wcss->dev, "wcss_reset failed\n");
 -		return ret;
--	}
--
++		dev_err(wcss->dev, "wcss_reset failed: %d\n", ret);
++		goto err_unprepare;
+ 	}
+ 
 -	ret = qcom_q6v5_wait_for_start(&wcss->q6, 5 * HZ);
 -	if (ret == -ETIMEDOUT)
 -		dev_err(wcss->dev, "start timed out\n");
--
-+		dev_err(wcss->dev, "wcss_reset failed: %d\n", ret);
-+		goto err_unprepare;
-+	}
-+
 +	ret = qcom_q6v5_wait_for_start(&wcss->q6, 10 * HZ);
 +	if (ret) {
 +		int shutdown_ret;
@@ -47,18 +42,14 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 +	}
 +
 +	return 0;
-+
+ 
 +err_unprepare:
 +	wcss->q6.running = false;
 +	qcom_q6v5_unprepare(&wcss->q6);
  	return ret;
  }
  
- static int q6_wcss_spawn_pd(struct rproc *rproc)
- {
-@@ -181,17 +196,18 @@
- 	struct q6_wcss *wcss = rproc->priv;
- 	const struct wcss_data *desc = wcss->desc;
+@@ -183,13 +198,14 @@ static int q6_wcss_stop(struct rproc *rp
  	int ret;
  
  	ret = qcom_scm_pas_shutdown(desc->pasid);
@@ -78,5 +69,3 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  }
  
  /**
-  * wcss_pd_stop() - Stop WCSS user pd
-  * @rproc:	rproc handle

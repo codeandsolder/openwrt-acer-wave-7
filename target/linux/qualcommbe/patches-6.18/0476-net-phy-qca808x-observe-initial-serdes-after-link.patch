@@ -24,7 +24,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  #include <dt-bindings/net/qcom,qca808x.h>
  
  #include "../phylib.h"
-@@ -177,6 +178,12 @@
+@@ -177,6 +178,12 @@ struct qca808x_priv {
  	/* Diagnostic-only, bounded one-time boot telemetry. */
  	u8 initial_status_samples;
  	u8 initial_link_events;
@@ -37,7 +37,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	struct qcom_phy_hw_stats hw_stats;
  };
  
-@@ -357,6 +364,68 @@
+@@ -357,6 +364,68 @@ static void qca808x_fill_possible_interf
  		__set_bit(PHY_INTERFACE_MODE_2500BASEX, possible);
  }
  
@@ -106,7 +106,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  static int qca808x_probe(struct phy_device *phydev)
  {
  	struct device *dev = &phydev->mdio.dev;
-@@ -379,6 +448,8 @@
+@@ -379,6 +448,8 @@ static int qca808x_probe(struct phy_devi
  		return ret;
  
  	priv->channel_id = ch_id;
@@ -115,7 +115,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	phydev->priv = priv;
  
  	return 0;
-@@ -664,6 +735,13 @@
+@@ -664,6 +735,13 @@ static void qca808x_link_change_notify(s
  			    "wave7-diag: fifo[%u] state=%d link=%u mdio_result=%d\n",
  			    priv->initial_link_events, phydev->state,
  			    phydev->link, ret);
@@ -129,7 +129,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	}
  }
  
-@@ -1250,6 +1328,7 @@
+@@ -1250,6 +1328,7 @@ static struct phy_driver qca808x_driver[
  	.name			= "Qualcomm QCA8081",
  	.flags			= PHY_POLL_CABLE_TEST,
  	.probe			= qca808x_probe,

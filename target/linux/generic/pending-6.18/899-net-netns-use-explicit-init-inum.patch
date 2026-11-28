@@ -10,7 +10,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/net/core/net_namespace.c
 +++ b/net/core/net_namespace.c
-@@ -1282,7 +1282,7 @@ static int __init net_ns_init(void)
+@@ -1282,7 +1282,7 @@ void __init net_ns_init(void)
  	 * has a static inode number.
  	 */
  	preinit_net(&init_net, &init_user_ns);

@@ -24,8 +24,6 @@ Signed-off-by: Mieczyslaw Nalewaj <namiltd@yahoo.com>
  drivers/net/dsa/realtek/rtl8365mb_main.c | 242 +++++++++++++++++------
  1 file changed, 187 insertions(+), 55 deletions(-)
 
-diff --git a/drivers/net/dsa/realtek/rtl8365mb_main.c b/drivers/net/dsa/realtek/rtl8365mb_main.c
-index bcb84ad..a0bd78e 100644
 --- a/drivers/net/dsa/realtek/rtl8365mb_main.c
 +++ b/drivers/net/dsa/realtek/rtl8365mb_main.c
 @@ -249,7 +249,8 @@
@@ -82,7 +80,7 @@ index bcb84ad..a0bd78e 100644
  /* Shared "disable" encoding for both SDS_MISC's and SDS1_MISC0's
   * 5-bit mode fields.
   */
-@@ -707,6 +726,21 @@ static const struct rtl8365mb_jam_tbl_entry rtl8365mb_sds_jam_hsgmii[] = {
+@@ -707,6 +726,21 @@ static const struct rtl8365mb_jam_tbl_en
  	{ 0x0424, 0xD810 }, { 0x0001, 0x0F80 }, { 0x002E, 0x83F2 },
  };
  
@@ -104,7 +102,7 @@ index bcb84ad..a0bd78e 100644
  enum rtl8365mb_phy_interface_mode {
  	RTL8365MB_PHY_INTERFACE_MODE_INVAL = 0,
  	RTL8365MB_PHY_INTERFACE_MODE_INTERNAL = BIT(0),
-@@ -1245,7 +1279,8 @@ static int rtl8365mb_ext_config_rgmii(struct realtek_priv *priv, int port,
+@@ -1245,7 +1279,8 @@ static int rtl8365mb_ext_config_rgmii(st
  	return 0;
  }
  
@@ -114,7 +112,7 @@ index bcb84ad..a0bd78e 100644
  {
  	int ret;
  
-@@ -1263,10 +1298,13 @@ static int rtl8365mb_sds_write(struct realtek_priv *priv, u16 addr, u16 data)
+@@ -1263,10 +1298,13 @@ static int rtl8365mb_sds_write(struct re
  	 */
  	return regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
  			    RTL8365MB_SDS_INDACS_CMD_RUN_MASK |
@@ -130,7 +128,7 @@ index bcb84ad..a0bd78e 100644
  {
  	u32 val;
  	int ret;
-@@ -1276,7 +1314,9 @@ static int rtl8365mb_sds_read(struct realtek_priv *priv, u16 addr, u16 *data)
+@@ -1276,7 +1314,9 @@ static int rtl8365mb_sds_read(struct rea
  		return ret;
  
  	ret = regmap_write(priv->map, RTL8365MB_SDS_INDACS_CMD_REG,
@@ -141,7 +139,7 @@ index bcb84ad..a0bd78e 100644
  	if (ret)
  		return ret;
  
-@@ -1316,6 +1356,14 @@ static int rtl8365mb_sds_probe_option(struct realtek_priv *priv)
+@@ -1316,6 +1356,14 @@ static int rtl8365mb_sds_probe_option(st
  	int ret;
  	int i;
  
@@ -156,7 +154,7 @@ index bcb84ad..a0bd78e 100644
  	/* Nothing to probe if no external interface is wired to the SerDes */
  	for (i = 0; i < RTL8365MB_MAX_NUM_EXTINTS; i++) {
  		extint = &mb->chip_info->extints[i];
-@@ -1397,25 +1445,44 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+@@ -1397,25 +1445,44 @@ static int rtl8365mb_pcs_config(struct p
  	const struct rtl8365mb_jam_tbl_entry *sds_jam;
  	const int id = RTL8365MB_SDS_EXT_INTERFACE_ID;
  	struct rtl8365mb *mb = pcs_to_rtl8365mb(pcs);
@@ -210,7 +208,7 @@ index bcb84ad..a0bd78e 100644
  	/* Hold the embedded DW8051 microcontroller in reset and keep it
  	 * disabled. The vendor driver loads firmware into it to manage the
  	 * SerDes link, but the firmware only duplicates work that phylink
-@@ -1444,34 +1511,57 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+@@ -1444,34 +1511,57 @@ static int rtl8365mb_pcs_config(struct p
  
  	/* Tune the SerDes with vendor-prescribed parameters */
  	for (i = 0; i < sds_jam_size; i++) {
@@ -284,7 +282,7 @@ index bcb84ad..a0bd78e 100644
  				  RTL8365MB_SDS_RESET_DEASSERT);
  	if (ret)
  		return ret;
-@@ -1481,27 +1571,32 @@ static int rtl8365mb_pcs_config(struct phylink_pcs *pcs, unsigned int neg_mode,
+@@ -1481,27 +1571,32 @@ static int rtl8365mb_pcs_config(struct p
  	 * This flushes the FIFOs and ensures a clean state for the link,
  	 * preventing silent drops and CRC errors.
  	 */
@@ -322,7 +320,7 @@ index bcb84ad..a0bd78e 100644
  }
  
  static bool rtl8365mb_interface_is_serdes(phy_interface_t interface)
-@@ -1526,18 +1621,27 @@ static void rtl8365mb_pcs_get_state(struct phylink_pcs *pcs,
+@@ -1526,18 +1621,27 @@ static void rtl8365mb_pcs_get_state(stru
  {
  	struct rtl8365mb *mb = pcs_to_rtl8365mb(pcs);
  	struct realtek_priv *priv = mb->priv;
@@ -354,7 +352,7 @@ index bcb84ad..a0bd78e 100644
  	if (ret) {
  		state->link = false;
  		return;
-@@ -1548,6 +1652,23 @@ static void rtl8365mb_pcs_get_state(struct phylink_pcs *pcs,
+@@ -1548,6 +1652,23 @@ static void rtl8365mb_pcs_get_state(stru
  	if (!state->link)
  		return;
  
@@ -378,7 +376,7 @@ index bcb84ad..a0bd78e 100644
  	/* The speed and duplex are forced; read them back from the values
  	 * programmed into the SerDes MISC register.
  	 */
-@@ -1589,6 +1710,12 @@ static void rtl8365mb_pcs_link_up(struct phylink_pcs *pcs,
+@@ -1589,6 +1710,12 @@ static void rtl8365mb_pcs_link_up(struct
  	u32 r_speed;
  	int ret;
  
@@ -391,7 +389,7 @@ index bcb84ad..a0bd78e 100644
  	/* The speed field has no value for 2.5 Gbps: the rate is determined by
  	 * the HSGMII SerDes configuration, and the vendor driver programs the
  	 * 1 Gbps value here.
-@@ -1867,7 +1994,7 @@ static void rtl8365mb_phylink_mac_link_down(struct phylink_config *config,
+@@ -1867,7 +1994,7 @@ static void rtl8365mb_phylink_mac_link_d
  	/* phylink has no pcs_link_down callback, so on the SerDes path only the
  	 * MAC external interface force is reset here. Clearing the MAC force is
  	 * enough to bring the link down; the SerDes keeps presenting its last
@@ -400,7 +398,7 @@ index bcb84ad..a0bd78e 100644
  	 */
  	if (phy_interface_mode_is_rgmii(interface) ||
  	    rtl8365mb_interface_is_serdes(interface)) {
-@@ -1900,9 +2027,11 @@ static void rtl8365mb_phylink_mac_link_up(struct phylink_config *config,
+@@ -1900,9 +2027,11 @@ static void rtl8365mb_phylink_mac_link_u
  	p = &mb->ports[port];
  	schedule_delayed_work(&p->mib_work, 0);
  
@@ -414,7 +412,7 @@ index bcb84ad..a0bd78e 100644
  	 */
  	if (phy_interface_mode_is_rgmii(interface) ||
  	    rtl8365mb_interface_is_serdes(interface)) {
-@@ -1916,18 +2045,21 @@ static void rtl8365mb_phylink_mac_link_up(struct phylink_config *config,
+@@ -1916,18 +2045,21 @@ static void rtl8365mb_phylink_mac_link_u
  			return;
  		}
  

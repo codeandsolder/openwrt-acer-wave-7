@@ -20,11 +20,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -1335,14 +1335,17 @@
- 		const char *name;
- 		unsigned int reg;
- 	} regs[] = {
- 		{ "calibration", PCS_CALIBRATION },
+@@ -1339,6 +1339,9 @@ static int ipq_pcs_snapshot_show(struct
  		{ "mode_ctrl", PCS_MODE_CTRL },
  		{ "misc2", PCS_MISC2 },
  		{ "vco_cal_ctrl", PCS_VCO_CAL_CTRL },
@@ -34,7 +30,3 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  	};
  	struct ipq_pcs *qpcs = s->private;
  	unsigned int val;
- 	int ret, i;
- 
- 	seq_printf(s, "interface=%s mppe=%u\n",
- 		   phy_modes(qpcs->interface), qpcs->mppe);

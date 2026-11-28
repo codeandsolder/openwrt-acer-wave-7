@@ -19,7 +19,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -166,6 +166,8 @@
+@@ -165,6 +165,8 @@ struct ipq_pcs {
  	struct clk_hw rx_hw;
  	/* TX clock supplied to NSSCC */
  	struct clk_hw tx_hw;
@@ -28,7 +28,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  	struct ipq_pcs_mii *qpcs_mii[PCS_MAX_MII_NRS];
  	struct reset_control *xpcs_rstc;
-@@ -1200,6 +1202,40 @@
+@@ -1087,6 +1089,40 @@ static const struct clk_ops ipq_pcs_tx_c
  	.recalc_rate = ipq_pcs_tx_clk_recalc_rate,
  };
  
@@ -69,7 +69,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  static struct clk_hw *ipq_pcs_clk_hw_get(struct of_phandle_args *clkspec,
  					 void *data)
  {
-@@ -1210,6 +1246,8 @@
+@@ -1097,6 +1133,8 @@ static struct clk_hw *ipq_pcs_clk_hw_get
  		return &qpcs->rx_hw;
  	case PCS_TX_CLK:
  		return &qpcs->tx_hw;
@@ -78,7 +78,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	}
  
  	return ERR_PTR(-EINVAL);
-@@ -1248,6 +1286,17 @@
+@@ -1135,6 +1173,17 @@ static int ipq_pcs_clk_register(struct i
  	if (ret)
  		return ret;
  
@@ -106,7 +106,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  enum mdio_clk_id {
  	MDIO_CLK_MDIO_AHB,
-@@ -66,6 +67,7 @@
+@@ -66,6 +67,7 @@ struct ipq4019_mdio_data {
  	void __iomem	*membase;
  	void __iomem *eth_ldo_rdy;
  	struct clk *clk[MDIO_CLK_CNT];
@@ -114,7 +114,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	struct gpio_descs *reset_gpios;
  	unsigned int mdc_rate;
  };
-@@ -78,6 +80,11 @@
+@@ -78,6 +80,11 @@ static const char *const mdio_clk_name[M
  	[MDIO_CLK_UNIPHY1_SYS] = "gcc_uniphy1_sys_clk",
  };
  
@@ -126,7 +126,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  static int ipq4019_mdio_wait_busy(struct mii_bus *bus)
  {
  	struct ipq4019_mdio_data *priv = bus->priv;
-@@ -624,6 +631,13 @@
+@@ -415,6 +422,13 @@ static int ipq4019_mdio_probe(struct pla
  			return PTR_ERR(priv->clk[ret]);
  	}
  

@@ -99,7 +99,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.mode != 'none'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    # Cold toolchain preparation plus kernel/package validation can exceed 2h.
+    timeout-minutes: 360
     container:
       image: ghcr.io/openwrt/buildbot/buildworker-v3.11.8@sha256:3d9edeb63c9bee5151b314f9620d9565657abba6e1450b2959e66bdeade286fe
       options: --privileged --pid=host

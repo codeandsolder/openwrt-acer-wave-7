@@ -22,7 +22,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/drivers/net/pcs/pcs-qcom-ipq9574.c
 +++ b/drivers/net/pcs/pcs-qcom-ipq9574.c
-@@ -1000,26 +1000,33 @@
+@@ -1000,26 +1000,33 @@ static void ipq_pcs_link_up(struct phyli
  	}
  
  	/*

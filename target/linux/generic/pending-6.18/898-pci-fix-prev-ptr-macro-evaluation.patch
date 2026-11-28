@@ -7,7 +7,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 ---
 --- a/drivers/pci/pci.h
 +++ b/drivers/pci/pci.h
-@@ -123,6 +123,7 @@
+@@ -123,6 +123,7 @@ bool pcie_cap_has_rtctl(const struct pci
  	u8 __prev_pos = (start);					\
  	u8 __pos = (start);						\
  	u16 __ent;							\
@@ -15,7 +15,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  									\
  	read_cfg##_byte(args, __pos, &__pos);				\
  									\
-@@ -139,8 +140,8 @@
+@@ -139,8 +140,8 @@ bool pcie_cap_has_rtctl(const struct pci
  									\
  		if (__id == (cap)) {					\
  			__found_pos = __pos;				\
@@ -26,7 +26,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  			break;						\
  		}							\
  									\
-@@ -174,6 +175,7 @@
+@@ -174,6 +175,7 @@ bool pcie_cap_has_rtctl(const struct pci
  	u16 __prev_pos;							\
  	int __ttl, __ret;						\
  	u32 __header;							\
@@ -34,7 +34,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  									\
  	__prev_pos = __pos;						\
  	__ttl = (PCI_CFG_SPACE_EXP_SIZE - PCI_CFG_SPACE_SIZE) / 8;	\
-@@ -187,8 +189,8 @@
+@@ -187,8 +189,8 @@ bool pcie_cap_has_rtctl(const struct pci
  									\
  		if (PCI_EXT_CAP_ID(__header) == (cap) && __pos != start) {\
  			__found_pos = __pos;				\

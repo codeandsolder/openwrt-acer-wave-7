@@ -16,10 +16,9 @@ ubiattach after initialization. Default behavior is unchanged.
 Signed-off-by: codeandsolder <codeandsolder@gmail.com>
 
 ---
-diff --git a/drivers/mtd/ubi/build.c b/drivers/mtd/ubi/build.c
 --- a/drivers/mtd/ubi/build.c
 +++ b/drivers/mtd/ubi/build.c
-@@ -71,6 +71,9 @@
+@@ -71,6 +71,9 @@ static int mtd_devs;
  
  /* MTD devices specification parameters */
  static struct mtd_dev_param mtd_dev_param[UBI_MAX_DEVICES];
@@ -29,7 +28,7 @@ diff --git a/drivers/mtd/ubi/build.c b/drivers/mtd/ubi/build.c
  #ifdef CONFIG_MTD_UBI_FASTMAP
  /* UBI module parameter to enable fastmap automatically on non-fastmap images */
  static bool fm_autoconvert;
-@@ -1342,6 +1345,11 @@
+@@ -1342,6 +1345,11 @@ static int __init ubi_init_attach(void)
  {
  	int err, i, k;
  
@@ -41,14 +40,14 @@ diff --git a/drivers/mtd/ubi/build.c b/drivers/mtd/ubi/build.c
  	/* Attach MTD devices */
  	for (i = 0; i < mtd_devs; i++) {
  		struct mtd_dev_param *p = &mtd_dev_param[i];
-@@ -1653,6 +1661,10 @@
- 	mtd_devs += 1;
+@@ -1654,6 +1662,10 @@ static int ubi_mtd_param_parse(const cha
  	return 0;
  }
-+
+ 
 +module_param_named(no_autoattach, no_autoattach, bool, 0400);
 +MODULE_PARM_DESC(no_autoattach,
 +	"Disable all boot-time UBI MTD attachments, including ubi.mtd=; manual ubiattach remains available.");
- 
++
  module_param_call(mtd, ubi_mtd_param_parse, NULL, NULL, 0400);
  MODULE_PARM_DESC(mtd, "MTD devices to attach. Parameter format: mtd=<name|num|path>[,<vid_hdr_offs>[,max_beb_per1024[,ubi_num[,enable_fm[,need_resv_pool]]]]].\n"
+ 		      "Multiple \"mtd\" parameters may be specified.\n"

@@ -59,7 +59,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  #define CMN_PLL_REFCLK_CONFIG			0x784
  #define CMN_PLL_REFCLK_EXTERNAL			BIT(9)
-@@ -93,6 +97,7 @@
+@@ -93,6 +97,7 @@ struct cmn_pll_fixed_output_clk {
  struct clk_cmn_pll {
  	struct regmap *regmap;
  	struct clk_hw hw;
@@ -67,7 +67,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  };
  
  #define CLK_PLL_OUTPUT(_id, _name, _rate) {		\
-@@ -117,6 +122,16 @@
+@@ -117,6 +122,16 @@ static const struct cmn_pll_fixed_output
  	{ /* Sentinel */ }
  };
  
@@ -84,7 +84,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  static const struct cmn_pll_fixed_output_clk ipq5424_output_clks[] = {
  	CLK_PLL_OUTPUT(IPQ5424_XO_24MHZ_CLK, "xo-24mhz", 24000000UL),
  	CLK_PLL_OUTPUT(IPQ5424_SLEEP_32KHZ_CLK, "sleep-32khz", 32000UL),
-@@ -227,6 +242,21 @@
+@@ -227,6 +242,21 @@ static int clk_cmn_pll_set_rate(struct c
  	u32 val;
  
  	/*
@@ -106,7 +106,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  	 * Configure the reference input clock selection as per the given
  	 * parent clock. The output clock rates are always of fixed value.
  	 */
-@@ -320,6 +350,8 @@
+@@ -320,6 +350,8 @@ static struct clk_hw *ipq_cmn_pll_clk_hw
  
  	cmn_pll->hw.init = &init;
  	cmn_pll->regmap = regmap;
@@ -115,7 +115,7 @@ Signed-off-by: codeandsolder <codeandsolder@gmail.com>
  
  	ret = devm_clk_hw_register(dev, &cmn_pll->hw);
  	if (ret)
-@@ -454,6 +486,7 @@
+@@ -454,6 +486,7 @@ static const struct dev_pm_ops ipq_cmn_p
  
  static const struct of_device_id ipq_cmn_pll_clk_ids[] = {
  	{ .compatible = "qcom,ipq5018-cmn-pll", .data = &ipq5018_output_clks },

@@ -14,9 +14,7 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 ---
 --- a/drivers/remoteproc/qcom_q6v5_mpd.c
 +++ b/drivers/remoteproc/qcom_q6v5_mpd.c
-@@ -625,50 +625,31 @@
- 		return ret;
- 
+@@ -627,46 +627,27 @@ static int wcss_register_dump_segments(s
  	return qcom_register_dump_segments(rproc, fw);
  }
  
@@ -49,11 +47,13 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
  {
  	struct q6_wcss *wcss = rproc->priv;
 -	int i, ret;
--
++	int ret;
+ 
 -	ret = wcss_register_dump_segments(rproc, fw);
--	if (ret)
--		return ret;
--
++	ret = rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_HEXAGON);
+ 	if (ret)
+ 		return ret;
+ 
 -	for (i = 1; i < MAX_FIRMWARE; i++) {
 -		if (!wcss->firmware[i])
 -			continue;
@@ -70,16 +70,8 @@ Signed-off-by: Code and Solder <codeandsolder@gmail.com>
 -	}
 -
 -	return 0;
-+	int ret;
-+
-+	ret = rproc_coredump_set_elf_info(rproc, ELFCLASS32, EM_HEXAGON);
-+	if (ret)
-+		return ret;
-+
 +	return rproc_coredump_add_segment(rproc, wcss->mem_reloc,
 +					  wcss->mem_size);
  }
  
  static const struct rproc_ops wcss_ops = {
- 	.start = wcss_pd_start,
- 	.stop = wcss_pd_stop,
