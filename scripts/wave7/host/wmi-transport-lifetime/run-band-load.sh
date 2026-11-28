@@ -51,9 +51,11 @@ attest(){
 local_sha=$(sha256sum "$h/secondary-ap/client-sustained.sh" | cut -d' ' -f1)
 remote_sha=$(ssh -o BatchMode=yes acer "ssh -o BatchMode=yes wyse-eth 'sha256sum /home/jan/scripts/wave7/client-validation/client-sustained.sh'" | cut -d' ' -f1)
 [[ "$remote_sha" == "$local_sha" ]] || fail 'client helper digest'
+failed=()
 for id in "single-$band" "dual-$band" dual-24; do
     select_band=${id#*-}
     case "$id" in single-*) variant=--client-single-link ;; *) variant=--client-reconnect-teardown-privilege-trace ;; esac
+    echo "START $id $(date -Is)"
     attest "$out/$id-before.txt"
     rc=0
     bash "$h/wmi-transport-lifetime/test-primary-client.sh" "$run" --band="$select_band" --client-load "$variant" --ap-rx-error-stats --ap-load-series --ap-link-stats --ap-channel-survey --ap-reo-command-stats --ap-tx-attempt-stats | tee "$out/$id.log" || rc=$?
@@ -63,8 +65,12 @@ for id in "single-$band" "dual-$band" dual-24; do
     (cd "$a"; sha256sum -c SHA256SUMS >/dev/null) || fail 'archive seal'
     rg -q STACK_ORIGINAL_PASS "$a/client-original-after.txt" || fail 'client restoration'
     attest "$out/$id-after.txt"
-    if [[ $rc != 0 ]]; then echo "UNQUALIFIED $id rc=$rc"; continue; fi
+    if [[ $rc != 0 ]]; then echo "UNQUALIFIED $id rc=$rc"; failed+=("$id"); continue; fi
     uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$select_band" --describe-run "$a" > "$out/$id-qualified.json"
     echo "QUALIFIED $id $(date -Is)"
 done
+if (( ${#failed[@]} )); then
+    echo "BAND_LOAD_INCOMPLETE ${failed[*]} $(date -Is)"
+    exit 1
+fi
 echo "BAND_LOAD_COMPLETE $(date -Is)"

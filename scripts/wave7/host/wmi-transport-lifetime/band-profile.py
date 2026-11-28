@@ -134,8 +134,36 @@ def expected_dtb(before, profile):
     return expected_nodes, result
 
 
+def reservations(data):
+    _, total, start, _, offset = struct.unpack_from('>5I', data)
+    require(40 <= offset < start <= total <= len(data), 'FDT reservation bounds')
+    result = []
+    while offset + 16 <= start:
+        address, size = struct.unpack_from('>QQ', data, offset)
+        offset += 16
+        if not (address or size):
+            return result
+        result.append((address, size))
+    raise ValueError('missing FDT reservation terminator')
+
+
 def verify_dtb(before, after, profile):
     require(properties(after) == expected_dtb(properties(before), profile), 'unexpected DT transition')
+    require(reservations(before) == reservations(after), 'DT memory reservations changed')
+
+
+def verify_fit(before, after, profile):
+    helper = runpy.run_path(str(Path(__file__).with_name('build-profile-fit.py')))
+    old_nodes, old = properties(before)
+    new_nodes, new = properties(after)
+    helper['verify_hashes'](old)
+    helper['verify_hashes'](new)
+    allowed = {('/', 'timestamp'), ('/images/fdt-1', 'data'),
+               ('/images/fdt-1/hash-1', 'value'), ('/images/fdt-1/hash-2', 'value')}
+    require(new_nodes == old_nodes and new.keys() == old.keys(), 'FIT inventory changed')
+    require(all(new[k] == old[k] for k in old.keys() - allowed), 'FIT kernel/metadata changed')
+    require(reservations(before) == reservations(after), 'FIT memory reservations changed')
+    verify_dtb(old['/images/fdt-1', 'data'], new['/images/fdt-1', 'data'], profile)
 
 
 def command(*args):
@@ -145,7 +173,7 @@ def command(*args):
 def build_fit(parent, output, profile, tools, repo, kernel, epoch):
     require(not output.exists(), 'output exists')
     helper = runpy.run_path(str(Path(__file__).with_name('build-profile-fit.py')))
-    old_nodes, old = properties(parent.read_bytes())
+    _, old = properties(parent.read_bytes())
     helper['verify_hashes'](old)
     require(old['/images/kernel-1', 'compression'] == b'lzma\0', 'kernel compression')
     require(old['/configurations', 'default'] == b'config@mi04.1-c2\0', 'board config')
@@ -183,14 +211,9 @@ def build_fit(parent, output, profile, tools, repo, kernel, epoch):
         subprocess.run([str(tools / 'mkimage'), '-f', str(t / 'image.its'), str(t / 'image.fit')],
                        env={**os.environ, 'SOURCE_DATE_EPOCH': str(epoch)}, check=True,
                        stdout=subprocess.DEVNULL)
-        new_nodes, new = properties((t / 'image.fit').read_bytes())
-        helper['verify_hashes'](new)
-        allowed = {('/', 'timestamp'), ('/images/fdt-1', 'data'),
-                   ('/images/fdt-1/hash-1', 'value'), ('/images/fdt-1/hash-2', 'value')}
-        require(new_nodes == old_nodes and new.keys() == old.keys(), 'FIT inventory changed')
-        require(all(new[k] == old[k] for k in old.keys() - allowed), 'FIT kernel/metadata changed')
-        verify_dtb(original, new['/images/fdt-1', 'data'], profile)
-        output.write_bytes((t / 'image.fit').read_bytes())
+        candidate = (t / 'image.fit').read_bytes()
+        verify_fit(parent.read_bytes(), candidate, profile)
+        output.write_bytes(candidate)
 
 
 if __name__ == '__main__':

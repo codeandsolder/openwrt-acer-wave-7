@@ -118,6 +118,8 @@ def describe(image, sha256, revision, kernel, builder, host_tree, scratch, closu
                     digest(root / 'etc/config/wireless'), 'band policy identity')
             pinned_radio = band['radio_pins'](pinned_radio, name)
             _, fit = band['properties']((t / 'kernel').read_bytes())
+            fit_helper = runpy.run_path(str(repo / 'scripts/wave7/host/wmi-transport-lifetime/build-profile-fit.py'))
+            fit_helper['verify_hashes'](fit)
             _, dt = band['properties'](fit['/images/fdt-1', 'data'])
             frequency = band['PROFILES'][name][0]
             require(dt[band['RADIO'], 'qcom,board_id'] == (0x91 if frequency == 6 else 0x53).to_bytes(4, 'big'),
