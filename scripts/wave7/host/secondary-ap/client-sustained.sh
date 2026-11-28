@@ -34,6 +34,27 @@ link_masks() {
     [[ $expected =~ ^[123]$ && $2 =~ ^0x0*$expected$ && $3 =~ ^0x0*3$ && $4 =~ ^0x0+$ ]]
 }
 
+# These are requested MT7925 debugfs policies, not a proof of firmware
+# sleep state. Keep them independent of mac80211's power_save setting.
+load_pm_policy() {
+    case "$1" in
+        --pm=normal) printf '1 1\n' ;;
+        --pm=deep-sleep-off) printf '1 0\n' ;;
+        --pm=runtime-pm-off) printf '0 1\n' ;;
+        --pm=both-off) printf '0 0\n' ;;
+        *) return 2 ;;
+    esac
+}
+if [[ $# == 1 && $1 == --selftest-load-pm ]]; then
+    [[ $(load_pm_policy --pm=normal) == '1 1' ]]
+    [[ $(load_pm_policy --pm=deep-sleep-off) == '1 0' ]]
+    [[ $(load_pm_policy --pm=runtime-pm-off) == '0 1' ]]
+    [[ $(load_pm_policy --pm=both-off) == '0 0' ]]
+    if load_pm_policy --pm=bad; then exit 1; fi
+    echo LOAD_PM_POLICY_SELFTEST_PASS
+    exit 0
+fi
+
 if [[ $# == 1 && $1 == --selftest-link-masks ]]; then
     link_masks 3 0x3 0x3 0x0
     link_masks 3 0x0003 0x03 0x0000
@@ -87,10 +108,23 @@ if [[ $# == 1 && $1 == --selftest-scan-state ]]; then
     exit 0
 fi
 
-[[ $(id -un) == jan && ( $# == 1 || ( $# == 2 && -n $2 ) ||
-   ( $# == 3 && ( $2 == --scan-timing-upstream-* || $2 == --early-only-upstream-* || $2 == --early-tap-upstream-* || $2 == --early-dual-upstream-* || $2 == --early-soak-upstream-* || $2 == --early-load-upstream-* || $2 == --early-reconnect-upstream-* ) && ( $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ) ) ) &&
-   $1 =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+[[ $(id -un) == jan && ${1:-} =~ ^0498-[0-9]{8}-[0-9]{6}$ ]] || exit 2
+case $# in
+    1) ;;
+    2) [[ -n $2 ]] || exit 2 ;;
+    3)
+        case $2 in
+            --scan-timing-upstream-*|--early-only-upstream-*|--early-tap-upstream-*|--early-dual-upstream-*|--early-soak-upstream-*|--early-load-upstream-*|--early-reconnect-upstream-*) ;;
+            *) exit 2 ;;
+        esac
+        [[ $3 == --primary-24 || $3 == --bssid-24 || $3 == --bssid-5 ]] || exit 2 ;;
+    4)
+        [[ $2 == --early-load-upstream-* && ( $3 == --bssid-24 || $3 == --bssid-5 ) ]] || exit 2
+        load_pm_policy "$4" >/dev/null || exit 2 ;;
+    *) exit 2 ;;
+esac
 association_preference=${3:-}
+load_pm_profile=${4:-}
 stack_guard=/home/jan/scripts/wave7/client-validation/client-module-stack.sh
 trace=0
 scope_experiment=0
@@ -196,6 +230,11 @@ case "${2:-}" in
     "") ;;
     *) exit 2 ;;
 esac
+if [[ -n $load_pm_profile ]]; then
+    (( early_load && pm_experiment )) || exit 2
+    policy=$(load_pm_policy "$load_pm_profile") || exit 2
+    read -r runtime_expected deep_expected <<< "$policy"
+fi
 tap=/home/jan/scripts/wave7/client-validation/icmp-probe-tap
 if (( trace || early_tap )); then
     [[ $(sha256sum "$tap" | cut -d' ' -f1) == d1fa6760fef57a219ba3df1255e7ab5a6f78e8038091b24bd7cc8ab5d9a56558 ]]
@@ -219,10 +258,11 @@ pm_dir=/sys/kernel/debug/ieee80211/$phy/mt76
 pm_modified=0
 runtime_modified=0
 pm_snapshot() {
-    local f
+    local f value
     printf 'time=%s\n' "$(date -Is)"
     for f in runtime-pm deep-sleep idle-timeout; do
-        printf '%s=%s\n' "$f" "$(rootcmd cat "$pm_dir/$f")"
+        value=$(rootcmd cat "$pm_dir/$f") || return 1
+        printf '%s=%s\n' "$f" "$value"
     done
     rootcmd cat "$pm_dir/runtime_pm_stats"
 }
@@ -231,6 +271,16 @@ pm_valid() {
        $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" &&
        $(rootcmd cat "$pm_dir/idle-timeout") == 83 ]] &&
        iw dev "$iface" get power_save | grep -Fxq 'Power save: off'
+}
+pm_edge() {
+    local name=$1
+    [[ -n $load_pm_profile ]] || return 0
+    local f="$out/pm-load-$name.txt"
+    { pm_snapshot && iw dev "$iface" get power_save; } > "$f" || return 1
+    rg -qx "runtime-pm=$runtime_expected" "$f" &&
+        rg -qx "deep-sleep=$deep_expected" "$f" &&
+        rg -qx 'idle-timeout=83' "$f" &&
+        rg -qx 'Power save: off' "$f"
 }
 clone=0
 event_pid=''
@@ -440,7 +490,8 @@ cleanup() {
     if (( pm_experiment )); then
         pm_snapshot > "$out/pm-restored.txt" || rc=1
         [[ $(rootcmd cat "$pm_dir/deep-sleep") == 1 &&
-           $(rootcmd cat "$pm_dir/runtime-pm") == 1 ]] || rc=1
+           $(rootcmd cat "$pm_dir/runtime-pm") == 1 &&
+           $(rootcmd cat "$pm_dir/idle-timeout") == 83 ]] || rc=1
     fi
     # NetworkManager removes the profile before the asynchronous device
     # deactivation finishes. Require the same disconnected state, but
@@ -537,6 +588,9 @@ if (( pm_experiment )); then
         printf '0\n' | rootcmd tee "$pm_dir/runtime-pm" > "$out/set-runtime-pm.txt"
     fi
     pm_snapshot > "$out/pm-selected.txt"
+    if [[ -n $load_pm_profile ]]; then
+        printf '%s\n' "${load_pm_profile#--pm=}" > "$out/pm-load-profile.txt"
+    fi
     [[ $(rootcmd cat "$pm_dir/deep-sleep") == "$deep_expected" &&
        $(rootcmd cat "$pm_dir/runtime-pm") == "$runtime_expected" ]]
 fi
@@ -664,6 +718,7 @@ if (( early_only )); then
         (( ready ))
     fi
     # This shortened diagnostic is not a production acceptance PASS.
+    pm_edge associated || exit 3
     short_failed=0
     hold_count=440
     if (( early_soak )); then hold_count=2400; fi
@@ -699,6 +754,7 @@ if (( early_only )); then
         sample_pid=''
         [[ $(wc -l < "$out/soak-link-masks.txt") == 24 ]] || short_failed=1
     fi
+    pm_edge hold-after || short_failed=1
     printf 'short_hold_all_replies=%s\n' "$((1 - short_failed))" \
         > "$out/short-hold-result.txt"
     {
@@ -801,6 +857,7 @@ if (( early_only )); then
                 link_masks "$expected_active_mask" "$a" "$v" "$d"
             }
             for mode in uplink downlink bidirectional; do
+                pm_edge "$mode-before" || exit 3
                 load_link > "$out/load-$mode-before.txt" || exit 3
                 ip -4 route get 192.168.76.2 from "$v4" oif "$iface" >> "$out/load-$mode-before.txt" || exit 3
                 [[ -z $(ss -H -ltn 'sport = :52231') ]] || exit 3
@@ -832,6 +889,7 @@ if (( early_only )); then
                     probe_wait_one "$index" || :
                 done
                 load_link > "$out/load-$mode-after.txt" || exit 3
+                pm_edge "$mode-after" || exit 3
                 (( load_rc == 0 )) || { load_failed=1; break; }
             done
             for target in 192.168.76.1 192.168.76.2; do
@@ -840,6 +898,7 @@ if (( early_only )); then
             probe_start post-load-v6 100 "$v6" fd76:7::2 -6
             for index in "${!pings[@]}"; do probe_wait_one "$index" || load_failed=1; done
             load_link > "$out/load-final.txt" || load_failed=1
+            pm_edge post || load_failed=1
             printf 'dual_stack_load_pass=%s\n' "$((1 - load_failed))" > "$out/dual-stack-load-result.txt"
             exit "$load_failed"
         fi

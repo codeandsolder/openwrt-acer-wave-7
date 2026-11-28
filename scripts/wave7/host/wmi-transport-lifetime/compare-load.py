@@ -80,10 +80,13 @@ def read_run(path, band):
     require(state['boot'] == boot and state['rev'] == manifest['revision'] and
             state['builder'] == manifest['builder_commit'] and
             (path.parent / 'status').read_text().strip() == 'SOAK_PASS', 'AP identity mismatch')
-    pm = dict(re.findall(r'^(runtime-pm|deep-sleep|idle-timeout)=(\d+)$', archive['pm-selected.txt'], re.M))
-    require(len(pm) == 3, 'missing client power settings')
+    pm = iperf.pm_values(archive['pm-selected.txt'])
+    pm_profile = result['pm_load_profile']
+    requested_pm = path / 'client-pm-profile.txt'
+    require((requested_pm.read_text().strip() if requested_pm.exists() else None) == pm_profile,
+            'requested client PM profile not attested')
     identity = dict(stack=stack, kernel=kernel[0], firmware=firmware[0], geometry=ap_geometry, wireless_policy=manifest['policy_sha256']['etc/config/wireless'],
-                    preference=archive['association-preference.txt'], pm=pm,
+                    preference=archive['association-preference.txt'], pm=pm, pm_control_profile=pm_profile,
                     variant=(path / 'client-variant.txt').read_text().strip(),
                     iperf_source=result['source'], active_link_mask=result['active_link_mask'], kernel_ap=state['kernel'], radio_ap=state['radio'])
     phases = {}
@@ -106,6 +109,7 @@ def read_run(path, band):
         identity[f'htt_tx_{mode}'] = 'htt_tx' in extra
         identity[f'htt_mlo_{mode}'] = 'htt_mlo' in extra
         identity[f'reo_command_{mode}'] = 'reo_command' in extra
+        identity[f'tx_attempt_{mode}'] = 'tx_attempt' in extra
         traffic = result['cases'][mode]
         station = d['station_delta']
         reo = {}
@@ -125,6 +129,8 @@ def read_run(path, band):
                             tx_failed_per_1000=1000 * station['tx failed'] / station['tx packets'] if station['tx packets'] else None,
                             tx_airtime_us=station['tx duration'], cpu=d['cpu'], cpu_cost=d['cpu_cost'],
                             rates=d['station_rates'])
+        if 'tx_attempt' in extra:
+            phases[mode]['tx_attempt'] = extra['tx_attempt']
         if 'reo_command' in extra:
             phases[mode]['reo_command'] = extra['reo_command']
         if 'htt_mlo' in extra:
@@ -146,10 +152,17 @@ def read_run(path, band):
                 identity=identity, phases=phases)
 
 
-def compare(a, b, *, describe_unmatched=False):
+def compare(a, b, *, describe_unmatched=False, compare_pm=False):
     mismatches = sorted(k for k in a['identity'].keys() | b['identity'].keys()
                         if a['identity'].get(k) != b['identity'].get(k))
-    require(not mismatches or describe_unmatched, f'unmatched experimental conditions: {mismatches}')
+    if compare_pm:
+        require(a.get('boot') == b.get('boot') and a.get('image_sha256') == b.get('image_sha256'),
+                'PM contrast requires the same AP image and boot')
+        require(mismatches == ['pm', 'pm_control_profile'] and all(
+            x['identity'].get('pm_control_profile') in iperf.PM_POLICIES for x in (a,b)),
+                f'PM contrast has uncontrolled differences: {mismatches}')
+    else:
+        require(not mismatches or describe_unmatched, f'unmatched experimental conditions: {mismatches}')
     changes = {}
     for mode in load.MODES:
         p, q = a['phases'][mode], b['phases'][mode]
@@ -157,7 +170,7 @@ def compare(a, b, *, describe_unmatched=False):
             for k, v in p['directions'].items()}, rtt_ms={family: {
                 'before': p['latency'][family]['rtt_ms'], 'after': q['latency'][family]['rtt_ms']}
                 for family in ('v4', 'v6')})
-    return dict(matched=not mismatches, mismatches=mismatches,
+    return dict(matched=not mismatches, matched_except_pm=compare_pm, mismatches=mismatches,
                 baseline=a, candidate=b, changes=changes)
 
 
@@ -169,15 +182,18 @@ def main():
     parser.add_argument('--band', required=True, choices=('24', '5'))
     parser.add_argument('--describe-unmatched', action='store_true',
                         help='report descriptive contrasts, explicitly identifying unmatched conditions')
+    parser.add_argument('--compare-pm', action='store_true',
+                        help='compare explicit requested PM policies on the same AP boot')
     args = parser.parse_args()
+    require(not (args.compare_pm and args.describe_unmatched), 'choose one comparison mode')
     if args.describe_run:
-        require(args.candidate is None and not args.describe_unmatched, 'baseline mode takes one run')
+        require(args.candidate is None and not args.describe_unmatched and not args.compare_pm, 'baseline mode takes one run')
         print(json.dumps(read_run(args.baseline.resolve(), args.band), indent=2))
         return
     require(args.candidate is not None, 'comparison requires two runs')
     print(json.dumps(compare(read_run(args.baseline.resolve(), args.band),
                              read_run(args.candidate.resolve(), args.band),
-                             describe_unmatched=args.describe_unmatched), indent=2))
+                             describe_unmatched=args.describe_unmatched, compare_pm=args.compare_pm), indent=2))
 
 
 if __name__ == '__main__':

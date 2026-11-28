@@ -26,6 +26,10 @@ reo_spec = importlib.util.spec_from_file_location(
     "reo_command", Path(__file__).with_name("reo-command-stats.py"))
 reo_cmd = importlib.util.module_from_spec(reo_spec)
 reo_spec.loader.exec_module(reo_cmd)
+attempt_spec = importlib.util.spec_from_file_location(
+    "tx_attempt", Path(__file__).with_name("tx-attempt-stats.py"))
+tx_attempt = importlib.util.module_from_spec(attempt_spec)
+attempt_spec.loader.exec_module(tx_attempt)
 MODES = ("uplink", "downlink", "bidirectional")
 CPU = re.compile(r"^cpu(\d+)\s+([\d ]+)$")
 IRQ = re.compile(r"^\s*(\d+):\s+(.*)$")
@@ -298,6 +302,8 @@ def parse(text):
         extra["channel_survey"] = survey.describe_snapshot(sections_["CHANNEL_SURVEY"])
     if any(k.startswith("REO_CMD ") for k in sections_):
         extra["reo_command"] = reo_cmd.parse_sections(sections_, tx.keys())
+    if any(k.startswith("TX_ATTEMPT ") for k in sections_):
+        extra["tx_attempt"] = tx_attempt.parse_sections(sections_, tx.keys())
     if "HTT_TX" in sections_:
         extra["htt_tx"] = htt.describe_snapshot(sections_["HTT_TX"], tx.keys())
     if "HTT_MLO" in sections_:
@@ -421,6 +427,8 @@ def compare(before, after):
                                                  b["extra"]["channel_survey"])
     if "reo_command" in a["extra"]:
         extra["reo_command"] = reo_cmd.compare(a["extra"]["reo_command"], b["extra"]["reo_command"])
+    if "tx_attempt" in a["extra"]:
+        extra["tx_attempt"] = tx_attempt.compare(a["extra"]["tx_attempt"], b["extra"]["tx_attempt"])
     if "htt_tx" in a["extra"]:
         extra["htt_tx"] = htt.compare(a["extra"]["htt_tx"], b["extra"]["htt_tx"])
     if "htt_mlo" in a["extra"]:

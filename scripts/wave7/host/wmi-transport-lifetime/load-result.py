@@ -71,6 +71,52 @@ def load_link_profile(files, band):
     return active
 
 
+PM_POLICIES = {
+    "normal": ("1", "1"),
+    "deep-sleep-off": ("1", "0"),
+    "runtime-pm-off": ("0", "1"),
+    "both-off": ("0", "0"),
+}
+
+
+def pm_values(text, *, associated=False):
+    pairs = re.findall(r"^(runtime-pm|deep-sleep|idle-timeout)=(\d+)$", text, re.M)
+    values = dict(pairs)
+    require(len(pairs) == len(values) == 3 and
+            values["runtime-pm"] in ("0", "1") and values["deep-sleep"] in ("0", "1") and
+            values["idle-timeout"] == "83", "invalid requested client PM policy")
+    if associated:
+        require(re.findall(r"^Power save: (\w+)$", text, re.M) == ["off"],
+                "mac80211 power-save policy changed")
+    return values
+
+
+def load_pm_profile(files):
+    profile_name = "pm-load-profile.txt"
+    edge_names = {"associated", "hold-after", "post"} | {
+        f"{mode}-{side}" for mode in MODES for side in ("before", "after")}
+    edges = {f"pm-load-{name}.txt" for name in edge_names}
+    actual = {name for name in files if name.startswith("pm-load-")}
+    if profile_name not in files:
+        require(not actual, "missing explicit PM profile")
+        return None
+    profile = files[profile_name].strip()
+    require(profile in PM_POLICIES and actual == edges | {profile_name},
+            "invalid/incomplete explicit PM profile evidence")
+    normal = dict(zip(("runtime-pm", "deep-sleep", "idle-timeout"), ("1", "1", "83")))
+    expected = dict(zip(("runtime-pm", "deep-sleep", "idle-timeout"),
+                        (*PM_POLICIES[profile], "83")))
+    for name in ("pm-original.txt", "pm-restored.txt"):
+        require(name in files and pm_values(files[name]) == normal,
+                "original requested PM policy not restored")
+    require("pm-selected.txt" in files and pm_values(files["pm-selected.txt"]) == expected,
+            "requested PM policy not selected")
+    for name in edges:
+        require(pm_values(files[name], associated=True) == expected,
+                f"requested PM policy changed at {name}")
+    return profile
+
+
 def check_link(text, expected_active):
     require(expected_active in (1, 2, 3), "invalid active link mask")
     require(re.search(rf"\bactive=0x0*{expected_active} valid=0x0*3 dormant=0x0+\b", text),
@@ -182,6 +228,7 @@ def summarize(path, tag, prefix, *, describe_unqualified=False):
             "source outside lab")
     band = Path(prefix).name.removeprefix("band-")
     active = load_link_profile(f, band)
+    pm_profile = load_pm_profile(f)
     for name in ("early-only-snapshot.txt", "early-only-final.txt"):
         require(re.search(rf"^mac80211_active_links=0x0*{active}$", f[name], re.M)
                 and re.search(r"^mac80211_valid_links=0x0*3$", f[name], re.M)
@@ -208,7 +255,8 @@ def summarize(path, tag, prefix, *, describe_unqualified=False):
                                            for x in (*pre.values(), *post.values()))
     require(describe_unqualified or qualified, "client connectivity gate failed")
     return {"source": source, "cases": result, "pre_load": pre, "post_load": post,
-            "qualified": qualified, "client_gates": gates, "active_link_mask": active}
+            "qualified": qualified, "client_gates": gates, "active_link_mask": active,
+            "pm_load_profile": pm_profile}
 
 
 

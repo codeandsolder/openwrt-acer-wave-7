@@ -38,6 +38,8 @@ ap_channel_survey=0
 ap_htt_tx_stats=0
 ap_htt_mlo_stats=0
 ap_reo_command_stats=0
+ap_tx_attempt_stats=0
+client_pm_profile=""
 ap_link_tool=""
 client_rx_arg=--none
 variant_mgmt_profile=--none
@@ -79,6 +81,10 @@ for arg in "$@"; do
         --ap-htt-tx-stats) ap_htt_tx_stats=1 ;;
         --ap-htt-mlo-stats) ap_htt_tx_stats=1; ap_htt_mlo_stats=1 ;;
         --ap-reo-command-stats) ap_reo_command_stats=1 ;;
+        --ap-tx-attempt-stats) ap_tx_attempt_stats=1 ;;
+        --client-pm=normal|--client-pm=deep-sleep-off|--client-pm=runtime-pm-off|--client-pm=both-off)
+            [[ -z $client_pm_profile ]] || fail 'one client PM profile'
+            client_pm_profile="--pm=${arg#--client-pm=}" ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
         --client-delayed-links) select_variant upstream-prefix22-authorize-delayed-links-trace --none --none ;;
@@ -173,6 +179,10 @@ if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP
 if (( ap_channel_survey && !dual_load )); then fail "channel survey requires isolated TCP load trial"; fi
 if (( ap_htt_tx_stats && !dual_load )); then fail "HTT TX stats require isolated TCP load trial"; fi
 if (( ap_reo_command_stats && !dual_load )); then fail "REO command stats require isolated TCP load trial"; fi
+if (( ap_tx_attempt_stats && !dual_load )); then fail "TX attempt stats require isolated TCP load trial"; fi
+if [[ -n $client_pm_profile ]] && (( !dual_load || dual_reconnect || dual_soak )); then
+    fail 'client PM profile requires isolated TCP load trial'
+fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -242,6 +252,9 @@ done
 out="$run/client-ab-$(date +%Y%m%d-%H%M%S)"
 mkdir -m 700 "$out"
 printf "%s\n" "$variant" > "$out/client-variant.txt"
+if [[ -n $client_pm_profile ]]; then
+    printf '%s\n' "${client_pm_profile#--pm=}" > "$out/client-pm-profile.txt"
+fi
 if (( ${#boundary_profiles[@]} )); then
     printf '%s  packet-boundary-arm64\n%s  packet-boundary-x86_64\n' \
         "$boundary_arm_hash" "$boundary_x86_hash" > "$out/packet-boundary-binaries.sha256"
@@ -377,6 +390,7 @@ snapshot_reo_commands(){
         cat /proc/sys/kernel/random/boot_id"
 }
 htt_mlo_reader=$(cat "$(dirname "$helper")/ap-htt-mlo-reader.sh")
+tx_attempt_reader=$(cat "$(dirname "$helper")/ap-tx-attempt-reader.sh")
 snapshot_load(){
     local side=${1:?snapshot side required}
     [[ $side == before || $side == after ]] || return 2
@@ -408,6 +422,7 @@ snapshot_load(){
             echo GEOMETRY_AFTER_END rc=\$info_rc
         }
         $htt_mlo_reader
+        $tx_attempt_reader
         capture_htt_tx(){
             found=0
             for f in /sys/kernel/debug/ath12k/*/mac*/htt_stats; do
@@ -460,6 +475,12 @@ snapshot_load(){
                 [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
             done
             [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        fi
+        if [ '$ap_tx_attempt_stats' = 1 ] && [ '$side' = before ]; then
+            if ! attempts_before=\$(capture_tx_attempts); then
+                printf '%s\\n' \"\$attempts_before\"
+                exit 1
+            fi
         fi
         cat /proc/sys/kernel/random/boot_id
         cat /proc/uptime
@@ -520,6 +541,13 @@ snapshot_load(){
                 echo ==== RX_ERROR \"\${d##*/}\"
                 cat \"\$d/rx_error_stats\"
             done
+        fi
+        if [ '$ap_tx_attempt_stats' = 1 ]; then
+            if [ '$side' = before ]; then
+                printf '%s\\n' \"\$attempts_before\"
+            else
+                capture_tx_attempts || exit 1
+            fi
         fi
         if [ '$ap_reo_command_stats' = 1 ]; then
             $reo_command_reader
@@ -880,7 +908,7 @@ for band in "${bands[@]}"; do
     if (( dual_load )); then
         # Wyse listens only on its temporary Wi-Fi address. Initiate TCP
         # from the existing Asus direct NIC so no firewall change is needed.
-        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" \
+        wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band ${client_pm_profile}" \
             > "$prefix.client-run.txt" 2>&1 &
         load_client_pid=$!
         target=''
@@ -1097,6 +1125,11 @@ for band in "${bands[@]}"; do
         uv run --no-project python -B "$(dirname "$helper")/load-result.py" \
             "$prefix.client.tar" "$tag" "$prefix" > "$prefix.load-result.json" 2>"$prefix.load-result-errors.txt" ||
             cases_failed=1
+        if [[ -n $client_pm_profile ]]; then
+            jq -e --arg p "${client_pm_profile#--pm=}" '.pm_load_profile == $p' "$prefix.load-result.json" >/dev/null || cases_failed=1
+        else
+            jq -e '.pm_load_profile == null' "$prefix.load-result.json" >/dev/null || cases_failed=1
+        fi
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
     if (( reconnect_count == 2 )); then
