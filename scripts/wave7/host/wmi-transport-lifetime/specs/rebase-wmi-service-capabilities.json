@@ -1,0 +1,16 @@
+{
+  "parent_sha": "234171323afef30fd990159b89946788388b63c0321120b7b2cd341b875ed2fc",
+  "parent_rev": "r0+39019-0bcd4de52d-ap-dhcp-guard8",
+  "parent_builder": "0bcd4de52d3cf18cff89112a9028f4b02c23175e",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "cc2e92a6577f5fcb85a12d1594683cd90d1ca0ab6c0ad7b9994cfbdf8f390124",
+      "b20ae13d448bb7dcd486dadf1b3f3eee3f003738ee68bc96746068b7f6711845"
+    ]
+  },
+  "patch_commit": "8fe84c08c3c8027ed3955a5c6a79f3c777dfe622",
+  "patch_key": "trial_wmi_service_capabilities_commit",
+  "filename": "wave7-rebase-wmi-service-capabilities-dhcp-guard8-sysupgrade.bin"
+}
