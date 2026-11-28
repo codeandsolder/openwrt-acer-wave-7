@@ -1,0 +1,71 @@
+Subject: [PATCH] wifi: ath12k: size RX release ring by memory profile
+
+Backport upstream 534459ac562b207ba1a9bb2c95dba77b5939e2da
+(Pavankumar Nandeshwar, Qualcomm). Bursts of OOR and other RX errors
+can overwhelm the existing 1024-entry WBM release ring and stall
+RXDMA/REO. Use 16384 entries for default and 8192 for 512 MiB, as
+upstream. The downstream 256 MiB profile has the same datapath
+pool sizes as the 512 MiB profile; use 8192 there as well.
+Keep downstream radio-specific release ring selection unchanged.
+
+Upstream: https://github.com/torvalds/linux/commit/534459ac562b207ba1a9bb2c95dba77b5939e2da
+---
+--- a/drivers/net/wireless/ath/ath12k/core.c
++++ b/drivers/net/wireless/ath/ath12k/core.c
+@@ -53,6 +53,7 @@
+ 			.rxdma_monitor_dst_ring_size = 8092,
+ 			.num_pool_tx_desc = 32768,
+ 			.rx_desc_count = 12288,
++			.rx_release_ring_size = 16384,
+ 		},
+ 	},
+ [ATH12K_QMI_MEMORY_MODE_LOW_512_M] = {
+@@ -66,6 +67,7 @@
+ 			.rxdma_monitor_dst_ring_size = 512,
+ 			.num_pool_tx_desc = 16384,
+ 			.rx_desc_count = 6144,
++			.rx_release_ring_size = 8192,
+ 		},
+ 	},
+ [ATH12K_QMI_MEMORY_MODE_LOW_256_M] = {
+@@ -79,6 +81,7 @@
+ 			.rxdma_monitor_dst_ring_size = 512,
+ 			.num_pool_tx_desc = 16384,
+ 			.rx_desc_count = 6144,
++			.rx_release_ring_size = 8192,
+ 		},
+ 	},
+ };
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -953,6 +953,7 @@
+ 	u32 rxdma_monitor_dst_ring_size;
+ 	u32 num_pool_tx_desc;
+ 	u32 rx_desc_count;
++	u32 rx_release_ring_size;
+ };
+ 
+ struct ath12k_mem_profile_based_param {
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -200,7 +200,8 @@
+ #define DP_REO_DST_RING_MAX		4
+ #define DP_REO_DST_RING_SIZE		2048
+ #define DP_REO_REINJECT_RING_SIZE	32
+-#define DP_RX_RELEASE_RING_SIZE		1024
++#define DP_RX_RELEASE_RING_SIZE(ab) \
++	((ab)->profile_param->dp_params.rx_release_ring_size)
+ #define DP_REO_EXCEPTION_RING_SIZE	128
+ #define DP_REO_CMD_RING_SIZE		256
+ #define DP_REO_STATUS_RING_SIZE		2048
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -553,7 +553,7 @@
+ 
+ 	ret = ath12k_dp_srng_setup(ab, &dp->rx_rel_ring, HAL_WBM2SW_RELEASE,
+ 				   ab->hal.hal_params->rx_rel_ring_num, 0,
+-				   DP_RX_RELEASE_RING_SIZE);
++				   DP_RX_RELEASE_RING_SIZE(ab));
+ 	if (ret) {
+ 		ath12k_warn(ab, "failed to set up rx_rel ring :%d\n", ret);
+ 		goto err;
