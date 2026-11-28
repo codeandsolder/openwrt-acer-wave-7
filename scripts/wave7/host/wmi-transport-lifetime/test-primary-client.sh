@@ -29,6 +29,7 @@ reconnect_datapath=0
 ap_irq_spread=0
 ap_aql=none
 ap_pmu=0
+ap_load_series=0
 ap_pmu_dir=""
 ap_ring3_probe=0
 ap_link_stats=0
@@ -62,6 +63,7 @@ for arg in "$@"; do
         --reconnect-datapath) reconnect_datapath=1 ;;
         --ap-irq-spread) ap_irq_spread=1 ;;
         --ap-pmu) ap_pmu=1 ;;
+        --ap-load-series) ap_load_series=1 ;;
         --ap-aql-on|--ap-aql-off)
             [[ $ap_aql == none ]] || fail 'one AQL profile'
             if [[ $arg == --ap-aql-on ]]; then ap_aql=1; else ap_aql=0; fi ;;
@@ -147,6 +149,7 @@ if (( dhcp_boundaries )); then boundary_profiles+=(dhcp4); fi
 if (( icmp_boundaries )); then boundary_profiles+=(echo4); fi
 if (( ap_irq_spread && !dual_load )); then fail "IRQ profile requires isolated TCP load trial"; fi
 if (( ap_pmu && !dual_load )); then fail "PMU profile requires isolated TCP load trial"; fi
+if (( ap_load_series && !dual_load )); then fail "load series requires isolated TCP load trial"; fi
 if [[ $ap_aql != none ]] && (( !dual_load )); then fail "AQL profile requires isolated TCP load trial"; fi
 if (( ap_ring3_probe )); then
     [[ ${#bands[@]} == 1 && ${bands[0]} == 24 && $variant == upstream-prefix22-authorize-single-link-trace ]] || fail "ring3 probe requires single-link 2.4 GHz case"
@@ -402,6 +405,7 @@ load_client_pid=''
 ap_irq_pid=''
 ap_aql_pid=''
 ap_pmu_pid=''
+ap_series_pid=''
 restore_client(){
     local deadline=$((SECONDS + $1)) request_rc=0
     local check="sudo -n bash $client/client-module-stack.sh $variant --check-original"
@@ -447,6 +451,7 @@ cleanup(){
     if [[ -n $ap_irq_pid ]]; then wait "$ap_irq_pid" || rc=1; fi
     if [[ -n $ap_aql_pid ]]; then wait "$ap_aql_pid" || rc=1; fi
     if [[ -n $ap_pmu_pid ]]; then wait "$ap_pmu_pid" || rc=1; fi
+    if [[ -n $ap_series_pid ]]; then wait "$ap_series_pid" || rc=1; fi
     if [[ -n $ap_pmu_dir ]]; then
         remote "set -eu; [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]; rm -f '$ap_pmu_dir/pmu'; rmdir '$ap_pmu_dir'" || rc=1
     fi
@@ -729,6 +734,18 @@ for band in "${bands[@]}"; do
                 break
             fi
             snapshot_load > "$prefix.load-$direction-ap-before.txt" || { cases_failed=1; break; }
+            if (( ap_load_series )); then
+                series="$prefix.load-$direction-ap-series.txt"
+                remote_stream "sh -s -- $boot" < "$(dirname "$helper")/ap-load-series.sh" > "$series" 2>&1 &
+                ap_series_pid=$!
+                deadline=$((SECONDS + 8))
+                until [[ -s $series ]] && rg -qx 'LOAD_SERIES_READY' "$series"; do
+                    if ! kill -0 "$ap_series_pid" 2>/dev/null || (( SECONDS >= deadline )); then
+                        fail 'load series readiness failed'
+                    fi
+                    sleep .1
+                done
+            fi
             args=()
             case $direction in
                 uplink) args=(-R) ;;
@@ -742,6 +759,15 @@ for band in "${bands[@]}"; do
             printf '%s\n' "$load_rc" > "$prefix.load-$direction-exit.txt"
             if (( load_rc )); then cases_failed=1; break; fi
             snapshot_load > "$prefix.load-$direction-ap-after.txt" || { cases_failed=1; break; }
+            if (( ap_load_series )); then
+                wait "$ap_series_pid" || cases_failed=1
+                ap_series_pid=''
+                rg -qx "LOAD_SERIES_END boot=$boot samples=25" "$series" || cases_failed=1
+                uv run --no-project python -B "$(dirname "$helper")/load-series.py" "$series" \
+                    --before "$prefix.load-$direction-ap-before.txt" \
+                    --after "$prefix.load-$direction-ap-after.txt" > "$prefix.load-$direction-series.json" || cases_failed=1
+                (( !cases_failed )) || break
+            fi
         done
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
