@@ -11,6 +11,11 @@ phy_underrun seq_failed_queueing mpdus_sw_flush mpdus_hw_filter
 mpdus_truncated mpdus_ack_failed mpdus_expired mpdus_seq_hw_retry
 remove_mpdus_max_retries num_total_ppdus_tried_ota num_data_ppdus_tried_ota
 mpdu_tried pdev_resets fes_offsets_err_cnt
+hw_paused txop_ovf seq_posted seq_completed seq_restarted seq_txop_repost_stop
+seq_qdepth_repost_stop seq_min_msdu_repost_stop mu_seq_min_msdu_repost_stop
+next_seq_cancel seq_switch_hw_paused mpdu_count_tqm msdu_count_tqm
+mpdu_removed_tqm msdu_removed_tqm local_ctrl_mgmt_enqued local_ctrl_mgmt_freed
+local_data_enqued local_data_freed ack_tlv_proc self_triggers
 """.split())
 REQUIRED = COUNTERS | {"mac_id", "tx_active_dur_us_low", "tx_active_dur_us_high"}
 
@@ -43,6 +48,24 @@ def common(lines):
     return vals["mac_id"], counters
 
 
+def histogram(lines, header, field, limit):
+    # Firmware TLVs have variable length; accept only a complete contiguous
+    # array of the reported size, then require equal shapes across edges.
+    require(lines.count(header) == 1, "missing or ambiguous " + field)
+    i = lines.index(header) + 1
+    require(i < len(lines), "missing " + field)
+    m = re.fullmatch(r"\s*" + field + r"\s*=\s*(.+)", lines[i])
+    require(m, "malformed " + field)
+    values = []
+    for item in m[1].split(","):
+        v = re.fullmatch(r"\s*(\d+):(\d+)\s*", item)
+        require(v and int(v[1]) == len(values) and int(v[2]) < 2**32,
+                "invalid " + field + " index/value")
+        values.append(int(v[2]))
+    require(0 < len(values) <= limit, "invalid " + field + " length")
+    return values
+
+
 def describe_snapshot(lines, expected_devices):
     radios = {}
     try:
@@ -63,9 +86,12 @@ def describe_snapshot(lines, expected_devices):
                 require(e[3] == "0", "HTT request failed")
                 start, end = ms(b[2]), ms(e[2])
                 require(0 <= end - start < 2900, "HTT request may have timed out")
-                mac, counters = common(lines[i+1:j])
+                reply = lines[i+1:j]
+                mac, counters = common(reply)
+                flush = histogram(reply, "HTT_TX_PDEV_STATS_FLUSH_TLV:", "flush_errs", 150)
+                underruns = histogram(reply, "HTT_TX_PDEV_STATS_URRN_TLV:", "urrn_stats", 3)
                 radios[b[1]] = dict(qualified=True, start_ms=start, end_ms=end,
-                                    mac_id=mac, counters=counters)
+                                    mac_id=mac, counters=counters, flush=flush, underruns=underruns)
             except ValueError as exc:
                 radios[b[1]] = dict(qualified=False, reason=str(exc))
             i = j + 1
@@ -93,8 +119,15 @@ def compare(before, after):
             require(p["pdev_resets"] == q["pdev_resets"], "firmware pdev reset")
             require(all(p[k] <= q[k] for k in p), "HTT counter reset or wrap")
             delta = {k: q[k] - p[k] for k in p}
+            histograms = {}
+            for name in ("flush", "underruns"):
+                left, right = x[name], y[name]
+                require(len(left) == len(right), name + " histogram shape changed")
+                require(all(a <= b for a, b in zip(left, right)), name + " histogram reset or wrap")
+                histograms[name] = [b - a for a, b in zip(left, right)]
             radios[key] = dict(qualified=True, mac_id=x["mac_id"],
-                               wall_ms_range=[lo, hi], delta=delta)
+                               wall_ms_range=[lo, hi], delta=delta,
+                               histogram_delta=histograms)
         except ValueError as exc:
             radios[key] = dict(qualified=False, reason=str(exc))
     return dict(qualified=bool(radios) and all(v["qualified"] for v in radios.values()), radios=radios)

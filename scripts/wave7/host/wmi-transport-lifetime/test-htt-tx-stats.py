@@ -14,7 +14,8 @@ def reply(device, start, end, value, **overrides):
     fields.update(overrides)
     return [f"HTT_BEGIN {device}/mac0 {start} selector=1", "HTT_TX_PDEV_STATS_CMN_TLV:",
             *(f"{k} = {v}" for k,v in sorted(fields.items())), "",
-            "HTT_TX_PDEV_STATS_URRN_TLV:", "urrn_stats = 0:0,1:0",
+            "HTT_TX_PDEV_STATS_URRN_TLV:", "urrn_stats = 0:0,1:0,2:0", "",
+            "HTT_TX_PDEV_STATS_FLUSH_TLV:", f"flush_errs = 0:0,1:{value},2:0",
             f"HTT_END {device}/mac0 {end} rc=0"]
 
 
@@ -45,4 +46,10 @@ assert not h["compare"](pre,parse(c,reply("radio-b","117.11","117.25",150,mac_id
 r = h["compare"](parse(reply("radio-a","100.00","100.10",50,tx_active_dur_us_low=4294967290),b),
                  parse(reply("radio-a","117.00","117.10",100,tx_active_dur_us_low=4,tx_active_dur_us_high=1),d))
 assert r["qualified"] and r["radios"]["radio-a/mac0"]["delta"]["tx_active_dur_us"] == 10
+assert h["compare"](pre,post)["radios"]["radio-a/mac0"]["histogram_delta"]["flush"] == [0,50,0]
+assert not parse(a,[x for x in b if not x.startswith("flush_errs")])["qualified"]
+assert not parse(a,[x.replace("1:70,2:0", "1:70,3:0") for x in b])["qualified"]
+assert not parse(a,[x.replace("1:70,2:0", "1:4294967296,2:0") for x in b])["qualified"]
+assert not h["compare"](pre,parse(c,[x.replace("1:150,2:0", "1:69,2:0") for x in d]))["qualified"]
+assert not h["compare"](pre,parse(c,[x.replace("1:150,2:0", "1:150") for x in d]))["qualified"]
 print("HTT_TX_STATS_PASS")
