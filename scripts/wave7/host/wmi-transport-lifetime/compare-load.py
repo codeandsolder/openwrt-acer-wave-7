@@ -21,6 +21,40 @@ seal = runpy.run_path(str(Path(__file__).with_name('verify-wbm-parent.py')))['se
 require = load.require
 
 
+def geometry(text):
+    # iw reports the primary, center and width separately. An unchanged
+    # 80 MHz block is not enough to establish the same control channel.
+    lines = text.splitlines()
+    require(lines.count('Interface ap-mld0') == 1, 'ambiguous AP interface')
+    lines = lines[lines.index('Interface ap-mld0') + 1:]
+    values = [v.strip() for v in lines if re.fullmatch(
+        r'\s+(?:- link ID .*|channel .*|txpower .*|Radios: .*)', v)]
+    require(len(values) == 7, 'missing AP link geometry')
+    for link, offset in ((0, 0), (1, 3)):
+        require(re.fullmatch(rf'- link ID\s+{link} link addr (?:[0-9a-f]{{2}}:){{5}}[0-9a-f]{{2}}',
+                             values[offset]), 'unexpected AP link identity')
+        require(re.fullmatch(r'channel \d+ \(\d+ MHz\), width: \d+ MHz, center1: \d+ MHz(?:, center2: \d+ MHz)?',
+                             values[offset + 1]), 'malformed AP channel geometry')
+        require(re.fullmatch(r'txpower -?\d+\.\d+ dBm', values[offset + 2]), 'malformed AP txpower')
+    require(values[6] == 'Radios: 0 1', 'unexpected AP radio mapping')
+    return values
+
+
+def survey_geometry(lines):
+    # Counter qualification is independent of geometry qualification.
+    # A rejected firmware survey must not hide a changed primary channel.
+    result = []
+    for side in ('BEFORE', 'AFTER'):
+        marker, end = f'GEOMETRY_{side}', f'GEOMETRY_{side}_END rc=0'
+        require(lines.count(marker) == lines.count(end) == 1,
+                'missing or failed survey geometry observation')
+        i, j = lines.index(marker), lines.index(end)
+        require(i < j, 'misordered survey geometry observation')
+        result.append(geometry('\n'.join(lines[i+1:j])))
+    require(result[0] == result[1], 'geometry changed during survey')
+    return result[0]
+
+
 def read_run(path, band):
     names = seal(path)
     prefix = path / f'band-{band}'
@@ -40,8 +74,7 @@ def read_run(path, band):
     require(len(kernel) == 1 and len(firmware) == 1, 'ambiguous client firmware')
     before = (path / 'ap-before.txt').read_text()
     boot = before.splitlines()[0]
-    geometry = re.findall(r'^\s+(?:- link ID .*|channel .*|txpower .*|Radios: .*)$', before, re.M)
-    require(len(geometry) == 7, 'missing AP link geometry')
+    ap_geometry = geometry(before)
     state = dict(line.split('=', 1) for line in (path.parent / 'last-state.txt').read_text().splitlines())
     manifest = json.loads((path.parents[2] / 'native-manifest.json').read_text())
     require(state['boot'] == boot and state['rev'] == manifest['revision'] and
@@ -49,7 +82,7 @@ def read_run(path, band):
             (path.parent / 'status').read_text().strip() == 'SOAK_PASS', 'AP identity mismatch')
     pm = dict(re.findall(r'^(runtime-pm|deep-sleep|idle-timeout)=(\d+)$', archive['pm-selected.txt'], re.M))
     require(len(pm) == 3, 'missing client power settings')
-    identity = dict(stack=stack, kernel=kernel[0], firmware=firmware[0], geometry=[v.strip() for v in geometry],
+    identity = dict(stack=stack, kernel=kernel[0], firmware=firmware[0], geometry=ap_geometry, wireless_policy=manifest['policy_sha256']['etc/config/wireless'],
                     preference=archive['association-preference.txt'], pm=pm,
                     variant=(path / 'client-variant.txt').read_text().strip(),
                     iperf_source=result['source'], active_link_mask=result['active_link_mask'], kernel_ap=state['kernel'], radio_ap=state['radio'])
@@ -57,6 +90,11 @@ def read_run(path, band):
     for mode in load.MODES:
         pre = Path(f'{prefix}.load-{mode}-ap-before.txt').read_text()
         post = Path(f'{prefix}.load-{mode}-ap-after.txt').read_text()
+        for snapshot in (pre, post):
+            _, sections = load.sections(snapshot)
+            if 'CHANNEL_SURVEY' in sections:
+                require(survey_geometry(sections['CHANNEL_SURVEY']) == ap_geometry,
+                        'AP geometry changed from preflight')
         d = load.compare(pre, post)
         require(d['radio']['boot'] == boot, 'phase boot mismatch')
         extra = d['extra']
@@ -123,11 +161,17 @@ def compare(a, b, *, describe_unmatched=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('baseline', type=Path)
-    parser.add_argument('candidate', type=Path)
+    parser.add_argument('candidate', type=Path, nargs='?')
+    parser.add_argument('--describe-run', action='store_true', help='qualify a new independent baseline')
     parser.add_argument('--band', required=True, choices=('24', '5'))
     parser.add_argument('--describe-unmatched', action='store_true',
                         help='report descriptive contrasts, explicitly identifying unmatched conditions')
     args = parser.parse_args()
+    if args.describe_run:
+        require(args.candidate is None and not args.describe_unmatched, 'baseline mode takes one run')
+        print(json.dumps(read_run(args.baseline.resolve(), args.band), indent=2))
+        return
+    require(args.candidate is not None, 'comparison requires two runs')
     print(json.dumps(compare(read_run(args.baseline.resolve(), args.band),
                              read_run(args.candidate.resolve(), args.band),
                              describe_unmatched=args.describe_unmatched), indent=2))

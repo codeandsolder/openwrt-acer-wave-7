@@ -29,3 +29,31 @@ for key in a['identity']:
     descriptive = m.compare(a, bad, describe_unmatched=True)
     assert not descriptive['matched'] and descriptive['mismatches'] == [key]
 print('COMPARE_LOAD_SELFTEST_PASS')
+
+info = """Interface ap-mld0
+	MLD with links:
+	 - link ID  0 link addr 70:5a:6f:5a:bb:16
+	   channel 1 (2412 MHz), width: 20 MHz, center1: 2412 MHz
+	   txpower 18.00 dBm
+	 - link ID  1 link addr 4e:5a:6f:5a:bb:16
+	   channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz
+	   txpower 18.00 dBm
+	Radios: 0 1"""
+g = m.geometry(info)
+assert len(g) == 7
+changed = info.replace('36 (5180', '40 (5200')
+assert m.geometry(changed) != g
+def survey(a,b):
+    return ['GEOMETRY_BEFORE', *a.splitlines(), 'GEOMETRY_BEFORE_END rc=0',
+            'SURVEY_BEGIN 1.00', 'malformed firmware data', 'SURVEY_END 1.01 rc=1',
+            'GEOMETRY_AFTER', *b.splitlines(), 'GEOMETRY_AFTER_END rc=0']
+assert m.survey_geometry(survey(info, info)) == g
+for bad in (survey(info, changed), survey(info,info)[:-1],
+            survey(info.replace('link ID  1','link ID  0'),info)):
+    try:
+        m.survey_geometry(bad)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('invalid edge geometry accepted')
+print('COMPARE_GEOMETRY_SELFTEST_PASS')

@@ -232,6 +232,7 @@ boot=$(sed -n 's/^boot=//p' "$run/last-state.txt")
 rev=$(jq -er .revision "$manifest")
 kernel=$(jq -er .kernel "$manifest")
 builder=$(jq -er .builder_commit "$manifest")
+wireless_sha=$(jq -er '.policy_sha256["etc/config/wireless"] | select(test("^[a-f0-9]{64}$"))' "$manifest")
 [[ $boot =~ ^[0-9a-f-]{36}$ && $rev =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-dhcp-guard8$ && $kernel =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && $builder =~ ^[a-f0-9]{40}$ ]] || fail 'trial identity'
 for line in "rev=$rev" "merged_rev=$rev" "kernel=$kernel" "builder=$builder"; do
     rg -Fxq "$line" "$run/last-state.txt" || fail "sealed boot state differs: $line"
@@ -319,6 +320,7 @@ guard(){
     local s
     s=$(remote 'cat /proc/sys/kernel/random/boot_id; cat /rom/etc/openwrt_version; uname -r; sed -n "s/^builder_commit=//p" /rom/etc/wave7-role-profile; fw_printenv -n bootfail; for p in 0 1 2; do cat /sys/class/remoteproc/remoteproc$p/state; done; dmesg | grep -c "NOC ERROR DETECTED" || :')
     [[ $s == "$(printf '%s\n%s\n%s\n%s\n0\nrunning\nrunning\nrunning\n0' "$boot" "$rev" "$kernel" "$builder")" ]] || return 1
+    [[ $(remote 'sha256sum /etc/config/wireless') == "$wireless_sha  /etc/config/wireless" ]] || return 1
     ping -I 192.168.76.2 -c 1 -W 1 192.168.76.1 >/dev/null &&
     ping -I 192.168.76.250 -c 1 -W 1 192.168.76.1 >/dev/null
 }
@@ -383,6 +385,7 @@ snapshot_load(){
             [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
         done
         [ \"\$(dmesg | grep -c 'NOC ERROR DETECTED' || :)\" = 0 ]
+        [ \"\$(sha256sum /etc/config/wireless)\" = '$wireless_sha  /etc/config/wireless' ]
         capture_channel_survey(){
             # Query only at the case boundaries. get_survey can send WMI
             # commands and wait for firmware, so never add it to load-series.
