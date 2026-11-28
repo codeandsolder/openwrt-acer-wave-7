@@ -1,0 +1,169 @@
+Subject: [PATCH] wifi: ath12k: keep STA U-APSD configuration per vdev
+
+WMI STA power-save parameters are addressed to a firmware vdev. A
+shared MLD-wide mask makes a change on one link modify the mask sent to
+another link. Keep the requested mask in the corresponding link vif.
+
+The firmware AC ordering is BE, BK, VI, VO, as used in the WMI AP
+peer configuration and the vendor STA power-save implementation.
+Correct the swapped BE and BK bits and reject an invalid AC.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -325,6 +325,7 @@
+ 	bool beacon_prot;
+ 
+ 	struct wmi_wmm_params_all_arg wmm_params;
++	u32 uapsd;
+ 	struct list_head list;
+ 
+ 	bool is_created;
+@@ -372,22 +373,17 @@
+ 	struct ieee80211_vif *vif;
+ 	struct ath12k_hw *ah;
+ 
+-	union {
+-		struct {
+-			u32 uapsd;
+-		} sta;
+-		struct {
+-			/* 127 stations; wmi limit */
+-			u8 tim_bitmap[16];
+-			u8 tim_len;
+-			u32 ssid_len;
+-			u8 ssid[IEEE80211_MAX_SSID_LEN];
+-			bool hidden_ssid;
+-			/* P2P_IE with NoA attribute for P2P_GO case */
+-			u32 noa_len;
+-			u8 *noa_data;
+-		} ap;
+-	} u;
++	struct {
++		/* 127 stations; wmi limit */
++		u8 tim_bitmap[16];
++		u8 tim_len;
++		u32 ssid_len;
++		u8 ssid[IEEE80211_MAX_SSID_LEN];
++		bool hidden_ssid;
++		/* P2P_IE with NoA attribute for P2P_GO case */
++		u32 noa_len;
++		u8 *noa_data;
++	} ap;
+ 
+ 	u32 aid;
+ 	bool ps;
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -4451,9 +4451,9 @@
+ 	lockdep_assert_wiphy(hw->wiphy);
+ 
+ 	if (changed & BSS_CHANGED_SSID && vif->type == NL80211_IFTYPE_AP) {
+-		ahvif->u.ap.ssid_len = vif->cfg.ssid_len;
++		ahvif->ap.ssid_len = vif->cfg.ssid_len;
+ 		if (vif->cfg.ssid_len)
+-			memcpy(ahvif->u.ap.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
++			memcpy(ahvif->ap.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
+ 	}
+ 
+ 	if (changed & BSS_CHANGED_ASSOC) {
+@@ -4864,10 +4864,10 @@
+ 
+ 	if (changed & BSS_CHANGED_SSID &&
+ 	    vif->type == NL80211_IFTYPE_AP) {
+-		ahvif->u.ap.ssid_len = vif->cfg.ssid_len;
++		ahvif->ap.ssid_len = vif->cfg.ssid_len;
+ 		if (vif->cfg.ssid_len)
+-			memcpy(ahvif->u.ap.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
+-		ahvif->u.ap.hidden_ssid = info->hidden_ssid;
++			memcpy(ahvif->ap.ssid, vif->cfg.ssid, vif->cfg.ssid_len);
++		ahvif->ap.hidden_ssid = info->hidden_ssid;
+ 	}
+ 
+ 	if (changed & BSS_CHANGED_BSSID && !is_zero_ether_addr(info->bssid))
+@@ -8369,29 +8369,32 @@
+ 			WMI_STA_PS_UAPSD_AC2_TRIGGER_EN;
+ 		break;
+ 	case IEEE80211_AC_BE:
+-		value = WMI_STA_PS_UAPSD_AC1_DELIVERY_EN |
+-			WMI_STA_PS_UAPSD_AC1_TRIGGER_EN;
+-		break;
+-	case IEEE80211_AC_BK:
+ 		value = WMI_STA_PS_UAPSD_AC0_DELIVERY_EN |
+ 			WMI_STA_PS_UAPSD_AC0_TRIGGER_EN;
+ 		break;
++	case IEEE80211_AC_BK:
++		value = WMI_STA_PS_UAPSD_AC1_DELIVERY_EN |
++			WMI_STA_PS_UAPSD_AC1_TRIGGER_EN;
++		break;
++	default:
++		return -EINVAL;
+ 	}
+ 
++	/* WMI configures a single vdev, not the entire MLD. */
+ 	if (enable)
+-		ahvif->u.sta.uapsd |= value;
++		arvif->uapsd |= value;
+ 	else
+-		ahvif->u.sta.uapsd &= ~value;
++		arvif->uapsd &= ~value;
+ 
+ 	ret = ath12k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
+ 					  WMI_STA_PS_PARAM_UAPSD,
+-					  ahvif->u.sta.uapsd);
++					  arvif->uapsd);
+ 	if (ret) {
+ 		ath12k_warn(ar->ab, "could not set uapsd params %d\n", ret);
+ 		goto exit;
+ 	}
+ 
+-	if (ahvif->u.sta.uapsd)
++	if (arvif->uapsd)
+ 		value = WMI_STA_PS_RX_WAKE_POLICY_POLL_UAPSD;
+ 	else
+ 		value = WMI_STA_PS_RX_WAKE_POLICY_WAKE;
+@@ -9735,11 +9738,11 @@
+ 
+ 	spin_lock_bh(&ar->data_lock);
+ 
+-	if (ahvif->u.ap.noa_data &&
+-	    !pskb_expand_head(skb, 0, ahvif->u.ap.noa_len,
++	if (ahvif->ap.noa_data &&
++	    !pskb_expand_head(skb, 0, ahvif->ap.noa_len,
+ 			      GFP_ATOMIC))
+-		skb_put_data(skb, ahvif->u.ap.noa_data,
+-			     ahvif->u.ap.noa_len);
++		skb_put_data(skb, ahvif->ap.noa_data,
++			     ahvif->ap.noa_len);
+ 
+ 	spin_unlock_bh(&ar->data_lock);
+ }
+@@ -11577,9 +11580,9 @@
+ 	}
+ 
+ 	if (ahvif->vdev_type == WMI_VDEV_TYPE_AP) {
+-		arg.ssid = ahvif->u.ap.ssid;
+-		arg.ssid_len = ahvif->u.ap.ssid_len;
+-		arg.hidden_ssid = ahvif->u.ap.hidden_ssid;
++		arg.ssid = ahvif->ap.ssid;
++		arg.ssid_len = ahvif->ap.ssid_len;
++		arg.hidden_ssid = ahvif->ap.hidden_ssid;
+ 
+ 		/* For now allow DFS for AP mode */
+ 		arg.chan_radar = !!(chandef->chan->flags & IEEE80211_CHAN_RADAR);
+--- a/drivers/net/wireless/ath/ath12k/p2p.c
++++ b/drivers/net/wireless/ath/ath12k/p2p.c
+@@ -76,10 +76,10 @@
+ 
+ 	lockdep_assert_held(&ar->data_lock);
+ 
+-	kfree(arvif->ahvif->u.ap.noa_data);
++	kfree(arvif->ahvif->ap.noa_data);
+ 
+-	arvif->ahvif->u.ap.noa_data = ie;
+-	arvif->ahvif->u.ap.noa_len = len;
++	arvif->ahvif->ap.noa_data = ie;
++	arvif->ahvif->ap.noa_len = len;
+ }
+ 
+ static void __ath12k_p2p_noa_update(struct ath12k_link_vif *arvif,
