@@ -150,12 +150,16 @@ def iperf(text, server_text, mode, target, *, source="192.168.76.2", port=52231,
     return result
 
 
-def summarize(path, tag, prefix):
+def summarize(path, tag, prefix, *, describe_unqualified=False):
     f = load_archive(path, tag)
-    require(f["status"].strip() == "exit=0" and
-            f["dual-stack-load-result.txt"].strip() == "dual_stack_load_pass=1" and
-            f["short-dual-hold-result.txt"].strip() == "short_dual_hold_pass=1",
-            "client load gate failed")
+    gates = {name: f[name].strip() for name in
+             ("status", "dual-stack-load-result.txt", "short-dual-hold-result.txt")}
+    expected = {"status": "exit=0", "dual-stack-load-result.txt": "dual_stack_load_pass=1",
+                "short-dual-hold-result.txt": "short_dual_hold_pass=1"}
+    for name, success in expected.items():
+        failure = success[:-1] + ("1" if name == "status" else "0")
+        require(gates[name] in (success, failure), f"invalid client gate: {name}")
+    require(describe_unqualified or gates == expected, "client load gate failed")
     source = re.search(r"\bipv4=(\S+)", f["early-only-snapshot.txt"])[1]
     require(ipaddress.ip_address(source) in ipaddress.ip_network("192.168.76.0/24"),
             "source outside lab")
@@ -172,11 +176,16 @@ def summarize(path, tag, prefix):
             family: ping(f[f"load-{mode}-latency-{family}.txt"], 100)
             for family in ("v4", "v6")}
     check_link(f["load-final.txt"])
-    return {"source": source, "cases": result,
-            "pre_load": {name: ping(f[f"short-hold-{name}.txt"], 440, strict=True)
-                         for name in ("1", "2", "v6")},
-            "post_load": {name: ping(f[f"post-load-{name}.txt"], 100, strict=True)
-                          for name in ("1", "2", "v6")}}
+    pre = {name: ping(f[f"short-hold-{name}.txt"], 440, strict=not describe_unqualified)
+           for name in ("1", "2", "v6")}
+    post = {name: ping(f[f"post-load-{name}.txt"], 100, strict=not describe_unqualified)
+            for name in ("1", "2", "v6")}
+    qualified = gates == expected and all(x["sent"] == x["received"]
+                                           for x in (*pre.values(), *post.values()))
+    require(describe_unqualified or qualified, "client connectivity gate failed")
+    return {"source": source, "cases": result, "pre_load": pre, "post_load": post,
+            "qualified": qualified, "client_gates": gates}
+
 
 
 def main():
@@ -184,8 +193,11 @@ def main():
     p.add_argument("archive")
     p.add_argument("tag")
     p.add_argument("prefix", type=Path)
+    p.add_argument("--describe-unqualified", action="store_true",
+                   help="describe complete TCP evidence even if connectivity gates failed")
     args = p.parse_args()
-    print(json.dumps(summarize(args.archive, args.tag, args.prefix), indent=2))
+    print(json.dumps(summarize(args.archive, args.tag, args.prefix,
+                               describe_unqualified=args.describe_unqualified), indent=2))
 
 
 if __name__ == "__main__":

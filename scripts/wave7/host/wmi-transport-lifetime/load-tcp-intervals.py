@@ -84,15 +84,17 @@ def intervals(report, endpoint, direction):
     return result
 
 
-def summarize(path, band):
+def summarize(path, band, *, describe_unqualified=False):
     seal(path)
-    require((path/'status').read_text().strip() == 'exit=0', 'unqualified run')
+    status = (path/'status').read_text().strip()
+    require(status == 'exit=0' or (describe_unqualified and status == 'exit=1'), 'unqualified run')
     require('verified=1' in (path/'client-restore-status.txt').read_text().splitlines(),
             'client restoration not verified')
     prefix = path / f'band-{band}'
     tag = Path(f'{prefix}.tag').read_text().strip()
     archive = load.load_archive(f'{prefix}.client.tar', tag)
-    qualified = load.summarize(f'{prefix}.client.tar', tag, prefix)
+    qualified = load.summarize(f'{prefix}.client.tar', tag, prefix,
+                               describe_unqualified=describe_unqualified)
     result = {}
     for mode in load.MODES:
         asus = json.loads(Path(f'{prefix}.load-{mode}.json').read_text())
@@ -110,6 +112,9 @@ def summarize(path, band):
             result[mode][direction] = dict(sender=tx, receiver=rx,
                     qualified=qualified['cases'][mode][direction])
     return dict(path=str(path), band=band, phases=result,
+                qualified=status == 'exit=0' and qualified['qualified'], outer_status=status,
+                client_gates=qualified['client_gates'], pre_load=qualified['pre_load'],
+                post_load=qualified['post_load'],
                 note='Local iperf interval clocks are independent; do not align endpoint intervals by index.')
 
 
@@ -117,8 +122,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('run', type=Path)
     parser.add_argument('--band', choices=('24', '5'), required=True)
+    parser.add_argument('--describe-unqualified', action='store_true')
     args = parser.parse_args()
-    print(json.dumps(summarize(args.run.resolve(), args.band), indent=2))
+    print(json.dumps(summarize(args.run.resolve(), args.band,
+                               describe_unqualified=args.describe_unqualified), indent=2))
 
 
 if __name__ == '__main__':
