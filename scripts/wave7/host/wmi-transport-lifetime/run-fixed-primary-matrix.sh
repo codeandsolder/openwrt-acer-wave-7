@@ -33,12 +33,17 @@ expected_rev=$(jq -er .revision "$manifest")
 expected_builder=$(jq -er .builder_commit "$manifest")
 [[ $expected_rev =~ ^r0\+[0-9]+-[a-f0-9]{10}-ap-dhcp-guard8$ && $expected_builder =~ ^[a-f0-9]{40}$ ]] || fail 'manifest identity'
 ids=(single-5 dual-5 dual-24)
+verify_restored(){
+    local run=$1 a=$2
+    [[ "$a" == "$run"/client-ab-* ]] || fail 'unexpected client archive'
+    (cd "$a"; sha256sum -c SHA256SUMS >/dev/null) || fail 'client archive seal'
+    rg -qx 'verified=1|already_original=1' "$a/client-restore-status.txt" || fail 'client restoration'
+    rg -q STACK_ORIGINAL_PASS "$a/client-original-after.txt" || fail 'client stack restoration'
+}
 verify_case(){
     local run=$1 a=$2
-    [[ "$a" == "$run"/client-ab-* && $(cat "$a/status") == exit=0 ]] || fail 'unqualified case'
-    (cd "$a"; sha256sum -c SHA256SUMS >/dev/null)
-    rg -qx 'verified=1' "$a/client-restore-status.txt" || fail 'client restoration'
-    rg -q STACK_ORIGINAL_PASS "$a/client-original-after.txt" || fail 'client stack restoration'
+    verify_restored "$run" "$a"
+    [[ $(cat "$a/status") == exit=0 ]] || fail 'unqualified case'
 }
 if [[ $mode == --baseline ]]; then
     [[ $source == "$parent"/runs/native-* ]] || fail 'baseline predecessor run'
@@ -108,6 +113,7 @@ attest(){
 }
 attest "$out/geometry-initial.txt"
 echo FIXED_PRIMARY_GEOMETRY_PASS
+failed=()
 for id in "${ids[@]}"; do
     case "$id" in
       single-5) band=5; variant=--client-single-link ;;
@@ -117,7 +123,8 @@ for id in "${ids[@]}"; do
     # Reuse only independently qualified completed cases from the same
     # sealed candidate boot; incomplete/failed cases require a fresh run.
     a=''
-    if [[ -n $resume && -f "$resume/$id-dir.txt" ]]; then
+    if [[ -n $resume && -f "$resume/$id-dir.txt" ]] &&
+       rg -q "^QUALIFIED $id " "$resume/wrapper.log"; then
         existing=$(realpath -e "$(cat "$resume/$id-dir.txt")")
         if [[ "$existing" == "$run"/client-ab-* && $(cat "$existing/status") == exit=0 ]]; then
             verify_case "$run" "$existing"
@@ -133,20 +140,41 @@ for id in "${ids[@]}"; do
         a=$(sed -n 's/^PRIMARY_CLIENT_TEST_DIR=//p' "$out/$id.log" | tail -1)
         [[ -d "$a" && "$a" == "$run"/client-ab-* ]] || fail 'missing client result directory'
         printf '%s\n' "$a" > "$out/$id-dir.txt"
-        (cd "$a"; sha256sum -c SHA256SUMS >/dev/null)
-        [[ $rc == 0 ]] || fail "unqualified $id rc=$rc"
+        verify_restored "$run" "$a"
+        [[ $(cat "$a/status") == "exit=$rc" ]] || fail 'client exit status mismatch'
+        if (( rc )); then
+            # This profile failed its connectivity/measurement gate. It
+            # cannot serve as a baseline, but an independent profile may
+            # run if the original stack and exact AP boot are healthy.
+            attest "$out/$id-geometry-after.txt"
+            echo "UNQUALIFIED $id rc=$rc $(date -Is)"
+            failed+=("$id")
+            continue
+        fi
         verify_case "$run" "$a"
     fi
     printf '%s\n' "$a" > "$out/$id-dir.txt"
     attest "$out/$id-geometry-after.txt"
     if [[ $mode == --baseline ]]; then
-        uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-run "$a" > "$out/$id-baseline.json"
-        jq -e --arg w "$wireless" '.identity.wireless_policy == $w and (.identity.geometry | index("channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz") != null)' "$out/$id-baseline.json" >/dev/null
+        if ! uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-run "$a" > "$out/$id-baseline.json" ||
+           ! jq -e --arg w "$wireless" '.identity.wireless_policy == $w and (.identity.geometry | index("channel 36 (5180 MHz), width: 80 MHz, center1: 5210 MHz") != null)' "$out/$id-baseline.json" >/dev/null; then
+            echo "UNQUALIFIED $id baseline $(date -Is)"
+            failed+=("$id")
+            continue
+        fi
     else
         old=$(realpath -e "$(cat "$source/$id-dir.txt")")
-        uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" "$old" "$a" > "$out/$id-comparison.json"
-        jq -e '.matched == true' "$out/$id-comparison.json" >/dev/null
+        if ! uv run --offline --no-project python -B "$h/wmi-transport-lifetime/compare-load.py" --band "$band" --describe-unmatched "$old" "$a" > "$out/$id-comparison.json" ||
+           ! jq -e '.matched == true' "$out/$id-comparison.json" >/dev/null; then
+            echo "UNQUALIFIED $id comparison $(date -Is)"
+            failed+=("$id")
+            continue
+        fi
     fi
     echo "QUALIFIED $id $(date -Is)"
 done
+if (( ${#failed[@]} )); then
+    echo "INCOMPLETE ${failed[*]} $(date -Is)"
+    exit 1
+fi
 echo "COMPLETE $(date -Is)"

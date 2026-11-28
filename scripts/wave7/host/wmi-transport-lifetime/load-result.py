@@ -168,10 +168,11 @@ def iperf(text, server_text, mode, target, *, source="192.168.76.2", port=52231,
 
 def summarize(path, tag, prefix, *, describe_unqualified=False):
     f = load_archive(path, tag)
-    gates = {name: f[name].strip() for name in
-             ("status", "dual-stack-load-result.txt", "short-dual-hold-result.txt")}
     expected = {"status": "exit=0", "dual-stack-load-result.txt": "dual_stack_load_pass=1",
                 "short-dual-hold-result.txt": "short_dual_hold_pass=1"}
+    require(expected.keys() <= f.keys(), "client never completed all load/hold gates: " +
+            ", ".join(sorted(expected.keys() - f.keys())))
+    gates = {name: f[name].strip() for name in expected}
     for name, success in expected.items():
         failure = success[:-1] + ("1" if name == "status" else "0")
         require(gates[name] in (success, failure), f"invalid client gate: {name}")
