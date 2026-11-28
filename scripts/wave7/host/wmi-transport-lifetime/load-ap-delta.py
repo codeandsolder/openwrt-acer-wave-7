@@ -17,6 +17,7 @@ STATION = re.compile(r"^Station ([\da-f:]+) \(on (\S+)\)$")
 SCALAR = re.compile(r"^\s*([^:]+):\s*(\d+)(?:\s+us)?$")
 MATRIX = re.compile(r"^(\w+):\s+((?:\d+:\d+\s*)+)$")
 TX_MATRIX = {"tx_wbm_rel_source", "tqm_rel_reason", "fw_tx_status", "tx_enqueued", "tx_completed"}
+SG_MATRIX = {"tx_sg_enqueued", "tx_sg_fragments", "tx_sg_completed"}
 
 
 def require(ok, message):
@@ -206,14 +207,22 @@ def parse(text):
         device = k.split("/")[-2]
         tx[device] = {}
         for line in lines:
-            if (m := MATRIX.fullmatch(line)) and m[1] in TX_MATRIX:
+            if (m := MATRIX.fullmatch(line)) and m[1] in TX_MATRIX | SG_MATRIX:
                 for pair in m[2].split():
                     index, value = pair.split(":")
-                    tx[device][f"{m[1]}/{index}"] = int(value)
+                    field = f"{m[1]}/{index}"
+                    require(field not in tx[device], "duplicate TX matrix entry")
+                    tx[device][field] = int(value)
             elif (m := SCALAR.fullmatch(line)) and m[1] == "Misc Transmit Failures":
                 tx[device][m[1]] = int(m[2])
-        require(TX_MATRIX == {k.split("/")[0] for k in tx[device] if "/" in k},
-                "incomplete TX matrices")
+        matrices = {k.split("/")[0] for k in tx[device] if "/" in k}
+        require(matrices in (TX_MATRIX, TX_MATRIX | SG_MATRIX), "incomplete TX matrices")
+        if SG_MATRIX <= matrices:
+            rings = {k.split("/")[1] for k in tx[device] if k.startswith("tx_enqueued/")}
+            require(all({k.split("/")[1] for k in tx[device] if k.startswith(f"{name}/")} == rings
+                        for name in SG_MATRIX), "incomplete SG ring matrix")
+    require(len({bool(SG_MATRIX & {k.split("/")[0] for k in counters}) for counters in tx.values()}) == 1,
+            "incomplete per-radio SG statistics")
     extra = {}
     pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
              if k.startswith("PAGE_POOL ")}

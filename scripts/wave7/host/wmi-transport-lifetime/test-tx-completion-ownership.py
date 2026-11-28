@@ -30,6 +30,9 @@ def main():
     retire = one(tx, r'^static void ath12k_wifi7_tx_retire\(.*?^\}')
     parse = one(tx, r'^static void\nath12k_wifi7_dp_tx_status_parse\(.*?^\}')
     ext = one(tx, r'^static void\nath12k_wifi7_hal_tx_cmd_ext_desc_setup\(.*?^\}')
+    ext_buf = one(tx, r'^static void\nath12k_wifi7_hal_tx_ext_set_buffer\(.*?^\}')
+    unmap = one(common, r'^void ath12k_dp_tx_unmap_payload\(.*?^\}') + '\n' + one(common, r'^void ath12k_dp_tx_unmap\(.*?^\}')
+    ext_structs = one(desc, r'^struct hal_tx_msdu_ext_buffer \{.*?^\};') + '\n' + one(desc, r'^struct hal_tx_msdu_ext_desc \{.*?^\};')
     handler = one(tx, r'^static void\nath12k_wifi7_dp_tx_complete_record\(.*?^\}')
     assert handler.index('ath12k_wifi7_tx_completion_is_release(') < handler.index('desc_va =')
     assert handler.index('guard(rcu)();') < handler.index('ath12k_dp_tx_take_completed(')
@@ -51,7 +54,11 @@ def main():
 #include <stdio.h>
 #include <string.h>
 typedef uint8_t u8;
-typedef uint32_t u32;
+typedef uint32_t u32, __le32;
+typedef uint64_t dma_addr_t;
+#define ATH12K_TX_EXT_MAX_FRAGS 5
+#define BUILD_BUG_ON(x) _Static_assert(!(x), "layout")
+#define lower_32_bits(x) ((u32)(x))
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 #define BIT(n) (UINT32_C(1) << (n))
 #define GENMASK(h,l) ((UINT32_MAX >> (31-(h))) & (UINT32_MAX << (l)))
@@ -69,7 +76,14 @@ struct ath12k_link_vif { int link_stats_lock; struct { unsigned tx_completed; } 
 struct ath12k_vif { struct ath12k_link_vif *link[4]; };
 struct ieee80211_vif { struct ath12k_vif priv; };
 struct ath12k_skb_cb { uintptr_t paddr; struct ieee80211_vif *vif; u8 link_id; };
-struct sk_buff { unsigned len; struct ath12k_skb_cb cb; };
+struct ath12k_tx_ext_cb { uintptr_t paddr, frags[5]; };
+struct skb_shared_info { unsigned nr_frags, frags[5]; };
+struct sk_buff { unsigned len; struct ath12k_skb_cb cb; struct ath12k_tx_ext_cb ext_cb; struct skb_shared_info shinfo; };
+#define ATH12K_TX_EXT_CB(s) (&(s)->ext_cb)
+#define skb_shinfo(s) (&(s)->shinfo)
+#define skb_headlen(s) ((s)->len)
+#define skb_frag_size(f) (*(f))
+#define skb_is_nonlinear(s) ((s)->shinfo.nr_frags != 0)
 struct list_head { unsigned id; };
 struct ath12k_tx_desc_info { struct list_head list; struct sk_buff *skb,*skb_ext_desc; u8 mac_id,pool_id; };
 struct ath12k_tx_desc_params { struct sk_buff *skb,*skb_ext_desc; };
@@ -78,7 +92,7 @@ struct ath12k_tx_completion_stats {
     unsigned tx_wbm_rel_source[HAL_WBM_REL_SRC_MODULE_MAX];
     unsigned tqm_rel_reason[MAX_TQM_RELEASE_REASON];
     unsigned fw_tx_status[MAX_FW_TX_STATUS];
-    unsigned completed;
+    unsigned completed, sg_completed;
 };
 struct ath12k_dp {
     struct ath12k_base *ab;
@@ -91,7 +105,7 @@ struct ath12k_dp {
     } device_stats;
 };
 struct hal_tx_info { uint64_t paddr; unsigned data_len,encap_type,encrypt_type; };
-struct hal_tx_msdu_ext_desc { u32 info0,info1; };
+''' + ext_structs + r'''
 struct hal_wbm_completion_ring_tx {u32 info0,info1,info2,info3; struct {u32 info0;} rate_stats;};
 struct hal_tx_status {enum hal_wbm_rel_src_module buf_rel_source; unsigned status,ppdu_id,peer_id,ack_rssi,flags,pkt_type,mcs,sgi,bw,tones,ofdma;};
 static unsigned moves,unmaps,ext_unmaps,ext_frees;
@@ -104,12 +118,14 @@ static struct ath12k_pdev_dp *ath12k_dp_to_pdev_dp(struct ath12k_dp *dp,int id)
 {assert(in_rcu);return dp->dp_pdevs[id];}
 static void list_move_tail(struct list_head *node,struct list_head *head) {node->id=head->id;++moves;}
 static void dma_unmap_single(void *dev,uintptr_t addr,unsigned len,int dir)
-{assert(dev && dir==DMA_TO_DEVICE && in_rcu); if(len==payload->len){assert(addr==payload->cb.paddr);++unmaps;}else{assert(extension && len==extension->len && addr==extension->cb.paddr);++ext_unmaps;}}
-static void dev_kfree_skb_any(struct sk_buff *s) {assert(s==extension);++ext_frees;}
+{assert(dev && dir==DMA_TO_DEVICE && in_rcu); if(len==payload->len){assert(addr==payload->cb.paddr);++unmaps;}else{assert(extension && len==extension->len && addr==extension->ext_cb.paddr);++ext_unmaps;}}
+static void dma_unmap_page(void *dev, uintptr_t addr, unsigned len, int dir)
+{ (void)dev; (void)addr; (void)len; (void)dir; assert(0); }
+static void dev_kfree_skb_any(struct sk_buff *s) {if(s){assert(s==extension);++ext_frees;}}
 #define ATH12K_SKB_CB(s) (&(s)->cb)
 #define rcu_dereference(p) (assert(in_rcu),(p))
 static struct ath12k_vif *ath12k_vif_to_ahvif(struct ieee80211_vif *vif) {return &vif->priv;}
-''' + take + '\n' + classify + '\n' + retire + '\n' + parse + '\n' + ext + r'''
+''' + unmap + '\n' + take + '\n' + classify + '\n' + retire + '\n' + parse + '\n' + ext_buf + '\n' + ext + r'''
 int main(void)
 {
     struct ath12k_base ab={0};
@@ -171,7 +187,7 @@ int main(void)
         struct ath12k_link_vif link={0};
         struct ieee80211_vif vif={0};
         vif.priv.link[2]=link_present?&link:NULL;
-        struct sk_buff data={.len=1514,.cb={.paddr=zero?0:0x1000,.vif=vif_present?&vif:NULL,.link_id=2}},extra={.len=32,.cb={.paddr=zero?0x2000:0}};
+        struct sk_buff data={.len=1514,.cb={.paddr=zero?0:0x1000,.vif=vif_present?&vif:NULL,.link_id=2}},extra={.len=32,.ext_cb={.paddr=zero?0x2000:0}};
         struct ath12k_tx_desc_params out={&data,ext?&extra:NULL};
         memset(&dp.device_stats,0,sizeof(dp.device_stats));
         payload=&data;extension=&extra;unmaps=ext_unmaps=ext_frees=0;in_rcu=true;
@@ -185,13 +201,13 @@ int main(void)
     for(unsigned len=1;len<65536;len+=257){
         struct hal_tx_info info={.paddr=((uint64_t)high<<32)|UINT32_C(0xa9876543),.data_len=len,.encap_type=2,.encrypt_type=7};
         struct hal_tx_msdu_ext_desc d={0};
-        ath12k_wifi7_hal_tx_cmd_ext_desc_setup(&d,&info);
-        assert(d.info0==UINT32_C(0xa9876543));
-        assert(le32_get_bits(d.info1,HAL_TX_MSDU_EXT_INFO1_BUF_PTR_HI)==high);
-        assert(le32_get_bits(d.info1,HAL_TX_MSDU_EXT_INFO1_BUF_LEN)==len);
-        assert(le32_get_bits(d.info1,HAL_TX_MSDU_EXT_INFO1_EXTN_OVERRIDE)==1);
-        assert(le32_get_bits(d.info1,HAL_TX_MSDU_EXT_INFO1_ENCAP_TYPE)==2);
-        assert(le32_get_bits(d.info1,HAL_TX_MSDU_EXT_INFO1_ENCRYPT_TYPE)==7);
+        ath12k_wifi7_hal_tx_cmd_ext_desc_setup(&d,&info,true);
+        assert(d.buf[0].info0==UINT32_C(0xa9876543));
+        assert(le32_get_bits(d.buf[0].info1,HAL_TX_MSDU_EXT_INFO1_BUF_PTR_HI)==high);
+        assert(le32_get_bits(d.buf[0].info1,HAL_TX_MSDU_EXT_INFO1_BUF_LEN)==len);
+        assert(le32_get_bits(d.buf[0].info1,HAL_TX_MSDU_EXT_INFO1_EXTN_OVERRIDE)==1);
+        assert(le32_get_bits(d.buf[0].info1,HAL_TX_MSDU_EXT_INFO1_ENCAP_TYPE)==2);
+        assert(le32_get_bits(d.buf[0].info1,HAL_TX_MSDU_EXT_INFO1_ENCRYPT_TYPE)==7);
         ++cases;
     }
     for(unsigned src=0;src<8;src++)

@@ -29,14 +29,14 @@ def main():
     assert function.count('ath12k_dp_tx_assign_buffer(') == 1
     assert function.count('dma_map_single(') == 2
     assert function.index('skb_cb->paddr = ti.paddr;') < function.index('ti.paddr = dma_map_single(dp->dev, skb_ext_desc->data,')
-    assert function.index('ATH12K_SKB_CB(skb_ext_desc)->paddr = ti.paddr;') < function.index('tcl_ring_sel:')
+    assert function.index('ATH12K_TX_EXT_CB(skb_ext_desc)->paddr = ti.paddr;') < function.index('tcl_ring_sel:')
     assert function.index('tcl_ring_sel:') < function.index('tx_desc->skb = skb;')
     assert function.index('tx_desc->skb = skb;') < function.index('atomic_inc(&dp_pdev->num_tx_pending);')
     assert 'tx_desc->skb = NULL;' in common
-    assert 'if (tx_desc_info->skb_ext_desc)' in (root / 'dp.c').read_text()
+    assert 'ath12k_dp_tx_unmap(dp, skb, tx_desc_info->skb_ext_desc);' in (root / 'dp.c').read_text()
     retire = one(tx, r'^static void ath12k_wifi7_tx_retire\(.*?^\}')
-    assert 'if (params->skb_ext_desc)' in retire
-    assert retire.count('dma_unmap_single(') == 2
+    assert 'ath12k_dp_tx_unmap(dp, skb, params->skb_ext_desc);' in retire
+    unmap = one(common, r'^void ath12k_dp_tx_unmap_payload\(.*?^\}')
     assert 'if (skb_cb->paddr_ext_desc)' not in tx + common
     # Compile actual control-flow fragments, with explicit fake device ownership.
     code = r'''
@@ -51,8 +51,12 @@ typedef uint32_t u32;
 #define BIT(n) (1u << (n))
 #define DMA_TO_DEVICE 1
 struct ath12k_skb_cb { uintptr_t paddr; };
+struct ath12k_tx_ext_cb { uintptr_t paddr, frags[5]; };
+struct skb_shared_info { unsigned nr_frags, frags[5]; };
 struct sk_buff {
     struct ath12k_skb_cb cb;
+    struct ath12k_tx_ext_cb ext_cb;
+    struct skb_shared_info shinfo;
     unsigned char *data, *base;
     unsigned len, capacity;
     int header;
@@ -60,6 +64,10 @@ struct sk_buff {
     uintptr_t addr;
 };
 #define ATH12K_SKB_CB(s) (&(s)->cb)
+#define ATH12K_TX_EXT_CB(s) (&(s)->ext_cb)
+#define skb_shinfo(s) (&(s)->shinfo)
+#define skb_headlen(s) ((s)->len)
+#define skb_frag_size(f) (*(f))
 struct ath12k_hw_params { unsigned max_tx_ring; bool tcl_ring_retry; u32 iova_mask; };
 struct hal_srng { int lock; unsigned ring; };
 struct dp_tx_ring { struct { unsigned ring_id; } tcl_data_ring; };
@@ -104,6 +112,8 @@ static void dma_unmap_single(void *dev, uintptr_t addr, unsigned len, int dir)
     if (addr == payload->addr && len == payload->len) ++data_unmaps;
     else { assert(extension && addr == extension->addr && len == extension->len); ++ext_unmaps; }
 }
+static void dma_unmap_page(void *dev, uintptr_t addr, unsigned len, int dir)
+{ (void)dev; (void)addr; (void)len; (void)dir; assert(0); }
 static void kfree_skb(struct sk_buff *skb)
 { if (skb) { assert(skb == extension); ++ext_frees; } }
 static void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp, struct ath12k_tx_desc_info *desc, u8 pool)
@@ -128,7 +138,7 @@ static int skb_cow(struct sk_buff *s, unsigned headroom)
     s->header += (int)next - (int)old; s->cloned = false;
     return 0;
 }
-''' + align + r'''
+''' + unmap + '\n' + align + r'''
 static int submit(struct ath12k_dp *dp, struct ath12k_hal *hal, unsigned selector,
                   bool ext, unsigned fail, uintptr_t data_addr, uintptr_t ext_addr)
 {
@@ -136,10 +146,10 @@ static int submit(struct ath12k_dp *dp, struct ath12k_hal *hal, unsigned selecto
     struct ath12k_link_vif av = {0}, *arvif = &av;
     struct ath12k_tx_desc_info desc = {0}, *tx_desc = &desc;
     static struct sk_buff data, extra;
-    data = (struct sk_buff){.len=1514, .addr=data_addr};
-    extra = (struct sk_buff){.len=56, .addr=ext_addr, .cb={ext_addr}};
+    data = (struct sk_buff){.len=1514, .addr=data_addr, .cb={data_addr}};
+    extra = (struct sk_buff){.len=56, .addr=ext_addr, .ext_cb={.paddr=ext_addr}};
     struct sk_buff *skb = &data, *skb_ext_desc = ext ? &extra : NULL;
-    struct ath12k_skb_cb cb = {data_addr}, *skb_cb = &cb;
+    unsigned mapped_frags = 0;
     struct hal_tx_info ti = {0};
     struct dp_tx_ring *tx_ring;
     struct hal_srng *tcl_ring;

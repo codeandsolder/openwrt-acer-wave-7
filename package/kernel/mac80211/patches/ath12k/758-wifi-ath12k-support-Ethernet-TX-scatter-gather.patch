@@ -1,0 +1,458 @@
+Subject: [PATCH] wifi: ath12k: support six-buffer Ethernet TX scatter/gather
+
+QCA5332 and QCN6432 firmware API TX MSDU extension descriptors have
+six 40-bit address/16-bit length buffer pairs at offset 24. Use one
+linear head and up to five skb page fragments, preserving TCL bank
+encapsulation and crypto by leaving the extension override clear.
+
+Advertise SG only when all radios in the hardware group support this
+layout. Linearize native Wi-Fi, unsupported fragment layouts and other
+fallbacks before mutation. Keep the mapping count independent of DMA
+addresses, and use the same release routine for completion and teardown.
+Keep ring retries independent of DMA mapping. Report actual SG traffic
+per TCL ring so a hardware benchmark can establish that it was used.
+
+TSO remains unadvertised; one descriptor still owns one MSDU.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -134,6 +134,20 @@
+ 	u8 link_id;
+ };
+ 
++#define ATH12K_TX_EXT_MAX_FRAGS 5
++
++/* Extension skbs are private to the driver, not mac80211 TX skbs. */
++struct ath12k_tx_ext_cb {
++	dma_addr_t paddr;
++	dma_addr_t frags[ATH12K_TX_EXT_MAX_FRAGS];
++};
++
++static inline struct ath12k_tx_ext_cb *ATH12K_TX_EXT_CB(struct sk_buff *skb)
++{
++	BUILD_BUG_ON(sizeof(struct ath12k_tx_ext_cb) > sizeof(skb->cb));
++	return (void *)skb->cb;
++}
++
+ struct ath12k_skb_rxcb {
+ 	dma_addr_t paddr;
+ 	bool is_first_msdu;
+--- a/drivers/net/wireless/ath/ath12k/hw.h
++++ b/drivers/net/wireless/ath/ath12k/hw.h
+@@ -234,6 +234,7 @@
+ 	bool supports_dynamic_smps_6ghz;
+ 
+ 	u32 iova_mask;
++	bool supports_tx_sg;
+ 
+ 	const struct ce_ie_addr *ce_ie_addr;
+ 	const struct ce_remap *ce_remap;
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -14930,6 +14930,7 @@
+ 	int ret, i, j;
+ 	u32 ht_cap = U32_MAX, antennas_rx = 0, antennas_tx = 0;
+ 	bool is_6ghz = false, is_raw_mode = false, is_monitor_disable = false;
++	bool supports_tx_sg = true;
+ 	u8 *mac_addr = NULL;
+ 	u8 mbssid_max_interfaces = 0;
+ 
+@@ -14974,6 +14975,9 @@
+ 		if (!ar->ab->hw_params->supports_monitor)
+ 			is_monitor_disable = true;
+ 
++		if (!ar->ab->hw_params->supports_tx_sg)
++			supports_tx_sg = false;
++
+ 		if (i == 0)
+ 			mac_addr = ar->mac_addr;
+ 		else
+@@ -15121,6 +15125,8 @@
+ 
+ 	if (!is_raw_mode) {
+ 		hw->netdev_features = NETIF_F_HW_CSUM;
++		if (supports_tx_sg)
++			hw->netdev_features |= NETIF_F_SG;
+ 		ieee80211_hw_set(hw, SW_CRYPTO_CONTROL);
+ 		ieee80211_hw_set(hw, SUPPORT_FAST_XMIT);
+ 	}
+--- a/drivers/net/wireless/ath/ath12k/dp.h
++++ b/drivers/net/wireless/ath/ath12k/dp.h
+@@ -437,6 +437,7 @@
+ 	u32 fw_tx_status[MAX_FW_TX_STATUS];
+ 	u32 tx_wbm_rel_source[HAL_WBM_REL_SRC_MODULE_MAX];
+ 	u32 completed;
++	u32 sg_completed;
+ } ____cacheline_aligned_in_smp;
+ 
+ struct ath12k_device_dp_stats {
+@@ -450,6 +451,8 @@
+ 	u32 rx_wbm_rel_source[HAL_WBM_REL_SRC_MODULE_MAX][ATH12K_MAX_DEVICES];
+ 	struct ath12k_tx_completion_stats tx_completion[DP_TCL_NUM_RING_MAX];
+ 	u32 tx_enqueued[DP_TCL_NUM_RING_MAX];
++	u32 tx_sg_enqueued[DP_TCL_NUM_RING_MAX];
++	u32 tx_sg_fragments[DP_TCL_NUM_RING_MAX];
+ 	u32 reo_excep_msdu_buf_type;
+ };
+ 
+--- a/drivers/net/wireless/ath/ath12k/dp.c
++++ b/drivers/net/wireless/ath/ath12k/dp.c
+@@ -1092,16 +1092,8 @@
+ 				continue;
+ 
+ 			skb_cb = ATH12K_SKB_CB(skb);
+-			if (tx_desc_info->skb_ext_desc) {
+-				dma_unmap_single(ab->dev,
+-						 ATH12K_SKB_CB(tx_desc_info->skb_ext_desc)->paddr,
+-						 tx_desc_info->skb_ext_desc->len,
+-						 DMA_TO_DEVICE);
+-				dev_kfree_skb_any(tx_desc_info->skb_ext_desc);
+-			}
++			ath12k_dp_tx_unmap(dp, skb, tx_desc_info->skb_ext_desc);
+ 
+-			dma_unmap_single(ab->dev, skb_cb->paddr,
+-					 skb->len, DMA_TO_DEVICE);
+ 			/* During unregister the hw and ar may already be gone. */
+ 			if (!test_bit(ATH12K_FLAG_UNREGISTERING, &ab->dev_flags)) {
+ 				ar = skb_cb->ar;
+--- a/drivers/net/wireless/ath/ath12k/dp_tx.h
++++ b/drivers/net/wireless/ath/ath12k/dp_tx.h
+@@ -14,6 +14,10 @@
+ 	s8 ack_rssi;
+ };
+ 
++void ath12k_dp_tx_unmap_payload(struct ath12k_dp *dp, struct sk_buff *skb,
++				struct sk_buff *ext, unsigned int nr_frags);
++void ath12k_dp_tx_unmap(struct ath12k_dp *dp, struct sk_buff *skb,
++			struct sk_buff *ext);
+ void ath12k_dp_tx_put_bank_profile(struct ath12k_dp *dp, u8 bank_id);
+ enum hal_tcl_encap_type
+ ath12k_dp_tx_get_encap_type(struct ath12k_base *ab, struct sk_buff *skb);
+--- a/drivers/net/wireless/ath/ath12k/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/dp_tx.c
+@@ -82,6 +82,36 @@
+ }
+ EXPORT_SYMBOL(ath12k_dp_tx_get_encrypt_type);
+ 
++/* The skb and its fragment layout are immutable from mapping to retirement.
++ * nr_frags is the number of successful page mappings, not an address sentinel.
++ */
++void ath12k_dp_tx_unmap_payload(struct ath12k_dp *dp, struct sk_buff *skb,
++				struct sk_buff *ext, unsigned int nr_frags)
++{
++	unsigned int i;
++
++	for (i = 0; i < nr_frags; i++)
++		dma_unmap_page(dp->dev, ATH12K_TX_EXT_CB(ext)->frags[i],
++			       skb_frag_size(&skb_shinfo(skb)->frags[i]),
++			       DMA_TO_DEVICE);
++
++	dma_unmap_single(dp->dev, ATH12K_SKB_CB(skb)->paddr,
++			 skb_headlen(skb), DMA_TO_DEVICE);
++}
++EXPORT_SYMBOL(ath12k_dp_tx_unmap_payload);
++
++void ath12k_dp_tx_unmap(struct ath12k_dp *dp, struct sk_buff *skb,
++			struct sk_buff *ext)
++{
++	if (ext)
++		dma_unmap_single(dp->dev, ATH12K_TX_EXT_CB(ext)->paddr,
++				 ext->len, DMA_TO_DEVICE);
++
++	ath12k_dp_tx_unmap_payload(dp, skb, ext, skb_shinfo(skb)->nr_frags);
++	dev_kfree_skb_any(ext);
++}
++EXPORT_SYMBOL(ath12k_dp_tx_unmap);
++
+ void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp,
+ 				struct ath12k_tx_desc_info *tx_desc,
+ 				u8 pool_id)
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -1163,6 +1163,23 @@
+ 
+ 	len += scnprintf(buf + len, size - len, "\n");
+ 
++	len += scnprintf(buf + len, size - len, "\ntx_sg_enqueued:");
++	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++)
++		len += scnprintf(buf + len, size - len, " %d:%u", i,
++				 READ_ONCE(device_stats->tx_sg_enqueued[i]));
++
++	len += scnprintf(buf + len, size - len, "\ntx_sg_fragments:");
++	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++)
++		len += scnprintf(buf + len, size - len, " %d:%u", i,
++				 READ_ONCE(device_stats->tx_sg_fragments[i]));
++
++	len += scnprintf(buf + len, size - len, "\ntx_sg_completed:");
++	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++)
++		len += scnprintf(buf + len, size - len, " %d:%u", i,
++				 READ_ONCE(device_stats->tx_completion[i].sg_completed));
++
++	len += scnprintf(buf + len, size - len, "\n");
++
+ 	len += scnprintf(buf + len, size - len, "\ntx_completed:");
+ 
+ 	for (i = 0; i < DP_TCL_NUM_RING_MAX; i++)
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hal_desc.h
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hal_desc.h
+@@ -1288,11 +1288,14 @@
+ #define HAL_TX_MSDU_EXT_INFO1_ENCRYPT_TYPE	GENMASK(14, 11)
+ #define HAL_TX_MSDU_EXT_INFO1_BUF_LEN		GENMASK(31, 16)
+ 
+-struct hal_tx_msdu_ext_desc {
+-	__le32 rsvd0[6];
++struct hal_tx_msdu_ext_buffer {
+ 	__le32 info0;
+ 	__le32 info1;
+-	__le32 rsvd1[10];
++};
++
++struct hal_tx_msdu_ext_desc {
++	__le32 rsvd0[6];
++	struct hal_tx_msdu_ext_buffer buf[1 + ATH12K_TX_EXT_MAX_FRAGS];
+ };
+ 
+ struct hal_tcl_gse_cmd {
+--- a/drivers/net/wireless/ath/ath12k/wifi7/hw.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/hw.c
+@@ -714,6 +714,7 @@
+ 
+ 		.acpi_guid = NULL,
+ 		.supports_dynamic_smps_6ghz = false,
++		.supports_tx_sg = true,
+ 		.iova_mask = 0,
+ 		.supports_aspm = false,
+ 
+@@ -795,6 +796,7 @@
+ 
+ 		.acpi_guid = NULL,
+ 		.supports_dynamic_smps_6ghz = false,
++		.supports_tx_sg = true,
+ 		.iova_mask = 0,
+ 		.supports_aspm = true,
+ 
+@@ -1036,6 +1038,18 @@
+ 	}
+ 	skb_cb->vif = vif;
+ 
++	/* Native Wi-Fi, management and P2P paths may modify the frame. */
++	if (skb_is_gso(skb) ||
++	    (skb_is_nonlinear(skb) &&
++	     (!(info_flags & IEEE80211_TX_CTL_HW_80211_ENCAP) || vif->p2p) &&
++	     skb_linearize(skb)) ||
++	    ((info_flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
++	     !pskb_may_pull(skb, ETH_HLEN))) {
++		ath12k_free_txskb(hw, skb);
++		return;
++	}
++	hdr = (void *)skb->data;
++
+ 	if (key) {
+ 		skb_cb->cipher = key->cipher;
+ 		skb_cb->flags |= ATH12K_SKB_CIPHER_SET;
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -14,21 +14,56 @@
+ #include "hal_tx.h"
+ 
+ static void
++ath12k_wifi7_hal_tx_ext_set_buffer(struct hal_tx_msdu_ext_buffer *buf,
++				   dma_addr_t addr, unsigned int len)
++{
++	buf->info0 = le32_encode_bits(lower_32_bits(addr),
++				      HAL_TX_MSDU_EXT_INFO0_BUF_PTR_LO);
++	buf->info1 = le32_encode_bits(upper_32_bits(addr),
++				      HAL_TX_MSDU_EXT_INFO1_BUF_PTR_HI) |
++		     le32_encode_bits(len, HAL_TX_MSDU_EXT_INFO1_BUF_LEN);
++}
++
++static void
+ ath12k_wifi7_hal_tx_cmd_ext_desc_setup(struct hal_tx_msdu_ext_desc *tcl_ext_cmd,
+-				       struct hal_tx_info *ti)
++				     struct hal_tx_info *ti, bool override)
+ {
+-	tcl_ext_cmd->info0 = le32_encode_bits(ti->paddr,
+-					      HAL_TX_MSDU_EXT_INFO0_BUF_PTR_LO);
+-	tcl_ext_cmd->info1 = le32_encode_bits(upper_32_bits(ti->paddr),
+-					      HAL_TX_MSDU_EXT_INFO1_BUF_PTR_HI) |
+-			       le32_encode_bits(ti->data_len,
+-						HAL_TX_MSDU_EXT_INFO1_BUF_LEN);
+-
+-	tcl_ext_cmd->info1 |= le32_encode_bits(1, HAL_TX_MSDU_EXT_INFO1_EXTN_OVERRIDE) |
+-				le32_encode_bits(ti->encap_type,
+-						 HAL_TX_MSDU_EXT_INFO1_ENCAP_TYPE) |
+-				le32_encode_bits(ti->encrypt_type,
+-						 HAL_TX_MSDU_EXT_INFO1_ENCRYPT_TYPE);
++	BUILD_BUG_ON(sizeof(*tcl_ext_cmd) != 72);
++	ath12k_wifi7_hal_tx_ext_set_buffer(&tcl_ext_cmd->buf[0], ti->paddr,
++					   ti->data_len);
++
++	if (override)
++		tcl_ext_cmd->buf[0].info1 |=
++			le32_encode_bits(1, HAL_TX_MSDU_EXT_INFO1_EXTN_OVERRIDE) |
++			le32_encode_bits(ti->encap_type, HAL_TX_MSDU_EXT_INFO1_ENCAP_TYPE) |
++			le32_encode_bits(ti->encrypt_type, HAL_TX_MSDU_EXT_INFO1_ENCRYPT_TYPE);
++}
++
++/* Only the documented six-buffer Ethernet extension layout is enabled.
++ * Other layouts are linearized before any packet or DMA mutation.
++ */
++static bool ath12k_wifi7_tx_sg_eligible(struct ath12k_dp *dp,
++					struct ath12k_dp_vif *dp_vif,
++					struct sk_buff *skb)
++{
++	unsigned int i, nr = skb_shinfo(skb)->nr_frags;
++
++	if (!dp->hw_params->supports_tx_sg || dp->hw_params->iova_mask ||
++	    test_bit(ATH12K_FLAG_RAW_MODE, &dp->ab->dev_flags) ||
++	    !(ATH12K_SKB_CB(skb)->flags & ATH12K_SKB_HW_80211_ENCAP) ||
++	    dp_vif->tx_encap_type != HAL_TCL_ENCAP_TYPE_ETHERNET ||
++	    skb_has_frag_list(skb) || !nr || nr > ATH12K_TX_EXT_MAX_FRAGS ||
++	    skb_headlen(skb) < ETH_HLEN || skb_headlen(skb) > U16_MAX)
++		return false;
++
++	for (i = 0; i < nr; i++) {
++		unsigned int len = skb_frag_size(&skb_shinfo(skb)->frags[i]);
++
++		if (!len || len > U16_MAX)
++			return false;
++	}
++
++	return true;
+ }
+ 
+ #define HTT_META_DATA_ALIGNMENT 0x8
+@@ -89,10 +124,22 @@
+ 	u32 iova_mask = dp->hw_params->iova_mask;
+ 	bool is_diff_encap = false;
+ 	bool is_null_frame = false;
++	unsigned int mapped_frags = 0;
++	bool sg = false;
+ 
+ 	if (test_bit(ATH12K_FLAG_CRASH_FLUSH, &ab->dev_flags))
+ 		return -ESHUTDOWN;
+ 
++	if (skb_is_gso(skb))
++		return -EOPNOTSUPP;
++
++	if (skb_is_nonlinear(skb)) {
++		sg = ath12k_wifi7_tx_sg_eligible(dp, dp_vif, skb);
++		if (!sg && skb_linearize(skb))
++			return -ENOMEM;
++		hdr = (void *)skb->data;
++	}
++
+ 	if (!(info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP) &&
+ 	    !ieee80211_is_data(hdr->frame_control))
+ 		return -EOPNOTSUPP;
+@@ -249,8 +296,13 @@
+ 	}
+ map:
+ 	ath12k_dbg_dump(ab, ATH12K_DBG_DP_TX, NULL, "dp tx msdu attempt: ",
+-			skb->data, skb->len);
+-	ti.paddr = dma_map_single(dp->dev, skb->data, skb->len, DMA_TO_DEVICE);
++			skb->data, skb_headlen(skb));
++	if (skb_headlen(skb) > U16_MAX) {
++		ret = -EMSGSIZE;
++		goto fail_remove_tx_buf;
++	}
++	ti.paddr = dma_map_single(dp->dev, skb->data, skb_headlen(skb),
++				  DMA_TO_DEVICE);
+ 	if (dma_mapping_error(dp->dev, ti.paddr)) {
+ 		atomic_inc(&dp->device_stats.tx_err.misc_fail);
+ 		ath12k_warn(ab, "failed to DMA map data Tx buffer\n");
+@@ -282,10 +334,10 @@
+ 	}
+ 
+ 	ti.desc_id = tx_desc->desc_id;
+-	ti.data_len = skb->len;
++	ti.data_len = skb_headlen(skb);
+ 	skb_cb->paddr = ti.paddr;
+ 
+-	if (msdu_ext_desc) {
++	if (msdu_ext_desc || sg) {
+ 		skb_ext_desc = dev_alloc_skb(sizeof(struct hal_tx_msdu_ext_desc));
+ 		if (!skb_ext_desc) {
+ 			ret = -ENOMEM;
+@@ -296,7 +348,24 @@
+ 		memset(skb_ext_desc->data, 0, skb_ext_desc->len);
+ 
+ 		msg = (struct hal_tx_msdu_ext_desc *)skb_ext_desc->data;
+-		ath12k_wifi7_hal_tx_cmd_ext_desc_setup(msg, &ti);
++		/* SG Ethernet inherits encapsulation and crypto from the bank. */
++		ath12k_wifi7_hal_tx_cmd_ext_desc_setup(msg, &ti, !sg);
++
++		while (sg && mapped_frags < skb_shinfo(skb)->nr_frags) {
++			skb_frag_t *frag = &skb_shinfo(skb)->frags[mapped_frags];
++			unsigned int len = skb_frag_size(frag);
++			dma_addr_t addr;
++
++			addr = skb_frag_dma_map(dp->dev, frag, 0, len, DMA_TO_DEVICE);
++			if (dma_mapping_error(dp->dev, addr)) {
++				ret = -ENOMEM;
++				goto fail_free_ext_skb;
++			}
++
++			ATH12K_TX_EXT_CB(skb_ext_desc)->frags[mapped_frags++] = addr;
++			ath12k_wifi7_hal_tx_ext_set_buffer(&msg->buf[mapped_frags],
++							   addr, len);
++		}
+ 
+ 		if (add_htt_metadata) {
+ 			ret = ath12k_wifi7_dp_prepare_htt_metadata(skb_ext_desc);
+@@ -317,7 +386,7 @@
+ 		ti.data_len = skb_ext_desc->len;
+ 		ti.type = HAL_TCL_DESC_TYPE_EXT_DESC;
+ 
+-		ATH12K_SKB_CB(skb_ext_desc)->paddr = ti.paddr;
++		ATH12K_TX_EXT_CB(skb_ext_desc)->paddr = ti.paddr;
+ 	}
+ 
+ 	/* Keep the prepared packet and its DMA mappings across ring retries. */
+@@ -371,6 +440,10 @@
+ 	spin_unlock_bh(&arvif->link_stats_lock);
+ 
+ 	dp->device_stats.tx_enqueued[ti.ring_id]++;
++	if (sg) {
++		dp->device_stats.tx_sg_enqueued[ti.ring_id]++;
++		dp->device_stats.tx_sg_fragments[ti.ring_id] += mapped_frags;
++	}
+ 
+ 	ath12k_wifi7_hal_tx_cmd_desc_setup(ab, hal_tcl_desc, &ti);
+ 
+@@ -393,14 +466,13 @@
+ 
+ fail_unmap_dma_ext:
+ 	if (skb_ext_desc)
+-		dma_unmap_single(dp->dev, ATH12K_SKB_CB(skb_ext_desc)->paddr,
++		dma_unmap_single(dp->dev, ATH12K_TX_EXT_CB(skb_ext_desc)->paddr,
+ 				 skb_ext_desc->len,
+ 				 DMA_TO_DEVICE);
+ fail_free_ext_skb:
+-	kfree_skb(skb_ext_desc);
+-
+ fail_unmap_dma:
+-	dma_unmap_single(dp->dev, skb_cb->paddr, skb->len, DMA_TO_DEVICE);
++	ath12k_dp_tx_unmap_payload(dp, skb, skb_ext_desc, mapped_frags);
++	kfree_skb(skb_ext_desc);
+ 
+ fail_remove_tx_buf:
+ 	ath12k_dp_tx_release_txbuf(dp, tx_desc, pool_id);
+@@ -790,12 +862,10 @@
+ 	struct ath12k_link_vif *arvif;
+ 	struct ath12k_vif *ahvif;
+ 
+-	dma_unmap_single(dp->dev, skb_cb->paddr, skb->len, DMA_TO_DEVICE);
+-	if (params->skb_ext_desc) {
+-		dma_unmap_single(dp->dev, ATH12K_SKB_CB(params->skb_ext_desc)->paddr,
+-				 params->skb_ext_desc->len, DMA_TO_DEVICE);
+-		dev_kfree_skb_any(params->skb_ext_desc);
+-	}
++	if (skb_is_nonlinear(skb))
++		dp->device_stats.tx_completion[ring].sg_completed++;
++
++	ath12k_dp_tx_unmap(dp, skb, params->skb_ext_desc);
+ 	dp->device_stats.tx_completion[ring].completed++;
+ 
+ 	if (!vif)
