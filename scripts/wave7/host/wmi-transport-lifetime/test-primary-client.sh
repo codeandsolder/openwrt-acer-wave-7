@@ -267,6 +267,10 @@ if (( ${#boundary_profiles[@]} )); then
         "$boundary_arm_hash" "$boundary_x86_hash" > "$out/packet-boundary-binaries.sha256"
 fi
 remote_stream(){
+    # Dropbear's MAX_CMD_LEN/MAX_STRING_LEN is 9000 bytes. Long
+    # scripts must travel over channel stdin, not an exec request.
+    local LC_ALL=C
+    [[ $# == 1 && ${#1} -le 9000 ]] || fail 'AP SSH exec command exceeds Dropbear limit'
     ssh -T -i /home/jan/.ssh/wave7-root-rsa \
         -o BindInterface=enp4s0f4u2u4 -o BindAddress=192.168.76.2 \
         -o BatchMode=yes -o IdentitiesOnly=yes -o ConnectTimeout=3 \
@@ -403,7 +407,9 @@ snapshot_load(){
     [[ $side == before || $side == after ]] || return 2
     # Never query station firmware after an SSR. This executes at the
     # edges of each TCP case, not in the saturated packet path.
-    remote "set -eu
+    # Stream the script instead of overflowing Dropbear's exec limit.
+    local script
+    script="set -eu
         [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]
         for p in 0 1 2; do
             [ \"\$(cat /sys/class/remoteproc/remoteproc\$p/state)\" = running ]
@@ -594,6 +600,7 @@ snapshot_load(){
         fi
         echo ==== END
         cat /proc/sys/kernel/random/boot_id"
+    printf '%s\n' "$script" | remote_stream 'sh -s'
 }
 guard || fail 'router no longer healthy'
 systemctl is-active --quiet wave7-lab-upstream-guard8.service || fail 'lab upstream'
