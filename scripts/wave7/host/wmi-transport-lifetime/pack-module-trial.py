@@ -80,7 +80,7 @@ def main():
     check(all(re.fullmatch(r'[a-f0-9]{64}', profile_spec[k]) for k in ('parent_sha', 'fit_sha')), 'image pins')
     check(all(re.fullmatch(r'[a-f0-9]{40}', profile_spec[k]) for k in ('parent_builder', 'patch_commit')), 'commit pins')
     modules = profile_spec['modules']
-    check(modules and all(re.fullmatch(r'[a-zA-Z0-9_-]+\.ko', n) and len(pair) == 2 and (kernel_trial or pair[0] != pair[1]) and all(re.fullmatch(r'[a-f0-9]{64}', h) for h in pair) for n, pair in modules.items()), 'module pins')
+    check((modules or policy_trial) and all(re.fullmatch(r'[a-zA-Z0-9_-]+\.ko', n) and len(pair) == 2 and (kernel_trial or pair[0] != pair[1]) and all(re.fullmatch(r'[a-f0-9]{64}', h) for h in pair) for n, pair in modules.items()), 'module pins')
     if kernel_trial:
         check(all(re.fullmatch(r'[a-f0-9]{64}', profile_spec[key]) for key in kernel_keys), 'kernel pins')
         check(fit_sha != parent_fit_sha and sha(a.replacement_fit) == fit_sha, 'replacement FIT pin')
