@@ -308,8 +308,11 @@ def parse(text):
         extra["htt_tx"] = htt.describe_snapshot(sections_["HTT_TX"], tx.keys())
     if "HTT_MLO" in sections_:
         require("htt_tx" in extra, "MLO scheduler stats require pdev TX witness")
-        extra["htt_mlo"] = htt_mlo.describe_snapshot(sections_["HTT_MLO"],
-                                                     extra["htt_tx"]["radios"].keys())
+        witness = extra["htt_tx"]
+        if witness["qualified"]:
+            extra["htt_mlo"] = htt_mlo.describe_snapshot(sections_["HTT_MLO"], witness["radios"])
+        else:
+            extra["htt_mlo"] = dict(qualified=False, reason="unqualified pdev TX reset witness")
     pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
              if k.startswith("PAGE_POOL ")}
     if pools:

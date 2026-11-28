@@ -56,6 +56,8 @@ def decode(kind, lines):
 def describe_snapshot(lines, expected_radios):
     replies = {}
     try:
+        expected_radios = set(expected_radios)
+        require(expected_radios, "missing expected MLO radios")
         i = 0
         while i < len(lines):
             if not lines[i].strip():

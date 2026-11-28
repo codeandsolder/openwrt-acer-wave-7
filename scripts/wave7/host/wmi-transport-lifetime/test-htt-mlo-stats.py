@@ -39,4 +39,5 @@ for bad in (raw[:-1], raw+raw, raw[1:],
             [x.replace(' = 50',' = 4294967296') for x in raw],
             [x for x in raw if not x.startswith('num_pref_link_timeout =')]):
     assert not parse(bad)['qualified']
+assert not h['describe_snapshot']([],[])['qualified']
 print('HTT_MLO_STATS_PASS')
