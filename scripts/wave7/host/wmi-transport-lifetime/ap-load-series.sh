@@ -13,9 +13,9 @@ healthy() {
     done
 }
 healthy
-printf 'LOAD_SERIES_BEGIN boot=%s samples=25\n' "$boot"
+printf 'LOAD_SERIES_BEGIN boot=%s samples=120\n' "$boot"
 i=0
-while [ "$i" -lt 25 ]; do
+while [ "$i" -lt 120 ]; do
     healthy
     read -r stamp rest </proc/uptime
     printf 'LOAD_SAMPLE %s %s\n' "$i" "$stamp"
@@ -32,6 +32,6 @@ while [ "$i" -lt 25 ]; do
     printf 'LOAD_SAMPLE_END %s %s\n' "$i" "$stamp"
     if [ "$i" = 0 ]; then printf 'LOAD_SERIES_READY\n'; fi
     i=$((i + 1))
-    if [ "$i" -lt 25 ]; then sleep 1; fi
+    if [ "$i" -lt 120 ]; then sleep 1; fi
 done
 printf 'LOAD_SERIES_END boot=%s samples=%s\n' "$boot" "$i"

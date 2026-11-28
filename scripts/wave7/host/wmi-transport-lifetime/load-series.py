@@ -22,7 +22,7 @@ load = helper('load-ap-delta')
 srng = helper('srng-pointer-delta')
 tx = srng.tx
 require = load.require
-SAMPLES = 25
+SAMPLES = 120
 DEVICES = (tx.IPQ, tx.QCN)
 PATHS = {f'/sys/kernel/debug/ath12k/{d}/device_dp_stats' for d in DEVICES}
 STAMP = r'(\d+\.\d+)'
@@ -59,7 +59,7 @@ def sample(boot, start, end, lines):
 
 def parse(text):
     lines = iter(text.splitlines())
-    begin = re.fullmatch(r'LOAD_SERIES_BEGIN boot=([0-9a-f-]{36}) samples=25', next(lines, ''))
+    begin = re.fullmatch(r'LOAD_SERIES_BEGIN boot=([0-9a-f-]{36}) samples=120', next(lines, ''))
     require(begin and load.rx.BOOT.fullmatch(begin[1]), 'missing load series identity')
     boot = begin[1]
     samples = []
@@ -82,7 +82,7 @@ def parse(text):
         samples.append(sample(boot, a, b, body))
         if i == 0:
             require(next(lines, '') == 'LOAD_SERIES_READY', 'missing readiness')
-    require(next(lines, '') == f'LOAD_SERIES_END boot={boot} samples=25' and next(lines, None) is None,
+    require(next(lines, '') == f'LOAD_SERIES_END boot={boot} samples=120' and next(lines, None) is None,
             'invalid closing series identity')
     return boot, samples
 
@@ -124,12 +124,11 @@ def summarize(text, before, after):
     phase = load.compare(before, after)
     start, end = phase['radio']['start_s'], phase['radio']['end_s']
     require(phase['radio']['boot'] == boot, 'series boot differs from phase')
-    require(start <= samples[0]['start_s'] <= start + 5 and samples[-1]['end_s'] >= end,
+    require(samples[0]['start_s'] <= start + 5 and samples[-1]['end_s'] >= end,
             'series does not cover load phase')
     rows = [interval(a, b) for a, b in zip(samples, samples[1:])]
-    # The first sample follows the phase-start snapshot and precedes iperf;
-    # the last sample may be after the phase-end snapshot. Never count that
-    # idle tail as part of the load. The edge gaps are explicitly reported.
+    # One continuous observation spans all three TCP phases. Never count
+    # inter-phase or idle-tail intervals as load. Report the edge gaps.
     contained = [r for r in rows if start <= r['start_s'] and r['end_read_end_s'] <= end]
     require(contained and contained[-1]['end_read_end_s'] - contained[0]['start_s'] >= .65 * (end - start),
             'insufficient sampled load coverage')

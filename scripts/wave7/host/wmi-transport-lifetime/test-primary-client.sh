@@ -733,9 +733,8 @@ for band in "${bands[@]}"; do
                 cases_failed=1
                 break
             fi
-            snapshot_load > "$prefix.load-$direction-ap-before.txt" || { cases_failed=1; break; }
-            if (( ap_load_series )); then
-                series="$prefix.load-$direction-ap-series.txt"
+            if (( ap_load_series )) && [[ $direction == uplink ]]; then
+                series="$prefix.ap-load-series.txt"
                 remote_stream "sh -s -- $boot" < "$(dirname "$helper")/ap-load-series.sh" > "$series" 2>&1 &
                 ap_series_pid=$!
                 deadline=$((SECONDS + 8))
@@ -746,6 +745,7 @@ for band in "${bands[@]}"; do
                     sleep .1
                 done
             fi
+            snapshot_load > "$prefix.load-$direction-ap-before.txt" || { cases_failed=1; break; }
             args=()
             case $direction in
                 uplink) args=(-R) ;;
@@ -759,18 +759,25 @@ for band in "${bands[@]}"; do
             printf '%s\n' "$load_rc" > "$prefix.load-$direction-exit.txt"
             if (( load_rc )); then cases_failed=1; break; fi
             snapshot_load > "$prefix.load-$direction-ap-after.txt" || { cases_failed=1; break; }
-            if (( ap_load_series )); then
-                wait "$ap_series_pid" || cases_failed=1
-                ap_series_pid=''
-                rg -qx "LOAD_SERIES_END boot=$boot samples=25" "$series" || cases_failed=1
-                uv run --no-project python -B "$(dirname "$helper")/load-series.py" "$series" \
-                    --before "$prefix.load-$direction-ap-before.txt" \
-                    --after "$prefix.load-$direction-ap-after.txt" > "$prefix.load-$direction-series.json" || cases_failed=1
-                (( !cases_failed )) || break
-            fi
         done
         wait "$load_client_pid" || rc=$?
         load_client_pid=''
+        if (( ap_load_series )); then
+            if [[ -z $ap_series_pid ]]; then
+                cases_failed=1
+            else
+                wait "$ap_series_pid" || cases_failed=1
+                ap_series_pid=''
+                rg -qx "LOAD_SERIES_END boot=$boot samples=120" "$series" || cases_failed=1
+                if (( !cases_failed && !rc )); then
+                    for direction in uplink downlink bidirectional; do
+                        uv run --no-project python -B "$(dirname "$helper")/load-series.py" "$series" \
+                            --before "$prefix.load-$direction-ap-before.txt" \
+                            --after "$prefix.load-$direction-ap-after.txt" > "$prefix.load-$direction-series.json" || cases_failed=1
+                    done
+                fi
+            fi
+        fi
     elif (( ap_ring3_probe )); then
         wyse "timeout $client_seconds bash $client/client-sustained.sh $tag --$mode-$variant --bssid-$band" > "$prefix.client-run.txt" 2>&1 &
         load_client_pid=$!

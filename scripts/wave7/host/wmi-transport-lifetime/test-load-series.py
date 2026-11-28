@@ -36,10 +36,10 @@ def row(i):
     return '\n'.join(lines)
 
 
-text = '\n'.join([f'LOAD_SERIES_BEGIN boot={BOOT} samples=25',
-                  *(row(i) for i in range(25)), f'LOAD_SERIES_END boot={BOOT} samples=25'])
+text = '\n'.join([f'LOAD_SERIES_BEGIN boot={BOOT} samples=120',
+                  *(row(i) for i in range(120)), f'LOAD_SERIES_END boot={BOOT} samples=120'])
 boot, samples = series.parse(text)
-assert boot == BOOT and len(samples) == 25
+assert boot == BOOT and len(samples) == 120
 r = series.interval(*samples[:2])
 assert r['cpu'][0] == dict(busy_pct=30, softirq_pct=10)
 assert r['ipq_ring_samples']['TCL0']['sampled_fill'] == 1
@@ -49,7 +49,7 @@ assert r['radios'][series.DEVICES[1]]['ba_duplicates'] == 1
 assert r['radios'][series.DEVICES[0]]['tx_enqueued'][0] == 11
 with patch.object(series.load, 'compare', return_value={'radio': {'boot': BOOT, 'start_s': 9.9, 'end_s': 27.1}}):
     result = series.summarize(text, '', '')
-assert len(result['intervals']) == 16 and len(result['all_intervals']) == 24
+assert len(result['intervals']) == 16 and len(result['all_intervals']) == 119
 assert result['trailing_unsampled_s'] < 1
 for invalid in (
         text.replace('LOAD_SAMPLE 1 ', 'LOAD_SAMPLE 0 ', 1),
@@ -67,7 +67,7 @@ for invalid in (
     else:
         raise AssertionError('bad series accepted')
 for invalid in (
-        {'boot': BOOT, 'start_s': 9.9, 'end_s': 40},
+        {'boot': BOOT, 'start_s': 9.9, 'end_s': 150},
         {'boot': BOOT, 'start_s': 1, 'end_s': 27},
         {'boot': '86' + BOOT[2:], 'start_s': 9.9, 'end_s': 27}):
     with patch.object(series.load, 'compare', return_value={'radio': invalid}):
