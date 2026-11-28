@@ -1,0 +1,426 @@
+Subject: [PATCH] wifi: ath12k: decode PPDU rate fields using the HTT ABI
+
+The firmware rate TLV distinguishes an RU-26 index span from an
+explicit RU size. Translate both encodings into the corresponding
+HE or EHT allocation, rather than treating an index span as a tone
+count. The HTT bandwidth enum is not an arithmetic offset from the
+host bandwidth enum: 6 and 7 describe dynamic bandwidth, 8 is 320 MHz.
+
+Publish only representable rate fields, keeping the previous valid rate
+and independently decoded completion counters if the rate is invalid.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/dp_htt.c
++++ b/drivers/net/wireless/ath/ath12k/dp_htt.c
+@@ -197,6 +197,222 @@
+ 	return true;
+ }
+ 
++/* Firmware format 0 reports a span in RU-26 indices. Format 1 reports
++ * an index and an explicit size. Neither is a literal tone count.
++ * Keep the two firmware encodings separate from the nl80211 enums.
++ */
++static const struct {
++	u16 span;
++	s8 he;
++	u8 eht;
++} ath12k_htt_ppdu_ru_sizes[HTT_PPDU_STATS_RU_SIZE_COUNT] = {
++	[HTT_PPDU_STATS_RU_26] = { RU_26,
++		NL80211_RATE_INFO_HE_RU_ALLOC_26,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_26 },
++	[HTT_PPDU_STATS_RU_52] = { RU_52,
++		NL80211_RATE_INFO_HE_RU_ALLOC_52,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_52 },
++	[HTT_PPDU_STATS_RU_52_26] = { RU_52_26,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_52P26 },
++	[HTT_PPDU_STATS_RU_106] = { RU_106,
++		NL80211_RATE_INFO_HE_RU_ALLOC_106,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_106 },
++	[HTT_PPDU_STATS_RU_106_26] = { RU_106_26,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_106P26 },
++	[HTT_PPDU_STATS_RU_242] = { RU_242,
++		NL80211_RATE_INFO_HE_RU_ALLOC_242,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_242 },
++	[HTT_PPDU_STATS_RU_484] = { RU_484,
++		NL80211_RATE_INFO_HE_RU_ALLOC_484,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_484 },
++	[HTT_PPDU_STATS_RU_484_242] = { RU_484_242,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_484P242 },
++	[HTT_PPDU_STATS_RU_996] = { RU_996,
++		NL80211_RATE_INFO_HE_RU_ALLOC_996,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_996 },
++	[HTT_PPDU_STATS_RU_996_484] = { RU_996_484,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_996P484 },
++	[HTT_PPDU_STATS_RU_996_484_242] = { RU_996_484_242,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_996P484P242 },
++	[HTT_PPDU_STATS_RU_996X2] = { RU_2X996,
++		NL80211_RATE_INFO_HE_RU_ALLOC_2x996,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_2x996 },
++	[HTT_PPDU_STATS_RU_996X2_484] = { RU_2X996_484,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_2x996P484 },
++	[HTT_PPDU_STATS_RU_996X3] = { RU_3X996,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_3x996 },
++	[HTT_PPDU_STATS_RU_996X3_484] = { RU_3X996_484,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_3x996P484 },
++	[HTT_PPDU_STATS_RU_996X4] = { RU_4X996,
++		-1,
++		NL80211_RATE_INFO_EHT_RU_ALLOC_4x996 },
++};
++
++static bool
++ath12k_htt_ppdu_decode_ru(const struct htt_ppdu_stats_user_rate *user,
++			  struct rate_info *rate, bool eht)
++{
++	u16 start = le16_to_cpu(user->ru_start);
++	u16 end = le16_to_cpu(user->ru_end);
++	u8 format = le32_get_bits(user->info0,
++				   HTT_PPDU_STATS_USER_RATE_INFO0_RU_FORMAT_M);
++	unsigned int size;
++
++	switch (format) {
++	case HTT_PPDU_STATS_RU_SPAN:
++		if (end < start)
++			return false;
++
++		for (size = 0; size < ARRAY_SIZE(ath12k_htt_ppdu_ru_sizes); size++)
++			if (ath12k_htt_ppdu_ru_sizes[size].span == (u32)end - start + 1)
++				break;
++		break;
++	case HTT_PPDU_STATS_RU_INDEX_SIZE:
++		size = start;
++		break;
++	default:
++		return false;
++	}
++
++	if (size >= ARRAY_SIZE(ath12k_htt_ppdu_ru_sizes))
++		return false;
++
++	if (eht) {
++		rate->bw = RATE_INFO_BW_EHT_RU;
++		rate->eht_ru_alloc = ath12k_htt_ppdu_ru_sizes[size].eht;
++	} else {
++		if (ath12k_htt_ppdu_ru_sizes[size].he < 0)
++			return false;
++
++		rate->bw = RATE_INFO_BW_HE_RU;
++		rate->he_ru_alloc = ath12k_htt_ppdu_ru_sizes[size].he;
++	}
++
++	return true;
++}
++
++static bool ath12k_htt_ppdu_decode_bw(u8 bw, struct rate_info *rate)
++{
++	switch (bw) {
++	case HTT_PPDU_STATS_BANDWIDTH_20MHZ:
++		rate->bw = RATE_INFO_BW_20;
++		break;
++	case HTT_PPDU_STATS_BANDWIDTH_40MHZ:
++		rate->bw = RATE_INFO_BW_40;
++		break;
++	case HTT_PPDU_STATS_BANDWIDTH_80MHZ:
++		rate->bw = RATE_INFO_BW_80;
++		break;
++	case HTT_PPDU_STATS_BANDWIDTH_160MHZ:
++		rate->bw = RATE_INFO_BW_160;
++		break;
++	case HTT_PPDU_STATS_BANDWIDTH_320MHZ:
++		rate->bw = RATE_INFO_BW_320;
++		break;
++	default:
++		/* Dynamic bandwidth and unsupported narrow widths do not
++		 * describe a fixed bitrate on this device.
++		 */
++		return false;
++	}
++
++	return true;
++}
++
++static bool
++ath12k_htt_ppdu_decode_rate(const struct htt_ppdu_stats_user_rate *user,
++			    struct rate_info *rate)
++{
++	u8 preamble = HTT_USR_RATE_PREAMBLE(user->rate_flags);
++	u8 nss = HTT_USR_RATE_NSS(user->rate_flags) + 1;
++	u8 mcs = HTT_USR_RATE_MCS(user->rate_flags);
++	u8 sgi = HTT_USR_RATE_GI(user->rate_flags);
++	u8 ppdu_type = HTT_USR_RATE_PPDU_TYPE(user->info1);
++	u8 bw = HTT_USR_RATE_BW(user->rate_flags);
++	u8 rate_idx;
++	bool ofdma;
++
++	ofdma = ppdu_type == HTT_PPDU_STATS_PPDU_TYPE_MU_OFDMA ||
++		ppdu_type == HTT_PPDU_STATS_PPDU_TYPE_MU_MIMO_OFDMA;
++
++	if (ofdma) {
++		if (preamble != WMI_RATE_PREAMBLE_HE &&
++		    preamble != WMI_RATE_PREAMBLE_EHT)
++			return false;
++
++		if (!ath12k_htt_ppdu_decode_ru(user, rate,
++					       preamble == WMI_RATE_PREAMBLE_EHT))
++			return false;
++	} else if (!ath12k_htt_ppdu_decode_bw(bw, rate)) {
++		return false;
++	}
++
++	switch (preamble) {
++	case WMI_RATE_PREAMBLE_OFDM:
++	case WMI_RATE_PREAMBLE_CCK:
++		/* Legacy OFDM duplicate transmissions may use a wide channel. */
++		return !ath12k_mac_hw_ratecode_to_legacy_rate(mcs, preamble,
++							     &rate_idx, &rate->legacy);
++	case WMI_RATE_PREAMBLE_HT:
++		if (mcs > ATH12K_HT_MCS_MAX || nss > 4 ||
++		    sgi > HTT_PPDU_STATS_SGI_0_4_US ||
++		    (rate->bw != RATE_INFO_BW_20 && rate->bw != RATE_INFO_BW_40))
++			return false;
++
++		rate->mcs = mcs + 8 * (nss - 1);
++		rate->flags = RATE_INFO_FLAGS_MCS;
++		if (sgi == HTT_PPDU_STATS_SGI_0_4_US)
++			rate->flags |= RATE_INFO_FLAGS_SHORT_GI;
++		break;
++	case WMI_RATE_PREAMBLE_VHT:
++		if (mcs > ATH12K_VHT_MCS_MAX || nss > 8 ||
++		    sgi > HTT_PPDU_STATS_SGI_0_4_US ||
++		    rate->bw == RATE_INFO_BW_320)
++			return false;
++
++		rate->mcs = mcs;
++		rate->flags = RATE_INFO_FLAGS_VHT_MCS;
++		if (sgi == HTT_PPDU_STATS_SGI_0_4_US)
++			rate->flags |= RATE_INFO_FLAGS_SHORT_GI;
++		break;
++	case WMI_RATE_PREAMBLE_HE:
++		if (mcs > ATH12K_HE_MCS_MAX || nss > 8 ||
++		    sgi == HTT_PPDU_STATS_SGI_0_4_US ||
++		    sgi > HTT_PPDU_STATS_SGI_3_2_US ||
++		    rate->bw == RATE_INFO_BW_320)
++			return false;
++
++		rate->mcs = mcs;
++		rate->flags = RATE_INFO_FLAGS_HE_MCS;
++		rate->he_dcm = HTT_USR_RATE_DCM(user->rate_flags);
++		rate->he_gi = ath12k_he_gi_to_nl80211_he_gi(sgi);
++		break;
++	case WMI_RATE_PREAMBLE_EHT:
++		if (mcs > ATH12K_EHT_MCS_MAX || nss > 8 ||
++		    sgi == HTT_PPDU_STATS_SGI_0_4_US ||
++		    sgi > HTT_PPDU_STATS_SGI_3_2_US)
++			return false;
++
++		rate->mcs = mcs;
++		rate->flags = RATE_INFO_FLAGS_EHT_MCS;
++		rate->eht_gi = ath12k_mac_eht_gi_to_nl80211_eht_gi(sgi);
++		break;
++	default:
++		return false;
++	}
++
++	rate->nss = nss;
++	return true;
++}
++
+ static void
+ ath12k_update_per_peer_tx_stats(struct ath12k_pdev_dp *dp_pdev,
+ 				struct htt_ppdu_stats *ppdu_stats, u8 user)
+@@ -204,18 +420,16 @@
+ 	struct ath12k_dp *dp = dp_pdev->dp;
+ 	struct ath12k_base *ab = dp->ab;
+ 	struct ath12k_dp_link_peer *peer;
+-	struct htt_ppdu_stats_user_rate *user_rate;
++	struct rate_info txrate = {};
+ 	struct ath12k_per_peer_tx_stats *peer_stats = &dp_pdev->peer_tx_stats;
+ 	struct htt_ppdu_user_stats *usr_stats = &ppdu_stats->user_stats[user];
+ 	struct htt_ppdu_stats_common *common = &ppdu_stats->common;
+-	int ret;
+-	u8 flags, mcs, nss, bw, sgi, dcm, ppdu_type, rate_idx = 0;
+-	u32 v, succ_bytes = 0;
+-	u16 tones, rate = 0, succ_pkts = 0;
++	u32 succ_bytes = 0;
++	u16 succ_pkts = 0;
+ 	u32 tx_duration = 0;
+ 	u8 tid = HTT_PPDU_STATS_NON_QOS_TID;
+ 	u16 tx_retry_failed = 0, tx_retry_count = 0;
+-	bool is_ampdu = false, is_ofdma;
++	bool is_ampdu = false, rate_valid;
+ 
+ 	if (!usr_stats->is_valid_peer_id ||
+ 	    !(usr_stats->tlv_flags & BIT(HTT_PPDU_STATS_TAG_USR_RATE)))
+@@ -247,47 +461,12 @@
+ 			tx_duration = le32_to_cpu(common->fes_duration_us);
+ 	}
+ 
+-	user_rate = &usr_stats->rate;
+-	flags = HTT_USR_RATE_PREAMBLE(user_rate->rate_flags);
+-	bw = HTT_USR_RATE_BW(user_rate->rate_flags) - 2;
+-	nss = HTT_USR_RATE_NSS(user_rate->rate_flags) + 1;
+-	mcs = HTT_USR_RATE_MCS(user_rate->rate_flags);
+-	sgi = HTT_USR_RATE_GI(user_rate->rate_flags);
+-	dcm = HTT_USR_RATE_DCM(user_rate->rate_flags);
+-
+-	ppdu_type = HTT_USR_RATE_PPDU_TYPE(user_rate->info1);
+-	is_ofdma = (ppdu_type == HTT_PPDU_STATS_PPDU_TYPE_MU_OFDMA) ||
+-		   (ppdu_type == HTT_PPDU_STATS_PPDU_TYPE_MU_MIMO_OFDMA);
+-
+-	/* Note: If host configured fixed rates and in some other special
+-	 * cases, the broadcast/management frames are sent in different rates.
+-	 * Firmware rate's control to be skipped for this?
+-	 */
+-
+-	if (flags == WMI_RATE_PREAMBLE_HE && mcs > ATH12K_HE_MCS_MAX) {
+-		ath12k_warn(ab, "Invalid HE mcs %d peer stats",  mcs);
+-		return;
+-	}
+-
+-	if (flags == WMI_RATE_PREAMBLE_VHT && mcs > ATH12K_VHT_MCS_MAX) {
+-		ath12k_warn(ab, "Invalid VHT mcs %d peer stats",  mcs);
+-		return;
+-	}
+-
+-	if (flags == WMI_RATE_PREAMBLE_HT && (mcs > ATH12K_HT_MCS_MAX || nss < 1)) {
+-		ath12k_warn(ab, "Invalid HT mcs %d nss %d peer stats",
+-			    mcs, nss);
+-		return;
+-	}
+-
+-	if (flags == WMI_RATE_PREAMBLE_CCK || flags == WMI_RATE_PREAMBLE_OFDM) {
+-		ret = ath12k_mac_hw_ratecode_to_legacy_rate(mcs,
+-							    flags,
+-							    &rate_idx,
+-							    &rate);
+-		if (ret < 0)
+-			return;
+-	}
++	rate_valid = ath12k_htt_ppdu_decode_rate(&usr_stats->rate, &txrate);
++	if (!rate_valid)
++		ath12k_warn(ab, "Invalid PPDU rate for peer %u (flags 0x%x, info0 0x%x, info1 0x%x)\n",
++			    usr_stats->peer_id, le32_to_cpu(usr_stats->rate.rate_flags),
++			    le32_to_cpu(usr_stats->rate.info0),
++			    le32_to_cpu(usr_stats->rate.info1));
+ 
+ 	rcu_read_lock();
+ 	peer = ath12k_dp_link_peer_find_by_peerid(dp_pdev, usr_stats->peer_id);
+@@ -299,60 +478,16 @@
+ 
+ 	spin_lock_bh(&dp->dp_lock);
+ 
+-	memset(&peer->txrate, 0, sizeof(peer->txrate));
+-
+-	peer->txrate.bw = ath12k_mac_bw_to_mac80211_bw(bw);
+-
+-	switch (flags) {
+-	case WMI_RATE_PREAMBLE_OFDM:
+-		peer->txrate.legacy = rate;
+-		break;
+-	case WMI_RATE_PREAMBLE_CCK:
+-		peer->txrate.legacy = rate;
+-		break;
+-	case WMI_RATE_PREAMBLE_HT:
+-		peer->txrate.mcs = mcs + 8 * (nss - 1);
+-		peer->txrate.flags = RATE_INFO_FLAGS_MCS;
+-		if (sgi)
+-			peer->txrate.flags |= RATE_INFO_FLAGS_SHORT_GI;
+-		break;
+-	case WMI_RATE_PREAMBLE_VHT:
+-		peer->txrate.mcs = mcs;
+-		peer->txrate.flags = RATE_INFO_FLAGS_VHT_MCS;
+-		if (sgi)
+-			peer->txrate.flags |= RATE_INFO_FLAGS_SHORT_GI;
+-		break;
+-	case WMI_RATE_PREAMBLE_HE:
+-		peer->txrate.mcs = mcs;
+-		peer->txrate.flags = RATE_INFO_FLAGS_HE_MCS;
+-		peer->txrate.he_dcm = dcm;
+-		peer->txrate.he_gi = ath12k_he_gi_to_nl80211_he_gi(sgi);
+-		tones = le16_to_cpu(user_rate->ru_end) -
+-			le16_to_cpu(user_rate->ru_start) + 1;
+-		v = ath12k_he_ru_tones_to_nl80211_he_ru_alloc(tones);
+-		peer->txrate.he_ru_alloc = v;
+-		if (is_ofdma)
+-			peer->txrate.bw = RATE_INFO_BW_HE_RU;
+-		break;
+-	case WMI_RATE_PREAMBLE_EHT:
+-		peer->txrate.mcs = mcs;
+-		peer->txrate.flags = RATE_INFO_FLAGS_EHT_MCS;
+-		peer->txrate.he_dcm = dcm;
+-		peer->txrate.eht_gi = ath12k_mac_eht_gi_to_nl80211_eht_gi(sgi);
+-		tones = le16_to_cpu(user_rate->ru_end) -
+-			le16_to_cpu(user_rate->ru_start) + 1;
+-		v = ath12k_mac_eht_ru_tones_to_nl80211_eht_ru_alloc(tones);
+-		peer->txrate.eht_ru_alloc = v;
+-		if (is_ofdma)
+-			peer->txrate.bw = RATE_INFO_BW_EHT_RU;
+-		break;
++	/* A malformed rate must not replace the last known valid rate or
++	 * suppress independently decoded completion and airtime statistics.
++	 */
++	if (rate_valid) {
++		peer->txrate = txrate;
++		peer->last_txrate = txrate;
+ 	}
+-
+ 	peer->tx_retry_failed += tx_retry_failed;
+ 	peer->tx_retry_count += tx_retry_count;
+-	peer->txrate.nss = nss;
+ 	peer->tx_duration += tx_duration;
+-	memcpy(&peer->last_txrate, &peer->txrate, sizeof(struct rate_info));
+ 
+ 	spin_unlock_bh(&dp->dp_lock);
+ 
+--- a/drivers/net/wireless/ath/ath12k/dp_htt.h
++++ b/drivers/net/wireless/ath/ath12k/dp_htt.h
+@@ -1101,6 +1101,8 @@
+ 	HTT_PPDU_STATS_BANDWIDTH_80MHZ  = 4,
+ 	HTT_PPDU_STATS_BANDWIDTH_160MHZ = 5, /* includes 80+80 */
+ 	HTT_PPDU_STATS_BANDWIDTH_DYN    = 6,
++	HTT_PPDU_STATS_BANDWIDTH_DYN_PATTERNS = 7,
++	HTT_PPDU_STATS_BANDWIDTH_320MHZ = 8,
+ };
+ 
+ #define HTT_PPDU_STATS_CMN_FLAGS_FRAME_TYPE_M	GENMASK(7, 0)
+@@ -1135,6 +1137,33 @@
+ 
+ #define HTT_PPDU_STATS_USER_RATE_INFO0_USER_POS_M	GENMASK(3, 0)
+ #define HTT_PPDU_STATS_USER_RATE_INFO0_MU_GROUP_ID_M	GENMASK(11, 4)
++#define HTT_PPDU_STATS_USER_RATE_INFO0_RU_FORMAT_M	GENMASK(15, 12)
++
++enum htt_ppdu_stats_ru_format {
++	HTT_PPDU_STATS_RU_SPAN,
++	HTT_PPDU_STATS_RU_INDEX_SIZE,
++};
++
++/* HTT format 1 RU sizes, not the HAL RX RU enumeration. */
++enum htt_ppdu_stats_ru_size {
++	HTT_PPDU_STATS_RU_26,
++	HTT_PPDU_STATS_RU_52,
++	HTT_PPDU_STATS_RU_52_26,
++	HTT_PPDU_STATS_RU_106,
++	HTT_PPDU_STATS_RU_106_26,
++	HTT_PPDU_STATS_RU_242,
++	HTT_PPDU_STATS_RU_484,
++	HTT_PPDU_STATS_RU_484_242,
++	HTT_PPDU_STATS_RU_996,
++	HTT_PPDU_STATS_RU_996_484,
++	HTT_PPDU_STATS_RU_996_484_242,
++	HTT_PPDU_STATS_RU_996X2,
++	HTT_PPDU_STATS_RU_996X2_484,
++	HTT_PPDU_STATS_RU_996X3,
++	HTT_PPDU_STATS_RU_996X3_484,
++	HTT_PPDU_STATS_RU_996X4,
++	HTT_PPDU_STATS_RU_SIZE_COUNT,
++};
+ 
+ enum HTT_PPDU_STATS_PPDU_TYPE {
+ 	HTT_PPDU_STATS_PPDU_TYPE_SU,
