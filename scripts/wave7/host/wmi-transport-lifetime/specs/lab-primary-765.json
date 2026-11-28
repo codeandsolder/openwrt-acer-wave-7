@@ -1,0 +1,20 @@
+{
+  "parent_sha": "fb6492e7851030e0a2c44dc1b8e0159b56b1da523f276851fbfa51fedefd7bf9",
+  "parent_rev": "r0+39019-8bbf0c6648-ap-dhcp-guard8",
+  "parent_builder": "8bbf0c66487f944e540ad5f50ee3c9e5a43b4e30",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "ceb174ed15bdf64eee97c8844bd23c7c33f6348d50ede98d79b10bbe31723a5b",
+      "2492adb0d0dcc9ee6d4792a73e97330b13461ad22a7ccb33a5cc66128d31b45e"
+    ],
+    "ath12k_wifi7.ko": [
+      "5b971474488e90cfc9d3a917f49c7170eb747ca15704e96d233be1d9b772413d",
+      "bd37cbf537d9ec29efc7325c65a56fc7c746e9dd61fac3b471ba734e27a48925"
+    ]
+  },
+  "patch_commit": "9e20ac0d0a5c58c60bf2ff7b0875b0f56d0b95e4",
+  "patch_key": "trial_reo_command_telemetry_commit",
+  "filename": "wave7-lab-primary-765-dhcp-guard8-sysupgrade.bin"
+}
