@@ -1,0 +1,20 @@
+{
+  "parent_sha": "2f35f5d87d9f3c0e130c09f7b8dceee626e5b22a614d810562d5f55ea1521c5d",
+  "parent_rev": "r0+39019-05fb9f2452-ap-dhcp-guard8",
+  "parent_builder": "05fb9f2452bc1371490e2d810e93250643e24c72",
+  "fit_sha": "066a2d96a8493e966c8e93892d3f6f19e134af5bb59e439713740508609ca59a",
+  "kernel": "6.18.64",
+  "modules": {
+    "ath12k.ko": [
+      "00391767ce6fbf66e9c3ba9660a82aa5767604eb7f5045382e890f8d5600779d",
+      "1e4f3d43ce5fcec0ed74fcad1c0bcf83fd1d6c2c278ab9f690d6cb591b820f3d"
+    ],
+    "ath12k_wifi7.ko": [
+      "e097541c2fcb2e7745dc92eca4a798d5aa541c9fff1a33f6a7a7ab2946cbe6d8",
+      "69c582167d889c63ff690687b04b7d2121834f7c7ed9e7457bce0645ba91aab6"
+    ]
+  },
+  "patch_commit": "f6fd9741d46745de3a7567257e78eae6615ad2c9",
+  "patch_key": "trial_wmm_state_commit",
+  "filename": "wave7-lab-primary-771-dhcp-guard8-sysupgrade.bin"
+}
