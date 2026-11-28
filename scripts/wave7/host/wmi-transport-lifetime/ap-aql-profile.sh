@@ -50,7 +50,7 @@ drained(){
 wait_drain(){
     for _ in 1 2 3 4 5 6 7 8 9 10; do
         if drained; then return 0; fi
-        sleep .2
+        ucode -e 'exit(sleep(200) ? 0 : 1);' || return 1
     done
     return 1
 }
@@ -95,5 +95,5 @@ while :; do
     sample
     printf 'AQL_PROFILE_SAMPLE %s %s %s %s %s %s %s\n' "$now" "$vo" "$vi" "$be" "$bk" "$bc" "$total"
     [ "${now%.*}" -lt "$end" ] || break
-    sleep .25
+    ucode -e 'exit(sleep(250) ? 0 : 1);'
 done

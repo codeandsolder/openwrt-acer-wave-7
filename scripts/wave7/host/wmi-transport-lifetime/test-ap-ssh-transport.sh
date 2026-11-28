@@ -16,7 +16,7 @@ fi
 # The real expanded script must travel over stdin even when all
 # optional telemetry is disabled.
 helper="$h/ap-control-trace.sh"
-source <(sed -n '/^reo_command_reader=/,/^guard || fail/p' "$h/test-primary-client.sh" | head -n -1)
+source <(sed -n '/^debugfs_reader=/,/^guard || fail/p' "$h/test-primary-client.sh" | head -n -1)
 remote(){ echo 'measurement attempted SSH exec' >&2; exit 1; }
 remote_stream(){
     [[ $# == 1 && $1 == 'sh -s' ]] || return 1

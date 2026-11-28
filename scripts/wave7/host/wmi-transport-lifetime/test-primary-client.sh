@@ -350,17 +350,20 @@ guard(){
     ping -I 192.168.76.2 -c 1 -W 1 192.168.76.1 >/dev/null &&
     ping -I 192.168.76.250 -c 1 -W 1 192.168.76.1 >/dev/null
 }
+debugfs_reader=$(cat "$(dirname "$helper")/ap-debugfs-reader.sh")
 snapshot_rx(){
-    remote 'set -eu
+    remote "set -eu
+        $debugfs_reader
         cat /proc/sys/kernel/random/boot_id
         cat /proc/uptime
         for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do
-            echo "===$f"
-            cat "$f"
-        done'
+            echo \"===\$f\"
+            read_debugfs \"\$f\"
+        done"
 }
 snapshot_srng(){
-    remote 'set -eu; cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; cat /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state'
+    remote "set -eu; $debugfs_reader
+        cat /proc/sys/kernel/random/boot_id; cat /proc/uptime; read_debugfs /sys/kernel/debug/ath12k/ahb-c000000.wifi/srng_state"
 }
 snapshot_icmp(){
     remote 'cat /proc/sys/kernel/random/boot_id
@@ -374,17 +377,7 @@ capture_reo_commands(){
     for d in /sys/kernel/debug/ath12k/ahb-c000000.wifi /sys/kernel/debug/ath12k/ahb-soc@0:wifi; do
         f="$d/reo_cmd_stats"
         [ -r "$f" ] || return 1
-        attempt=0
-        while :; do
-            if result=$(cat "$f" 2>&1); then break; fi
-            case "$result" in
-                'cat: read error: Resource busy'|'cat: read error: Device or resource busy') ;;
-                *) printf '%s\n' "$result" >&2; return 1 ;;
-            esac
-            attempt=$((attempt + 1))
-            [ "$attempt" -lt 5 ] || return 1
-            sleep .02
-        done
+        result=$(read_debugfs "$f") || return 1
         printf '==== REO_CMD %s\n%s\n' "${d##*/}" "$result"
     done
 }
@@ -395,6 +388,7 @@ snapshot_reo_commands(){
         [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]
         cat /proc/sys/kernel/random/boot_id
         cat /proc/uptime
+        $debugfs_reader
         $reo_command_reader
         capture_reo_commands
         echo ==== END
@@ -434,6 +428,7 @@ snapshot_load(){
             iw dev ap-mld0 info 2>&1 || info_rc=\$?
             echo GEOMETRY_AFTER_END rc=\$info_rc
         }
+        $debugfs_reader
         $htt_mlo_reader
         $tx_attempt_reader
         capture_htt_tx(){
@@ -539,20 +534,20 @@ snapshot_load(){
         cat /sys/kernel/debug/ieee80211/phy0/aql_pending
         for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do
             echo ==== \"\$f\"
-            cat \"\$f\"
+            read_debugfs \"\$f\"
         done
         for f in /sys/kernel/debug/ath12k/*/rx_page_pool_stats; do
             [ -e \"\$f\" ] || continue
             d=\${f%/*}
             echo ==== PAGE_POOL \"\${d##*/}\"
-            cat \"\$f\"
+            read_debugfs \"\$f\"
         done
         if [ '$ap_rx_error_stats' = 1 ]; then
             for f in /sys/kernel/debug/ath12k/*/device_dp_stats; do
                 d=\${f%/*}
                 [ -r \"\$d/rx_error_stats\" ] || exit 1
                 echo ==== RX_ERROR \"\${d##*/}\"
-                cat \"\$d/rx_error_stats\"
+                read_debugfs \"\$d/rx_error_stats\"
             done
         fi
         if [ '$ap_tx_attempt_stats' = 1 ]; then
@@ -957,7 +952,8 @@ for band in "${bands[@]}"; do
             fi
             if (( ap_load_series )) && [[ $direction == uplink ]]; then
                 series="$prefix.ap-load-series.txt"
-                remote_stream "sh -s -- $boot" < "$(dirname "$helper")/ap-load-series.sh" > "$series" 2>&1 &
+                { printf '%s\n' "$debugfs_reader"; cat "$(dirname "$helper")/ap-load-series.sh"; } |
+                    remote_stream "sh -s -- $boot" > "$series" 2>&1 &
                 ap_series_pid=$!
                 deadline=$((SECONDS + 8))
                 until [[ -s $series ]] && rg -qx 'LOAD_SERIES_READY' "$series"; do
