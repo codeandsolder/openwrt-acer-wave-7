@@ -1,0 +1,227 @@
+Subject: [PATCH] wifi: ath12k: snapshot TX completion station and rates once
+
+Resolve the WBM peer once, snapshot the last PPDU rate and update the
+WBM rate under a single datapath lock. Preserve NSS fallback, all
+rate conversion rules and the distinction between WBM and PPDU rates.
+Report invalid rate data after dropping the lock.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
++++ b/drivers/net/wireless/ath/ath12k/wifi7/dp_tx.c
+@@ -562,44 +562,13 @@
+ 	ath12k_dp_tx_htt_tx_complete_buf(dp_pdev, params, &ts, peer_id);
+ }
+ 
+-static void ath12k_wifi7_dp_tx_update_txcompl(struct ath12k_pdev_dp *dp_pdev,
+-					      struct hal_tx_status *ts)
+-{
+-	struct ath12k_dp *dp = dp_pdev->dp;
+-	struct ath12k_dp_link_peer *peer;
+-	struct ath12k_link_sta *arsta;
+-	struct rate_info txrate = {};
+-	struct ieee80211_sta *sta;
+-	struct ath12k_sta *ahsta;
++static bool ath12k_wifi7_dp_tx_decode_rate(const struct hal_tx_status *ts,
++					   u8 nss, struct rate_info *out)
++{
++	struct rate_info txrate = { .nss = nss };
+ 	u16 rate, ru_tones;
+ 	u8 rate_idx = 0;
+ 	int ret;
+-
+-	peer = ath12k_dp_link_peer_find_by_peerid(dp_pdev, ts->peer_id);
+-	if (!peer || !peer->sta) {
+-		ath12k_dbg(dp->ab, ATH12K_DBG_DP_TX,
+-			   "failed to find the peer by id %u\n", ts->peer_id);
+-		return;
+-	}
+-
+-	spin_lock_bh(&dp->dp_lock);
+-
+-	sta = peer->sta;
+-	if (!sta) {
+-		spin_unlock_bh(&dp->dp_lock);
+-		return;
+-	}
+-	ahsta = ath12k_sta_to_ahsta(sta);
+-	arsta = NULL;
+-	if (peer->link_id < ARRAY_SIZE(ahsta->link))
+-		arsta = rcu_dereference(ahsta->link[peer->link_id]);
+-
+-	/* WBM has no NSS field. Use the same link's PPDU estimate first. */
+-	txrate.nss = peer->last_txrate.nss;
+-	if (!txrate.nss && arsta)
+-		txrate.nss = arsta->peer_nss;
+-
+-	spin_unlock_bh(&dp->dp_lock);
+ 
+ 	switch (ts->pkt_type) {
+ 	case HAL_TX_RATE_STATS_PKT_TYPE_11A:
+@@ -608,18 +577,14 @@
+ 							    ts->pkt_type,
+ 							    &rate_idx,
+ 							    &rate);
+-		if (ret < 0) {
+-			ath12k_warn(dp->ab, "Invalid tx legacy rate %d\n", ret);
+-			return;
+-		}
++		if (ret < 0)
++			return false;
+ 
+ 		txrate.legacy = rate;
+ 		break;
+ 	case HAL_TX_RATE_STATS_PKT_TYPE_11N:
+-		if (ts->mcs > ATH12K_HT_MCS_MAX) {
+-			ath12k_warn(dp->ab, "Invalid HT mcs index %d\n", ts->mcs);
+-			return;
+-		}
++		if (ts->mcs > ATH12K_HT_MCS_MAX)
++			return false;
+ 
+ 		if (txrate.nss != 0)
+ 			txrate.mcs = ts->mcs + 8 * (txrate.nss - 1);
+@@ -630,10 +595,8 @@
+ 			txrate.flags |= RATE_INFO_FLAGS_SHORT_GI;
+ 		break;
+ 	case HAL_TX_RATE_STATS_PKT_TYPE_11AC:
+-		if (ts->mcs > ATH12K_VHT_MCS_MAX) {
+-			ath12k_warn(dp->ab, "Invalid VHT mcs index %d\n", ts->mcs);
+-			return;
+-		}
++		if (ts->mcs > ATH12K_VHT_MCS_MAX)
++			return false;
+ 
+ 		txrate.mcs = ts->mcs;
+ 		txrate.flags = RATE_INFO_FLAGS_VHT_MCS;
+@@ -642,28 +605,23 @@
+ 			txrate.flags |= RATE_INFO_FLAGS_SHORT_GI;
+ 		break;
+ 	case HAL_TX_RATE_STATS_PKT_TYPE_11AX:
+-		if (ts->mcs > ATH12K_HE_MCS_MAX) {
+-			ath12k_warn(dp->ab, "Invalid HE mcs index %d\n", ts->mcs);
+-			return;
+-		}
++		if (ts->mcs > ATH12K_HE_MCS_MAX)
++			return false;
+ 
+ 		txrate.mcs = ts->mcs;
+ 		txrate.flags = RATE_INFO_FLAGS_HE_MCS;
+ 		txrate.he_gi = ath12k_he_gi_to_nl80211_he_gi(ts->sgi);
+ 		break;
+ 	case HAL_TX_RATE_STATS_PKT_TYPE_11BE:
+-		if (ts->mcs > ATH12K_EHT_MCS_MAX) {
+-			ath12k_warn(dp->ab, "Invalid EHT mcs index %d\n", ts->mcs);
+-			return;
+-		}
++		if (ts->mcs > ATH12K_EHT_MCS_MAX)
++			return false;
+ 
+ 		txrate.mcs = ts->mcs;
+ 		txrate.flags = RATE_INFO_FLAGS_EHT_MCS;
+ 		txrate.eht_gi = ath12k_mac_eht_gi_to_nl80211_eht_gi(ts->sgi);
+ 		break;
+ 	default:
+-		ath12k_warn(dp->ab, "Invalid tx pkt type: %d\n", ts->pkt_type);
+-		return;
++		return false;
+ 	}
+ 
+ 	txrate.bw = ath12k_mac_bw_to_mac80211_bw(ts->bw);
+@@ -681,9 +639,61 @@
+ 			ath12k_mac_eht_ru_tones_to_nl80211_eht_ru_alloc(ts->tones);
+ 	}
+ 
++	*out = txrate;
++	return true;
++}
++
++/* The caller holds RCU through mac80211 status delivery. Snapshot the station
++ * and its last PPDU rate together, and publish the WBM rate under the same
++ * lock. This avoids duplicate peer lookups and separately locked snapshots.
++ */
++static struct ieee80211_sta *
++ath12k_wifi7_dp_tx_peer_snapshot(struct ath12k_pdev_dp *dp_pdev,
++				 const struct hal_tx_status *ts,
++				 struct rate_info *rate)
++{
++	struct ath12k_dp *dp = dp_pdev->dp;
++	struct ath12k_dp_link_peer *peer;
++	struct ieee80211_sta *sta = NULL;
++	struct rate_info txrate;
++	bool invalid_rate = false;
++	u8 nss;
++
+ 	spin_lock_bh(&dp->dp_lock);
+-	peer->txrate = txrate;
++	peer = ath12k_dp_link_peer_find_by_peerid(dp_pdev, ts->peer_id);
++	if (!peer || !peer->sta)
++		goto unlock;
++
++	sta = peer->sta;
++	*rate = peer->last_txrate;
++
++	if (!(ts->flags & HAL_TX_STATUS_FLAGS_RATE_STATS_VALID))
++		goto unlock;
++
++	/* WBM has no NSS field. Prefer the same link's PPDU estimate. */
++	nss = rate->nss;
++	if (!nss) {
++		struct ath12k_sta *ahsta = ath12k_sta_to_ahsta(sta);
++		struct ath12k_link_sta *arsta = NULL;
++
++		if (peer->link_id < ARRAY_SIZE(ahsta->link))
++			arsta = rcu_dereference(ahsta->link[peer->link_id]);
++		if (arsta)
++			nss = arsta->peer_nss;
++	}
++
++	if (ath12k_wifi7_dp_tx_decode_rate(ts, nss, &txrate))
++		peer->txrate = txrate;
++	else
++		invalid_rate = true;
++
++unlock:
+ 	spin_unlock_bh(&dp->dp_lock);
++	if (invalid_rate)
++		ath12k_warn(dp->ab, "Invalid TX rate type %u MCS %u\n",
++			    ts->pkt_type, ts->mcs);
++
++	return sta;
+ }
+ 
+ static void ath12k_wifi7_dp_tx_complete_msdu(struct ath12k_pdev_dp *dp_pdev,
+@@ -697,7 +707,6 @@
+ 	s32 noise_floor;
+ 	struct ieee80211_tx_status status = {};
+ 	struct ieee80211_rate_status status_rate = {};
+-	struct ath12k_dp_link_peer *peer;
+ 	struct rate_info rate;
+ 
+ 	info = IEEE80211_SKB_CB(msdu);
+@@ -752,11 +761,8 @@
+ 	 * Might end up reporting it out-of-band from HTT stats.
+ 	 */
+ 
+-	if (ts->flags & HAL_TX_STATUS_FLAGS_RATE_STATS_VALID)
+-		ath12k_wifi7_dp_tx_update_txcompl(dp_pdev, ts);
+-
+-	peer = ath12k_dp_link_peer_find_by_peerid(dp_pdev, ts->peer_id);
+-	if (!peer || !peer->sta) {
++	status.sta = ath12k_wifi7_dp_tx_peer_snapshot(dp_pdev, ts, &rate);
++	if (!status.sta) {
+ 		ath12k_err(ab,
+ 			   "dp_tx: failed to find the peer with peer_id %d\n",
+ 			   ts->peer_id);
+@@ -764,12 +770,8 @@
+ 		return;
+ 	}
+ 
+-	status.sta = peer->sta;
+ 	status.info = info;
+ 	status.skb = msdu;
+-	spin_lock_bh(&dp->dp_lock);
+-	rate = peer->last_txrate;
+-	spin_unlock_bh(&dp->dp_lock);
+ 
+ 	if (rate.nss || rate.legacy) {
+ 		status_rate.rate_idx = rate;
