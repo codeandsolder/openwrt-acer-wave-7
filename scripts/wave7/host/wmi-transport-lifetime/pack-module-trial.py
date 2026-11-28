@@ -27,6 +27,26 @@ def module_key(name):
 
 
 
+def fixed_lab_primary(data):
+    """Pin only the 5 GHz lab primary channel; never touch 2.4 GHz coexistence."""
+    text = data.decode("utf-8")
+    sections = re.split(r"(?m)(?=^config )", text)
+    matches = [i for i, section in enumerate(sections)
+               if section.startswith("config wifi-device 'radio1'\n")]
+    check(len(matches) == 1, 'unique radio1 device')
+    i = matches[0]
+    section = sections[i]
+    for name, value in (('band', '5g'), ('channel', '36'), ('htmode', 'EHT80')):
+        check(re.findall(r"(?m)^\s*option " + name + r" '([^']+)'$", section) == [value],
+              'fixed lab radio1 ' + name)
+    check(not re.search(r"(?m)^\s*(?:option|list) (?:noscan|hostapd_options)\b", section),
+          'unexpected existing scan override')
+    check(section.count("\toption htmode 'EHT80'\n") == 1, 'radio1 stanza format')
+    sections[i] = section.replace("\toption htmode 'EHT80'\n",
+                                  "\toption htmode 'EHT80'\n\toption noscan '1'\n")
+    return ''.join(sections).encode("utf-8")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--spec', type=Path, required=True)
@@ -38,8 +58,16 @@ def main():
     profile_spec = json.loads(a.spec.read_text())
     base_keys = {'parent_sha', 'parent_rev', 'parent_builder', 'fit_sha', 'kernel', 'modules', 'patch_commit', 'patch_key', 'filename'}
     kernel_keys = {'replacement_fit_sha', 'kernel_closure_sha', 'kernel_config_sha'}
+    policy_trial = 'lab_primary_channel' in profile_spec
+    if policy_trial:
+        check(set(profile_spec['lab_primary_channel']) == {'before', 'after'} and
+              all(re.fullmatch(r'[a-f0-9]{64}', v)
+                  for v in profile_spec['lab_primary_channel'].values()) and
+              profile_spec['lab_primary_channel']['before'] != profile_spec['lab_primary_channel']['after'],
+              'lab wireless policy pins')
     kernel_trial = set(profile_spec) == base_keys | kernel_keys
-    check(kernel_trial or set(profile_spec) == base_keys, 'spec keys')
+    check(kernel_trial or set(profile_spec) == base_keys |
+          ({'lab_primary_channel'} if policy_trial else set()), 'spec keys')
     kernel_inputs = (a.replacement_fit, a.kernel_closure, a.kernel_config)
     check(all(x is not None for x in kernel_inputs) if kernel_trial else all(x is None for x in kernel_inputs), 'kernel trial inputs')
     check(re.fullmatch(r'\d+\.\d+\.\d+', profile_spec['kernel']), 'kernel pin')
@@ -113,6 +141,14 @@ def main():
             module.write_bytes((a.modules / name).read_bytes())
             if before != modules[name][1]:
                 module_delta.add(module.relative_to(root).as_posix())
+        policy_delta = set()
+        if policy_trial:
+            wireless = root / 'etc/config/wireless'
+            pins = profile_spec['lab_primary_channel']
+            check(sha(wireless) == pins['before'], 'parent wireless policy digest')
+            wireless.write_bytes(fixed_lab_primary(wireless.read_bytes()))
+            check(sha(wireless) == pins['after'], 'candidate wireless policy digest')
+            policy_delta.add('etc/config/wireless')
         for rel in IDENTITIES[:4]:
             f = root / rel
             old = f.read_text()
@@ -132,11 +168,14 @@ def main():
         if kernel_trial:
             fields.update(trial_fit_sha256=fit_sha, trial_kernel_config_sha256=profile_spec['kernel_config_sha'],
                           trial_kernel_closure_sha256=profile_spec['kernel_closure_sha'])
+        if policy_trial:
+            fields['trial_lab_primary_channel'] = '36'
+            fields['trial_lab_wireless_sha256'] = profile_spec['lab_primary_channel']['after']
         profile.write_text(''.join(f'{k}={v}\n' for k,v in fields.items()))
         cmd('sh', '-c', '. "$1"; wave7_ap_check_image "$2"', 'sh', root / 'lib/wave7/overlay-reset.sh', root)
         current = read_manifest(root)
         delta = sorted(k for k in original.keys() | current.keys() if original.get(k) != current.get(k))
-        check(set(delta) == set(IDENTITIES) | module_delta, 'unexpected root delta: ' + str(delta))
+        check(set(delta) == set(IDENTITIES) | module_delta | policy_delta, 'unexpected root delta: ' + str(delta))
         check(original.keys() == current.keys() and all(original[k][0] == current[k][0] and original[k][2] == current[k][2] for k in original), 'root inventory/types/modes')
         cmd(mksq, root, t / 'new.sq', '-nopad', '-noappend', '-root-owned', '-comp', 'xz', '-Xpreset', '9', '-Xe', '-Xlc', '0', '-Xlp', '2', '-Xpb', '2', '-b', '256k', '-p', '/dev d 755 0 0', '-p', '/dev/console c 600 0 0 5 1', '-no-xattrs', '-block-readers', '4', '-small-readers', '4')
         check((t / 'new.sq').stat().st_size <= 29204480, 'rootfs limit')
@@ -169,6 +208,8 @@ def main():
         for name, (_, after) in modules.items():
             meta['wave7_trial_radio'][module_key(name)] = after
         meta['wave7_trial_radio'][patch_key] = fields[patch_key]
+        if policy_trial:
+            meta['wave7_trial_lab_primary_channel'] = profile_spec['lab_primary_channel']
         if kernel_trial:
             meta['wave7_trial_kernel'] = {key: profile_spec[key] for key in sorted(kernel_keys)}
         (t / 'new-meta').write_text(json.dumps(meta))
@@ -185,6 +226,8 @@ def main():
                       radio_release=fields['trial_radio_release'], firmware=radio_manifest,
                       module_sha256={k: sha(root / moddir / k) for k in sorted(modules)},
                       delta=delta, roundtrip_identical=True)
+        if policy_trial:
+            report['lab_primary_channel'] = profile_spec['lab_primary_channel']
         if kernel_trial:
             report.update({key: profile_spec[key] for key in sorted(kernel_keys)})
         a.out.mkdir(mode=0o700)
