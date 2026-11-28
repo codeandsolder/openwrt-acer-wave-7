@@ -6,7 +6,7 @@ set -Eeuo pipefail
    $2 =~ ^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$ &&
    $4 =~ ^(90|150|300)$ ]]
 case $3 in
-    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath|--reconnect-data-tokens|--reconnect-mld-record) ;;
+    --none|--rx-data|--rx-header|--rx-wtbl|--rx-cnm|--rx-txd|--rx-cnm-group|--mgmt-tx|--reconnect-datapath|--reconnect-data-tokens|--reconnect-mld-record|--stall) ;;
     *) exit 2 ;;
 esac
 seconds=$4
@@ -15,6 +15,14 @@ reconnect=0
 profile=$3
 tokens=0
 mld_record=0
+stall=0
+if [[ $profile == --stall ]]; then
+    # Hold-only profile: no CNM/WTBL queries and no TX load benchmark.
+    # Trace the existing data path, firmware notifications and clock anchors.
+    stall=1
+    group=1
+    tokens=1
+fi
 if [[ $profile == --reconnect-mld-record ]]; then
     mld_record=1
     profile=--reconnect-data-tokens
@@ -47,7 +55,7 @@ events=(cfg80211/rdev_tx_control_port
         mac80211/drv_ampdu_action)
 rx_data=0
 rx_header=0
-if [[ $profile == --rx-data || $profile == --rx-header || $profile == --rx-wtbl || $profile == --rx-cnm || $profile == --rx-txd ]]; then
+if [[ $profile == --rx-data || $profile == --rx-header || $profile == --rx-wtbl || $profile == --rx-cnm || $profile == --rx-txd || $profile == --stall ]]; then
     rx_data=1
     events+=(mt7925_lab/mt7925_lab_rxdesc
              mt7925_lab/mt7925_lab_rx_frame
@@ -71,7 +79,7 @@ fi
 if [[ $profile == --rx-txd ]]; then
     events+=(mt7925_lab/mt7925_lab_tx_descriptor)
 fi
-if [[ $profile == --mgmt-tx ]] || (( reconnect )); then
+if [[ $profile == --mgmt-tx ]] || (( reconnect || stall )); then
     events+=(mt7925_lab/mt7925_lab_mgmt_txd
              mt7925_lab/mt7925_lab_mgmt_tx_free
              mt7925_lab/mt7925_lab_mgmt_txs
@@ -80,11 +88,18 @@ fi
 net_events=(net/net_dev_start_xmit net/netif_receive_skb_entry
             net/netif_receive_skb_list_entry net/napi_gro_receive_entry
             net/netif_rx_entry)
-if (( reconnect )); then
+if (( reconnect || stall )); then
     events+=("${net_events[@]}")
 fi
 if (( tokens )); then
     events+=(mt7925_lab/mt7925_lab_data_txd mt7925_lab/mt7925_lab_data_tx_free)
+fi
+if (( stall )); then
+    events+=(mt7925_lab/mt7925_lab_mcu_rx
+             mt7925_lab/mt7925_lab_beacon_loss
+             mt7925_lab/mt7925_lab_roc_sync
+             mac80211/drv_hw_scan mac80211/api_scan_completed
+             mac80211/api_beacon_loss mac80211/api_connection_loss)
 fi
 if (( mld_record )); then
     events+=(mt7925_lab/mt7925_lab_mld_record_result
@@ -99,6 +114,7 @@ cleanup(){
     trap - EXIT
     echo 0 > "$inst/tracing_on" || rc=1
     rmdir "$inst" || rc=1
+    if (( stall )); then echo "TRACE_CLEANUP rc=$rc"; fi
     echo "CLIENT_CONTROL_TRACE_END rc=$rc"
     exit "$rc"
 }
@@ -109,7 +125,12 @@ echo 0 > "$inst/tracing_on"
 echo mono > "$inst/trace_clock"
 echo nop > "$inst/current_tracer"
 if (( rx_data )); then
-    echo 1024 > "$inst/buffer_size_kb"
+    if (( stall )); then
+        # 120-second three-stream hold, not saturated traffic.
+        echo 8192 > "$inst/buffer_size_kb"
+    else
+        echo 1024 > "$inst/buffer_size_kb"
+    fi
     # Peer descriptors, accepted unicast data, and all peer TX statuses.
     # Capture errors and unresolved translated frames as well as valid peers.
     if (( group )); then
@@ -123,18 +144,43 @@ if (( rx_data )); then
 else
     echo 256 > "$inst/buffer_size_kb"
 fi
-if (( reconnect )); then
+if (( reconnect || stall )); then
     # Ethernet protocol and skb length only; restrict to the isolated
     # Wi-Fi interface and the address-configuration/data protocols.
     for e in "${net_events[@]}"; do
         echo 'name == "wlp2s0" && (protocol == 0x0800 || protocol == 0x0806 || protocol == 0x86dd)' > "$inst/events/$e/filter"
     done
 fi
+if (( stall )); then
+    echo 'option & 4' > "$inst/events/mt7925_lab/mt7925_lab_mcu_rx/filter"
+    cat "$inst/trace_clock"
+fi
 for e in "${events[@]}"; do echo 1 > "$inst/events/$e/enable"; done
 echo 1 > "$inst/tracing_on"
 echo "CLIENT_CONTROL_TRACE_READY boot=$2 rx_data=$rx_data rx_header=$rx_header"
-rc=0
-timeout "${seconds}s" cat "$inst/trace_pipe" || rc=$?
-[[ $rc == 124 ]]
-echo 0 > "$inst/tracing_on"
-for stats in "$inst"/per_cpu/cpu*/stats; do cat "$stats"; done
+if (( stall )); then
+    # A same-host wall/monotonic bracket surrounds the actual trace marker.
+    # Keep the independent crash stream for partial evidence if Wyse locks.
+    deadline=$((SECONDS+seconds))
+    i=0
+    while :; do
+        before=$(date +%s.%N)
+        printf 'wave7_anchor=%d\n' "$i" > "$inst/trace_marker"
+        after=$(date +%s.%N)
+        printf 'ANCHOR %d %s %s\n' "$i" "$before" "$after"
+        (( SECONDS < deadline )) || break
+        ((i+=1))
+        sleep 2
+    done
+    echo 0 > "$inst/tracing_on"
+    for stats in "$inst"/per_cpu/cpu*/stats; do cat "$stats"; done
+    echo TRACE_DATA
+    cat "$inst/trace"
+    echo TRACE_END
+else
+    rc=0
+    timeout "${seconds}s" cat "$inst/trace_pipe" || rc=$?
+    [[ $rc == 124 ]]
+    echo 0 > "$inst/tracing_on"
+    for stats in "$inst"/per_cpu/cpu*/stats; do cat "$stats"; done
+fi

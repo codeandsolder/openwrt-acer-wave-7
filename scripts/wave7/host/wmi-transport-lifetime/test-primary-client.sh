@@ -40,6 +40,7 @@ ap_htt_mlo_stats=0
 ap_reo_command_stats=0
 ap_tx_attempt_stats=0
 client_pm_profile=""
+client_stall_observe=0
 ap_link_tool=""
 client_rx_arg=--none
 variant_mgmt_profile=--none
@@ -60,6 +61,7 @@ for arg in "$@"; do
             [[ $wired_capture == none ]] || fail 'one wired capture profile'
             wired_capture=ndp ;;
         --client-ip6-observe) ip6_observe=1 ;;
+        --client-stall-observe) client_stall_observe=1 ;;
         --dhcp-boundaries) dhcp_boundaries=1 ;;
         --icmp-boundaries) icmp_boundaries=1 ;;
         --client-dual-hold) dual_hold=1 ;;
@@ -162,6 +164,11 @@ if (( dhcp_boundaries )) && { [[ $wired_capture != ndp ]] ||
 fi
 if (( icmp_boundaries && !reconnect_datapath )); then
     fail "ICMP boundaries require reconnect traces"
+fi
+if (( client_stall_observe )); then
+    (( dual_soak && !dual_load && !dual_reconnect )) || fail 'stall trace requires isolated dual-stack hold'
+    [[ $variant == upstream-prefix22-authorize-delayed-links-reconnect-teardown-privilege-trace ]] ||
+        fail 'stall trace requires attested TX token trace variant'
 fi
 boundary_profiles=()
 if (( dhcp_boundaries )); then boundary_profiles+=(dhcp4); fi
@@ -707,7 +714,7 @@ client_boot=$(wyse 'cat /proc/sys/kernel/random/boot_id')
 # Packet timestamp correlation must not straddle the client's first NTP
 # correction after boot. Wait for synchronization without changing its clock
 # or time-service policy; retain the strict observer clock-step checks.
-if (( ${#boundary_profiles[@]} )); then
+if (( ${#boundary_profiles[@]} || client_stall_observe )); then
     wyse 'set -eu; for n in $(seq 1 90); do
         sync=$(timedatectl show -p NTPSynchronized --value)
         printf "CLOCK_SYNC_CHECK %s %s\n" "$(cut -d" " -f1 /proc/uptime)" "$sync"
@@ -802,7 +809,14 @@ for band in "${bands[@]}"; do
     if [[ $wired_capture == ndp && $control_profile == --rx-cnm ]]; then
         control_profile=--rx-cnm-group
     fi
-    wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot $control_profile $observe_seconds" > "$prefix.client-control-trace.txt" 2>&1 &
+    if (( client_stall_observe )); then
+        # Use the exact checked-out observer without replacing shared Wyse helpers.
+        sha256sum "$(dirname "$helper")/client-control-trace.sh" > "$prefix.stall-observer.sha256"
+        wyse_stream "sudo -n bash -s -- $tag $client_boot --stall $observe_seconds" \
+            < "$(dirname "$helper")/client-control-trace.sh" > "$prefix.client-control-trace.txt" 2>&1 &
+    else
+        wyse "sudo -n bash $client/client-control-trace.sh $tag $client_boot $control_profile $observe_seconds" > "$prefix.client-control-trace.txt" 2>&1 &
+    fi
     client_control_pid=$!
     if [[ $wired_capture != none ]]; then
         # Header summaries only, no payload or promiscuous capture.
@@ -1130,6 +1144,11 @@ for band in "${bands[@]}"; do
         else
             jq -e '.pm_load_profile == null' "$prefix.load-result.json" >/dev/null || cases_failed=1
         fi
+    fi
+    if (( client_stall_observe )); then
+        uv run --offline --no-project python -B "$(dirname "$helper")/report-client-stall.py" \
+            "$prefix.client.tar" "$tag" "$prefix.client-control-trace.txt" \
+            > "$prefix.stall-report.json" 2>"$prefix.stall-report-errors.txt" || cases_failed=1
     fi
     result=$(tar -xOf "$prefix.client.tar" "$tag/$result_file" 2>/dev/null || :)
     if (( reconnect_count == 2 )); then
