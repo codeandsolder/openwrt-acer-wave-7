@@ -137,6 +137,9 @@ for arg in "$@"; do
 done
 if (( (dual_soak || dual_load || dual_reconnect) && ${#bands[@]} != 1 )); then fail "select one band per extended trial"; fi
 if (( dual_soak + dual_load + dual_reconnect > 1 )); then fail "select one extended trial mode"; fi
+if [[ $variant == upstream-prefix22-authorize-single-link-trace ]] && (( dual_hold && !dual_load )); then
+    fail 'single-active-link variant supports short IPv4 or controlled TCP load, not dual-link hold/reconnect/soak'
+fi
 if (( reconnect_datapath )) && { (( !dual_reconnect )) ||
     [[ $variant_reconnect_profile == --none ]]; }; then
     fail "reconnect datapath capture requires a reconnect-capable variant"

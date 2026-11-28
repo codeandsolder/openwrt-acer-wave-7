@@ -29,18 +29,28 @@ lab_ipv4_from_ip() {
 }
 
 # Validate hex before arithmetic, accepting the kernel's zero padding.
-dual_link_masks() {
-    [[ $1 =~ ^0x0*3$ && $2 =~ ^0x0*3$ && $3 =~ ^0x0+$ ]]
+link_masks() {
+    local expected=$1
+    [[ $expected =~ ^[123]$ && $2 =~ ^0x0*$expected$ && $3 =~ ^0x0*3$ && $4 =~ ^0x0+$ ]]
 }
 
 if [[ $# == 1 && $1 == --selftest-link-masks ]]; then
-    dual_link_masks 0x3 0x3 0x0
-    dual_link_masks 0x0003 0x03 0x0000
-    dual_link_masks 0x1 0x3 0x2 && exit 1
-    dual_link_masks 0x3 0x3 0x1 && exit 1
-    dual_link_masks 0x3 0x7 0x0 && exit 1
-    dual_link_masks 3 0x3 0x0 && exit 1
-    dual_link_masks 0x3 0x3 '' && exit 1
+    link_masks 3 0x3 0x3 0x0
+    link_masks 3 0x0003 0x03 0x0000
+    link_masks 3 0x1 0x3 0x2 && exit 1
+    link_masks 3 0x3 0x3 0x1 && exit 1
+    link_masks 3 0x3 0x7 0x0 && exit 1
+    link_masks 3 3 0x3 0x0 && exit 1
+    link_masks 3 0x3 0x3 '' && exit 1
+    for expected in 1 2; do
+        link_masks "$expected" "0x000$expected" 0x3 0x0
+        for actual in 1 2 3; do
+            if [[ $actual != "$expected" ]] && link_masks "$expected" "0x$actual" 0x3 0x0; then exit 1; fi
+        done
+        link_masks "$expected" "0x$expected" "0x$expected" 0x0 && exit 1
+        link_masks "$expected" "0x$expected" 0x3 0x2 && exit 1
+    done
+    link_masks 0 0x0 0x3 0x0 && exit 1
     echo LINK_MASK_SELFTEST_PASS
     exit 0
 fi
@@ -103,6 +113,7 @@ early_dual=0
 early_soak=0
 early_load=0
 early_reconnect=0
+expected_active_mask=3
 pm_experiment=0
 deep_expected=1
 runtime_expected=1
@@ -150,6 +161,16 @@ case "${2:-}" in
             upstream_stack_variant=${2#--early-only-}
         else
             upstream_stack_variant=${2#--scan-timing-}
+        fi
+        # A controlled one-active-link MLD load uses the same dual-stack
+        # traffic and restoration gates, but not the dual-link topology gate.
+        if [[ $upstream_stack_variant == upstream-prefix22-authorize-single-link-trace ]] && (( early_dual )); then
+            (( early_load )) || exit 2
+            case $association_preference in
+                --bssid-24) expected_active_mask=1 ;;
+                --bssid-5) expected_active_mask=2 ;;
+                *) exit 2 ;;
+            esac
         fi
         upstream_trace_profile=$(bash "$stack_guard" "$upstream_stack_variant" --trace-profile) || exit 2
         if [[ -n $association_preference ]]; then
@@ -664,7 +685,7 @@ if (( early_only )); then
                 dormant=$(rootcmd cat "$path/dormant_links")
                 printf 'sample=%d epoch=%s active=%s valid=%s dormant=%s\n' \
                     "$i" "$(date +%s.%N)" "$active" "$valid" "$dormant"
-                dual_link_masks "$active" "$valid" "$dormant" || exit 1
+                link_masks 3 "$active" "$valid" "$dormant" || exit 1
                 if (( i < 23 )); then sleep 5; fi
             done
         ) > "$out/soak-link-masks.txt" 2>&1 &
@@ -692,9 +713,10 @@ if (( early_only )); then
         done
     } > "$out/early-only-final.txt" 2>&1
     if (( early_dual )); then
-        # A successful ping on one active link is not dual-link evidence.
+        # Strictly attest the requested active link mask; dual-stack
+        # success must not be mistaken for dual-link success.
         for f in early-only-snapshot.txt early-only-final.txt; do
-            rg -qx 'mac80211_active_links=0x0*3' "$out/$f" || short_failed=1
+            rg -qx "mac80211_active_links=0x0*$expected_active_mask" "$out/$f" || short_failed=1
             rg -qx 'mac80211_valid_links=0x0*3' "$out/$f" || short_failed=1
             rg -qx 'mac80211_dormant_links=0x0+' "$out/$f" || short_failed=1
         done
@@ -755,7 +777,7 @@ if (( early_only )); then
                 v=$(rootcmd cat "$path/valid_links") || return 1
                 d=$(rootcmd cat "$path/dormant_links") || return 1
                 printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
-                dual_link_masks "$a" "$v" "$d"
+                link_masks 3 "$a" "$v" "$d"
             }
             reconnect_links > "$out/reconnect-links-before.txt" || exit 3
             probe_start reconnect-hold-ap 440 "$v4" 192.168.76.1 -4
@@ -776,7 +798,7 @@ if (( early_only )); then
                 v=$(rootcmd cat "$path/valid_links") || return 1
                 d=$(rootcmd cat "$path/dormant_links") || return 1
                 printf 'epoch=%s active=%s valid=%s dormant=%s\n' "$(date +%s.%N)" "$a" "$v" "$d"
-                dual_link_masks "$a" "$v" "$d"
+                link_masks "$expected_active_mask" "$a" "$v" "$d"
             }
             for mode in uplink downlink bidirectional; do
                 load_link > "$out/load-$mode-before.txt" || exit 3

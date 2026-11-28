@@ -52,7 +52,7 @@ def read_run(path, band):
     identity = dict(stack=stack, kernel=kernel[0], firmware=firmware[0], geometry=[v.strip() for v in geometry],
                     preference=archive['association-preference.txt'], pm=pm,
                     variant=(path / 'client-variant.txt').read_text().strip(),
-                    iperf_source=result['source'], kernel_ap=state['kernel'], radio_ap=state['radio'])
+                    iperf_source=result['source'], active_link_mask=result['active_link_mask'], kernel_ap=state['kernel'], radio_ap=state['radio'])
     phases = {}
     for mode in load.MODES:
         pre = Path(f'{prefix}.load-{mode}-ap-before.txt').read_text()

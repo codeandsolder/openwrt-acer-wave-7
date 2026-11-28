@@ -56,9 +56,25 @@ def ping(text, expected, strict=False):
             if rtt else None}
 
 
-def check_link(text):
-    require(re.search(r"\bactive=0x0*3 valid=0x0*3 dormant=0x0+\b", text),
-            "dual-link state lost")
+def load_link_profile(files, band):
+    """Use the independently sealed client stack and pinned association BSSID."""
+    variants = re.findall(r"^STACK_CANDIDATE_PASS variant=(\S+) boot=\S+$",
+                          files["module-stack.txt"], re.M)
+    require(len(variants) == 1, "missing or ambiguous client module variant")
+    if variants[0] != "upstream-prefix22-authorize-single-link-trace":
+        return 3
+    bssids = {"24": ("70:5A:6F:5A:BB:16", 1), "5": ("4E:5A:6F:5A:BB:16", 2)}
+    require(band in bssids, "single-active-link control requires pinned band")
+    bssid, active = bssids[band]
+    actual = files["association-preference.txt"].splitlines()[0].replace(r"\:", ":")
+    require(actual.upper() == bssid, "single-active-link BSSID mismatch")
+    return active
+
+
+def check_link(text, expected_active):
+    require(expected_active in (1, 2, 3), "invalid active link mask")
+    require(re.search(rf"\bactive=0x0*{expected_active} valid=0x0*3 dormant=0x0+\b", text),
+            "requested active link state lost")
 
 
 def iperf(text, server_text, mode, target, *, source="192.168.76.2", port=52231,
@@ -163,11 +179,18 @@ def summarize(path, tag, prefix, *, describe_unqualified=False):
     source = re.search(r"\bipv4=(\S+)", f["early-only-snapshot.txt"])[1]
     require(ipaddress.ip_address(source) in ipaddress.ip_network("192.168.76.0/24"),
             "source outside lab")
+    band = Path(prefix).name.removeprefix("band-")
+    active = load_link_profile(f, band)
+    for name in ("early-only-snapshot.txt", "early-only-final.txt"):
+        require(re.search(rf"^mac80211_active_links=0x0*{active}$", f[name], re.M)
+                and re.search(r"^mac80211_valid_links=0x0*3$", f[name], re.M)
+                and re.search(r"^mac80211_dormant_links=0x0+$", f[name], re.M),
+                "requested active link state lost during initial hold")
     result = {}
     for mode in MODES:
         require(f[f"load-{mode}-exit.txt"].strip() == "0", "load process failed")
-        check_link(f[f"load-{mode}-before.txt"])
-        check_link(f[f"load-{mode}-after.txt"])
+        check_link(f[f"load-{mode}-before.txt"], active)
+        check_link(f[f"load-{mode}-after.txt"], active)
         require(Path(f"{prefix}.load-{mode}-exit.txt").read_text().strip() == "0",
                 "Asus iperf process failed")
         result[mode] = iperf(Path(f"{prefix}.load-{mode}.json").read_text(),
@@ -175,7 +198,7 @@ def summarize(path, tag, prefix, *, describe_unqualified=False):
         result[mode]["latency"] = {
             family: ping(f[f"load-{mode}-latency-{family}.txt"], 100)
             for family in ("v4", "v6")}
-    check_link(f["load-final.txt"])
+    check_link(f["load-final.txt"], active)
     pre = {name: ping(f[f"short-hold-{name}.txt"], 440, strict=not describe_unqualified)
            for name in ("1", "2", "v6")}
     post = {name: ping(f[f"post-load-{name}.txt"], 100, strict=not describe_unqualified)
@@ -184,7 +207,7 @@ def summarize(path, tag, prefix, *, describe_unqualified=False):
                                            for x in (*pre.values(), *post.values()))
     require(describe_unqualified or qualified, "client connectivity gate failed")
     return {"source": source, "cases": result, "pre_load": pre, "post_load": post,
-            "qualified": qualified, "client_gates": gates}
+            "qualified": qualified, "client_gates": gates, "active_link_mask": active}
 
 
 
