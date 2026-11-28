@@ -66,6 +66,7 @@ def read_run(path, band):
         identity[f'rx_error_stats_{mode}'] = 'rx_error_attribution' in extra
         identity[f'channel_survey_{mode}'] = 'channel_survey' in extra
         identity[f'htt_tx_{mode}'] = 'htt_tx' in extra
+        identity[f'reo_command_{mode}'] = 'reo_command' in extra
         traffic = result['cases'][mode]
         station = d['station_delta']
         reo = {}
@@ -85,6 +86,8 @@ def read_run(path, band):
                             tx_failed_per_1000=1000 * station['tx failed'] / station['tx packets'] if station['tx packets'] else None,
                             tx_airtime_us=station['tx duration'], cpu=d['cpu'], cpu_cost=d['cpu_cost'],
                             rates=d['station_rates'])
+        if 'reo_command' in extra:
+            phases[mode]['reo_command'] = extra['reo_command']
         if 'htt_tx' in extra:
             phases[mode]['htt_tx'] = extra['htt_tx']
         if 'channel_survey' in extra:

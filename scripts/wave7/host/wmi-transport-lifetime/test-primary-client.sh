@@ -36,6 +36,7 @@ ap_ring3_probe=0
 ap_link_stats=0
 ap_channel_survey=0
 ap_htt_tx_stats=0
+ap_reo_command_stats=0
 ap_link_tool=""
 client_rx_arg=--none
 variant_mgmt_profile=--none
@@ -75,6 +76,7 @@ for arg in "$@"; do
         --ap-link-stats) ap_link_stats=1 ;;
         --ap-channel-survey) ap_channel_survey=1 ;;
         --ap-htt-tx-stats) ap_htt_tx_stats=1 ;;
+        --ap-reo-command-stats) ap_reo_command_stats=1 ;;
         --client-rx-trace) client_rx_arg=--rx-data ;;
         --client-single-link) select_variant upstream-prefix22-authorize-single-link-trace --none --none ;;
         --client-delayed-links) select_variant upstream-prefix22-authorize-delayed-links-trace --none --none ;;
@@ -168,6 +170,7 @@ fi
 if (( ap_link_stats && !dual_load )); then fail "link stats require isolated TCP load trial"; fi
 if (( ap_channel_survey && !dual_load )); then fail "channel survey requires isolated TCP load trial"; fi
 if (( ap_htt_tx_stats && !dual_load )); then fail "HTT TX stats require isolated TCP load trial"; fi
+if (( ap_reo_command_stats && !dual_load )); then fail "REO command stats require isolated TCP load trial"; fi
 if [[ $variant == upstream-prefix22-authorize-delayed-links-header-trace ]]; then
     client_rx_arg=--rx-header
 elif [[ $variant == upstream-prefix22-authorize-delayed-links-wtbl-trace ||
@@ -336,6 +339,39 @@ snapshot_icmp(){
         cat /proc/uptime
         cat /proc/net/snmp'
 }
+# No firmware requests or DMA/MMIO reads; the driver snapshots its
+# own pending-slot state under the REO lock. Retry only transient EBUSY.
+reo_command_reader=$(cat <<'REMOTE'
+capture_reo_commands(){
+    for d in /sys/kernel/debug/ath12k/ahb-c000000.wifi /sys/kernel/debug/ath12k/ahb-soc@0:wifi; do
+        f="$d/reo_cmd_stats"
+        [ -r "$f" ] || return 1
+        attempt=0
+        while :; do
+            if result=$(cat "$f" 2>&1); then break; fi
+            case "$result" in
+                'cat: read error: Resource busy'|'cat: read error: Device or resource busy') ;;
+                *) printf '%s\n' "$result" >&2; return 1 ;;
+            esac
+            attempt=$((attempt + 1))
+            [ "$attempt" -lt 5 ] || return 1
+            sleep .02
+        done
+        printf '==== REO_CMD %s\n%s\n' "${d##*/}" "$result"
+    done
+}
+REMOTE
+)
+snapshot_reo_commands(){
+    remote "set -eu
+        [ \"\$(cat /proc/sys/kernel/random/boot_id)\" = '$boot' ]
+        cat /proc/sys/kernel/random/boot_id
+        cat /proc/uptime
+        $reo_command_reader
+        capture_reo_commands
+        echo ==== END
+        cat /proc/sys/kernel/random/boot_id"
+}
 snapshot_load(){
     local side=${1:?snapshot side required}
     [[ $side == before || $side == after ]] || return 2
@@ -471,6 +507,10 @@ snapshot_load(){
                 echo ==== RX_ERROR \"\${d##*/}\"
                 cat \"\$d/rx_error_stats\"
             done
+        fi
+        if [ '$ap_reo_command_stats' = 1 ]; then
+            $reo_command_reader
+            capture_reo_commands
         fi
         if [ '$ap_htt_tx_stats' = 1 ]; then
             echo ==== HTT_TX
@@ -679,6 +719,7 @@ for band in "${bands[@]}"; do
             sleep .25
         done
     fi
+    if (( ap_reo_command_stats )); then snapshot_reo_commands > "$prefix.reo-command-before.txt"; fi
     snapshot_rx > "$prefix.rx-before.txt"
     snapshot_srng > "$prefix.rx-before.srng.txt"
     remote 'cat /proc/interrupts' > "$prefix.irq-before.txt"
@@ -996,6 +1037,11 @@ for band in "${bands[@]}"; do
     if ! guard; then
         echo "AP_FAULT_AFTER_BAND_$band"
         exit 1
+    fi
+    if (( ap_reo_command_stats )); then
+        snapshot_reo_commands > "$prefix.reo-command-after.txt"
+        uv run --offline --no-project python -B "$(dirname "$helper")/reo-command-stats.py" \
+            "$prefix.reo-command-before.txt" "$prefix.reo-command-after.txt" > "$prefix.reo-command-delta.json" || cases_failed=1
     fi
     snapshot_rx > "$prefix.rx-after.txt"
     snapshot_srng > "$prefix.rx-after.srng.txt"

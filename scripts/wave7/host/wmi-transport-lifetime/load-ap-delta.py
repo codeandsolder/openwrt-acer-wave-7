@@ -18,6 +18,10 @@ htt_spec = importlib.util.spec_from_file_location(
     "htt_tx", Path(__file__).with_name("htt-tx-stats.py"))
 htt = importlib.util.module_from_spec(htt_spec)
 htt_spec.loader.exec_module(htt)
+reo_spec = importlib.util.spec_from_file_location(
+    "reo_command", Path(__file__).with_name("reo-command-stats.py"))
+reo_cmd = importlib.util.module_from_spec(reo_spec)
+reo_spec.loader.exec_module(reo_cmd)
 MODES = ("uplink", "downlink", "bidirectional")
 CPU = re.compile(r"^cpu(\d+)\s+([\d ]+)$")
 IRQ = re.compile(r"^\s*(\d+):\s+(.*)$")
@@ -288,6 +292,8 @@ def parse(text):
     extra = {}
     if "CHANNEL_SURVEY" in sections_:
         extra["channel_survey"] = survey.describe_snapshot(sections_["CHANNEL_SURVEY"])
+    if any(k.startswith("REO_CMD ") for k in sections_):
+        extra["reo_command"] = reo_cmd.parse_sections(sections_, tx.keys())
     if "HTT_TX" in sections_:
         extra["htt_tx"] = htt.describe_snapshot(sections_["HTT_TX"], tx.keys())
     pools = {k.split()[-1]: parse_page_pool(v) for k, v in sections_.items()
@@ -405,6 +411,8 @@ def compare(before, after):
     if "channel_survey" in a["extra"]:
         extra["channel_survey"] = survey.compare(a["extra"]["channel_survey"],
                                                  b["extra"]["channel_survey"])
+    if "reo_command" in a["extra"]:
+        extra["reo_command"] = reo_cmd.compare(a["extra"]["reo_command"], b["extra"]["reo_command"])
     if "htt_tx" in a["extra"]:
         extra["htt_tx"] = htt.compare(a["extra"]["htt_tx"], b["extra"]["htt_tx"])
     if "rx_error_attribution" in a["extra"]:
