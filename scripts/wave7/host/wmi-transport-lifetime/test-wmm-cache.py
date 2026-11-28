@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise actual deferred WMM storage and replay, with mocked firmware transport."""
+"""Exercise deferred WMM replay and submission evidence with mocked firmware transport."""
 import argparse
 from pathlib import Path
 import re
@@ -35,8 +35,8 @@ def main():
         one(wmi, r'^struct wmi_wmm_params_arg \{.*?^\};'),
         one(wmi, r'^struct wmi_wmm_params_all_arg \{.*?^\};'),
     ))
-    funcs = '\n'.join(one(mac, rf'^static (?:int|void) {name}\(.*?^\}}') for name in (
-        'ath12k_mac_set_wmm_params', 'ath12k_mac_conf_tx',
+    funcs = one(core, r'^static inline struct wmi_wmm_params_arg \*\nath12k_wmm_ac\(.*?^\}') + '\n' + '\n'.join(one(mac, rf'^static (?:int|void) {name}\(.*?^\}}') for name in (
+        'ath12k_mac_set_wmm_params', 'ath12k_mac_submit_wmm', 'ath12k_mac_conf_tx',
         'ath12k_mac_cache_tx_conf', 'ath12k_mac_flush_tx_conf'))
     # Require the production callers to use the tested helpers.
     assert 'return ath12k_mac_cache_tx_conf(&cache->tx_conf, ac, params);' in mac
@@ -51,6 +51,7 @@ def main():
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
+typedef uint64_t u64;
 #define __packed __attribute__((packed))
 #define BIT(n) (1UL << (n))
 #define WARN_ON(x) (x)
@@ -62,6 +63,10 @@ struct ath12k_link_vif {
     struct ath12k *ar;
     u32 vdev_id;
     struct wmi_wmm_params_all_arg wmm_params;
+    struct wmi_wmm_params_all_arg wmm_submitted;
+    u64 wmm_attempts, wmm_failures;
+    int wmm_last_error;
+    u8 wmm_configured, wmm_submitted_mask;
 };
 static unsigned sends, calls, warned, uapsd_ac[4], uapsd_enabled[4];
 static int send_error, uapsd_error;
@@ -151,6 +156,9 @@ int main(void)
         reset();
         ath12k_mac_flush_tx_conf(&vif,&cache);
         assert(sends==!!mask && calls==(unsigned)__builtin_popcount(mask) && !warned);
+        assert(vif.wmm_configured==mask && vif.wmm_submitted_mask==mask);
+        assert(vif.wmm_attempts==!!mask && !vif.wmm_failures && !vif.wmm_last_error);
+        if(mask) assert(!memcmp(&vif.wmm_submitted,&sent,sizeof(sent)));
         for(unsigned ac=0,j=0;ac<4;++ac) {
             struct wmi_wmm_params_arg *p=slot(&vif.wmm_params,ac);
             if(mask&BIT(ac)) {
@@ -172,11 +180,15 @@ int main(void)
             reset(); send_error=-EIO;
             ath12k_mac_flush_tx_conf(&vif,&cache);
             assert(sends==1 && calls==0 && warned==1);
+            assert(vif.wmm_attempts==2 && vif.wmm_failures==1 && vif.wmm_last_error==-EIO);
+            assert(vif.wmm_submitted_mask==mask);
             for(unsigned ac=0;ac<4;++ac) {
                 reset(); uapsd_error=ac+1;
                 ath12k_mac_flush_tx_conf(&vif,&cache);
                 assert(sends==1 && calls==(unsigned)__builtin_popcount(mask));
                 assert(warned==!!(mask&BIT(ac)));
+                assert(vif.wmm_attempts==3+ac && vif.wmm_failures==1 && !vif.wmm_last_error);
+                assert(!memcmp(&vif.wmm_submitted,&sent,sizeof(sent)));
             }
         }
         ++cases;
@@ -189,12 +201,33 @@ int main(void)
         assert(ath12k_mac_conf_tx(&vif,ac,&q)==0 && sends==1 && calls==1);
         check_params(slot(&sent,ac),&q);
         assert(uapsd_ac[0]==ac && uapsd_enabled[0]);
+        assert(vif.wmm_attempts==1 && vif.wmm_submitted_mask==BIT(ac));
+        struct wmi_wmm_params_all_arg previous=vif.wmm_submitted;
+        unsigned next=(ac+1)%4;
+        q.txop=1234;
         reset(); send_error=-EIO;
-        assert(ath12k_mac_conf_tx(&vif,ac,&q)==-EIO && sends==1 && !calls);
+        assert(ath12k_mac_conf_tx(&vif,next,&q)==-EIO && sends==1 && !calls);
+        assert(vif.wmm_configured==(BIT(ac)|BIT(next)));
+        assert(vif.wmm_submitted_mask==BIT(ac) && vif.wmm_attempts==2);
+        assert(vif.wmm_failures==1 && vif.wmm_last_error==-EIO);
+        assert(!memcmp(&vif.wmm_submitted,&previous,sizeof(previous)));
+        check_params(slot(&vif.wmm_params,next),&q);
         reset(); uapsd_error=ac+1;
         assert(ath12k_mac_conf_tx(&vif,ac,&q)==-EIO && sends==1 && calls==1);
+        assert(vif.wmm_submitted_mask==(BIT(ac)|BIT(next)) && vif.wmm_attempts==3);
+        assert(vif.wmm_failures==1 && !vif.wmm_last_error);
+        assert(!memcmp(&vif.wmm_submitted,&sent,sizeof(sent)));
+        struct ath12k_link_vif other={.ar=&ar,.vdev_id=6};
+        reset(); send_error=-ENOSPC;
+        assert(ath12k_mac_conf_tx(&other,ac,&q)==-ENOSPC);
+        assert(other.wmm_configured==BIT(ac) && !other.wmm_submitted_mask);
+        assert(other.wmm_attempts==1 && other.wmm_failures==1);
+        assert(vif.wmm_attempts==3 && !vif.wmm_last_error);
+        reset();
+        assert(ath12k_mac_conf_tx(&other,65535,&q)==-EINVAL && !sends);
+        assert(other.wmm_attempts==1 && other.wmm_configured==BIT(ac));
     }
-    puts("WMM_CACHE_PASS");
+    puts("WMM_CACHE_AND_SUBMISSION_PASS");
     printf("ordered sequences=%u (success, WMI failure, each U-APSD failure)\\n",cases);
 }
 '''

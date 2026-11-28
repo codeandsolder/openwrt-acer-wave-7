@@ -1,0 +1,213 @@
+Subject: [PATCH] wifi: ath12k: expose per-vdev WMM submission state
+
+WMM updates send all four categories, even when only one was configured.
+Record the requested and last successfully submitted command payloads,
+including category validity, attempts and failures. Expose a passive
+per-link debugfs snapshot without firmware requests.
+
+A successful WMI submission is not an acknowledgment that firmware
+applied those parameters. Preserve the last submitted state on failure.
+
+---
+--- a/drivers/net/wireless/ath/ath12k/core.h
++++ b/drivers/net/wireless/ath/ath12k/core.h
+@@ -315,6 +315,24 @@
+ 	bool enable_offload;
+ };
+ 
++/* mac80211 AC numbers are not the WME wire ordering. */
++static inline struct wmi_wmm_params_arg *
++ath12k_wmm_ac(struct wmi_wmm_params_all_arg *params, u16 ac)
++{
++	switch (ac) {
++	case IEEE80211_AC_VO:
++		return &params->ac_vo;
++	case IEEE80211_AC_VI:
++		return &params->ac_vi;
++	case IEEE80211_AC_BE:
++		return &params->ac_be;
++	case IEEE80211_AC_BK:
++		return &params->ac_bk;
++	default:
++		return NULL;
++	}
++}
++
+ struct ath12k_link_vif {
+ 	u32 vdev_id;
+ 	u32 beacon_interval;
+@@ -325,6 +343,12 @@
+ 	bool beacon_prot;
+ 
+ 	struct wmi_wmm_params_all_arg wmm_params;
++	struct wmi_wmm_params_all_arg wmm_submitted;
++	u64 wmm_attempts;
++	u64 wmm_failures;
++	int wmm_last_error;
++	u8 wmm_configured;
++	u8 wmm_submitted_mask;
+ 	u32 uapsd;
+ 	struct list_head list;
+ 
+--- a/drivers/net/wireless/ath/ath12k/mac.c
++++ b/drivers/net/wireless/ath/ath12k/mac.c
+@@ -8412,24 +8412,11 @@
+ static int ath12k_mac_set_wmm_params(struct ath12k_link_vif *arvif, u16 ac,
+ 				     const struct ieee80211_tx_queue_params *params)
+ {
+-	struct wmi_wmm_params_arg *p = NULL;
++	struct wmi_wmm_params_arg *p;
+ 
+ 	lockdep_assert_wiphy(ath12k_ar_to_hw(arvif->ar)->wiphy);
+ 
+-	switch (ac) {
+-	case IEEE80211_AC_VO:
+-		p = &arvif->wmm_params.ac_vo;
+-		break;
+-	case IEEE80211_AC_VI:
+-		p = &arvif->wmm_params.ac_vi;
+-		break;
+-	case IEEE80211_AC_BE:
+-		p = &arvif->wmm_params.ac_be;
+-		break;
+-	case IEEE80211_AC_BK:
+-		p = &arvif->wmm_params.ac_bk;
+-		break;
+-	}
++	p = ath12k_wmm_ac(&arvif->wmm_params, ac);
+ 
+ 	if (WARN_ON(!p))
+ 		return -EINVAL;
+@@ -8438,7 +8425,30 @@
+ 	p->cwmax = params->cw_max;
+ 	p->aifs = params->aifs;
+ 	p->txop = params->txop;
++	arvif->wmm_configured |= BIT(ac);
++
++	return 0;
++}
++
++/* WMI submission success is not a firmware application acknowledgment. */
++static int ath12k_mac_submit_wmm(struct ath12k_link_vif *arvif)
++{
++	struct ath12k *ar = arvif->ar;
++	int ret;
++
++	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+ 
++	ret = ath12k_wmi_send_wmm_update_cmd(ar, arvif->vdev_id,
++					     &arvif->wmm_params);
++	arvif->wmm_attempts++;
++	arvif->wmm_last_error = ret;
++	if (ret) {
++		arvif->wmm_failures++;
++		return ret;
++	}
++
++	arvif->wmm_submitted = arvif->wmm_params;
++	arvif->wmm_submitted_mask = arvif->wmm_configured;
+ 	return 0;
+ }
+ 
+@@ -8453,8 +8463,7 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	ret = ath12k_wmi_send_wmm_update_cmd(ar, arvif->vdev_id,
+-					     &arvif->wmm_params);
++	ret = ath12k_mac_submit_wmm(arvif);
+ 	if (ret) {
+ 		ath12k_warn(ab, "pdev idx %d failed to set wmm params: %d\n",
+ 			    ar->pdev_idx, ret);
+@@ -8507,8 +8516,7 @@
+ 			return;
+ 	}
+ 
+-	ret = ath12k_wmi_send_wmm_update_cmd(ar, arvif->vdev_id,
+-					     &arvif->wmm_params);
++	ret = ath12k_mac_submit_wmm(arvif);
+ 	if (ret) {
+ 		ath12k_warn(ar->ab, "unable to apply cached WMM to vdev %u: %d\n",
+ 			    arvif->vdev_id, ret);
+--- a/drivers/net/wireless/ath/ath12k/debugfs.c
++++ b/drivers/net/wireless/ath/ath12k/debugfs.c
+@@ -1017,6 +1017,70 @@
+ 	.llseek = default_llseek,
+ };
+ 
++static void ath12k_debugfs_wmm_link_show(struct seq_file *s,
++					 struct ath12k_link_vif *arvif)
++{
++	unsigned int ac;
++
++	seq_printf(s, "link=%u vdev=%u pdev=%u configured=0x%x submitted=0x%x attempts=%llu failures=%llu last_error=%d\n",
++		   arvif->link_id, arvif->vdev_id, arvif->ar->pdev_idx,
++		   arvif->wmm_configured, arvif->wmm_submitted_mask,
++		   arvif->wmm_attempts, arvif->wmm_failures, arvif->wmm_last_error);
++
++	for (ac = 0; ac < IEEE80211_NUM_ACS; ac++) {
++		const struct wmi_wmm_params_arg *requested, *submitted;
++
++		requested = ath12k_wmm_ac(&arvif->wmm_params, ac);
++		submitted = ath12k_wmm_ac(&arvif->wmm_submitted, ac);
++		seq_printf(s, "ac=%u requested=%u,%u,%u,%u,%u,%u submitted=%u,%u,%u,%u,%u,%u\n",
++			   ac, requested->aifs, requested->cwmin, requested->cwmax,
++			   requested->txop, requested->acm, requested->no_ack,
++			   submitted->aifs, submitted->cwmin, submitted->cwmax,
++			   submitted->txop, submitted->acm, submitted->no_ack);
++	}
++}
++
++static int ath12k_debugfs_wmm_state_show(struct seq_file *s, void *unused)
++{
++	struct ath12k_vif *ahvif = s->private;
++	struct wiphy *wiphy = ahvif->ah->hw->wiphy;
++	struct ath12k_link_vif *arvif;
++	unsigned long links_map;
++	unsigned int link_id;
++	int ret = 0;
++
++	/* Do not block an interface removal holding the wiphy mutex. */
++	if (!mutex_trylock(&wiphy->mtx))
++		return -EBUSY;
++
++	if (ahvif->ah->state != ATH12K_HW_STATE_ON) {
++		ret = -ENETDOWN;
++		goto unlock;
++	}
++
++	links_map = ahvif->links_map & GENMASK(IEEE80211_MLD_MAX_NUM_LINKS - 1, 0);
++	if (!links_map) {
++		ret = -ENODATA;
++		goto unlock;
++	}
++
++	seq_puts(s, "version=1 fields=aifs,cwmin,cwmax,txop_32us,acm,no_ack\n");
++	for_each_set_bit(link_id, &links_map, IEEE80211_MLD_MAX_NUM_LINKS) {
++		arvif = wiphy_dereference(wiphy, ahvif->link[link_id]);
++		if (!arvif || !arvif->is_created || !arvif->ar) {
++			ret = -ENODEV;
++			break;
++		}
++
++		ath12k_debugfs_wmm_link_show(s, arvif);
++	}
++
++unlock:
++	mutex_unlock(&wiphy->mtx);
++	return ret;
++}
++DEFINE_SHOW_ATTRIBUTE(ath12k_debugfs_wmm_state);
++
+ void ath12k_debugfs_op_vif_add(struct ieee80211_hw *hw,
+ 			       struct ieee80211_vif *vif)
+ {
+@@ -1024,6 +1088,8 @@
+ 
+ 	debugfs_create_file("link_stats", 0400, vif->debugfs_dir, ahvif,
+ 			    &ath12k_fops_link_stats);
++	debugfs_create_file("wmm_state", 0400, vif->debugfs_dir, ahvif,
++			    &ath12k_debugfs_wmm_state_fops);
+ }
+ EXPORT_SYMBOL(ath12k_debugfs_op_vif_add);
+ 
